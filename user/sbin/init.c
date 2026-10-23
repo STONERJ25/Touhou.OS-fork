@@ -18,6 +18,7 @@
 #include <poll.h>
 #include <dirent.h>
 #include <signal.h>
+#include <time.h>
 #include <sys/wait.h>
 #include <pwd.h>
 #include <grp.h>
@@ -156,6 +157,20 @@ static bool read_greeted(int fd, char *name, size_t n) {
     return name[0] != 0;
 }
 
+/* Time zone: tz=... on the command line wins over /etc/timezone (which libc reads by itself). If the clock chip keeps local
+ * time (rtc=local: a PC that also runs Windows does that) the kernel read it as UTC, so correct the system clock. */
+static void setup_clock(void) {
+    char tz[96];
+    if (cmdline_get("tz=", tz, sizeof tz) && tz[0]) setenv("TZ", tz, 1);
+    tzset();
+    if (cmdline_has("rtc=local")) {
+        time_t raw = time(NULL);
+        struct tm tm;
+        gmtime_r(&raw, &tm);
+        gap_settime((long)mktime(&tm) * 1000, 0);
+    }
+}
+
 /* After a logout nothing of the previous resident should linger on the machine. */
 static void send_home(int uid) {
     if (uid == 0) return;
@@ -194,6 +209,7 @@ int main(void) {
         gap_reboot(0x100 | (WIFEXITED(status) ? WEXITSTATUS(status) : 99));
     }
 
+    setup_clock();
     printf(TAG " the shrine opens for the day (init, pid %d)\n", getpid());
 
     char autologin[32] = "reimu";
@@ -267,8 +283,12 @@ int main(void) {
         } else if (state == ST_LOGIN) {
             ask = true;                                                  /* whoever it was has left: back to the door */
         } else if (in_desktop && code != 0) {
-            printf(TAG " the desktop ended (status %d): here is the text shell; type 'desktop' to try again\n", code);
-            in_desktop = false;
+            /* A desktop that dies (or is shot down with Ctrl+Alt+Backspace) must not hand out a shell for free: the screen lock
+             * may have been up. The text door asks who is there; when that session ends the login screen tries again. */
+            printf(TAG " the desktop ended (status %d): the text door is open, then the login screen returns\n", code);
+            send_home(cur.uid);
+            text_door_once = true;
+            ask = true;
         } else if (in_desktop) {
             printf(TAG " %s left the shrine; the gate closes behind them\n", cur.name);
             send_home(cur.uid);

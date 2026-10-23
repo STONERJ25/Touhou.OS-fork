@@ -16,7 +16,9 @@ All art is original or procedurally generated. No assets are extracted from the 
 | Sakuya | timers, clock, tick | time manipulation |
 | Alice | tasks, processes, scheduler | she moves puppets on strings |
 | Eiki | faults, permissions, security | the judge: incidents are reported to Eiki |
-| Kappa / Nitori | hardware, PCI, drivers, framebuffer | kappa engineers |
+| Kappa / Nitori | hardware, framebuffer, window toolkit | kappa engineers |
+| Marisa | PCI and block devices (she collects everything on the bus) | borrows without asking |
+| Hakurei | init and the login screen | the shrine opens for the day |
 | Satori | keyboard | she reads your mind (your keystrokes) |
 | Koishi | mouse | unconscious movement |
 | Keine | filesystems, history | keeps history |
@@ -50,14 +52,20 @@ Thematic directories are real; conventional POSIX names are symlinks to them.
 
 ## People
 
-Users: `root` (GECOS "Yukari Yakumo"), `reimu` (1000, default), `marisa` (1001), `sakuya` (1002).
-Hostname: `gensokyo`. Prompt: `reimu@gensokyo:/HumanVillage/reimu$`.
+Users: `root` (GECOS "Yukari Yakumo", locked), `reimu` (1000, the default resident), `marisa` (1001, in the sudoers file: she
+borrows everything anyway), `sakuya` (1002), `sumireko` (1003, an outsider with no seat at the shrine, so no desktop and no power
+button). Group `shrine` (100) is the seat: display, input devices and the power button. Hostname: `gensokyo`.
+Prompt: `reimu@gensokyo ~ $`. See [ACCOUNTS.md](ACCOUNTS.md).
 
 ## Messages
 
 - Page fault in kernel: `BOUNDARY VIOLATION: ...`; any fatal kernel error: `*** INCIDENT: KERNEL PANIC ***` plus a quip that
   matches the fault (null pointer, stack overflow, out of memory, ...). The register dump and backtrace always follow.
-- Permission denied from the shell helper: `reimu is not in the sudoers file. This incident will be reported to Eiki.`
+- `sudo` (it is called `eiki`) for someone not in `/etc/sudoers`: `reimu is not in the sudoers file. This incident will be reported to Eiki.`
+  and a line `[Eiki] reimu tried to borrow root's power and was refused` in the kernel log.
+- A wrong password at the login screen: the card shakes its head, "Login incorrect / Eiki has made a note of it."
+- `init` logs in the voice of the shrine: `the shrine opens for the day`, `reimu left the shrine; the gate closes behind them`.
+- The window server's last resort (Ctrl+Alt+Backspace) opens the text door instead of handing out a shell.
 - Out of memory: `Yuyuko is hungry.`
 - `rm` -> Netherworld, `shutdown` -> "Yukari opens a gap...", `fortune`/`omikuji` -> shrine fortune slips, `saisen` -> offering box.
 

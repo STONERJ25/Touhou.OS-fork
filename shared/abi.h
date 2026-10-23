@@ -279,6 +279,7 @@ struct gpeercred { int32_t pid; uint32_t uid, gid; };
 /* ---- reboot ---- */
 #define REBOOT_RESTART  1
 #define REBOOT_POWEROFF 2
+#define REBOOT_CHECK    3               /* does nothing: 0 if the caller may restart or power off the machine, else -EPERM */
 
 /* ---- framebuffer / graphics devices ---- */
 struct gfbinfo {

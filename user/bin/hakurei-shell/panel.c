@@ -71,7 +71,8 @@ void sample_system(void) {
 
 /* ---------------------------------------------------------------- start menu */
 
-typedef struct { const char *header; int app; bool power; } MenuRow;
+enum { SP_NONE, SP_LOCK, SP_POWER };
+typedef struct { const char *header; int app; int special; } MenuRow;
 
 static int menu_rows(MenuRow *rows) {
     int n = 0;
@@ -80,12 +81,13 @@ static int menu_rows(MenuRow *rows) {
         bool any = false;
         for (int i = 0; i < g_napps; i++) {
             if (strcmp(g_apps[i].section, sections[s]) || !app_present(&g_apps[i])) continue;
-            if (!any) { rows[n++] = (MenuRow){ sections[s], -1, false }; any = true; }
-            rows[n++] = (MenuRow){ NULL, i, false };
+            if (!any) { rows[n++] = (MenuRow){ sections[s], -1, SP_NONE }; any = true; }
+            rows[n++] = (MenuRow){ NULL, i, SP_NONE };
         }
     }
-    rows[n++] = (MenuRow){ "Session", -1, false };
-    rows[n++] = (MenuRow){ NULL, -2, true };           /* shut down */
+    rows[n++] = (MenuRow){ "Session", -1, SP_NONE };
+    if (access("/bin/hakurei-lock", X_OK) == 0) rows[n++] = (MenuRow){ NULL, -3, SP_LOCK };
+    rows[n++] = (MenuRow){ NULL, -2, SP_POWER };       /* shut down */
     return n;
 }
 
@@ -117,17 +119,19 @@ static void menu_draw(KApp *app, KUI *ui, void *user) {
         uint32_t fg = hover ? ui->theme->select_text : ui->theme->text;
         const char *label;
         KIcon icon;
-        if (rows[i].power) { label = "Shut down..."; icon = KI_POWER; }
+        if (rows[i].special == SP_POWER) { label = "Shut down..."; icon = KI_POWER; }
+        else if (rows[i].special == SP_LOCK) { label = "Lock screen"; icon = KI_LOCK; }
         else { label = g_apps[rows[i].app].name; icon = g_apps[rows[i].app].icon; }
         k_icon(cv, icon, r.x + 6, r.y + 3, 24);
         kc_text(cv, r.x + 38, r.y + 7, label, fg);
         if (hover && ui->released[0]) {
-            if (rows[i].power) shutdown_open();
+            if (rows[i].special == SP_POWER) shutdown_open();
+            else if (rows[i].special == SP_LOCK) launch("hakurei-lock");
             else launch_app(rows[i].app);
             menu_close();
             return;
         }
-        if (hover) k_tooltip_text(ui, rows[i].power ? "Power off or restart" : g_apps[rows[i].app].tooltip);
+        if (hover) k_tooltip_text(ui, rows[i].special == SP_POWER ? "Power off, restart or log out" : rows[i].special == SP_LOCK ? "Lock the screen (Super+L)" : g_apps[rows[i].app].tooltip);
         y += ITEM_H;
     }
 }
@@ -156,7 +160,7 @@ static void calendar_draw(KApp *app, KUI *ui, void *user) {
     kc_panel(cv, kr(0, 0, cv->w, cv->h), KB_RAISED, ui->theme->window_bg);
     time_t now = time(NULL);
     struct tm t;
-    gmtime_r(&now, &t);
+    localtime_r(&now, &t);
     int month0 = t.tm_year * 12 + t.tm_mon + G.cal_month_offset;
     int year = month0 / 12, month = month0 % 12;
     char title[48];
@@ -171,7 +175,7 @@ static void calendar_draw(KApp *app, KUI *ui, void *user) {
     first.tm_year = year; first.tm_mon = month; first.tm_mday = 1; first.tm_hour = 12;
     time_t ft = mktime(&first);
     struct tm fl;
-    gmtime_r(&ft, &fl);
+    localtime_r(&ft, &fl);
     static const int mdays[12] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
     int y1900 = year + 1900;
     int dim = mdays[month] + (month == 1 && ((y1900 % 4 == 0 && y1900 % 100 != 0) || y1900 % 400 == 0));
@@ -256,7 +260,7 @@ void panel_draw(KApp *app, KUI *ui, void *user) {
     tx -= 14;
     time_t now = time(NULL);
     struct tm t;
-    gmtime_r(&now, &t);
+    localtime_r(&now, &t);
     char clock[16];
     snprintf(clock, sizeof clock, "%02d:%02d", t.tm_hour, t.tm_min);
     KRect cr = kr(tx - 62, 4, 62, PANEL_H - 8);

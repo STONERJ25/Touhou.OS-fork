@@ -304,7 +304,7 @@ static int eval(Expr *e, const Entry *en) {
         kb_mode_string(st->st_mode, mode);
         struct tm t;
         time_t mt = st->st_mtime;
-        gmtime_r(&mt, &t);
+        localtime_r(&mt, &t);
         strftime(tm, sizeof tm, "%b %e %H:%M", &t);
         printf("%6llu %4lld %s %3u %-8s %-8s %8lld %s %s\n", (unsigned long long)st->st_ino, (long long)((st->st_blocks + 1) / 2), mode,
                (unsigned)st->st_nlink, kb_user_name(st->st_uid), kb_group_name(st->st_gid), (long long)st->st_size, tm, en->path);

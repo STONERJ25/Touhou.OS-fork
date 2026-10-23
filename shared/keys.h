@@ -110,6 +110,7 @@
 #define KEY_LSUPER     (KEY_EXT | 0x5B)
 #define KEY_RSUPER     (KEY_EXT | 0x5C)
 #define KEY_MENU       (KEY_EXT | 0x5D)
+#define KEY_POWER      (KEY_EXT | 0x5E)     /* the ACPI power button, delivered by the kernel */
 
 /* modifier bits carried in userland key helpers */
 #define MOD_SHIFT 1

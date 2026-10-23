@@ -190,32 +190,84 @@ APPLET(groups) {
 
 /* ---- date ---- */
 
+/* "@seconds", "YYYY-MM-DD", "YYYY-MM-DD HH:MM[:SS]" (a 'T' also separates); local time unless `utc`. Returns 0 on success. */
+static int parse_when(const char *d, bool utc, time_t *out) {
+    if (d[0] == '@') { *out = (time_t)atol(d + 1); return 0; }
+    struct tm tm;
+    memset(&tm, 0, sizeof tm);
+    int y, mo, da, h = 0, mi = 0, s = 0;
+    char sep = ' ';
+    int got = sscanf(d, "%d-%d-%d%c%d:%d:%d", &y, &mo, &da, &sep, &h, &mi, &s);
+    if (got < 3 || (got > 3 && sep != ' ' && sep != 'T')) return -1;
+    tm.tm_year = y - 1900; tm.tm_mon = mo - 1; tm.tm_mday = da; tm.tm_hour = h; tm.tm_min = mi; tm.tm_sec = s;
+    *out = utc ? timegm(&tm) : mktime(&tm);
+    return 0;
+}
+
+/* date [-u] [-d STRING] [-s STRING] [+FORMAT] [-R] [-I] [--iso-8601=seconds]; -s sets the system clock (root only). */
 APPLET(date) {
     time_t t = time(NULL);
-    const char *fmt = "%a %b %e %H:%M:%S UTC %Y";
+    const char *fmt = "%a %b %e %H:%M:%S %Z %Y", *set = NULL;
+    bool utc = false;
+    for (int i = 1; i < argc; i++)
+        if (!strcmp(argv[i], "-u") || !strcmp(argv[i], "--utc")) utc = true;
     for (int i = 1; i < argc; i++) {
         if (argv[i][0] == '+') fmt = argv[i] + 1;
-        else if (!strcmp(argv[i], "-u")) { }
-        else if (!strcmp(argv[i], "-d") && i + 1 < argc) {
+        else if (!strcmp(argv[i], "-u") || !strcmp(argv[i], "--utc")) { }
+        else if ((!strcmp(argv[i], "-d") || !strcmp(argv[i], "-s")) && i + 1 < argc) {
+            bool setting = argv[i][1] == 's';
             const char *d = argv[++i];
-            if (d[0] == '@') t = (time_t)atol(d + 1);
-            else {
-                struct tm tm;
-                memset(&tm, 0, sizeof tm);
-                int y, mo, da, h = 0, mi = 0, s = 0;
-                if (sscanf(d, "%d-%d-%d %d:%d:%d", &y, &mo, &da, &h, &mi, &s) >= 3) {
-                    tm.tm_year = y - 1900; tm.tm_mon = mo - 1; tm.tm_mday = da; tm.tm_hour = h; tm.tm_min = mi; tm.tm_sec = s;
-                    t = mktime(&tm);
-                } else { kb_error("invalid date '%s'", d); return 1; }
-            }
-        } else if (!strcmp(argv[i], "-R")) fmt = "%a, %d %b %Y %H:%M:%S +0000";
+            if (parse_when(d, utc, &t) < 0) { kb_error("invalid date '%s'", d); return 1; }
+            if (setting) set = d;
+        } else if (!strcmp(argv[i], "-R")) fmt = "%a, %d %b %Y %H:%M:%S %z";
         else if (!strcmp(argv[i], "-I")) fmt = "%Y-%m-%d";
-        else if (!strcmp(argv[i], "--iso-8601=seconds")) fmt = "%Y-%m-%dT%H:%M:%S+00:00";
+        else if (!strcmp(argv[i], "--iso-8601=seconds")) fmt = "%Y-%m-%dT%H:%M:%S%z";
     }
+    if (set && gap_settime((long)t * 1000, 0) < 0) { kb_error("cannot set the date: %s", strerror(errno)); return 1; }
     struct tm tm;
-    gmtime_r(&t, &tm);
+    if (utc) gmtime_r(&t, &tm);
+    else localtime_r(&t, &tm);
     char buf[256];
     strftime(buf, sizeof buf, fmt, &tm);
+    puts(buf);
+    return 0;
+}
+
+/* hwclock [-w | -s] [--localtime]: the battery-backed clock chip. Without options it shows the chip's time.
+ *   -s  set the system clock from the chip       -w  write the system clock to the chip
+ * The chip normally keeps UTC; PCs that also run Windows keep local time there, which --localtime copes with. */
+APPLET(hwclock) {
+    bool to_chip = false, from_chip = false, local = false;
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "-w") || !strcmp(argv[i], "--systohc")) to_chip = true;
+        else if (!strcmp(argv[i], "-s") || !strcmp(argv[i], "--hctosys")) from_chip = true;
+        else if (!strcmp(argv[i], "--localtime")) local = true;
+        else if (!strcmp(argv[i], "--utc")) local = false;
+        else { kb_error("usage: hwclock [-w | -s] [--localtime | --utc]"); return 2; }
+    }
+    FILE *f = fopen("/proc/rtc", "r");
+    unsigned long raw = 0;
+    if (!f || fscanf(f, "%lu", &raw) != 1) { kb_error("cannot read the clock chip"); if (f) fclose(f); return 1; }
+    fclose(f);
+    time_t chip = (time_t)raw;
+    struct tm tm;
+    if (from_chip) {
+        time_t t = chip;
+        if (local) { gmtime_r(&chip, &tm); t = mktime(&tm); }
+        if (gap_settime((long)t * 1000, 0) < 0) { kb_error("cannot set the system clock: %s", strerror(errno)); return 1; }
+        return 0;
+    }
+    if (to_chip) {
+        time_t now = time(NULL), value = now;
+        if (local) { localtime_r(&now, &tm); value = now + tm.tm_gmtoff; }
+        if (gap_settime((long)now * 1000, (long)value) < 0) { kb_error("cannot write the clock chip: %s", strerror(errno)); return 1; }
+        return 0;
+    }
+    time_t shown = chip;
+    if (local) { gmtime_r(&chip, &tm); shown = mktime(&tm); }
+    localtime_r(&shown, &tm);
+    char buf[128];
+    strftime(buf, sizeof buf, "%Y-%m-%d %H:%M:%S %z", &tm);
     puts(buf);
     return 0;
 }
@@ -330,22 +382,22 @@ APPLET(tty) {
 
 /* ---- power ---- */
 
-APPLET(reboot) {
-    (void)argc; (void)argv;
+/* Says goodbye, asks the kernel, and reports why not if it refuses (it only lets root and the residents with a seat do this). */
+static int power_action(int how, const char *name, const char *farewell) {
+    if (gap_reboot(REBOOT_CHECK) < 0) { kb_error("%s: %s", name, strerror(errno)); return 1; }
     sync();
-    printf("The Hakurei barrier is resetting...\n");
+    printf("%s\n", farewell);
     fflush(stdout);
-    gap_reboot(REBOOT_RESTART);
+    gap_reboot(how);
+    kb_error("%s: %s", name, strerror(errno));
     return 1;
 }
 
+APPLET(reboot) { (void)argc; (void)argv; return power_action(REBOOT_RESTART, "reboot", "The Hakurei barrier is resetting..."); }
+
 APPLET(poweroff) {
     (void)argc; (void)argv;
-    sync();
-    printf("The shrine maiden is closing up for the night. Goodbye!\n");
-    fflush(stdout);
-    gap_reboot(REBOOT_POWEROFF);
-    return 1;
+    return power_action(REBOOT_POWEROFF, "poweroff", "The shrine maiden is closing up for the night. Goodbye!");
 }
 
 APPLET(halt) { return applet_poweroff(argc, argv); }

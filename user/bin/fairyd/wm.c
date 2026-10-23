@@ -10,6 +10,7 @@
 /* ---------------------------------------------------------------- geometry */
 
 int layer_of(const Win *w) {
+    if (w->flags & FW_LOCK) return LAYER_LOCK;
     if (w->flags & FW_DESKTOP) return LAYER_DESKTOP;
     if (w->flags & FW_POPUP) return LAYER_POPUP;
     if (w->flags & FW_FULLSCREEN) return LAYER_FULL;
@@ -165,6 +166,7 @@ static void send_focus(Win *w, bool gained) {
 }
 
 void win_focus(Win *w) {
+    if (S.lock && w != S.lock) return;                         /* while the screen is locked nothing else may take the keyboard */
     if (w == S.focus) return;
     Win *old = S.focus;
     S.focus = w;
@@ -480,16 +482,24 @@ static void spawn(const char *path) {
 
 /* Returns true when the key was a shortcut and must not be passed on to the focused window. */
 bool wm_key_shortcut(uint8_t code, uint8_t down) {
+    if (S.lock) return false;                                  /* no shortcuts, no switching windows: every key goes to the lock */
     bool alt = S.mods & MOD_ALT, ctrl = S.mods & MOD_CTRL;
+    if (code == KEY_LSUPER || code == KEY_RSUPER) {            /* a tap of Super opens the launcher; Super+key is a shortcut and does not */
+        if (down == 1) S.super_alone = true;
+        else if (down == 0 && S.super_alone) { S.super_alone = false; server_send_hotkey(FH_LAUNCHER); }
+        return true;
+    }
+    if (down == 1) S.super_alone = false;
     if (S.switching && (code == KEY_LALT || code == KEY_RALT) && !down) { wm_switcher_commit(); return false; }
     if (alt && code == KEY_TAB && down) { if (down == 1 || S.switching) wm_switcher_cycle(S.mods & MOD_SHIFT); return true; }
     if (down == 1) {
         if (alt && code == KEY_F4 && S.focus) { wm_request_close(S.focus); return true; }
         if (ctrl && alt && code == KEY_T) { if (!S.clients) spawn("/bin/gapterm"); else server_send_hotkey(FH_TERMINAL); return true; }
         if (ctrl && alt && code == KEY_DELETE) { server_send_hotkey(FH_TASKS); return true; }
-        if (code == KEY_LSUPER || code == KEY_RSUPER) { server_send_hotkey(FH_LAUNCHER); return true; }
         if (ctrl && code == KEY_F12) { comp_screenshot("/tmp/screenshot.ppm"); return true; }
         if (alt && code == KEY_F2) { server_send_hotkey(FH_RUN); return true; }
+        if ((S.mods & MOD_SUPER) && code == KEY_L) { server_send_hotkey(FH_LOCK); return true; }
+        if (code == KEY_POWER && server_have_shell()) { server_send_hotkey(FH_POWER); return true; }     /* otherwise the focused window (the login screen) gets the key */
     }
     return S.switching;                                 /* the switcher swallows keys while it is up */
 }

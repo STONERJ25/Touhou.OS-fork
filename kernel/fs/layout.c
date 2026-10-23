@@ -24,6 +24,7 @@ void layout_create(void) {
     mk("/HumanVillage/reimu", 0755, 1000, 1000);
     mk("/HumanVillage/marisa", 0755, 1001, 1001);
     mk("/HumanVillage/sakuya", 0755, 1002, 1002);
+    mk("/HumanVillage/sumireko", 0755, 1003, 1003);    /* an outsider: no seat at the shrine (group shrine) */
     mk("/ScarletDevilMansion", 0755, 0, 0);             /* applications and Patchouli's library */
     mk("/ScarletDevilMansion/lib", 0755, 0, 0);
     mk("/ScarletDevilMansion/share", 0755, 0, 0);

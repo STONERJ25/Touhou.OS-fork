@@ -76,10 +76,11 @@ void desktop_draw(KApp *app, KUI *ui, void *user) {
 /* ---------------------------------------------------------------- context menu */
 
 typedef struct { const char *label; KIcon icon; int action; } CtxItem;
-enum { CA_TERM, CA_FILES, CA_SHOT, CA_ABOUT, CA_SHUTDOWN, CA_SEP };
+enum { CA_TERM, CA_FILES, CA_SHOT, CA_ABOUT, CA_LOCK, CA_SHUTDOWN, CA_SEP };
 static const CtxItem g_ctx[] = {
     { "Open Terminal", KI_TERMINAL, CA_TERM }, { "Gensokyo Explorer", KI_FOLDER, CA_FILES }, { NULL, 0, CA_SEP },
     { "Take screenshot", KI_IMAGE, CA_SHOT }, { "About TouhouOS", KI_INFO, CA_ABOUT }, { NULL, 0, CA_SEP },
+    { "Lock screen", KI_LOCK, CA_LOCK },
     { "Shut down...", KI_POWER, CA_SHUTDOWN },
 };
 
@@ -101,6 +102,7 @@ static void context_draw(KApp *app, KUI *ui, void *user) {
             case CA_FILES: launch("explorer /"); break;
             case CA_SHOT: fairy_screenshot(kapp_display(G.app), "/tmp/screenshot.ppm"); break;
             case CA_ABOUT: about_open(); break;
+            case CA_LOCK: launch("hakurei-lock"); break;
             case CA_SHUTDOWN: shutdown_open(); break;
             }
             kwin_close(G.context);

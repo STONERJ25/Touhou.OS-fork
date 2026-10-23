@@ -47,6 +47,11 @@ void server_send_hotkey(uint32_t which) {
     for (Client *c = S.clients; c; c = c->next) if (c->is_shell) send_msg(c, FE_HOTKEY, 0, 0, &k, sizeof k);
 }
 
+bool server_have_shell(void) {
+    for (Client *c = S.clients; c; c = c->next) if (c->is_shell && !c->dead) return true;
+    return false;
+}
+
 void server_mark_list_dirty(void) { S.list_dirty = true; }
 
 static bool listed(const Win *w) { return !(w->flags & (FW_SKIP_TASKS | FW_PANEL | FW_DESKTOP | FW_POPUP)); }
@@ -106,6 +111,7 @@ void win_destroy(Win *w) {
     memmove(&S.wins[idx], &S.wins[idx + 1], (size_t)(S.nwins - idx - 1) * sizeof(Win *));
     S.nwins--;
     bool had_focus = S.focus == w;
+    if (S.lock == w) S.lock = NULL;
     if (S.focus == w) S.focus = NULL;
     if (S.hover == w) S.hover = NULL;
     if (S.grab == w) S.grab = NULL;
@@ -140,11 +146,17 @@ static void handle_create(Client *c, const FairyHdr *h, const FmCreate *m) {
         send_msg(c, FE_ERROR, 0, h->serial, &e, sizeof e);
         return;
     }
+    if ((m->flags & FW_LOCK) && S.lock) {                                  /* one lock at a time */
+        FeError e = { 3, "the screen is already locked" };
+        send_msg(c, FE_ERROR, 0, h->serial, &e, sizeof e);
+        return;
+    }
     Win *w = calloc(1, sizeof *w);
     if (!w) return;
     w->id = S.next_win++;
     w->client = c;
     w->flags = m->flags;
+    if (w->flags & FW_LOCK) w->flags |= FW_FULLSCREEN | FW_NO_DECOR | FW_SKIP_TASKS;
     strncpy(w->title, m->title, sizeof w->title - 1);
     w->cw = m->w; w->ch = m->h;
     w->parent = m->parent;
@@ -169,6 +181,7 @@ static void handle_create(Client *c, const FairyHdr *h, const FmCreate *m) {
     strncpy(w->shm_path, path, sizeof w->shm_path - 1);
     wm_place_new(w, m->x, m->y);
     win_insert(w);
+    if (w->flags & FW_LOCK) S.lock = w;
     if (w->flags & FW_PANEL) work_area_recompute();
     Rect o = win_outer(w);
     FeCreated cr = { w->cw, w->ch, o.x, o.y, o.w, o.h, 0, 0, 0, 0 };

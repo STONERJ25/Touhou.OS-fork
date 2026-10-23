@@ -304,8 +304,8 @@ APPLET(stat) {
         kb_mode_string(st.st_mode, ms);
         struct tm tm;
         time_t t = st.st_mtime;
-        gmtime_r(&t, &tm);
-        strftime(when, sizeof when, "%Y-%m-%d %H:%M:%S UTC", &tm);
+        localtime_r(&t, &tm);
+        strftime(when, sizeof when, "%Y-%m-%d %H:%M:%S %z", &tm);
         printf("  File: %s\n  Size: %ld\tBlocks: %lu\tInode: %lu\tLinks: %u\n", argv[i], (long)st.st_size,
                (unsigned long)st.st_blocks, (unsigned long)st.st_ino, st.st_nlink);
         printf("  Mode: (%04o/%s)\tUid: (%u/%s)\tGid: (%u/%s)\n", st.st_mode & 07777, ms, st.st_uid, kb_user_name(st.st_uid),

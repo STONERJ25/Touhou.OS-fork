@@ -446,6 +446,17 @@ static int parent_for_modify(const char *path, VNode *cwd, const Cred *c, VNode 
     return rc;
 }
 
+/* A sticky directory (/BambooForest, /Netherworld: mode 1777) lets everyone create entries but only an entry's owner,
+ * the directory's owner or root remove or rename them. */
+static int sticky_check(VNode *dir, const char *name, const Cred *c) {
+    if (!c || c->uid == 0 || !(dir->mode & S_ISVTX) || !dir->ops->lookup) return 0;
+    VNode *child;
+    if (dir->ops->lookup(dir, name, &child) != 0) return 0;         /* nothing there: let the operation report that */
+    int rc = (c->uid == child->uid || c->uid == dir->uid) ? 0 : -EPERM;
+    vnode_put(child);
+    return rc;
+}
+
 /* Like Linux, report EEXIST for a name that is already there before complaining about write access to its parent. */
 static int exists_check(const char *path, VNode *cwd, const Cred *c) {
     VNode *v;
@@ -478,6 +489,7 @@ int vfs_unlink(const char *path, const Cred *c, VNode *cwd) {
     char name[GNAME_MAX + 1];
     int rc = parent_for_modify(path, cwd, c, &dir, name);
     if (rc) return rc;
+    if ((rc = sticky_check(dir, name, c))) { vnode_put(dir); return rc; }
     mutex_lock(&g_ns);
     rc = dir->ops->unlink ? dir->ops->unlink(dir, name) : -EPERM;
     mutex_unlock(&g_ns);
@@ -490,6 +502,7 @@ int vfs_rmdir(const char *path, const Cred *c, VNode *cwd) {
     char name[GNAME_MAX + 1];
     int rc = parent_for_modify(path, cwd, c, &dir, name);
     if (rc) return rc;
+    if ((rc = sticky_check(dir, name, c))) { vnode_put(dir); return rc; }
     mutex_lock(&g_ns);
     rc = dir->ops->rmdir ? dir->ops->rmdir(dir, name) : -EPERM;
     mutex_unlock(&g_ns);
@@ -504,6 +517,7 @@ int vfs_rename(const char *from, const char *to, const Cred *c, VNode *cwd) {
     if (rc) return rc;
     rc = parent_for_modify(to, cwd, c, &nd, nn);
     if (rc) { vnode_put(od); return rc; }
+    if ((rc = sticky_check(od, on, c)) || (rc = sticky_check(nd, nn, c))) { vnode_put(od); vnode_put(nd); return rc; }
     if (od->mount != nd->mount) rc = -EXDEV;
     else {
         mutex_lock(&g_ns);

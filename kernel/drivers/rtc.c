@@ -3,12 +3,20 @@
 #include "cpu.h"
 #include "irq.h"
 #include "vfs.h"
+#include "process.h"
+#include "initcall.h"
+#include "ktime.h"
 
-static u64 g_boot_epoch;
+static u64 g_boot_ms;                  /* wall clock at uptime 0, in milliseconds since the epoch */
 
 static u8 cmos(u8 reg) {
     outb(0x70, reg);
     return inb(0x71);
+}
+
+static void cmos_write(u8 reg, u8 v) {
+    outb(0x70, reg);
+    outb(0x71, v);
 }
 
 static u8 bcd(u8 v) { return (u8)((v & 0x0F) + (v >> 4) * 10); }
@@ -67,16 +75,67 @@ static u64 read_rtc_epoch(void) {
 }
 
 void rtc_init(void) {
-    g_boot_epoch = read_rtc_epoch() - uptime_ms() / 1000;
+    g_boot_ms = read_rtc_epoch() * 1000 - uptime_ms();
     int y, mo, d, h, mi, s, wd;
     civil_from_epoch(time_now_sec(), &y, &mo, &d, &h, &mi, &s, &wd);
-    klog("Sakuya", "wall clock %04d-%02d-%02d %02d:%02d:%02d UTC (time is only stopped when she says so)", y, mo, d, h, mi, s);
+    klog("Sakuya", "wall clock %04d-%02d-%02d %02d:%02d:%02d (the clock chip is read as UTC; hwclock can fix that)", y, mo, d, h, mi, s);
 }
 
 u64 time_now_sec(void) {
-    return g_boot_epoch + uptime_ms() / 1000;
+    return time_now_ms() / 1000;
 }
 
 u64 time_now_ms(void) {
-    return g_boot_epoch * 1000 + uptime_ms();
+    return g_boot_ms + uptime_ms();
 }
+
+void time_set_ms(u64 ms) {
+    g_boot_ms = ms - uptime_ms();
+}
+
+u64 rtc_read_raw(void) {
+    return read_rtc_epoch();
+}
+
+/* Stores the calendar fields of `epoch` in the clock chip (24-hour mode; the BCD/binary format the chip already uses). */
+void rtc_write_raw(u64 epoch) {
+    int y, mo, d, h, mi, s, wd;
+    civil_from_epoch(epoch, &y, &mo, &d, &h, &mi, &s, &wd);
+    u8 b = cmos(0x0B);
+    bool binary = b & 4;
+    bool has_century = cmos(0x32) != 0;
+    #define ENC(v) ((u8)(binary ? (v) : (((v) / 10) << 4 | ((v) % 10))))
+    u64 flags = irq_save();
+    cmos_write(0x0B, (u8)(b | 0x80 | 0x02));            /* halt updates, 24-hour mode */
+    cmos_write(0x00, ENC(s));
+    cmos_write(0x02, ENC(mi));
+    cmos_write(0x04, ENC(h));
+    cmos_write(0x06, ENC(wd + 1));
+    cmos_write(0x07, ENC(d));
+    cmos_write(0x08, ENC(mo));
+    cmos_write(0x09, ENC(y % 100));
+    if (has_century) cmos_write(0x32, ENC(y / 100));
+    cmos_write(0x0B, (u8)((b | 0x02) & ~0x80));          /* let it run again */
+    irq_restore(flags);
+    #undef ENC
+}
+
+/* settime(ms, rtc_epoch): the first sets the kernel's wall clock; a non-zero second also rewrites the clock chip with
+ * those calendar fields (the caller decides whether the chip keeps UTC or local time). */
+static long sys_settime(TrapFrame *tf) {
+    if (current->proc->cred.uid != 0) return -EPERM;
+    time_set_ms((u64)A0(tf));
+    if (A1(tf)) rtc_write_raw((u64)A1(tf));
+    klog("Sakuya", "the clock was set by '%s'%s", current->proc->name, A1(tf) ? " (and the clock chip)" : "");
+    return 0;
+}
+
+static size_t proc_rtc(char *buf, size_t cap) {
+    return (size_t)snprintf(buf, cap, "%lu\n", (unsigned long)rtc_read_raw());
+}
+
+static void rtc_late_init(void) {
+    syscall_register(SYS_settime, sys_settime);
+    procfs_register("rtc", proc_rtc);
+}
+INITCALL(rtc_late_init);

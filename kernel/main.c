@@ -18,6 +18,7 @@
 #include "random.h"
 #include "process.h"
 #include "pci.h"
+#include "acpi.h"
 #include "initcall.h"
 
 void virtio_blk_init(void);
@@ -108,9 +109,11 @@ NORETURN void kmain(BootInfo *bi) {
     pmm_reclaim_boot_memory();
     klog("Boundary", "paging online: %lu MiB RAM, %lu MiB free", (unsigned long)(pmm_total_pages() >> 8),
          (unsigned long)(pmm_free_pages_count() >> 8));
+    acpi_init();
 
     sched_init();
     pic_init();
+    lapic_virtual_wire();
     timer_init();
     tty_console_init();
     input_init();

@@ -28,6 +28,7 @@ void    boot_mmap_save(const BootInfo *bi);          /* copies the loader's regi
 
 void    pmm_init(void);
 paddr_t pmm_alloc(unsigned order);                  /* 0 on failure */
+paddr_t pmm_alloc_below(unsigned order, paddr_t limit);     /* the whole block lies below limit (32-bit DMA); 0 on failure */
 void    pmm_free(paddr_t p, unsigned order);
 paddr_t pmm_alloc_page(void);
 paddr_t pmm_alloc_page_zeroed(void);

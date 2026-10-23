@@ -674,7 +674,9 @@ static long sys_sysinfo(TrapFrame *tf) {
 }
 
 static long sys_reboot(TrapFrame *tf) {
-    if (me()->cred.uid != 0) return -EPERM;
+    /* root, or anyone sitting at the machine: members of the shrine group may close it up (the desktop's Shut down button) */
+    if (me()->cred.uid != 0 && !cred_in_group(&me()->cred, GID_SHRINE)) return -EPERM;
+    if (A0(tf) == REBOOT_CHECK) return 0;
     if ((A0(tf) & 0xFF00) == 0x100) qemu_exit((int)(A0(tf) & 0xFF));      /* test harness: leave QEMU with a status */
     klog("Gensokyo", "%s requested by '%s'", A0(tf) == REBOOT_POWEROFF ? "poweroff" : "restart", me()->name);
     if (A0(tf) == REBOOT_POWEROFF) machine_poweroff();

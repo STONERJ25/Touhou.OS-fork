@@ -57,7 +57,7 @@ static void print_long(const Entry *e) {
     kb_mode_string(e->ok ? e->st.st_mode : 0, ms);
     time_t now = time(NULL), t = e->st.st_mtime;
     struct tm tm;
-    gmtime_r(&t, &tm);
+    localtime_r(&t, &tm);
     if (t > now - 180L * 86400 && t < now + 3600) strftime(when, sizeof when, "%b %e %H:%M", &tm);
     else strftime(when, sizeof when, "%b %e  %Y", &tm);
     if (o_h) kb_format_size((unsigned long long)e->st.st_size, size, sizeof size);
@@ -183,11 +183,6 @@ APPLET(ls) {
     }
     qsort(files, (size_t)nfiles, sizeof *files, cmp_entries);
     if (nfiles) { print_entries(files, nfiles); printed = 1; }
-    int ndirs = 0;
-    for (int k = 0; k < n; k++) {
-        struct stat st;
-        if (ents[k].ok && !o_d && stat(ents[k].name, &st) == 0 && S_ISDIR(st.st_mode)) ndirs++;
-    }
     for (int k = 0; k < n; k++) {
         struct stat st;
         if (ents[k].ok && !o_d && stat(ents[k].name, &st) == 0 && S_ISDIR(st.st_mode))

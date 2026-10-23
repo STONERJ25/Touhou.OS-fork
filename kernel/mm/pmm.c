@@ -147,6 +147,32 @@ paddr_t pmm_alloc(unsigned order) {
     return (paddr_t)pfn << PAGE_SHIFT;
 }
 
+/* Like pmm_alloc, but the block must end below `limit`: devices that can only address 32 bits of memory (and every device
+ * is cheaper to reason about that way) get their DMA buffers from the first 4 GiB even on a machine with 16 GiB of RAM. */
+paddr_t pmm_alloc_below(unsigned order, paddr_t limit) {
+    if (order > PMM_MAX_ORDER) return 0;
+    u64 f = irq_save();
+    for (unsigned o = order; o <= PMM_MAX_ORDER; o++) {
+        for (u32 pfn = g_free_head[o]; pfn != NIL; pfn = g_pages[pfn].next) {
+            paddr_t base = (paddr_t)pfn << PAGE_SHIFT;
+            if (base + ((paddr_t)PAGE_SIZE << order) > limit) continue;
+            list_remove(o, pfn);
+            for (unsigned cur = o; cur > order;) {         /* split, keeping the lower half */
+                cur--;
+                list_add(cur, pfn + (1U << cur));
+            }
+            g_pages[pfn].order = (u8)order;
+            g_pages[pfn].flags |= PG_USED;
+            g_pages[pfn].refcount = 1;
+            g_free_pages -= 1UL << order;
+            irq_restore(f);
+            return base;
+        }
+    }
+    irq_restore(f);
+    return 0;
+}
+
 void pmm_free(paddr_t p, unsigned order) {
     u64 f = irq_save();
     u64 pfn = p >> PAGE_SHIFT;

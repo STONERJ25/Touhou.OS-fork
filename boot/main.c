@@ -64,10 +64,18 @@ static EFI_STATUS read_file(EFI_FILE_PROTOCOL *root, const char *ascii_name, UIN
     return EFI_SUCCESS;
 }
 
+/* video=WxH     that mode (default 1024x768, with fallbacks)
+ * video=native   keep the mode the firmware already chose: on a PC that is normally the monitor's own resolution
+ * video=max      the largest mode the display offers, up to 2560x1600 */
+enum { VIDEO_EXACT, VIDEO_NATIVE, VIDEO_MAX };
+static int g_video_policy = VIDEO_EXACT;
+
 static void parse_video(const char *cmdline, UINT32 *w, UINT32 *h) {
     for (const char *p = cmdline; *p; p++) {
         if (p[0] == 'v' && p[1] == 'i' && p[2] == 'd' && p[3] == 'e' && p[4] == 'o' && p[5] == '=') {
             const char *q = p + 6;
+            if (q[0] == 'n' && q[1] == 'a' && q[2] == 't') { g_video_policy = VIDEO_NATIVE; return; }
+            if (q[0] == 'm' && q[1] == 'a' && q[2] == 'x') { g_video_policy = VIDEO_MAX; return; }
             UINT32 a = 0, b = 0;
             while (*q >= '0' && *q <= '9') a = a * 10 + (UINT32)(*q++ - '0');
             if (*q == 'x') q++;
@@ -78,37 +86,82 @@ static void parse_video(const char *cmdline, UINT32 *w, UINT32 *h) {
     }
 }
 
+/* Which byte order a mode uses: BOOTFB_BGRX, BOOTFB_RGBX, or -1 when it is not a 32-bit linear framebuffer we can draw to.
+ * Real firmware often describes its modes with PixelBitMask; the masks say which of the two layouts it really is. */
+static int pixel_layout(const EFI_GRAPHICS_OUTPUT_MODE_INFORMATION *info) {
+    switch (info->PixelFormat) {
+    case PixelBlueGreenRedReserved8BitPerColor: return BOOTFB_BGRX;
+    case PixelRedGreenBlueReserved8BitPerColor: return BOOTFB_RGBX;
+    case PixelBitMask: {
+        const EFI_PIXEL_BITMASK *m = &info->PixelInformation;
+        if (m->RedMask == 0x00FF0000 && m->GreenMask == 0x0000FF00 && m->BlueMask == 0x000000FF) return BOOTFB_BGRX;
+        if (m->RedMask == 0x000000FF && m->GreenMask == 0x0000FF00 && m->BlueMask == 0x00FF0000) return BOOTFB_RGBX;
+        return -1;
+    }
+    default: return -1;
+    }
+}
+
+/* The usable mode with the most pixels that fits in max_w x max_h; returns its index or -1. */
+static int largest_mode(EFI_GRAPHICS_OUTPUT_PROTOCOL *gop, UINT32 max_w, UINT32 max_h) {
+    int best = -1;
+    UINT64 best_area = 0;
+    for (UINT32 i = 0; i < gop->Mode->MaxMode; i++) {
+        EFI_GRAPHICS_OUTPUT_MODE_INFORMATION *info = 0;
+        UINTN isz = 0;
+        if (EFI_ERROR(gop->QueryMode(gop, i, &isz, &info)) || !info || pixel_layout(info) < 0) continue;
+        if (info->HorizontalResolution > max_w || info->VerticalResolution > max_h) continue;
+        UINT64 area = (UINT64)info->HorizontalResolution * info->VerticalResolution;
+        if (area > best_area) { best_area = area; best = (int)i; }
+    }
+    return best;
+}
+
 static void setup_gop(BootFramebuffer *fb, UINT32 want_w, UINT32 want_h) {
     EFI_GRAPHICS_OUTPUT_PROTOCOL *gop = 0;
-    if (EFI_ERROR(g_bs->LocateProtocol(&gopGuid, 0, (void **)&gop)) || !gop) {
-        log_str("loader: no Graphics Output Protocol, continuing without a framebuffer\n");
-        return;
+    /* The handle the firmware draws its own console on is the display that really has a monitor attached; on a machine with
+     * two graphics adapters the first GOP instance can be the one with nothing plugged in. */
+    if (EFI_ERROR(g_bs->HandleProtocol(g_st->ConsoleOutHandle, &gopGuid, (void **)&gop)) || !gop) {
+        gop = 0;
+        if (EFI_ERROR(g_bs->LocateProtocol(&gopGuid, 0, (void **)&gop)) || !gop) {
+            log_str("loader: no Graphics Output Protocol, continuing without a framebuffer\n");
+            return;
+        }
     }
 
-    /* Look for the requested mode, then a couple of fallbacks, among the 32-bit linear modes. */
-    static const UINT32 fallback[][2] = { {1024, 768}, {1280, 800}, {800, 600} };
     UINT32 best = gop->Mode->Mode;
     int found = 0;
-    for (int attempt = -1; attempt < 3 && !found; attempt++) {
-        UINT32 w = attempt < 0 ? want_w : fallback[attempt][0];
-        UINT32 h = attempt < 0 ? want_h : fallback[attempt][1];
-        for (UINT32 i = 0; i < gop->Mode->MaxMode; i++) {
-            EFI_GRAPHICS_OUTPUT_MODE_INFORMATION *info = 0;
-            UINTN isz = 0;
-            if (EFI_ERROR(gop->QueryMode(gop, i, &isz, &info)) || !info) continue;
-            if ((info->PixelFormat == PixelRedGreenBlueReserved8BitPerColor ||
-                 info->PixelFormat == PixelBlueGreenRedReserved8BitPerColor) &&
-                info->HorizontalResolution == w && info->VerticalResolution == h) {
-                best = i;
-                found = 1;
-                break;
+    if (g_video_policy == VIDEO_MAX) {
+        int m = largest_mode(gop, 2560, 1600);
+        if (m >= 0) { best = (UINT32)m; found = 1; }
+    } else if (g_video_policy == VIDEO_EXACT) {
+        /* Look for the requested mode, then a couple of fallbacks, among the 32-bit linear modes. */
+        static const UINT32 fallback[][2] = { {1024, 768}, {1280, 800}, {800, 600} };
+        for (int attempt = -1; attempt < 3 && !found; attempt++) {
+            UINT32 w = attempt < 0 ? want_w : fallback[attempt][0];
+            UINT32 h = attempt < 0 ? want_h : fallback[attempt][1];
+            for (UINT32 i = 0; i < gop->Mode->MaxMode; i++) {
+                EFI_GRAPHICS_OUTPUT_MODE_INFORMATION *info = 0;
+                UINTN isz = 0;
+                if (EFI_ERROR(gop->QueryMode(gop, i, &isz, &info)) || !info) continue;
+                if (pixel_layout(info) >= 0 && info->HorizontalResolution == w && info->VerticalResolution == h) {
+                    best = i;
+                    found = 1;
+                    break;
+                }
             }
         }
     }
     if (found && best != gop->Mode->Mode) gop->SetMode(gop, best);
 
+    /* Whatever the policy chose (native included) must be something we can draw on; otherwise take the best that is. */
+    if (pixel_layout(gop->Mode->Info) < 0) {
+        int m = largest_mode(gop, 1920, 1200);
+        if (m >= 0) gop->SetMode(gop, (UINT32)m);
+    }
     EFI_GRAPHICS_OUTPUT_MODE_INFORMATION *info = gop->Mode->Info;
-    if (info->PixelFormat > PixelBlueGreenRedReserved8BitPerColor) {
+    int layout = pixel_layout(info);
+    if (layout < 0) {
         log_str("loader: framebuffer pixel format not supported\n");
         return;
     }
@@ -118,7 +171,7 @@ static void setup_gop(BootFramebuffer *fb, UINT32 want_w, UINT32 want_h) {
     fb->height = info->VerticalResolution;
     fb->pitch  = info->PixelsPerScanLine * 4;
     fb->bpp    = 32;
-    fb->format = info->PixelFormat == PixelBlueGreenRedReserved8BitPerColor ? BOOTFB_BGRX : BOOTFB_RGBX;
+    fb->format = (UINT32)layout;
 
     log_str("loader: framebuffer ");
     log_dec(fb->width); log_str("x"); log_dec(fb->height);

@@ -18,6 +18,7 @@
 #define LAYER_TOP     3
 #define LAYER_FULL    4
 #define LAYER_POPUP   5
+#define LAYER_LOCK    6
 
 typedef struct Client {
     int fd;
@@ -67,6 +68,7 @@ typedef struct Server {
     Win *wins[MAX_WINS];            /* bottom to top */
     int nwins;
     Win *focus;
+    Win *lock;                      /* the screen-lock window while one exists */
     Client *clients;
     uint32_t next_client, next_win;
     int cursor_x, cursor_y;
@@ -87,6 +89,7 @@ typedef struct Server {
     Win *hover;
     /* alt-tab switcher */
     bool switching;
+    bool super_alone;               /* the Super key went down and nothing else has been pressed since: a tap opens the launcher */
     int switch_index;
     Win *switch_list[MAX_WINS];
     int switch_n;
@@ -111,6 +114,7 @@ void server_send_window_list(void);
 void server_mark_list_dirty(void);
 void server_flush_list(void);
 void server_send_hotkey(uint32_t which);
+bool server_have_shell(void);
 void win_destroy(Win *w);
 
 /* wm.c */

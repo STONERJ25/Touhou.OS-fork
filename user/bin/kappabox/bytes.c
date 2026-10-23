@@ -536,7 +536,7 @@ static void cal_month(int y, int m, int today, int hilite) {
 APPLET(cal) {
     time_t now = time(NULL);
     struct tm tm;
-    gmtime_r(&now, &tm);
+    localtime_r(&now, &tm);
     int y = tm.tm_year + 1900, m = tm.tm_mon + 1;
     if (argc == 2) { y = atoi(argv[1]); if (y < 1) y = tm.tm_year + 1900; else { for (m = 1; m <= 12; m++) { cal_month(y, m, 0, 0); putchar('\n'); } return 0; } }
     if (argc >= 3) { m = atoi(argv[1]); y = atoi(argv[2]); }

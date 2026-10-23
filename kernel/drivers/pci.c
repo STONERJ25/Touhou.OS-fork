@@ -187,7 +187,7 @@ void *dma_alloc(size_t size, paddr_t *phys) {
     unsigned order = 0;
     while (((size_t)1 << order) < pages) order++;
     if (order > PMM_MAX_ORDER) return NULL;
-    paddr_t p = pmm_alloc(order);
+    paddr_t p = pmm_alloc_below(order, 0x100000000UL);       /* DMA stays in the first 4 GiB: not every controller does 64-bit addresses */
     if (!p) return NULL;
     void *v = phys_to_virt(p);
     memset(v, 0, (size_t)PAGE_SIZE << order);

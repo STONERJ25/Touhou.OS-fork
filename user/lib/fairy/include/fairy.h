@@ -34,6 +34,7 @@
 #define FW_FULLSCREEN  0x0200               /* covers the whole screen, no frame (games) */
 #define FW_CENTER      0x0400               /* open in the middle of the work area */
 #define FW_NO_CLOSE    0x0800               /* the close button is disabled */
+#define FW_LOCK        0x1000               /* the screen lock: above everything, keeps keyboard and pointer to itself (one at a time) */
 
 /* ---- window states ---- */
 #define FS_NORMAL      0
@@ -91,7 +92,7 @@ typedef struct {
 } FeWinInfo;
 typedef struct { uint32_t count; FeWinInfo win[FAIRY_MAX_LIST]; } FeWindows;
 typedef struct { uint32_t len; char data[1024]; } FeClipboard;
-enum { FH_LAUNCHER = 1, FH_TERMINAL, FH_TASKS, FH_LOCK, FH_SCREENSHOT, FH_DESKTOP, FH_RUN };
+enum { FH_LAUNCHER = 1, FH_TERMINAL, FH_TASKS, FH_LOCK, FH_SCREENSHOT, FH_DESKTOP, FH_RUN, FH_POWER };
 typedef struct { uint32_t which; } FeHotkey;
 typedef struct { int32_t code; char text[64]; } FeError;
 #pragma pack(pop)

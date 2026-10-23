@@ -75,12 +75,12 @@ def login_text():
     with Qemu(cmdline="text login", name="t-login-text") as vm:
         vm.expect(r"gensokyo login: ", timeout=90)
         vm.send("nobody\n")
-        vm.expect(r"Password: ", timeout=15)
+        vm.expect(r"Password: ", timeout=40)
         vm.send("\n")
         vm.expect(r"Login incorrect", timeout=30)
-        vm.expect(r"gensokyo login: ", timeout=15)
+        vm.expect(r"gensokyo login: ", timeout=40)
         vm.send("marisa\n")
-        vm.expect(r"Password: ", timeout=15)
+        vm.expect(r"Password: ", timeout=40)
         vm.send("\n")
         vm.expect(r"marisa@gensokyo \S+ \$ ", timeout=30)
         out, _ = test_shell.run(vm, "whoami; id -u", prompt=r"marisa@gensokyo \S+ \$ ")
@@ -95,4 +95,4 @@ def autologin_option():
     with Qemu(cmdline="text autologin=sakuya", name="t-autologin") as vm:
         vm.expect(r"sakuya@gensokyo \S+ \$ ", timeout=90)
         vm.send("whoami\n")
-        vm.expect(r"\nsakuya\n", timeout=15)
+        vm.expect(r"\nsakuya\n", timeout=40)

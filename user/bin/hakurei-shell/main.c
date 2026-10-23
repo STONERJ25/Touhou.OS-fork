@@ -4,6 +4,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <gensokyo.h>
 
 Shell G;
 
@@ -19,6 +20,11 @@ static void event_hook(KApp *app, const FairyEvent *ev, void *user) {
         case FH_LAUNCHER: menu_open(); break;
         case FH_TERMINAL: launch("gapterm"); break;
         case FH_TASKS: launch("spellmgr"); break;
+        case FH_LOCK: menu_close(); launch("hakurei-lock"); break;
+        case FH_POWER:                                                  /* the power button: ask first, and a second press means it */
+            if (G.shutdown) { sync(); gap_reboot(REBOOT_POWEROFF); }
+            else shutdown_open();
+            break;
         default: break;
         }
         break;

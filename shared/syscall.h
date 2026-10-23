@@ -17,6 +17,7 @@
 #define SYS_setgroups     78      /* (n, gid_t list[]); root only */
 #define SYS_geteuid       79
 #define SYS_getegid       80      /* getuid/getgid return the real ids, these the effective ones */
+#define SYS_settime       81      /* (ms since the epoch, rtc epoch or 0): set the wall clock, and the clock chip if the second is not 0; root only */
 
 #define SYS_exit          0
 #define SYS_read          1

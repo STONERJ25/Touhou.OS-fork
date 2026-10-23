@@ -29,6 +29,12 @@ typedef struct Cred {
     u32 groups[NGROUPS_MAX];
 } Cred;
 
+static inline bool cred_in_group(const Cred *c, u32 gid) {
+    if (c->gid == gid) return true;
+    for (u32 i = 0; i < c->ngroups; i++) if (c->groups[i] == gid) return true;
+    return false;
+}
+
 typedef struct DirEntry {
     u64 ino;
     u32 type;               /* DT_* */

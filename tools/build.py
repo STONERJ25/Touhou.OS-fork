@@ -420,7 +420,7 @@ def build_user(nproc):
 # ------------------------------------------------------------------ initrd / esp
 
 # Programs that run with their owner's authority (setuid root) and files that only root may read.
-SPECIAL_MODES = {"bin/eiki": 0o4755, "bin/su": 0o4755, "bin/passwd": 0o4755, "Hakurei/etc/shadow": 0o600}
+SPECIAL_MODES = {"bin/eiki": 0o4755, "bin/su": 0o4755, "bin/passwd": 0o4755, "sbin/pwcheck": 0o4755, "Hakurei/etc/shadow": 0o600}
 EXTRA_LINKS = [("bin/sudo", "eiki")]
 
 

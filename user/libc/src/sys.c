@@ -512,5 +512,6 @@ int gap_umount(const char *target) { return (int)__ret(__sc1(SYS_umount, (long)t
 void gap_setname(const char *name) { __sc1(SYS_setname, (long)name); }
 void gap_log(const char *msg) { __sc1(SYS_debuglog, (long)msg); }
 long gap_time_ms(void) { return __sc0(SYS_gettime_ms); }
+int gap_settime(long ms, long rtc_epoch) { return (int)__ret(__sc2(SYS_settime, ms, rtc_epoch)); }
 int gap_getrandom(void *buf, unsigned long n) { return (int)__ret(__sc3(SYS_getrandom, (long)buf, (long)n, 0)); }
 

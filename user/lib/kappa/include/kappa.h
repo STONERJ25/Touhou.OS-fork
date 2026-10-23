@@ -298,6 +298,10 @@ int   k_messagebox(FairyDisplay *d, const char *title, const char *message, KIco
 /* The default wallpaper (moon, bamboo, torii) rendered into any pixel buffer; used by the desktop and the login screen. */
 void k_scenery_night(uint32_t *px, int w, int h, int stride);
 
+/* Round avatar with the resident's initial; ring: 0 plain, 1 hovered, 2 selected. */
+void k_avatar(KCanvas *cv, int cx, int cy, const char *name, int ring);
+void k_avatar_colors(const char *name, uint32_t *bg, uint32_t *fg);
+
 /* ---------------------------------------------------------------- misc helpers */
 uint64_t k_now_ms(void);
 const char *k_basename(const char *path);

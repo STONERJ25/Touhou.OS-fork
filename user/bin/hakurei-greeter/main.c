@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include <time.h>
 #include <pwd.h>
+#include <grp.h>
 #include <shadow.h>
 #include <gensokyo.h>
 #include <sys/utsname.h>
@@ -20,7 +21,6 @@
 
 typedef struct {
     char name[32], gecos[48];
-    uint32_t bg, fg;                /* avatar colours */
     bool open;                      /* no password needed */
 } Resident;
 
@@ -34,24 +34,13 @@ static KApp *g_app;
 static uint32_t *g_wall;
 static int g_wall_w, g_wall_h;
 
-/* Avatar colours: the residents everyone knows get their own, anyone else gets a colour from a hash of the name. */
-static void style_for(Resident *r) {
-    static const struct { const char *name; uint32_t bg, fg; } known[] = {
-        { "reimu", 0xC8102E, 0xFFFFFF },    { "marisa", 0x16161F, 0xE8B84A },   { "sakuya", 0x28376E, 0xDCE3F2 },
-        { "alice", 0x2F5FA8, 0xF2E6A0 },    { "patchouli", 0x5B3C8C, 0xF0E4FF }, { "remilia", 0x8E0B21, 0xFFD6D6 },
-        { "flandre", 0xB5122B, 0xFFE9A8 },  { "youmu", 0x2E6B4A, 0xF0F0F0 },    { "yuyuko", 0xD98CB3, 0xFFFFFF },
-        { "yukari", 0x6A3FA0, 0xFFD966 },   { "cirno", 0x6EC1F2, 0xFFFFFF },    { "nitori", 0x1E8C8C, 0xFFF6C8 },
-        { "satori", 0xA0306A, 0xFFE0F0 },   { "koishi", 0x3E8F5A, 0xF7F2C0 },   { "aya", 0x22222A, 0xE8452C },
-        { "eiki", 0x1C5C3A, 0xF2E6A0 },     { "keine", 0x3A5FBF, 0xFFFFFF },    { "root", 0x303030, 0xD9A441 },
-    };
-    for (unsigned i = 0; i < sizeof known / sizeof known[0]; i++) {
-        if (!strcmp(r->name, known[i].name)) { r->bg = known[i].bg; r->fg = known[i].fg; return; }
-    }
-    static const uint32_t palette[] = { 0x3B6EA5, 0x7A4E9E, 0x2E8B6F, 0xB5651D, 0x8E3B46, 0x4F6D7A, 0x9E7A1F, 0x5A7D2B };
-    unsigned h = 5381;
-    for (const char *p = r->name; *p; p++) h = h * 33 + (unsigned char)*p;
-    r->bg = palette[h % (sizeof palette / sizeof palette[0])];
-    r->fg = 0xFFF6E0;
+/* The desktop needs the display and input devices, which belong to group shrine: outsiders get the text console only. */
+static bool has_a_seat(const struct passwd *p) {
+    struct group *g = getgrnam("shrine");
+    if (!g) return true;                                            /* no such group configured: everyone does */
+    if (g->gr_gid == p->pw_gid) return true;
+    for (char **m = g->gr_mem; m && *m; m++) if (!strcmp(*m, p->pw_name)) return true;
+    return false;
 }
 
 static void load_residents(void) {
@@ -60,12 +49,12 @@ static void load_residents(void) {
     while ((p = getpwent()) && g_nres < MAX_RESIDENTS) {
         if (p->pw_uid < 1000 || p->pw_uid >= 60000) continue;
         if (strstr(p->pw_shell, "nologin") || strstr(p->pw_shell, "false")) continue;
+        if (!has_a_seat(p)) continue;
         Resident *r = &g_res[g_nres++];
         snprintf(r->name, sizeof r->name, "%s", p->pw_name);
         snprintf(r->gecos, sizeof r->gecos, "%s", p->pw_gecos);
         char hash[160];
         r->open = gap_shadow_lookup(r->name, hash, sizeof hash) == 0 && hash[0] == 0;
-        style_for(r);
     }
     endpwent();
 }
@@ -106,17 +95,6 @@ static void attempt(void) {
     g_refocus = true;
 }
 
-static void draw_avatar(KCanvas *cv, int cx, int cy, const Resident *r, bool selected, bool hover) {
-    if (selected) kc_circle_fill(cv, cx, cy, 35, KC_GOLD);
-    else if (hover) kc_circle_fill(cv, cx, cy, 35, 0x6C77B8);
-    else kc_circle_fill(cv, cx, cy, 35, 0x2A3566);
-    kc_circle_fill(cv, cx, cy, 31, r->bg);
-    char c = r->name[0];
-    if (c >= 'a' && c <= 'z') c = (char)(c - 32);
-    char init[2] = { c, 0 };
-    kc_text_scaled(cv, cx - 8, cy - 16, init, r->fg, 2);
-}
-
 static void ensure_wallpaper(KCanvas *cv) {
     if (g_wall && g_wall_w == cv->w && g_wall_h == cv->h) return;
     free(g_wall);
@@ -139,7 +117,7 @@ static void greeter_draw(KApp *app, KUI *ui, void *user) {
     static const char *const months[] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
     time_t now = time(NULL);
     struct tm t;
-    gmtime_r(&now, &t);
+    localtime_r(&now, &t);
     char hm[16], date[40];
     snprintf(hm, sizeof hm, "%02d:%02d", t.tm_hour, t.tm_min);
     snprintf(date, sizeof date, "%s %d %s %d", days[t.tm_wday % 7], t.tm_mday, months[t.tm_mon % 12], t.tm_year + 1900);
@@ -184,7 +162,7 @@ static void greeter_draw(KApp *app, KUI *ui, void *user) {
         if (hover) ui->cursor_shape = FC_HAND;
         if (hover && ui->pressed[0] && i != g_sel) select_resident(i);
         int ax = cellr.x + cell / 2;
-        draw_avatar(cv, ax, ay + 32, &g_res[i], i == g_sel, hover);
+        k_avatar(cv, ax, ay + 32, g_res[i].name, i == g_sel ? 2 : hover ? 1 : 0);
         int tw = kc_text_width(g_res[i].name);
         kc_text(cv, ax - tw / 2, ay + 76, g_res[i].name, i == g_sel ? 0xFFF6E0 : 0x9FA9DD);
     }
@@ -211,6 +189,8 @@ static void greeter_draw(KApp *app, KUI *ui, void *user) {
         if (k_key_pressed(ui, KEY_DOWN) || (k_key_pressed(ui, KEY_TAB) && !(ui->mods & MOD_SHIFT))) select_resident(g_sel + 1);
         else if (k_key_pressed(ui, KEY_UP) || k_key_pressed(ui, KEY_TAB)) select_resident(g_sel - 1);
     }
+
+    if (k_key_pressed(ui, KEY_POWER)) { sync(); gap_reboot(REBOOT_POWEROFF); }     /* the machine's power button */
 
     /* footer: a way out to the text console, and the power buttons */
     if (k_button_icon(ui, kr(16, cv->h - 48, 144, 32), KI_TERMINAL, "Text console")) kapp_quit(g_app, GREETER_EXIT_TEXT);

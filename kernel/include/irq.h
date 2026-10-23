@@ -9,6 +9,7 @@
 typedef void (*irq_handler_t)(int irq, void *ctx);
 
 void pic_init(void);
+void lapic_virtual_wire(void);       /* make sure the local APIC passes the PIC's interrupts to the boot processor */
 void irq_register(int irq, irq_handler_t handler, void *ctx);
 void irq_mask(int irq);
 void irq_unmask(int irq);
