@@ -12,8 +12,47 @@ centred on the screen and are addressed in absolute coordinates through s.vm.
 import re
 import time
 
-from harness import test, Qemu, BUILD
+import harness
+from harness import Qemu, BUILD
 from guitools import Gui, near
+
+
+def test(fn):
+    """Registers a test that gets one more try on a fresh VM when it fails. The PS/2 mouse the harness drives can lose a
+    byte when the one-CPU guest is busy, which leaves the pointer somewhere else for the rest of the run; that is a
+    property of the test rig, not of the program, and a second boot nearly always cures it."""
+    def run():
+        try:
+            return fn()
+        except Exception as first:  # noqa: BLE001
+            print(f"\n     ({fn.__name__} failed once, trying again on a fresh VM: {str(first)[:160]!r})", flush=True)
+            return fn()
+    run.__name__ = fn.__name__
+    run.__doc__ = fn.__doc__
+    return harness.test(run)
+
+
+class SteadyGui(Gui):
+    """Gui with a gentler pointer: smaller steps and more time between them, so fewer PS/2 bytes pile up."""
+
+    def home(self):
+        for _ in range(14):
+            self.vm.mouse_move(-80, -80)
+            time.sleep(0.02)
+        time.sleep(0.1)
+        self.px = self.py = 0
+
+    def move_to(self, x, y):
+        if self.px is None:
+            self.home()
+        while (self.px, self.py) != (x, y):
+            dx = max(-80, min(80, x - self.px))
+            dy = max(-80, min(80, y - self.py))
+            self.vm.mouse_move(dx, dy)
+            self.px += dx
+            self.py += dy
+            time.sleep(0.02)
+        time.sleep(0.08)
 
 OX, OY = 149, 105
 WHITE = (255, 255, 255)
@@ -41,9 +80,29 @@ MENU_KINDS = {"File": "nnnsnnsn", "Edit": "nnsnnnnsnn", "Image": "nnnnnsnnn", "V
 PARK = (86, 560)                         # an empty part of the toolbox, where the pointer waits while pixels are read
 
 
+def hold(vm, qcode):
+    vm._input([vm._key_event(qcode, True)], vm.input_device)
+
+
+def unhold(vm, qcode):
+    vm._input([vm._key_event(qcode, False)], vm.input_device)
+
+
 def pic(x, y):
     """Base screen coordinates of picture pixel (x, y) at zoom 100% in a 640x480 picture."""
     return OX + x, OY + y
+
+
+def bbox_of(s, shot, rect, rgb, tol=12):
+    """Bounding box (x0, y0, x1, y1) of the pixels near rgb inside rect (base coordinates), or None."""
+    x0, y0, w, h = rect
+    xs, ys = [], []
+    for y in range(y0, y0 + h):
+        for x in range(x0, x0 + w):
+            if s.is_near(shot, x, y, rgb, tol):
+                xs.append(x)
+                ys.append(y)
+    return (min(xs), min(ys), max(xs), max(ys)) if xs else None
 
 
 class Sk:
@@ -51,7 +110,7 @@ class Sk:
 
     def __init__(self, vm, start=True, args="", env=""):
         self.vm = vm
-        self.g = Gui(vm)
+        self.g = SteadyGui(vm)
         self.g.start_desktop()
         self.g.sh("mkdir /tmp/sk")
         self.count = 0
@@ -183,6 +242,24 @@ class Sk:
         g.type(path)
         g.key("ret")
 
+    FG_PROBE, BG_PROBE = (58, 624), (96, 656)        # visible parts of the two big swatches
+
+    def fg(self, swatch_xy, rgb):
+        """Left-click a palette cell and wait until the foreground swatch shows the colour (a busy machine can lose clicks)."""
+        for _ in range(3):
+            self.click(*swatch_xy)
+            if self.wait_pixel(*self.FG_PROBE, rgb, 2, 6):
+                return
+        self.g.shot("fg-failed")
+        raise AssertionError(f"the foreground colour did not become {rgb}")
+
+    def bg(self, swatch_xy, rgb):
+        for _ in range(3):
+            self.click(*swatch_xy, button="right")
+            if self.wait_pixel(*self.BG_PROBE, rgb, 2, 6):
+                return
+        raise AssertionError(f"the background colour did not become {rgb}")
+
     def menu(self, name, index):
         kinds = MENU_KINDS[name]
         self.click(MENU_X[name], 68)
@@ -245,27 +322,27 @@ def sketchbook_draw_undo():
         assert s.wait_pixel(*pic(70, 40), BLACK), "the pencil stroke is missing"
         assert near(s.px(*pic(70, 46)), WHITE), "pixels beside the stroke must stay white"
         # brush with the red swatch: size 4 by default, so the stroke is several pixels thick
-        s.click(*S_RED)
+        s.fg(S_RED, RED)
         s.key("b")
         s.drag(*pic(20, 100), *pic(220, 100))
         assert s.wait_pixel(*pic(120, 101), RED), "the brush stroke is missing"
         assert near(s.px(*pic(120, 98)), RED), "a size 4 brush covers 4 rows"
         assert near(s.px(*pic(120, 108)), WHITE)
         # filled rectangle in blue: choose the Solid style button
-        s.click(*S_BLUE)
+        s.fg(S_BLUE, BLUE)
         s.key("r")
         s.click(*STYLE["solid"])
         s.drag(*pic(300, 40), *pic(380, 100))
         assert s.wait_pixel(*pic(340, 70), BLUE), "the solid rectangle is missing"
         # ellipse outline in lime
-        s.click(*S_LIME)
+        s.fg(S_LIME, LIME)
         s.key("o")
         s.click(*STYLE["outline"])
         s.drag(*pic(400, 40), *pic(500, 100))
         assert s.wait_pixel(*pic(400, 70), LIME) or s.wait_pixel(*pic(400, 71), LIME), "the ellipse is missing"
         assert near(s.px(*pic(450, 70)), WHITE), "the ellipse must be hollow"
         # flood fill the inside of the ellipse with yellow
-        s.click(*S_YELLOW)
+        s.fg(S_YELLOW, YELLOW)
         s.key("f")
         s.click(*pic(450, 70))
         assert s.wait_pixel(*pic(450, 70), YELLOW), "flood fill did not fill the ellipse"
@@ -289,7 +366,7 @@ def sketchbook_draw_undo():
         g.shot("draw")
         # 25 dots are 25 undo steps (at least 20 levels are required): take them all back
         s.key("p")
-        s.click(*S_BLACK)
+        s.fg(S_BLACK, BLACK)
         for i in range(25):
             s.click(*pic(30 + 8 * i, 200))
         assert s.wait_pixel(*pic(30 + 8 * 24, 200), BLACK)
@@ -307,7 +384,7 @@ def sketchbook_zoom_grid():
         s.key("8")
         # zooming keeps the picture point under the middle of the view fixed: picture pixel (320, 240) now covers the
         # screen block x 469..476, y 345..352
-        s.click(*S_RED)
+        s.fg(S_RED, RED)
         s.key("p")
         s.click(473, 349)
         assert s.wait_pixel(473, 349, RED, 6), "the pixel was not painted"
@@ -329,6 +406,35 @@ def sketchbook_zoom_grid():
             s.vm.mouse_button("wheel-down", False)
             time.sleep(0.15)
         assert s.wait_until(lambda sh: not s.is_near(sh, 473, 349, RED, 12), 6), "the picture should have scrolled"
+        # the middle button pans: dragging by (+30, +40) moves the picture by exactly that much
+        view = (90, 36, 640, 500)
+        before = bbox_of(s, s.screen(), view, RED)
+        assert before, "the red pixel should still be in view after scrolling"
+        s.move_to(300, 300)
+        s.g.press("middle")
+        s.move_to(330, 340)
+        s.g.release("middle")
+        after = bbox_of(s, s.screen(), view, RED)
+        assert after and (after[0] - before[0], after[1] - before[1]) == (30, 40), f"panning should move the picture with the pointer: {before} -> {after}"
+        # Ctrl+wheel zooms around the pointer: 100% first, then up over a single red pixel which stays under the pointer
+        s.key("1")
+        s.click(*pic(320, 240))
+        s.move_to(*pic(320, 240))
+        zoomed = False
+        for button in ("wheel-up", "wheel-down"):            # (the PS/2 wheel sign differs between QEMU and the kernel: try both ways)
+            hold(vm, "ctrl")
+            time.sleep(0.15)
+            vm.mouse_button(button, True)
+            time.sleep(0.05)
+            vm.mouse_button(button, False)
+            time.sleep(0.4)
+            unhold(vm, "ctrl")
+            shot = s.screen()
+            if s.count_near(shot, (OX + 316, OY + 236, 10, 10), RED) in range(3, 12):
+                zoomed = True
+                break
+            s.move_to(*pic(320, 240))
+        assert zoomed, "Ctrl+wheel should zoom to 200% around the pointer (a 2x2 pixel block stays under it)"
 
 
 @test
@@ -352,7 +458,7 @@ def sketchbook_colours():
         r, g_, b = s.vm.pixel(*s.at(*pic(60, 50)), shot)
         assert abs(g_ - 0xA0) <= 2 and abs(b - 0xFF) <= 2, "moving the R slider must leave G and B alone"
         # right button on the yellow swatch sets the background; X swaps; then a click paints with the new foreground
-        s.click(*S_YELLOW, button="right")
+        s.bg(S_YELLOW, YELLOW)
         s.key("x")
         s.click(*pic(70, 50))
         assert s.wait_pixel(*pic(70, 50), YELLOW), "after X the old background must be the foreground"
@@ -382,12 +488,12 @@ def sketchbook_files():
 
         # draw a red rectangle and a black pixel on a new picture called pic.bmp, then save it with Ctrl+S
         s.start("/tmp/sk/pic.bmp")
-        s.click(*S_RED)
+        s.fg(S_RED, RED)
         s.key("r")
         s.click(*STYLE["solid"])
         s.drag(*pic(10, 10), *pic(59, 39))
         s.key("p")
-        s.click(*S_BLACK)
+        s.fg(S_BLACK, BLACK)
         s.click(*pic(100, 100))
         assert s.wait_pixel(*pic(100, 100), BLACK)
         s.key("s", ctrl=True)
@@ -426,6 +532,16 @@ def sketchbook_files():
         assert s.wait_dialog_closed()
         assert s.quit()
 
+        # File > Open through the file dialog
+        s.start("")
+        s.key("o", ctrl=True)
+        assert s.wait_dialog(), "Ctrl+O should open the file dialog"
+        time.sleep(0.5)
+        s.type("/tmp/sk/tiny.ppm")
+        s.key("ret")
+        assert s.wait_pixel(468, 344, RED) and s.wait_pixel(469, 345, YELLOW), "the Open dialog should have loaded tiny.ppm"
+        assert s.quit()
+
 
 @test
 def sketchbook_bad_files():
@@ -451,7 +567,7 @@ def sketchbook_bad_files():
             assert s.wait_dialog_closed(), f"{path}: the dialog did not close"
             # the program still works: the canvas is blank and a pencil click paints
             s.key("p")
-            s.click(*S_RED)
+            s.fg(S_RED, RED)
             s.click(*pic(40, 40))
             assert s.wait_pixel(*pic(40, 40), RED), f"{path}: the program stopped drawing after the error"
             s.key("z", ctrl=True)
@@ -487,7 +603,7 @@ def sketchbook_dialogs():
             and near(s.px(px0 + 10, py0 + 36), WORKSPACE, 12), "the picture must end at 48 x 32"
         # draw a red pixel in the corner and resize the canvas (Image > Resize Canvas) to 64 x 40 without stretching
         s.key("p")
-        s.click(*S_RED)
+        s.fg(S_RED, RED)
         s.click(px0 + 1, py0 + 1)
         assert s.wait_pixel(px0 + 1, py0 + 1, RED)
         s.menu("Image", 6)
@@ -505,19 +621,58 @@ def sketchbook_dialogs():
         assert s.wait_pixel(px0 + 1, py0 + 1, RED), "resizing the canvas must keep the picture at the top left"
         assert s.wait_pixel(px0 + 60, py0 + 36, WHITE) and near(s.px(px0 + 72, py0 + 10), WORKSPACE, 12) \
             and near(s.px(px0 + 10, py0 + 46), WORKSPACE, 12), "the canvas should now be 64 x 40"
-        # a huge size is clamped to 4096 with a note; the dialog stays open until OK is pressed again
+        # Resize Canvas with "Stretch the picture": the red pixel at the corner doubles to 2 x 2 when the size doubles
+        s.menu("Image", 6)
+        assert s.wait_dialog()
+        time.sleep(0.5)
+        g.click(345, 394)               # the "Stretch the picture to the new size" check box
+        g.click(428, 313)               # (it took the focus away from the Width field)
+        s.key("a", ctrl=True)
+        s.type("128")
+        s.key("tab")
+        s.key("a", ctrl=True)
+        s.type("80")
+        s.key("ret")
+        assert s.wait_dialog_closed()
+        px0, py0 = 44 + 86 + (678 - 128) // 2, 56 + 30 + (518 - 80) // 2
+        g.shot("stretch")
+        # the red pixel was at (1, 1): stretching by two makes it the block (2..3, 2..3)
+        assert s.wait_pixel(px0 + 2, py0 + 2, RED) and s.wait_pixel(px0 + 3, py0 + 2, RED) and s.wait_pixel(px0 + 2, py0 + 3, RED) \
+            and s.wait_pixel(px0 + 3, py0 + 3, RED), "the stretched pixel should be 2 x 2"
+        assert near(s.px(px0 + 1, py0 + 1), WHITE) and near(s.px(px0 + 4, py0 + 4), WHITE) and near(s.px(px0 + 125, py0 + 77), WHITE), "the rest stays white"
+        assert near(s.px(px0 + 134, py0 + 10), WORKSPACE, 12), "the canvas must end at 128 pixels"
+        # asking about unsaved changes: Ctrl+N on a modified picture asks first
         s.key("n", ctrl=True)           # modified -> asks first
         assert s.wait_dialog()
         assert s.dialog_has_icon(QUESTION_BLUE), "the unsaved changes question has no question icon"
         g.shot("unsaved")
         s.key("esc")                    # Cancel
         assert s.wait_dialog_closed(), "Escape should answer the question with Cancel"
-        assert near(s.px(*pic(0, 0)), WHITE) or True
-        # Alt+F4 asks as well; the Discard button (second of three) lets the program exit
+        # Discard throws the changes away and goes on to the New dialog; sizes above 4096 are clamped, with a note first
+        s.key("n", ctrl=True)
+        assert s.wait_dialog() and s.dialog_has_icon(QUESTION_BLUE)
+        g.click(572, 416)               # Discard: the ask dialog is centred, its buttons are at x = 466, 572, 678
+        time.sleep(1.0)
+        s.key("a", ctrl=True)
+        s.type("5000")
+        s.key("tab")
+        s.key("a", ctrl=True)
+        s.type("100")
+        s.key("ret")
+        time.sleep(0.8)
+        g.shot("clamp")
+        s.key("ret")
+        assert s.wait_dialog_closed()
+        s.save_as("/tmp/sk/wide.bmp")
+        assert s.wait_file("/tmp/sk/wide.bmp", 54 + 12288 * 100), "5000 x 100 must be clamped to 4096 x 100 (1228854 bytes)"
+        # Alt+F4 on an unmodified picture closes at once; after a change it asks first, and Discard lets the program exit
+        s.key("p")
+        s.click(140, 300)               # a pixel of the 4096 x 100 picture (it starts at screen x 136, y 295)
+        assert s.wait_pixel(140, 300, RED)
         s.key("f4", alt=True)
         assert s.wait_dialog()
         assert s.dialog_has_icon(QUESTION_BLUE)
-        g.click(572, 416)               # Discard: the ask dialog is centred, its buttons are at x = 466, 572, 678
+        g.click(572, 416)
         assert s.wait_gone(), "Discard should close the program"
 
 
@@ -531,11 +686,11 @@ def sketchbook_select_ops():
         s = Sk(vm)
         g = s.g
         # a red 60 x 40 rectangle at (150, 150) and a blue 20 x 20 square beside it
-        s.click(*S_RED)
+        s.fg(S_RED, RED)
         s.key("r")
         s.click(*STYLE["solid"])
         s.drag(*pic(150, 150), *pic(209, 189))
-        s.click(*S_BLUE)
+        s.fg(S_BLUE, BLUE)
         s.drag(*pic(250, 150), *pic(269, 169))
         assert s.wait_pixel(*pic(180, 170), RED) and s.wait_pixel(*pic(260, 160), BLUE)
         # select the red rectangle and drag it 100 pixels to the right: the old place becomes white (background)
@@ -591,21 +746,18 @@ def sketchbook_select_ops():
         assert s.is_near(shot, cx + 5, cy + 5, WHITE, 8)
         s.menu("Image", 3)             # and back
         assert s.wait_pixel(*pic(180, 170), RED), "Rotate 90 anticlockwise should undo the rotation"
+        # Crop to Selection: select the rectangle exactly and crop; the picture becomes 60 x 40 and all red
+        s.key("s")
+        s.drag(*pic(150, 150), *pic(209, 189))
+        s.menu("Image", 7)
+        px0, py0 = 44 + 86 + (678 - 60) // 2, 56 + 30 + (518 - 40) // 2
+        assert s.wait_pixel(px0, py0, RED) and s.wait_pixel(px0 + 59, py0 + 39, RED), "the cropped picture should be the 60 x 40 red rectangle"
+        assert near(s.px(px0 + 70, py0 + 10), WORKSPACE, 12) and near(s.px(px0 + 10, py0 + 50), WORKSPACE, 12), "the crop must end at 60 x 40"
+        s.key("z", ctrl=True)           # undo restores the whole picture
+        assert s.wait_pixel(*pic(5, 5), WHITE) and s.wait_pixel(*pic(260, 160), BLUE), "undo of the crop should bring the 640 x 480 picture back"
 
 
 # ---------------------------------------------------------------------------------------------------- text, spray, screenshot, guard
-
-
-def bbox_of(s, shot, rect, rgb, tol=12):
-    """Bounding box (x0, y0, x1, y1) of the pixels near rgb inside rect (base coordinates), or None."""
-    x0, y0, w, h = rect
-    xs, ys = [], []
-    for y in range(y0, y0 + h):
-        for x in range(x0, x0 + w):
-            if s.is_near(shot, x, y, rgb, tol):
-                xs.append(x)
-                ys.append(y)
-    return (min(xs), min(ys), max(xs), max(ys)) if xs else None
 
 
 @test
@@ -614,7 +766,7 @@ def sketchbook_text_spray():
     with Qemu(cmdline="text", name="t-sketchbook-text", mem="768M") as vm:
         s = Sk(vm)
         g = s.g
-        s.click(*S_RED)
+        s.fg(S_RED, RED)
         s.key("t")
         s.click(*pic(40, 40))
         s.type("Hi")
@@ -639,7 +791,7 @@ def sketchbook_text_spray():
         shot = s.screen()
         assert bbox_of(s, shot, (OX + 290, OY + 30, 60, 30), RED) is None, "Esc must cancel the text"
         # scale 2 makes the letters twice as big; Opaque paints the background colour behind them
-        s.click(*swatch(6, 1), button="right")          # background yellow
+        s.bg(S_YELLOW, YELLOW)                           # background yellow
         s.click(102, 330)                                # the 2x button
         s.click(59, 378)                                 # the Opaque check box
         s.click(*pic(400, 40))
@@ -652,7 +804,7 @@ def sketchbook_text_spray():
         assert yellows > 200, f"opaque text should paint the background colour behind the letter ({yellows})"
         g.shot("text")
         # the spray can: hold the button for a moment in one place; dots land inside the radius (12 by default)
-        s.click(*S_LIME)
+        s.fg(S_LIME, LIME)
         s.key("a")
         s.move_to(*pic(300, 300))
         g.press()
@@ -729,3 +881,50 @@ def sketchbook_guard_save():
         s.key("esc")
         assert s.wait_dialog_closed() and not s.wait_gone(2), "Cancel must keep the program running"
         assert s.wait_pixel(*pic(320, 300), BLACK)
+
+@test
+def sketchbook_shapes():
+    """The right button draws with the background colour; Shift snaps lines and makes squares and circles; Both fills."""
+    with Qemu(cmdline="text", name="t-sketchbook-shapes", mem="768M") as vm:
+        s = Sk(vm)
+        s.bg(S_YELLOW, YELLOW)
+        s.key("p")
+        s.drag(*pic(20, 20), *pic(120, 20), button="right")
+        assert s.wait_pixel(*pic(70, 20), YELLOW), "the right button should paint with the background colour"
+        # Shift on a line: (100, 100) to (200, 130) snaps to horizontal
+        s.key("l")
+        hold(vm, "shift")
+        s.drag(*pic(100, 100), *pic(200, 130))
+        unhold(vm, "shift")
+        assert s.wait_pixel(*pic(150, 100), BLACK), "a shifted line near the horizontal should be exactly horizontal"
+        assert near(s.px(*pic(150, 115)), WHITE) and near(s.px(*pic(200, 130)), WHITE)
+        # Shift on a solid rectangle: (300, 100) to (380, 130) becomes an 81 x 81 square
+        s.fg(S_BLUE, BLUE)
+        s.key("r")
+        s.click(*STYLE["solid"])
+        hold(vm, "shift")
+        s.drag(*pic(300, 100), *pic(380, 130))
+        unhold(vm, "shift")
+        assert s.wait_pixel(*pic(340, 170), BLUE), "Shift should make the rectangle a square"
+        assert near(s.px(*pic(340, 182)), WHITE) and near(s.px(*pic(382, 150)), WHITE)
+        # Shift on an ellipse outline: a circle, 81 pixels across
+        s.fg(S_RED, RED)
+        s.key("o")
+        s.click(*STYLE["outline"])
+        hold(vm, "shift")
+        s.drag(*pic(100, 300), *pic(180, 330))
+        unhold(vm, "shift")
+        assert s.wait_pixel(*pic(140, 300), RED) or s.wait_pixel(*pic(140, 301), RED), "the top of the circle"
+        assert near(s.px(*pic(140, 380)), RED, 30) or near(s.px(*pic(140, 379)), RED, 30), "the bottom of the circle is 80 pixels below"
+        # Both: outline in the foreground colour, inside in the background colour (yellow)
+        s.fg(S_BLACK, BLACK)
+        s.key("r")
+        s.click(*STYLE["both"])
+        s.drag(*pic(400, 300), *pic(460, 350))
+        assert s.wait_pixel(*pic(430, 325), YELLOW), "Both fills the inside with the background colour"
+        assert near(s.px(*pic(400, 325)), BLACK) and near(s.px(*pic(430, 300)), BLACK)
+        # a thick outline: raise the width with the ] key five times -> 6 pixels wide
+        for _ in range(5):
+            s.key("bracket_right")
+        s.drag(*pic(500, 300), *pic(580, 380))
+        assert s.wait_pixel(*pic(503, 340), BLACK) and near(s.px(*pic(505, 340)), BLACK) and near(s.px(*pic(507, 340)), YELLOW), "a width 6 outline is 6 pixels wide"

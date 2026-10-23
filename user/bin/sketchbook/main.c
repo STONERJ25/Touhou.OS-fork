@@ -417,7 +417,8 @@ static void handle_keys(KUI *ui) {
             }
         } else if (k->code == KEY_F1) dlg_shortcuts();
         else if (k->code == KEY_ESC) {
-            if (tools_dragging()) tools_cancel_drag();
+            if (ui->focus) used = false;                 /* a focused field wants it (Esc leaves the field) */
+            else if (tools_dragging()) tools_cancel_drag();
             else if (!tools_cancel_overlays()) cmd_deselect();
         } else if (ui->focus) used = false;
         else if (k->code == KEY_DELETE) cmd_delete();
@@ -471,11 +472,11 @@ static void draw_inner(KApp *app, KUI *ui, void *user) {
     KRect toolbox = kr(4, top + 2, TOOLBOX_W, bottom - top - 4);
     KRect frame = kr(TOOLBOX_W + 8, top + 2, W - TOOLBOX_W - 12, bottom - top - 4);
     tools_frame(ui);
+    handle_keys(ui);                                     /* keys before the pointer events of the same batch: "P, then click" works in order */
     canvas_frame(ui, frame);
     panels_toolbox(ui, toolbox);
     panels_palette(ui, kr(0, bottom, W, PALETTE_H));
     panels_status(ui, kr(0, H - STATUS_H, W, STATUS_H));
-    handle_keys(ui);
     run_menubar(ui, W);
     app_update_title();
 }

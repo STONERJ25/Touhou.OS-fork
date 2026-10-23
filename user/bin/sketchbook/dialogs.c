@@ -128,10 +128,11 @@ static void size_draw(KApp *app, KUI *ui, void *user) {
     if (k_key_pressed(ui, KEY_TAB)) { d->which ^= 1; k_focus_textfield(ui, d->which ? d->hbuf : d->wbuf); }
     y += 40;
     if (d->resize) {
-        char cur[64];
-        snprintf(cur, sizeof cur, "Now %d x %d. New space is filled with the background colour.", g_doc.w, g_doc.h);
+        char cur[96];
+        snprintf(cur, sizeof cur, "The picture is %d x %d now.", g_doc.w, g_doc.h);
         kc_text_in(cv, kr(16, y, w - 32, 16), cur, ui->theme->text_dim, KA_LEFT);
-        y += 24;
+        kc_text_in(cv, kr(16, y + 18, w - 32, 16), "New space gets the background colour.", ui->theme->text_dim, KA_LEFT);
+        y += 46;
         k_checkbox(ui, 16, y, "Stretch the picture to the new size", &d->stretch);
         y += 26;
     } else {
@@ -173,7 +174,7 @@ static void size_draw(KApp *app, KUI *ui, void *user) {
 }
 
 static void open_size_dialog(bool resize) {
-    Dlg *d = dlg_create(DK_SIZE, resize ? "Resize Canvas" : "New Picture", 380, resize ? 214 : 196, size_draw);
+    Dlg *d = dlg_create(DK_SIZE, resize ? "Resize Canvas" : "New Picture", 380, resize ? 236 : 196, size_draw);
     if (!d) return;
     d->resize = resize;
     snprintf(d->wbuf, sizeof d->wbuf, "%d", resize ? g_doc.w : SK_DEF_W);
