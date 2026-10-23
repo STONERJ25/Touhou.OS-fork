@@ -67,6 +67,8 @@ int    sscanf(const char *s, const char *fmt, ...);
 int    vsscanf(const char *s, const char *fmt, va_list ap);
 int    scanf(const char *fmt, ...);
 int    fscanf(FILE *f, const char *fmt, ...);
+int    vscanf(const char *fmt, va_list ap);
+int    vfscanf(FILE *f, const char *fmt, va_list ap);
 
 void   perror(const char *s);
 int    remove(const char *path);
