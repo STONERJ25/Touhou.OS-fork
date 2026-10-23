@@ -52,13 +52,28 @@ long inet_accept(File *f, u64 uaddr, u64 ulenp);
 long inet_connect(File *f, u64 uaddr, u64 len);
 long inet_shutdown(File *f, int how);
 
-static inline File *inet_fd(u64 fd) {
-    File *f = fd_get(current->proc, (int)fd);
-    return f && f->fops == &g_inet_fops ? f : NULL;
-}
+static int g_nunix;                             /* AF_UNIX sockets alive (statistics) */
+int unix_sock_count(void) { return g_nunix; }
 
 static const VNodeOps sock_node_ops;            /* identifies socket files; no data operations */
 static const FileOps sock_fops;
+
+static Sock *sock_alloc(void) {
+    Sock *s = kzalloc(sizeof *s);
+    if (!s) return NULL;
+    wq_init(&s->accept_wq);
+    u64 fl = irq_save();
+    g_nunix++;
+    irq_restore(fl);
+    return s;
+}
+
+static void sock_release(Sock *s) {
+    u64 fl = irq_save();
+    g_nunix--;
+    irq_restore(fl);
+    kfree(s);
+}
 
 static Conn *conn_new(void) {
     Conn *c = kzalloc(sizeof *c);
@@ -88,11 +103,14 @@ static File *sock_file(Sock *s, int flags) {
     return f;
 }
 
-static Sock *sock_of(int fd, File **fout) {
-    File *f = fd_get(current->proc, fd);
-    if (!f || f->fops != &sock_fops) return NULL;
-    if (fout) *fout = f;
-    return f->priv;
+/* The socket behind descriptor fd, with a reference on its File (file_put it): another thread may close the descriptor while the
+ * call sleeps. -EBADF for no such descriptor, -ENOTSOCK for a file that is not a socket. */
+static long socket_ref(u64 fd, File **out) {
+    File *f = fd_get_ref(current->proc, (int)fd);
+    if (!f) return -EBADF;
+    if (f->fops != &sock_fops && f->fops != &g_inet_fops) { file_put(f); return -ENOTSOCK; }
+    *out = f;
+    return 0;
 }
 
 /* ---------------------------------------------------------------- data path */
@@ -196,7 +214,6 @@ static void sock_close(File *f) {
             conn_unref(c);
         }
         s->npending = 0;
-        if (s->node) { s->node->priv = NULL; }
         wq_wake_all(&s->accept_wq);
     } else if (s->state == SS_CONN) {
         Conn *c = s->c;
@@ -209,9 +226,10 @@ static void sock_close(File *f) {
         conn_unref(c);
     }
     VNode *node = s->node;
+    if (node) node->priv = NULL;                              /* the socket file stays in the directory, but nothing is behind it any more */
     irq_restore(fl);
     if (node) vnode_put(node);
-    kfree(s);
+    sock_release(s);
 }
 
 static const FileOps sock_fops = { .read = sock_read, .write = sock_write, .ioctl = sock_ioctl, .close = sock_close, .poll = sock_poll };
@@ -230,12 +248,11 @@ static long sys_socket(TrapFrame *tf) {
     if (A0(tf) == AF_INET) return inet_socket(type, (int)A2(tf));
     if (A0(tf) != AF_UNIX) return -EAFNOSUPPORT;
     if ((type & 0xFF) != SOCK_STREAM) return -EPROTONOSUPPORT;
-    Sock *s = kzalloc(sizeof *s);
+    Sock *s = sock_alloc();
     if (!s) return -ENOMEM;
-    wq_init(&s->accept_wq);
     File *f = sock_file(s, (type & SOCK_NONBLOCK) ? O_NONBLOCK : 0);
-    if (!f) { kfree(s); return -ENOMEM; }
-    return fd_for(f, type);
+    if (!f) { sock_release(s); return -ENOMEM; }
+    return fd_for(f, type);                                  /* closing the file frees the socket */
 }
 
 static void fill_cred(Conn *c, int side) {
@@ -248,42 +265,64 @@ static long sys_socketpair(TrapFrame *tf) {
     int type = (int)A0(tf);
     if ((type & 0xFF) != SOCK_STREAM) return -EPROTONOSUPPORT;
     Conn *c = conn_new();
-    Sock *a = kzalloc(sizeof *a), *b = kzalloc(sizeof *b);
-    if (!c || !a || !b) { if (c) { kfree(c->q[0]); kfree(c->q[1]); kfree(c); } kfree(a); kfree(b); return -ENOMEM; }
+    Sock *a = sock_alloc(), *b = sock_alloc();
+    if (!c || !a || !b) {
+        if (c) { kfree(c->q[0]); kfree(c->q[1]); kfree(c); }
+        if (a) sock_release(a);
+        if (b) sock_release(b);
+        return -ENOMEM;
+    }
     a->state = b->state = SS_CONN;
     a->c = b->c = c;
     a->side = 0;
     b->side = 1;
-    wq_init(&a->accept_wq);
-    wq_init(&b->accept_wq);
     fill_cred(c, 0);
     fill_cred(c, 1);
-    File *fa = sock_file(a, type & SOCK_NONBLOCK ? O_NONBLOCK : 0), *fb = sock_file(b, type & SOCK_NONBLOCK ? O_NONBLOCK : 0);
-    if (!fa || !fb) return -ENOMEM;
+    File *fa = sock_file(a, type & SOCK_NONBLOCK ? O_NONBLOCK : 0);
+    File *fb = fa ? sock_file(b, type & SOCK_NONBLOCK ? O_NONBLOCK : 0) : NULL;
+    if (!fa || !fb) {                                        /* closing a File releases its end; for an end that has no File do it by hand */
+        u64 fl = irq_save();
+        if (fa) { irq_restore(fl); file_put(fa); fl = irq_save(); } else conn_unref(c);
+        conn_unref(c);                                       /* the end that never got a File */
+        irq_restore(fl);
+        if (!fa) sock_release(a);
+        sock_release(b);
+        return -ENOMEM;
+    }
     int sv[2];
     sv[0] = (int)fd_for(fa, type);
     sv[1] = sv[0] >= 0 ? (int)fd_for(fb, type) : -EMFILE;
-    if (sv[0] < 0 || sv[1] < 0) { if (sv[0] >= 0) fd_close(current->proc, sv[0]); return sv[0] < 0 ? sv[0] : sv[1]; }
-    if (copy_to_user((void *)A1(tf), sv, sizeof sv)) return -EFAULT;
+    if (sv[0] < 0 || sv[1] < 0) {
+        if (sv[0] >= 0) fd_close(current->proc, sv[0]);
+        else file_put(fb);
+        return sv[0] < 0 ? sv[0] : sv[1];
+    }
+    if (copy_to_user((void *)A1(tf), sv, sizeof sv)) {
+        fd_close(current->proc, sv[0]);
+        fd_close(current->proc, sv[1]);
+        return -EFAULT;
+    }
     return 0;
 }
 
 static long sys_bind(TrapFrame *tf) {
-    File *inf = inet_fd(A0(tf));
-    if (inf) return inet_bind(inf, A1(tf), A2(tf));
     File *f;
-    Sock *s = sock_of((int)A0(tf), &f);
-    if (!s) return -ENOTSOCK;
-    if (s->state != SS_NEW || s->bound) return -EINVAL;
-    char path[PATH_MAX];
-    int n = strncpy_from_user(path, (const char *)A1(tf) + sizeof(u16), sizeof path);       /* A1 is a struct sockaddr_un */
-    if (n < 0) return n;
+    long rc = socket_ref(A0(tf), &f);
+    if (rc) return rc;
+    if (f->fops == &g_inet_fops) { rc = inet_bind(f, A1(tf), A2(tf)); file_put(f); return rc; }
+    Sock *s = f->priv;
+    if (s->state != SS_NEW || s->bound) { file_put(f); return -EINVAL; }
+    char *path = kmalloc(PATH_MAX);
+    if (!path) { file_put(f); return -ENOMEM; }
+    int n = strncpy_from_user(path, (const char *)A1(tf) + sizeof(u16), PATH_MAX);          /* A1 is a struct sockaddr_un */
+    if (n < 0) { kfree(path); file_put(f); return n; }
     Process *p = current->proc;
     VNode *dir;
     char name[GNAME_MAX + 1];
-    int rc = vfs_lookup_parent(path, p->cwd, &p->cred, &dir, name);
-    if (rc) return rc;
-    if (dir->mount->type != &g_tmpfs_type && dir->mount->type != &g_devfs_type) { vnode_put(dir); return -ENOTSUP; }
+    rc = vfs_lookup_parent(path, p->cwd, &p->cred, &dir, name);
+    kfree(path);
+    if (rc) { file_put(f); return rc; }
+    if (!dir->mount || (dir->mount->type != &g_tmpfs_type && dir->mount->type != &g_devfs_type)) { vnode_put(dir); file_put(f); return -ENOTSUP; }
     rc = vfs_access(dir, &p->cred, W_OK | X_OK);
     VNode *node = NULL;
     if (!rc) {
@@ -291,53 +330,62 @@ static long sys_bind(TrapFrame *tf) {
         if (rc == -EEXIST) rc = -EADDRINUSE;
     }
     vnode_put(dir);
-    if (rc) return rc;
+    if (rc) { file_put(f); return rc; }
     node->uid = p->cred.uid;
     node->gid = p->cred.gid;
     s->node = node;                                           /* keep our reference until the socket closes */
     s->bound = true;
+    file_put(f);
     return 0;
 }
 
 static long sys_listen(TrapFrame *tf) {
-    File *inf = inet_fd(A0(tf));
-    if (inf) return inet_listen(inf, (int)A1(tf));
-    Sock *s = sock_of((int)A0(tf), NULL);
-    if (!s) return -ENOTSOCK;
-    if (s->state == SS_CONN || !s->bound) return -EINVAL;
-    int backlog = (int)A1(tf);
-    s->backlog = backlog < 1 ? 1 : backlog > BACKLOG_MAX ? BACKLOG_MAX : backlog;
-    s->state = SS_LISTEN;
-    return 0;
+    File *f;
+    long rc = socket_ref(A0(tf), &f);
+    if (rc) return rc;
+    if (f->fops == &g_inet_fops) { rc = inet_listen(f, (int)A1(tf)); file_put(f); return rc; }
+    Sock *s = f->priv;
+    if (s->state == SS_CONN || !s->bound) rc = -EINVAL;
+    else {
+        int backlog = (int)A1(tf);
+        s->backlog = backlog < 1 ? 1 : backlog > BACKLOG_MAX ? BACKLOG_MAX : backlog;
+        s->state = SS_LISTEN;
+    }
+    file_put(f);
+    return rc;
 }
 
 static long sys_connect(TrapFrame *tf) {
-    File *inf = inet_fd(A0(tf));
-    if (inf) return inet_connect(inf, A1(tf), A2(tf));
     File *f;
-    Sock *s = sock_of((int)A0(tf), &f);
-    if (!s) return -ENOTSOCK;
-    if (s->state == SS_CONN) return -EISCONN;
-    if (s->state != SS_NEW) return -EINVAL;
-    char path[PATH_MAX];
-    int n = strncpy_from_user(path, (const char *)A1(tf) + sizeof(u16), sizeof path);       /* A1 is a struct sockaddr_un */
-    if (n < 0) return n;
+    long rc = socket_ref(A0(tf), &f);
+    if (rc) return rc;
+    if (f->fops == &g_inet_fops) { rc = inet_connect(f, A1(tf), A2(tf)); file_put(f); return rc; }
+    Sock *s = f->priv;
+    if (s->state == SS_CONN) { file_put(f); return -EISCONN; }
+    if (s->state != SS_NEW) { file_put(f); return -EINVAL; }
+    char *path = kmalloc(PATH_MAX);
+    if (!path) { file_put(f); return -ENOMEM; }
+    int n = strncpy_from_user(path, (const char *)A1(tf) + sizeof(u16), PATH_MAX);          /* A1 is a struct sockaddr_un */
+    if (n < 0) { kfree(path); file_put(f); return n; }
     Process *p = current->proc;
     VNode *v;
-    int rc = vfs_lookup(path, p->cwd, &p->cred, 0, &v);
-    if (rc) return rc == -ENOENT ? -ECONNREFUSED : rc;
-    if (v->ops != &sock_node_ops) { vnode_put(v); return -ECONNREFUSED; }
+    rc = vfs_lookup(path, p->cwd, &p->cred, 0, &v);
+    kfree(path);
+    if (rc) { file_put(f); return rc == -ENOENT ? -ECONNREFUSED : rc; }
+    if (v->ops != &sock_node_ops) { vnode_put(v); file_put(f); return -ECONNREFUSED; }
     rc = vfs_access(v, &p->cred, W_OK);
-    if (rc) { vnode_put(v); return rc; }
+    if (rc) { vnode_put(v); file_put(f); return rc; }
     Conn *c = conn_new();
-    if (!c) { vnode_put(v); return -ENOMEM; }
+    if (!c) { vnode_put(v); file_put(f); return -ENOMEM; }
     u64 fl = irq_save();
     Sock *l = v->priv;
-    if (!l || l->state != SS_LISTEN || l->npending >= l->backlog) {
+    if (!l || l->state != SS_LISTEN || l->npending >= l->backlog || s->state != SS_NEW) {
+        bool raced = s->state != SS_NEW;                       /* another thread connected this socket meanwhile */
         irq_restore(fl);
         kfree(c->q[0]); kfree(c->q[1]); kfree(c);
         vnode_put(v);
-        return -ECONNREFUSED;
+        file_put(f);
+        return raced ? -EISCONN : -ECONNREFUSED;
     }
     fill_cred(c, 0);
     s->state = SS_CONN;
@@ -347,20 +395,21 @@ static long sys_connect(TrapFrame *tf) {
     wq_wake_all(&l->accept_wq);
     irq_restore(fl);
     vnode_put(v);
+    file_put(f);
     return 0;
 }
 
 static long sys_accept(TrapFrame *tf) {
-    File *inf = inet_fd(A0(tf));
-    if (inf) return inet_accept(inf, A1(tf), A2(tf));
     File *f;
-    Sock *l = sock_of((int)A0(tf), &f);
-    if (!l) return -ENOTSOCK;
-    if (l->state != SS_LISTEN) return -EINVAL;
+    long rc = socket_ref(A0(tf), &f);
+    if (rc) return rc;
+    if (f->fops == &g_inet_fops) { rc = inet_accept(f, A1(tf), A2(tf)); file_put(f); return rc; }
+    Sock *l = f->priv;
+    if (l->state != SS_LISTEN) { file_put(f); return -EINVAL; }
     u64 fl = irq_save();
     while (!l->npending) {
-        if (f->flags & O_NONBLOCK) { irq_restore(fl); return -EAGAIN; }
-        if (signal_pending()) { irq_restore(fl); return -EINTR; }
+        if (f->flags & O_NONBLOCK) { irq_restore(fl); file_put(f); return -EAGAIN; }
+        if (signal_pending()) { irq_restore(fl); file_put(f); return -EINTR; }
         current->intr = true;
         wq_block(&l->accept_wq);
         current->intr = false;
@@ -369,7 +418,8 @@ static long sys_accept(TrapFrame *tf) {
     memmove(l->pending, l->pending + 1, (size_t)(--l->npending) * sizeof(Conn *));
     fill_cred(c, 1);
     irq_restore(fl);
-    Sock *ns = kzalloc(sizeof *ns);
+    file_put(f);
+    Sock *ns = sock_alloc();
     File *nf = ns ? sock_file(ns, 0) : NULL;
     if (!nf) {
         u64 f2 = irq_save();
@@ -377,30 +427,32 @@ static long sys_accept(TrapFrame *tf) {
         wq_wake_all(&c->wq);
         conn_unref(c);
         irq_restore(f2);
-        kfree(ns);
+        if (ns) sock_release(ns);
         return -ENOMEM;
     }
     ns->state = SS_CONN;
     ns->c = c;
     ns->side = 1;
-    wq_init(&ns->accept_wq);
     return fd_for(nf, 0);
 }
 
 static long sys_shutdown(TrapFrame *tf) {
-    File *inf = inet_fd(A0(tf));
-    if (inf) return inet_shutdown(inf, (int)A1(tf));
-    Sock *s = sock_of((int)A0(tf), NULL);
-    if (!s) return -ENOTSOCK;
-    if (s->state != SS_CONN) return -ENOTCONN;
+    File *f;
+    long rc = socket_ref(A0(tf), &f);
+    if (rc) return rc;
+    if (f->fops == &g_inet_fops) { rc = inet_shutdown(f, (int)A1(tf)); file_put(f); return rc; }
+    Sock *s = f->priv;
     int how = (int)A1(tf);
-    if (how == SHUT_WR || how == SHUT_RDWR) {
+    if (s->state != SS_CONN) rc = -ENOTCONN;
+    else if (how < SHUT_RD || how > SHUT_RDWR) rc = -EINVAL;
+    else if (how == SHUT_WR || how == SHUT_RDWR) {
         u64 fl = irq_save();
         s->c->shut_wr[s->side] = true;
         wq_wake_all(&s->c->wq);
         irq_restore(fl);
     }
-    return 0;
+    file_put(f);
+    return rc;
 }
 
 static void socket_init(void) {

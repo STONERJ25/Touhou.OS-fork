@@ -58,6 +58,8 @@ void sock_unlink_free(Sock *s) {
 
 void sock_wake(Sock *s) { wq_wake_all(&s->wq); }
 
+int inet_sock_count(void) { return g_nsocks; }
+
 bool sock_exists(Sock *s) {
     for (Sock *o = g_socks; o; o = o->next) if (o == s) return true;
     return false;

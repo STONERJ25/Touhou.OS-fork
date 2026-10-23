@@ -84,6 +84,7 @@ NORETURN void kmain(BootInfo *bi) {
     g_kernel_phys = bi->kernel_phys;
     g_kernel_virt = bi->kernel_virt;
     cmdline_init(bi->cmdline);
+    heap_init_debug();                  /* "heapdebug": before the first allocation, so every object is poisoned or none */
 
     cpu_init();
     gdt_init();

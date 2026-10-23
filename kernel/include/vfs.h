@@ -125,6 +125,8 @@ struct File {
 };
 
 /* ---- vnodes and open files ---- */
+u64    vfs_vnode_count(void);                                           /* live objects, for /proc/kstats */
+u64    vfs_file_count(void);
 VNode *vnode_alloc(const VNodeOps *ops, Mount *m, u32 mode);       /* refs = 1, nlink = 1 */
 void   vnode_get(VNode *v);
 void   vnode_put(VNode *v);

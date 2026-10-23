@@ -70,6 +70,7 @@ void    vmm_switch(paddr_t pml4);
 void   *ioremap(paddr_t phys, size_t size, u64 flags);                  /* flags: PTE_PCD for UC, PTE_PWT for WC (PAT) */
 void   *kstack_alloc(size_t size);                  /* guard-paged kernel stack, returns the LOW address */
 void    kstack_free(void *base, size_t size);
+int     kstack_slots_used(void);                    /* stacks alive (statistics) */
 
 /* ---- kernel heap ---- */
 void  *kmalloc(size_t size);
@@ -78,5 +79,7 @@ void  *krealloc(void *p, size_t size);
 void   kfree(void *p);
 size_t kmalloc_usable(void *p);
 u64    heap_bytes_in_use(void);
+u64    heap_slab_pages(void);                       /* pages the small-object slabs hold (they are never given back) */
+void   heap_init_debug(void);                       /* "heapdebug" on the command line: poison freed memory; call before the first allocation */
 
 #endif

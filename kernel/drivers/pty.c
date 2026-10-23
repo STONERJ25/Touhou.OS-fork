@@ -35,6 +35,14 @@ extern void (*g_signal_self_hook)(int sig);
 
 static u32 ring_count(Pty *p) { return p->w - p->r; }
 
+int pty_count(void) {                    /* pairs alive (statistics) */
+    int n = 0;
+    u64 fl = irq_save();
+    for (int i = 0; i < PTY_MAX; i++) n += g_ptys[i].in_use;
+    irq_restore(fl);
+    return n;
+}
+
 /* Best effort, never blocks: used for echo (interrupt context) and as the tail of a slave write. */
 static void pty_tty_out(Tty *t, const u8 *buf, size_t n) {
     Pty *p = t->priv;

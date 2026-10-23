@@ -176,8 +176,18 @@ paddr_t pmm_alloc_below(unsigned order, paddr_t limit) {
 void pmm_free(paddr_t p, unsigned order) {
     u64 f = irq_save();
     u64 pfn = p >> PAGE_SHIFT;
-    if (pfn >= g_max_pfn || (pfn & ((1UL << order) - 1))) panic("pmm_free: bad block %#lx order %u", (unsigned long)p, order);
-    if (g_pages[pfn].flags & PG_FREE) panic("pmm_free: double free of %#lx", (unsigned long)p);
+    /* These are bugs, but not ones worth stopping the machine for: the block stays where it is (a leak at worst). */
+    if (order > PMM_MAX_ORDER || pfn >= g_max_pfn || (pfn & ((1UL << order) - 1))) {
+        irq_restore(f);
+        KWARN("pmm_free: bad block %#lx order %u", (unsigned long)p, order);
+        return;
+    }
+    if (!(g_pages[pfn].flags & PG_USED) || (g_pages[pfn].flags & PG_FREE)) {
+        u8 fl = g_pages[pfn].flags;
+        irq_restore(f);
+        KWARN("pmm_free: %#lx is not an allocated block (%s)", (unsigned long)p, (fl & PG_FREE) ? "freed already" : "never allocated");
+        return;
+    }
     g_pages[pfn].flags &= (u8)~(PG_USED | PG_SLAB | PG_LARGE);
     g_pages[pfn].refcount = 0;
     g_free_pages += 1UL << order;

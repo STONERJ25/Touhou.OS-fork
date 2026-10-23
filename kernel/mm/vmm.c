@@ -15,7 +15,6 @@ extern u64 g_kernel_phys, g_kernel_virt;         /* set by kmain from BootInfo *
 
 static paddr_t g_kernel_pml4;
 static u64 g_mmio_next   = KERNEL_MMIO_BASE;
-static u64 g_kstack_next = KERNEL_STACK_BASE;
 
 static inline u64 *tbl(paddr_t p) { return phys_to_virt(p); }
 
@@ -33,6 +32,11 @@ static u64 *next_level(u64 *table, unsigned idx, bool create, u64 user) {
     return tbl(e & PTE_ADDR);
 }
 
+/* A change below the kernel half is shared by every address space: whichever one is loaded, its TLB may hold the old entry. */
+static inline void flush_one(paddr_t pml4, u64 virt) {
+    if (virt >= 0xFFFF800000000000UL || read_cr3() == pml4) invlpg((void *)virt);
+}
+
 int vmm_map(paddr_t pml4, u64 virt, paddr_t phys, u64 flags) {
     u64 user = flags & PTE_U;
     u64 *l3 = next_level(tbl(pml4), (virt >> 39) & 511, true, user);
@@ -42,7 +46,7 @@ int vmm_map(paddr_t pml4, u64 virt, paddr_t phys, u64 flags) {
     u64 *l1 = next_level(l2, (virt >> 21) & 511, true, user);
     if (!l1) return -1;
     l1[(virt >> 12) & 511] = (phys & PTE_ADDR) | flags | PTE_P;
-    if (read_cr3() == pml4) invlpg((void *)virt);
+    flush_one(pml4, virt);
     return 0;
 }
 
@@ -61,7 +65,7 @@ paddr_t vmm_unmap(paddr_t pml4, u64 virt) {
     if (!pte || !(*pte & PTE_P)) return 0;
     paddr_t p = *pte & PTE_ADDR;
     *pte = 0;
-    if (read_cr3() == pml4) invlpg((void *)virt);
+    flush_one(pml4, virt);
     return p;
 }
 
@@ -166,17 +170,38 @@ void *ioremap(paddr_t phys, size_t size, u64 flags) {
     return (void *)(virt + off);
 }
 
+/* Kernel stacks live in slots of the stack region: [guard page | stack], every slot the same size, handed out lowest first and
+ * given back when the task is reaped, so a machine that starts and ends processes for months neither runs out of address
+ * space nor accumulates page-table pages for stacks that are long gone. */
+#define KSTACK_SLOTS 8192
+static u64 g_kstack_map[KSTACK_SLOTS / 64];                         /* 1 = in use */
+static u64 g_kstack_slot_pages;                                     /* pages per slot (guard included), fixed by the first stack */
+static int g_kstack_used;
+
+int kstack_slots_used(void) { return g_kstack_used; }
+
 void *kstack_alloc(size_t size) {
     u64 pages = ALIGN_UP(size, PAGE_SIZE) >> PAGE_SHIFT;
     u64 u = irq_save();
-    u64 base = g_kstack_next + PAGE_SIZE;                           /* one unmapped guard page below the stack */
-    g_kstack_next += (pages + 1) << PAGE_SHIFT;
+    if (!g_kstack_slot_pages) g_kstack_slot_pages = pages + 1;
+    if (g_kstack_slot_pages != pages + 1) { irq_restore(u); return NULL; }         /* one stack size only */
+    int slot = -1;
+    for (int w = 0; w < KSTACK_SLOTS / 64 && slot < 0; w++)
+        if (g_kstack_map[w] != ~0UL) slot = w * 64 + __builtin_ctzl(~g_kstack_map[w]);
+    if (slot < 0) { irq_restore(u); return NULL; }
+    g_kstack_map[slot / 64] |= 1UL << (slot % 64);
+    g_kstack_used++;
     irq_restore(u);
+    u64 base = KERNEL_STACK_BASE + (u64)slot * (g_kstack_slot_pages << PAGE_SHIFT) + PAGE_SIZE;     /* one unmapped guard page below */
     for (u64 i = 0; i < pages; i++) {
         paddr_t p = pmm_alloc_page_zeroed();
         if (!p || vmm_map(g_kernel_pml4, base + (i << PAGE_SHIFT), p, PTE_W | PTE_NX)) {
             for (u64 j = 0; j < i; j++) pmm_free_page(vmm_unmap(g_kernel_pml4, base + (j << PAGE_SHIFT)));
             if (p) pmm_free_page(p);
+            u64 v = irq_save();
+            g_kstack_map[slot / 64] &= ~(1UL << (slot % 64));
+            g_kstack_used--;
+            irq_restore(v);
             return NULL;
         }
     }
@@ -189,4 +214,11 @@ void kstack_free(void *base, size_t size) {
         paddr_t p = vmm_unmap(g_kernel_pml4, (u64)base + (i << PAGE_SHIFT));
         if (p) pmm_free_page(p);
     }
+    u64 slot = ((u64)base - PAGE_SIZE - KERNEL_STACK_BASE) / (g_kstack_slot_pages << PAGE_SHIFT);
+    u64 u = irq_save();
+    if (slot < KSTACK_SLOTS && (g_kstack_map[slot / 64] & (1UL << (slot % 64)))) {
+        g_kstack_map[slot / 64] &= ~(1UL << (slot % 64));
+        g_kstack_used--;
+    }
+    irq_restore(u);
 }

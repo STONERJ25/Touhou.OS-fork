@@ -21,9 +21,14 @@ static bool fs_owns_ids(const VNode *v) {
     return v->mount && v->mount->type && (v->mount->type->flags & FS_FIXED_OWNER);
 }
 
+static u64 g_nvnodes, g_nfiles;                         /* live objects: /proc/kstats shows them, the leak checks compare them */
+u64 vfs_vnode_count(void) { return g_nvnodes; }
+u64 vfs_file_count(void) { return g_nfiles; }
+
 VNode *vnode_alloc(const VNodeOps *ops, Mount *m, u32 mode) {
     VNode *v = kzalloc(sizeof *v);
     if (!v) return NULL;
+    __atomic_fetch_add(&g_nvnodes, 1, __ATOMIC_RELAXED);
     v->ops = ops;
     v->mount = m;
     v->mode = mode;
@@ -47,6 +52,7 @@ void vnode_put(VNode *v) {
     if (r > 0) return;
     if (r < 0) panic("vnode_put: refcount underflow (ino %lu)", (unsigned long)v->ino);
     if (v->ops && v->ops->release) v->ops->release(v);
+    __atomic_fetch_sub(&g_nvnodes, 1, __ATOMIC_RELAXED);
     kfree(v);
 }
 
@@ -322,6 +328,7 @@ int vfs_lookup_parent(const char *path, VNode *cwd, const Cred *c, VNode **dir, 
 File *file_new(VNode *v, int flags, const FileOps *fops, void *priv) {
     File *f = kzalloc(sizeof *f);
     if (!f) return NULL;
+    __atomic_fetch_add(&g_nfiles, 1, __ATOMIC_RELAXED);
     f->vn = v;
     f->flags = flags;
     f->refs = 1;
@@ -346,6 +353,7 @@ void file_put(File *f) {
     else if (f->vn && f->vn->ops && f->vn->ops->closed) f->vn->ops->closed(f->vn, f);
     if (f->vn) vnode_put(f->vn);
     kfree(f->path);
+    __atomic_fetch_sub(&g_nfiles, 1, __ATOMIC_RELAXED);
     kfree(f);
 }
 
