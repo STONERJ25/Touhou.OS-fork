@@ -25,6 +25,7 @@ Running on a real PC: [REAL_HARDWARE.md](REAL_HARDWARE.md).
 | Kernel core | GDT/IDT, symbolised panics, buddy PMM (DMA below 4 GiB), slab heap, PIC + PIT (APIC virtual wire), preemptive scheduler, wait queues, syscalls (SYSCALL/SYSRET), signals, fork/exec/wait, pipes, ptys, UNIX sockets | [ARCHITECTURE](ARCHITECTURE.md) |
 | Filesystems | VFS with tmpfs root, devfs, procfs, initrd (tar); **FAT32/FAT16** read-write with long names and a write-back cache; the volume labelled HUMANVILLAGE is the only one ever mounted by itself | [STORAGE](STORAGE.md) |
 | Drivers | PCI, virtio-blk, AHCI (SATA), NVMe, xHCI USB with hubs and HID keyboards/mice, PS/2 keyboard + mouse, serial, framebuffer; all polled | [BLOCKDEVICES](BLOCKDEVICES.md), [USB](USB.md) |
+| Network | TCP/IP in the kernel (loopback, ARP, IPv4 with fragments, ICMP, UDP, a full TCP), AF_INET sockets, DHCP client, DNS resolver, tools (`ifconfig ip route ping netstat ss nslookup host fetch wget nc sntp ntpdate httpd`); drivers for virtio-net, e1000, e1000e, RTL8139 (tested in QEMU) and the PCH I217/I218/I219 and RTL8168/8111 parts of real PCs (**never run on hardware**) | [NETWORK](NETWORK.md) |
 | Power and time | ACPI soft-off, reset register, polled power button; POSIX time zones, settable clock, `hwclock`, `rtc=local` | [POWER_AND_TIME](POWER_AND_TIME.md) |
 | Accounts | users and groups, setuid exec, salted password hashes, `login`, `su`, `sudo` (`eiki`), `passwd`, `adduser`/`deluser`, sticky `/tmp`, a seat group for the desktop and the power button | [ACCOUNTS](ACCOUNTS.md) |
 | Userland | libgap (C library with regex, getopt, sockets, ptys, crypto, time zones), gapsh (POSIX-style shell), kappabox (~120 applets), pnote editor, pager, manual pages for everything (`man`), omikuji and friends | [TOOLS](TOOLS.md) |
@@ -35,5 +36,5 @@ Running on a real PC: [REAL_HARDWARE.md](REAL_HARDWARE.md).
 
 - Only one CPU is used (the other cores are idle); everything is polled.
 - Nothing is persistent unless a HUMANVILLAGE volume is mounted: `/etc` and the homes live in RAM and are rebuilt at boot.
-- No network, audio, threads or USB mass storage yet, and the Explorer app is unmerged (see ROADMAP and NEXT).
+- No audio, threads or USB mass storage in this list yet (see their docs), the Explorer app is unmerged (see ROADMAP and NEXT), and the real-PC network drivers (I219, RTL8168) have never touched hardware.
 - The local agent log (`docs/AI_SUMMARY.md`, gitignored) has the newest development notes.
