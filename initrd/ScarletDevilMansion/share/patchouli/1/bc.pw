@@ -1,0 +1,49 @@
+.page bc 1 arbitrary precision calculator language
+
+# SYNOPSIS
+*bc* [*-lqsw*] [*-e* _EXPR_] [*-f* _FILE_] [_FILE_...]
+
+# DESCRIPTION
+`bc` reads a program written in a small C-like language, runs each statement as soon as it has been read, and prints the value of every expression that is not an assignment. Numbers have any number of digits; the number of digits after the decimal point is set by the variable `scale`. With no file and no `-e` or `-f` option the program is read from standard input; otherwise the expressions and files are run in the order given.
+
+Numbers are written in decimal, or in the input base `ibase` (2 to 16, with the digits `A` to `F`). Output is in base `obase` (2 or more); for a base above 16 each digit is written as a space and a decimal number. Long numbers are broken into lines of 69 characters followed by a backslash; set `BC_LINE_LENGTH` to change the width (0 means never break).
+
+# LANGUAGE
+- Operators, from the loosest: `||`, `&&`, `!`, comparisons (`< <= > >= == !=`), assignments (`= += -= *= /= %= ^=`), `+ -`, `* / %`, `^` (right to left), unary `-`, `++` and `--`. The comparisons and logical operators give 1 or 0.
+- The result of `+`, `-` has the larger scale of its operands; `*` has `min(a+b, max(scale, a, b))` digits; `/` uses `scale`; `%` is `a - (a/b)*b` computed with `scale`; `a^b` needs an integer `b`.
+- Special variables: `scale`, `ibase`, `obase`, and `last` (also written `.`), the value printed last. Variables and arrays (`a[i]`) are named with lower case letters, digits and `_`; they start at 0.
+- `scale(x)` is the number of digits after the point of _x_, `length(x)` the number of digits it has, `sqrt(x)` the square root, `read()` reads a number from standard input.
+- Statements are separated by newlines or `;`. An expression statement prints its value. A string in double quotes is printed as it is, without a newline. `print` writes a list of strings and expressions without separators; inside `print` the escapes `\n \t \a \b \f \r \e \q \\` are understood.
+- `if (e) s [else s]`, `while (e) s`, `for (e; e; e) s`, `break`, `continue`, `{ ... }`, `halt` and `quit` (which stops as soon as it is read).
+- `define name(parameters) { auto locals; statements }` defines a function; `return` or `return (e)` gives the value (0 when there is none). Array parameters are written `a[]` and passed by value as `f(a[])`. `define void name(...)` makes a function whose calls print nothing. Variables are dynamically scoped: a function sees the locals of the function that called it.
+- Comments are `/* ... */` and `#` to the end of the line; a backslash at the end of a line continues it.
+
+# OPTIONS
+@ *-l*
+    Load the math library and set `scale` to 20. It defines `s(x)` (sine), `c(x)` (cosine), `a(x)` (arc tangent), `l(x)` (natural logarithm), `e(x)` (exponential) and `j(n,x)` (Bessel function of integer order _n_), all with _x_ in radians and exact to the current scale.
+@ *-q*
+    Quiet: do not print the banner (it is only printed on a terminal anyway).
+@ *-s*, *-w*
+    Accepted and ignored.
+@ *-e* _EXPR_, *--expression*=_EXPR_
+    Run _EXPR_ as program text. May be repeated.
+@ *-f* _FILE_, *--file*=_FILE_
+    Run the program in _FILE_ (`-` is standard input).
+@ *--version*
+    Print the version.
+
+# ERRORS
+A syntax error is reported as `(standard_in) 1: syntax error` (with the file name instead of `standard_in` for a file) and the rest of the line is skipped. A runtime error such as division by zero is reported as `Runtime error (func=(main), adr=0): Divide by zero` and stops the current statement only; the next one runs. Output goes to standard output, errors to standard error.
+
+# EXIT STATUS
+0 normally, also after a runtime error or a syntax error in the program; 1 when a file cannot be opened or an option is not known.
+
+# EXAMPLES
+    echo '2^100' | bc
+    echo 'scale=20; sqrt(2)' | bc
+    echo 'obase=16; 255' | bc
+    bc -l -e 'scale=50; 4*a(1)'
+    echo 'define f(n) { if (n < 2) return 1; return n * f(n - 1) }; f(30)' | bc
+
+# SEE ALSO
+expr(1)
