@@ -109,17 +109,16 @@ static void assign_lvar_offsets(Obj *fn) {
     }
     fn->va_stack_top = align_to(top, 8);
 
+    /* the parser gave every local variable its slot (blocks that do not overlap share them) */
     for (Obj *var = fn->locals; var; var = var->next) {
         if (var->offset) continue;
-
-        /* the ABI wants arrays of 16 bytes or more aligned to 16 */
         int align = (var->ty->kind == TY_ARRAY && var->ty->size >= 16) ? MAX(16, var->align) : var->align;
-        bottom += var->ty->size;
-        bottom = align_to(bottom, align);
+        bottom = MAX(bottom, fn->stack_size);
+        bottom += var->ty->size > 0 ? var->ty->size : 1;
+        bottom = align_to(bottom, align ? align : 1);
         var->offset = -bottom;
     }
-
-    fn->stack_size = align_to(bottom, 16);
+    fn->stack_size = align_to(MAX(bottom, fn->stack_size), 16);
 }
 
 /* ---- loads, stores, conversions */
@@ -911,6 +910,148 @@ static void gen_builtin(Node *node) {
     }
 }
 
+/* ---- atomics (x86 is strongly ordered; lock-prefixed instructions give the read-modify-write operations) */
+
+static void extend_rax(Type *ty) {
+    switch (ty->size) {
+    case 1:
+        if (ty->is_unsigned) movzx_rr8(RAX, RAX);
+        else movsx_rr8(RAX, RAX, 0);
+        break;
+    case 2:
+        if (ty->is_unsigned) movzx_rr16(RAX, RAX);
+        else movsx_rr16(RAX, RAX, 0);
+        break;
+    case 4:
+        if (ty->is_unsigned || ty->kind == TY_PTR) mov_rr32(RAX, RAX);
+        else movsxd_rr(RAX, RAX);
+        break;
+    default:
+        break;
+    }
+}
+
+/* [lock] op [mem], reg  for sizes 1, 2, 4 and 8; opw is the opcode for the wider forms, opb the byte form */
+static void locked_rm(bool lock, int opw, int opb, int size, Mem m, int reg) {
+    if (lock) e1(0xF0);
+    i_rm(size == 2 ? 0x66 : 0, size == 8, size == 1 ? opb : opw, reg, m, 0, size == 1 && reg >= 4 && reg < 8);
+}
+
+static void gen_atomic(Node *node) {
+    int size = (int)node->val;
+    int regs[6] = {RDI, RSI, RDX, RCX, R8, R9};
+    int n = 0;
+
+    if (node->op == AT_FENCE) {
+        e1(0x0F);
+        e1(0xAE);
+        e1(0xF0); /* mfence */
+        return;
+    }
+
+    for (Node *a = node->args; a; a = a->next) {
+        gen_expr(a);
+        push();
+        n++;
+    }
+    for (int i = n - 1; i >= 0; i--) pop(regs[i]);
+
+    Mem m = mem_reg(RDI, 0);
+    switch (node->op) {
+    case AT_LOAD:
+        load_mem(RAX, m, size, node->ty->is_unsigned || node->ty->kind == TY_PTR);
+        return;
+    case AT_STORE:
+        mov_rr(RAX, RSI);
+        locked_rm(false, 0x87, 0x86, size, m, RAX);
+        return;
+    case AT_LOCK_RELEASE:
+        mov_mi32(m, size, 0);
+        return;
+    case AT_CLEAR:
+        mov_mi32(m, 1, 0);
+        return;
+    case AT_XCHG:
+        mov_rr(RAX, RSI);
+        locked_rm(false, 0x87, 0x86, size, m, RAX);
+        extend_rax(node->ty);
+        return;
+    case AT_TEST_AND_SET:
+        mov_ri(RAX, 1);
+        locked_rm(false, 0x87, 0x86, 1, m, RAX);
+        movzx_rr8(RAX, RAX);
+        alu_ri(A_CMP, 0, RAX, 0);
+        setcc(CC_NE, RAX);
+        movzx_rr8(RAX, RAX);
+        return;
+    case AT_FETCH_ADD:
+    case AT_ADD_FETCH:
+        mov_rr(RAX, RSI);
+        locked_rm(true, 0x0FC1, 0x0FC0, size, m, RAX); /* lock xadd: rax = old value */
+        if (node->op == AT_ADD_FETCH) alu_rr(A_ADD, 1, RAX, RSI);
+        extend_rax(node->ty);
+        return;
+    case AT_FETCH_SUB:
+    case AT_SUB_FETCH:
+        mov_rr(RAX, RSI);
+        unary_r(1, 3, RAX); /* neg */
+        locked_rm(true, 0x0FC1, 0x0FC0, size, m, RAX);
+        if (node->op == AT_SUB_FETCH) alu_rr(A_SUB, 1, RAX, RSI);
+        extend_rax(node->ty);
+        return;
+    case AT_FETCH_AND:
+    case AT_FETCH_OR:
+    case AT_FETCH_XOR:
+    case AT_FETCH_NAND:
+    case AT_AND_FETCH:
+    case AT_OR_FETCH:
+    case AT_XOR_FETCH:
+    case AT_NAND_FETCH: {
+        int kind = node->op >= AT_ADD_FETCH ? node->op - AT_ADD_FETCH : node->op - AT_FETCH_ADD; /* 0 add, 1 sub, 2 and, 3 or, 4 xor, 5 nand */
+        bool new_value = node->op >= AT_ADD_FETCH;
+        int loop = next_label();
+        load_mem(RAX, m, size, true);
+        label_set(loop);
+        mov_rr(RDX, RAX);
+        if (kind == 2 || kind == 5) alu_rr(A_AND, 1, RDX, RSI);
+        else if (kind == 3) alu_rr(A_OR, 1, RDX, RSI);
+        else alu_rr(A_XOR, 1, RDX, RSI);
+        if (kind == 5) unary_r(1, 2, RDX);
+        locked_rm(true, 0x0FB1, 0x0FB0, size, m, RDX); /* lock cmpxchg [rdi], rdx */
+        jcc_label(CC_NE, loop);
+        if (new_value) mov_rr(RAX, RDX);
+        extend_rax(node->ty);
+        return;
+    }
+    case AT_CAS: {
+        /* rdi = ptr, rsi = &expected, rdx = desired */
+        int done = next_label();
+        load_mem(RAX, mem_reg(RSI, 0), size, true);
+        locked_rm(true, 0x0FB1, 0x0FB0, size, m, RDX);
+        setcc(CC_E, RCX);
+        jcc_label(CC_E, done);
+        store_mem(mem_reg(RSI, 0), RAX, size);
+        label_set(done);
+        movzx_rr8(RAX, RCX);
+        return;
+    }
+    case AT_SYNC_VAL_CAS:
+    case AT_SYNC_BOOL_CAS:
+        /* rdi = ptr, rsi = old, rdx = new */
+        mov_rr(RAX, RSI);
+        locked_rm(true, 0x0FB1, 0x0FB0, size, m, RDX);
+        if (node->op == AT_SYNC_BOOL_CAS) {
+            setcc(CC_E, RAX);
+            movzx_rr8(RAX, RAX);
+        } else {
+            extend_rax(node->ty);
+        }
+        return;
+    default:
+        error_tok(node->tok, "atomic builtin not supported");
+    }
+}
+
 /* ---- expressions */
 
 /* an operand that can be put into rdi without touching rax */
@@ -1193,6 +1334,9 @@ static void gen_expr(Node *node) {
         return;
     case ND_BUILTIN:
         gen_builtin(node);
+        return;
+    case ND_ATOMIC:
+        gen_atomic(node);
         return;
     case ND_THREAD_PTR:
         e1(0x64);

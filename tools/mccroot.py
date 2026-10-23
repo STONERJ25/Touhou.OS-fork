@@ -2,6 +2,7 @@
 
     include/       libgap headers (user/libc/include), the shared ABI headers (shared/*.h), the headers of the user libraries
     lib/mcc/include/   mcc's own freestanding headers (stddef.h, stdarg.h, stdint.h, limits.h ...)
+    src/mcc/       the source of mcc itself (so that the OS can compile its own compiler)
     lib/crt0.o  lib/libgap.a  lib/libkappa.a ...   what a TouhouOS program is linked with
 
 tools/build.py calls stage_sysroot() after the userland is built and puts the tree into the initrd under
@@ -45,6 +46,11 @@ def sysroot_files():
                 files.append(("include/" + rel, p))
     for rel, p in _headers(ROOT / "user" / "bin" / "mcc" / "include"):
         files.append(("lib/mcc/include/" + rel, p))
+    # the compiler's own source: the guest can rebuild mcc with mcc (see docs/MCC.md, "Self-hosting")
+    src = ROOT / "user" / "bin" / "mcc"
+    for pat in ("*.c", "*.inc", "*.h"):
+        for p in sorted(src.glob(pat)):
+            files.append(("src/mcc/" + p.name, p))
     crt0 = BUILD / "obj" / "libc" / "user" / "libc" / "crt0.asm.o"
     if crt0.exists():
         files.append(("lib/crt0.o", crt0))

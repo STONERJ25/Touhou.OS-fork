@@ -1,0 +1,32 @@
+d+e=4.750 d-e=2.250 d*e=4.375 d/e=2.800
+f+g=3.250 f-g=1.750 f*g=1.875 f/g=3.333
+-d=-3.50 -f=-2.50
+cmp: 0 1 1 0 1 0
+fcmp: 0 1 1 0
+conv: 3 3500 3000000000
+neg conv: -2 0
+fromint: 7.0 4000000000.0 1234567890123.0 16777216.0
+ull->double: 1.8000e+19
+double->ull: 18000000000000000000
+mixed arithmetic: 6.50
+harmonic float: 2.92897
+harmonic double: 2.9289682540
+dsum=385.0
+fmix=76.25
+halve=3.500
+total=12.00
+sqrt(2)=1.414214 pow=1024.0
+floor/ceil: 2.0 3.0 -3.0 -2.0
+fabs: 3.25 3.25
+nan: 1 0 inf: 1 1
+nan compares: 0 0 0
+tiny*tiny=0
+consts: 3.14159265 6.020e+23 0.0001
+hexfloat=3.0
+float widening: 0
+float narrowing: 1
+long double: 5.00
+cond: 10 2.5
+loop: 14 10.50
+compound: 2.1250
+f=3.00

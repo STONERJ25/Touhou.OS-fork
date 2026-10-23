@@ -75,6 +75,8 @@ def make_initrd(extra, out):
     with tarfile.open(src, "r") as tin, tarfile.open(out, "w", format=tarfile.USTAR_FORMAT) as tout:
         names = set()
         for m in tin.getmembers():
+            if m.name in extra:
+                continue            # replaced by the file we are adding
             names.add(m.name)
             if m.isfile():
                 tout.addfile(m, tin.extractfile(m))

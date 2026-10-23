@@ -67,7 +67,7 @@ int main(void) {
     printf("%d\n", VERSION);
     printf("%s:%d\n", "pp.c", LINE_OF());
     printf("file ends with pp.c: %d\n", strstr(__FILE__, "pp.c") != NULL);
-    printf("stdc=%d version=%ld\n", __STDC__, __STDC_VERSION__);
+    printf("stdc=%d c11=%d\n", __STDC__, __STDC_VERSION__ >= 201112L);
     printf("%s\n", "adjacent" " string" " literals");
     printf("%d\n", (int)sizeof("abc" "def"));
     printf("%s\n", XSTR(a   b    c));

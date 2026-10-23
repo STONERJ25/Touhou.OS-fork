@@ -15,6 +15,7 @@ struct Scope {
     Scope *next;
     Map vars;
     Map tags;
+    int frame_mark; /* frame_cur at the start of the scope: locals of sibling blocks share stack space */
 };
 
 typedef struct {
@@ -68,6 +69,8 @@ static int label_counter;
 static int unique_counter;
 static bool in_param_decl;
 static Type *va_list_type;
+static int frame_cur, frame_max; /* bytes of the stack frame in use / the most ever in use */
+static bool stmt_pinned;        /* a compound literal lives in the current statement: its slot must outlive it */
 
 static Type *declspec(Token **rest, Token *tok, VarAttr *attr);
 static Type *typename(Token **rest, Token *tok);
@@ -118,10 +121,12 @@ static int next_label(void) {
 static void enter_scope(void) {
     Scope *sc = xcalloc(sizeof(Scope));
     sc->next = scope;
+    sc->frame_mark = frame_cur;
     scope = sc;
 }
 
 static void leave_scope(void) {
+    frame_cur = scope->frame_mark;
     scope = scope->next;
 }
 
@@ -235,11 +240,27 @@ static Obj *new_var(char *name, Type *ty) {
     return var;
 }
 
-static Obj *new_lvar(char *name, Type *ty) {
+/* gives a local variable its place in the frame: the slots are reused once the block (or statement) ends */
+static void alloc_lvar(Obj *var) {
+    int size = var->ty->size > 0 ? var->ty->size : 1;
+    int align = (var->ty->kind == TY_ARRAY && var->ty->size >= 16) ? MAX(16, var->align) : var->align;
+    if (align < 1) align = 1;
+    frame_cur = align_to(frame_cur + size, align);
+    if (frame_cur > frame_max) frame_max = frame_cur;
+    var->offset = -frame_cur;
+}
+
+static Obj *new_lvar_noalloc(char *name, Type *ty) {
     Obj *var = new_var(name, ty);
     var->is_local = true;
     var->next = locals;
     locals = var;
+    return var;
+}
+
+static Obj *new_lvar(char *name, Type *ty) {
+    Obj *var = new_lvar_noalloc(name, ty);
+    if (ty->size >= 0) alloc_lvar(var);
     return var;
 }
 
@@ -1570,7 +1591,7 @@ static Node *declaration(Token **rest, Token *tok, Type *basety, VarAttr *attr) 
             continue;
         }
 
-        Obj *var = new_lvar(get_ident(ty->name), ty);
+        Obj *var = new_lvar_noalloc(get_ident(ty->name), ty);
         if (attr && attr->align) var->align = attr->align;
 
         if (equal(tok, "=")) {
@@ -1580,6 +1601,7 @@ static Node *declaration(Token **rest, Token *tok, Type *basety, VarAttr *attr) 
 
         if (var->ty->size < 0) error_tok(ty->name, "variable has incomplete type");
         if (var->ty->kind == TY_VOID) error_tok(ty->name, "variable declared void");
+        alloc_lvar(var);
     }
 
     Node *node = new_node(ND_BLOCK, tok);

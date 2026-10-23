@@ -99,7 +99,7 @@ int main(void) {
     printf("three=%d size=%d\n", three_sum(t), (int)sizeof(t));
     struct big b = make_big(10);
     printf("big=%ld tag=%s size=%d\n", big_sum(b), b.tag, (int)sizeof(b));
-    printf("fl2=%.1f dbl2=%.2f\n", fl2_sum(make_fl2(1.25f, 2.5f)), dbl2_sum(make_dbl2(0.5, 0.25)));
+    printf("fl2=%.1f dbl2=%.2f\n", fl2_sum(make_fl2(1.0f, 2.5f)), dbl2_sum(make_dbl2(0.5, 0.25)));
     printf("mixed=%.2f mixed2=%.2f\n", mixed_sum(make_mixed(7, 0.5)), mixed2_sum(make_mixed2(1.5, 8)));
     printf("f3=%.1f size=%d\n", f3_sum(make_f3()), (int)sizeof(struct f3));
     struct pair8 pr = {5, 6};

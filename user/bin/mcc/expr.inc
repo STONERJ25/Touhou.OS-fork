@@ -672,6 +672,8 @@ static Node *funcall(Token **rest, Token *tok, Node *fn) {
     return node;
 }
 
+static Node *postfix_tail(Token **rest, Token *tok, Node *node);
+
 /* postfix = "(" type-name ")" "{" initializer-list "}" | primary ("[" expr "]" | "." ident | "->" ident | "++" | "--")* */
 static Node *postfix(Token **rest, Token *tok) {
     if (equal(tok, "(") && is_typename(tok->next)) {
@@ -680,19 +682,27 @@ static Node *postfix(Token **rest, Token *tok) {
         Type *ty = typename(&tok, tok->next);
         tok = skip(tok, ")");
 
+        Node *lit;
         if (scope->next == NULL) {
             Obj *var = new_anon_gvar(ty);
-            gvar_initializer(rest, tok, var);
-            return new_var_node(var, start);
+            gvar_initializer(&tok, tok, var);
+            lit = new_var_node(var, start);
+        } else {
+            Obj *var = new_lvar_noalloc("", ty);
+            Node *lhs = lvar_initializer(&tok, tok, var);
+            alloc_lvar(var);
+            stmt_pinned = true; /* a compound literal lives until the end of the enclosing block */
+            Node *rhs = new_var_node(var, tok);
+            lit = new_binary(ND_COMMA, lhs, rhs, start);
         }
-
-        Obj *var = new_lvar("", ty);
-        Node *lhs = lvar_initializer(rest, tok, var);
-        Node *rhs = new_var_node(var, tok);
-        return new_binary(ND_COMMA, lhs, rhs, start);
+        return postfix_tail(rest, tok, lit);
     }
 
     Node *node = primary(&tok, tok);
+    return postfix_tail(rest, tok, node);
+}
+
+static Node *postfix_tail(Token **rest, Token *tok, Node *node) {
 
     for (;;) {
         if (equal(tok, "(")) {
@@ -856,6 +866,106 @@ static Node *read_offsetof(Token **rest, Token *tok) {
     return new_ulong(offset, start);
 }
 
+enum {
+    AT_LOAD = 1, AT_STORE, AT_XCHG, AT_CAS, AT_FETCH_ADD, AT_FETCH_SUB, AT_FETCH_AND, AT_FETCH_OR, AT_FETCH_XOR, AT_FETCH_NAND,
+    AT_ADD_FETCH, AT_SUB_FETCH, AT_AND_FETCH, AT_OR_FETCH, AT_XOR_FETCH, AT_NAND_FETCH, AT_SYNC_VAL_CAS, AT_SYNC_BOOL_CAS,
+    AT_TEST_AND_SET, AT_CLEAR, AT_FENCE, AT_LOCK_RELEASE,
+};
+
+static int atomic_rmw_kind(const char *s, bool fetch_first) {
+    static const char *ops[] = {"add", "sub", "and", "or", "xor", "nand"};
+    for (int i = 0; i < 6; i++) {
+        if (!strcmp(s, ops[i])) return (fetch_first ? AT_FETCH_ADD : AT_ADD_FETCH) + i;
+    }
+    return 0;
+}
+
+/* __atomic_* and __sync_* builtins (x86 is strongly ordered: the memory order arguments are evaluated and ignored) */
+static Node *atomic_call(char *name, Node **args, int nargs, Token *tok) {
+    int op = 0, nval = 0; /* nval: arguments that are not memory orders */
+    bool is_sync = false;
+    char *p;
+    if (str_starts(name, "__builtin_")) name += 10;
+    if (str_starts(name, "__atomic_")) {
+        p = name + 9;
+        if (!strcmp(p, "load_n")) { op = AT_LOAD; nval = 1; }
+        else if (!strcmp(p, "store_n")) { op = AT_STORE; nval = 2; }
+        else if (!strcmp(p, "exchange_n")) { op = AT_XCHG; nval = 2; }
+        else if (!strcmp(p, "compare_exchange_n")) { op = AT_CAS; nval = 3; }
+        else if (!strcmp(p, "test_and_set")) { op = AT_TEST_AND_SET; nval = 1; }
+        else if (!strcmp(p, "clear")) { op = AT_CLEAR; nval = 1; }
+        else if (!strcmp(p, "thread_fence") || !strcmp(p, "signal_fence")) { op = AT_FENCE; nval = 0; }
+        else if (!strcmp(p, "always_lock_free") || !strcmp(p, "is_lock_free")) return new_num(1, tok);
+        else if (str_starts(p, "fetch_")) { op = atomic_rmw_kind(p + 6, true); nval = 2; }
+        else if (str_ends(p, "_fetch")) {
+            char *base = xstrndup(p, strlen(p) - 6);
+            op = atomic_rmw_kind(base, false);
+            nval = 2;
+        }
+    } else if (str_starts(name, "__sync_")) {
+        is_sync = true;
+        p = name + 7;
+        if (!strcmp(p, "synchronize")) { op = AT_FENCE; nval = 0; }
+        else if (!strcmp(p, "val_compare_and_swap")) { op = AT_SYNC_VAL_CAS; nval = 3; }
+        else if (!strcmp(p, "bool_compare_and_swap")) { op = AT_SYNC_BOOL_CAS; nval = 3; }
+        else if (!strcmp(p, "lock_test_and_set")) { op = AT_XCHG; nval = 2; }
+        else if (!strcmp(p, "lock_release")) { op = AT_LOCK_RELEASE; nval = 1; }
+        else if (str_starts(p, "fetch_and_")) { op = atomic_rmw_kind(p + 10, true); nval = 2; }
+        else if (str_ends(p, "_and_fetch")) {
+            char *base = xstrndup(p, strlen(p) - 10);
+            op = atomic_rmw_kind(base, false);
+            nval = 2;
+        }
+    }
+    if (!op) return NULL;
+    (void)is_sync;
+    if (nargs < nval) error_tok(tok, "too few arguments to %s", name);
+
+    Node *node = new_node(ND_ATOMIC, tok);
+    node->op = op;
+    if (op == AT_FENCE) {
+        node->ty = ty_void;
+        return node;
+    }
+    add_type(args[0]);
+    if (!args[0]->ty->base) error_tok(tok, "%s needs a pointer as its first argument", name);
+    Type *ety = args[0]->ty->base;
+    if (ety->kind == TY_ARRAY) ety = ety->base;
+    if (!is_integer(ety) && ety->kind != TY_PTR) error_tok(tok, "%s: unsupported operand type", name);
+    node->val = ety->size;
+
+    Node head;
+    memset(&head, 0, sizeof head);
+    Node *cur = &head;
+    cur = cur->next = new_cast(args[0], pointer_to(ety));
+    for (int i = 1; i < nval; i++) {
+        Node *a = args[i];
+        add_type(a);
+        if (op == AT_CAS && i == 1) a = new_cast(a, pointer_to(ety));      /* the pointer to the expected value */
+        else if (op == AT_CAS && i == 2) a = new_cast(a, ety);
+        else if (op == AT_CAS) a = new_cast(a, ty_int);
+        else a = new_cast(a, ety);
+        cur = cur->next = a;
+    }
+    node->args = head.next;
+    for (Node *a = node->args; a; a = a->next) add_type(a);
+    switch (op) {
+    case AT_STORE:
+    case AT_CLEAR:
+    case AT_LOCK_RELEASE:
+        node->ty = ty_void;
+        break;
+    case AT_CAS:
+    case AT_SYNC_BOOL_CAS:
+    case AT_TEST_AND_SET:
+        node->ty = ty_bool;
+        break;
+    default:
+        node->ty = ety;
+    }
+    return node;
+}
+
 /* Returns the node for a __builtin_* call, or NULL if tok is not a builtin we know. */
 static Node *builtin_call(Token **rest, Token *tok) {
     Token *start = tok;
@@ -896,16 +1006,16 @@ static Node *builtin_call(Token **rest, Token *tok) {
     }
 
     /* the rest take an ordinary argument list */
-    if (!str_starts(name, "__builtin_")) return NULL;
+    if (!str_starts(name, "__builtin_") && !str_starts(name, "__atomic_") && !str_starts(name, "__sync_")) return NULL;
     if (!equal(tok->next, "(")) return NULL;
 
-    Node *args[4];
+    Node *args[8];
     int nargs = 0;
     tok = tok->next->next;
     if (!strcmp(name, "__builtin_va_start") || !strcmp(name, "__builtin_va_end") || !strcmp(name, "__builtin_va_copy")) {
         while (!equal(tok, ")")) {
             if (nargs) tok = skip(tok, ",");
-            if (nargs < 4) args[nargs++] = assign(&tok, tok);
+            if (nargs < 8) args[nargs++] = assign(&tok, tok);
             else assign(&tok, tok);
         }
         *rest = skip(tok, ")");
@@ -927,9 +1037,14 @@ static Node *builtin_call(Token **rest, Token *tok) {
     while (!equal(tok, ")")) {
         if (nargs) tok = skip(tok, ",");
         Node *a = assign(&tok, tok);
-        if (nargs < 4) args[nargs++] = a;
+        if (nargs < 8) args[nargs++] = a;
     }
     *rest = skip(tok, ")");
+
+    {
+        Node *at = atomic_call(name, args, nargs, start);
+        if (at) return at;
+    }
 
     if (!strcmp(name, "__builtin_expect") || !strcmp(name, "__builtin_expect_with_probability")) {
         if (nargs < 1) error_tok(start, "too few arguments");
@@ -942,9 +1057,10 @@ static Node *builtin_call(Token **rest, Token *tok) {
         if (nargs < 1) error_tok(start, "too few arguments");
         return new_num(is_const_expr(args[0]) ? 1 : 0, start);
     }
-    if (!strcmp(name, "__builtin_huge_val") || !strcmp(name, "__builtin_inf")) return double_const(mcc_inf(), ty_double, start);
+    if (!strcmp(name, "__builtin_huge_val") || !strcmp(name, "__builtin_inf") || !strcmp(name, "__builtin_infl") || !strcmp(name, "__builtin_huge_vall"))
+        return double_const(mcc_inf(), ty_double, start);
     if (!strcmp(name, "__builtin_huge_valf") || !strcmp(name, "__builtin_inff")) return double_const(mcc_inf(), ty_float, start);
-    if (!strcmp(name, "__builtin_nan") || !strcmp(name, "__builtin_nans")) return double_const(mcc_nan(), ty_double, start);
+    if (!strcmp(name, "__builtin_nan") || !strcmp(name, "__builtin_nans") || !strcmp(name, "__builtin_nanl")) return double_const(mcc_nan(), ty_double, start);
     if (!strcmp(name, "__builtin_nanf") || !strcmp(name, "__builtin_nansf")) return double_const(mcc_nan(), ty_float, start);
     if (!strcmp(name, "__builtin_thread_pointer")) {
         Node *node = new_node(ND_THREAD_PTR, start);
@@ -1047,7 +1163,8 @@ static Node *primary(Token **rest, Token *tok) {
 
     if (tok->kind == TK_IDENT) {
         /* __builtin_xxx intrinsics that are not ordinary functions */
-        if (tok->len > 10 && !strncmp(tok->loc, "__builtin_", 10)) {
+        if ((tok->len > 10 && !strncmp(tok->loc, "__builtin_", 10)) || (tok->len > 9 && !strncmp(tok->loc, "__atomic_", 9)) ||
+            (tok->len > 7 && !strncmp(tok->loc, "__sync_", 7))) {
             VarScope *known = find_var(tok);
             if (!known) {
                 Node *b = builtin_call(rest, tok);
@@ -1413,7 +1530,13 @@ static Node *compound_stmt(Token **rest, Token *tok) {
 
             cur = cur->next = declaration(&tok, tok, basety, &attr);
         } else {
+            int mark = frame_cur;
+            bool saved_pin = stmt_pinned;
+            stmt_pinned = false;
             cur = cur->next = stmt(&tok, tok);
+            /* the temporaries of an expression are dead after its statement (unless a compound literal was made) */
+            if (!stmt_pinned) frame_cur = mark;
+            stmt_pinned = stmt_pinned || saved_pin;
         }
         add_type(cur);
     }
@@ -1488,6 +1611,8 @@ static Token *function(Token *tok, Type *basety, VarAttr *attr) {
     locals = NULL;
     enter_scope();
     in_param_decl = false;
+    frame_cur = frame_max = 0;
+    stmt_pinned = false;
     create_param_lvars(ty->params);
 
     /* a buffer for a struct/union return value is passed as the hidden first parameter */
@@ -1510,6 +1635,7 @@ static Token *function(Token *tok, Type *basety, VarAttr *attr) {
 
     fn->body = compound_stmt(&tok, tok);
     fn->locals = locals;
+    fn->stack_size = align_to(frame_max, 16);
     leave_scope();
     resolve_goto_labels();
     current_fn = NULL;
