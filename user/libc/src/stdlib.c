@@ -269,41 +269,7 @@ int atoi(const char *s) { return (int)strtol(s, NULL, 10); }
 long atol(const char *s) { return strtol(s, NULL, 10); }
 long long atoll(const char *s) { return strtoll(s, NULL, 10); }
 
-double strtod(const char *s, char **end) {
-    const char *p = s;
-    while (isspace((unsigned char)*p)) p++;
-    int neg = 0;
-    if (*p == '-') { neg = 1; p++; } else if (*p == '+') p++;
-    if (!strncasecmp(p, "inf", 3)) { if (end) *end = (char *)p + 3; return neg ? -INFINITY : INFINITY; }
-    if (!strncasecmp(p, "nan", 3)) { if (end) *end = (char *)p + 3; return NAN; }
-    double v = 0;
-    int digits = 0;
-    while (isdigit((unsigned char)*p)) { v = v * 10 + (*p - '0'); p++; digits++; }
-    if (*p == '.') {
-        p++;
-        double scale = 0.1;
-        while (isdigit((unsigned char)*p)) { v += (*p - '0') * scale; scale /= 10; p++; digits++; }
-    }
-    if (!digits) { if (end) *end = (char *)s; return 0; }
-    if (*p == 'e' || *p == 'E') {
-        const char *q = p + 1;
-        int eneg = 0;
-        if (*q == '-') { eneg = 1; q++; } else if (*q == '+') q++;
-        if (isdigit((unsigned char)*q)) {
-            int e = 0;
-            while (isdigit((unsigned char)*q)) { e = e * 10 + (*q - '0'); q++; }
-            double m = 1;
-            for (int i = 0; i < e && i < 400; i++) m *= 10;
-            v = eneg ? v / m : v * m;
-            p = q;
-        }
-    }
-    if (end) *end = (char *)p;
-    return neg ? -v : v;
-}
-
-float strtof(const char *s, char **end) { return (float)strtod(s, end); }
-double atof(const char *s) { return strtod(s, NULL); }
+/* strtod, strtof, strtold and atof are in fpconv.c (exactly rounded). */
 
 /* ---------------------------------------------------------------- rand / qsort */
 

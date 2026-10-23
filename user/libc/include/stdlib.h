@@ -37,6 +37,8 @@ long long strtoll(const char *s, char **end, int base);
 unsigned long long strtoull(const char *s, char **end, int base);
 double strtod(const char *s, char **end);
 float  strtof(const char *s, char **end);
+long double strtold(const char *s, char **end);
+long double atold(const char *s);
 
 int    rand(void);
 void   srand(unsigned seed);
