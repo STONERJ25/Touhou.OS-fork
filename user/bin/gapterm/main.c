@@ -35,6 +35,7 @@ typedef struct Term {
 } Term;
 
 static Term T;
+static const char *g_run;               /* gapterm -e COMMAND: run this shell command line instead of a login shell (the Explorer uses it) */
 
 /* ---------------------------------------------------------------- pty */
 
@@ -90,6 +91,10 @@ static pid_t start_shell(const char *slave_path, int cols, int rows) {
     setenv("NOMOTD", "1", 1);
     const char *home = getenv("HOME");
     if (home) chdir(home);
+    if (g_run) {
+        tcsetpgrp(0, getpid());                                 /* Ctrl+C must reach the command: it is not an interactive shell */
+        execl("/bin/gapsh", "gapsh", "-c", g_run, (char *)NULL);
+    }
     execl("/bin/gapsh", "gapsh", "-l", (char *)NULL);
     _exit(127);
 }
@@ -394,10 +399,13 @@ static bool on_close(KApp *app, void *user) {
 }
 
 int main(int argc, char **argv) {
-    (void)argc; (void)argv;
     T.cols = 80; T.rows = 25;
     snprintf(T.title, sizeof T.title, "Terminal");
-    KApp *app = kapp_new("Terminal", PAD * 2 + 80 * 8, PAD * 2 + 25 * 16, FW_RESIZABLE);
+    for (int i = 1; i < argc; i++) {                            /* -t TITLE, -e COMMAND */
+        if (!strcmp(argv[i], "-e") && i + 1 < argc) g_run = argv[++i];
+        else if (!strcmp(argv[i], "-t") && i + 1 < argc) snprintf(T.title, sizeof T.title, "%s", argv[++i]);
+    }
+    KApp *app = kapp_new(T.title, PAD * 2 + 80 * 8, PAD * 2 + 25 * 16, FW_RESIZABLE);
     if (!app) return 1;
     T.app = app;
     char slave[40];
