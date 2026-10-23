@@ -74,19 +74,28 @@ u32 fat_node_mode(const FatNode *n) {
     return (dir ? S_IFDIR : S_IFREG) | perm;
 }
 
+/* Copies the node's state into its live vnode (the VFS reads these fields without any lock). The stores happen with
+ * interrupts off: a vnode whose last reference is being dropped is only freed after fat_release() has detached it. */
 void fat_node_publish(FatNode *n) {
-    VNode *v = n->vn;
-    if (!v) return;
     const FatUser *u = node_user(n);
     bool dir = (n->flags & FN_DIR) != 0;
-    v->mode = fat_node_mode(n);
-    v->uid = u ? u->uid : n->vol->uid;
-    v->gid = u ? u->gid : n->vol->gid;
-    v->size = dir ? fatd_dirsize(n) : n->size;
-    v->atime = n->atime;
-    v->mtime = n->mtime;
-    v->ctime = n->ctime;
-    v->nlink = (n->flags & FN_UNLINKED) ? 0 : dir ? 2 : 1;
+    u32 mode = fat_node_mode(n);
+    u32 uid = u ? u->uid : n->vol->uid, gid = u ? u->gid : n->vol->gid;
+    u64 size = dir ? fatd_dirsize(n) : n->size;
+    u32 nlink = (n->flags & FN_UNLINKED) ? 0 : dir ? 2 : 1;
+    u64 f = irq_save();
+    VNode *v = n->vn;
+    if (v) {
+        v->mode = mode;
+        v->uid = uid;
+        v->gid = gid;
+        v->size = size;
+        v->atime = n->atime;
+        v->mtime = n->mtime;
+        v->ctime = n->ctime;
+        v->nlink = nlink;
+    }
+    irq_restore(f);
 }
 
 /* A directory moved between levels may change who owns everything below it. */
@@ -188,13 +197,14 @@ static int mark_media_clean(FatVol *v) {
     return 0;
 }
 
-/* Makes everything durable; when nothing is pending afterwards the volume is marked clean again. */
-static int vol_sync(FatVol *v) {
+/* Makes everything durable; when nothing is pending afterwards (and may_clean says nobody is busy writing) the volume is
+ * marked clean again. */
+static int vol_sync(FatVol *v, bool may_clean) {
     if (v->ro) return 0;
     if (v->orphans) vol_reap(v);
     int rc = fc_flush(v);
     if (rc) { v->io_error = rc; return rc; }
-    if (v->media_dirty && !v->was_dirty) return mark_media_clean(v);
+    if (v->media_dirty && !v->was_dirty) return may_clean ? mark_media_clean(v) : 0;
     if (v->was_dirty) {                                          /* forced mount: stays dirty, but the hints stay truthful */
         rc = fsinfo_store(v);
         if (!rc) rc = fc_flush(v);
@@ -656,7 +666,7 @@ static int fat_vsync(VNode *vn) {
     FatNode *n = vn->priv;
     FatVol *v = n->vol;
     mutex_lock(&v->lock);
-    int rc = vol_sync(v);
+    int rc = vol_sync(v, true);
     mutex_unlock(&v->lock);
     return rc;
 }
@@ -777,6 +787,7 @@ static const char *parse_bpb(FatVol *v, const u8 *b, u64 dev_bytes) {
     u64 total = total16 ? total16 : total32;
     u64 fatsz = fatsz16 ? fatsz16 : fatsz32;
     if (!total || !fatsz) return "empty volume or FAT";
+    if (total * bps > dev_bytes) return "the volume is larger than its device";      /* never trust a size we cannot back */
     u64 root_sectors = ((u64)root_entries * 32 + bps - 1) / bps;
     u64 meta = reserved + (u64)nfats * fatsz + root_sectors;
     if (meta >= total) return "metadata larger than the volume";
@@ -791,7 +802,6 @@ static const char *parse_bpb(FatVol *v, const u8 *b, u64 dev_bytes) {
         if (!root_entries || !fatsz16 || (root_entries * 32) % bps) return "FAT16 geometry is inconsistent";
     }
     if ((nclusters + 2) * (bits / 8) > fatsz * bps) return "the FAT is too small for the cluster count";
-    if (total * bps > dev_bytes) return "the volume is larger than its device";
     v->bits = bits;
     v->bps = bps;
     v->spc = spc;
@@ -914,17 +924,38 @@ static int fat_mount(const char *source, u32 flags, Mount *m) {
     if (!rc) rc = boot_flag_get(v, &boot_dirty);
     if (rc) { klog("Keine", "fat32: cannot read the state flags of %s (%d)", dev->name, rc); fc_destroy(v); kfree(v); return rc; }
     bool fat_clean = v->bits == 32 ? (fat1 & 0x08000000u) != 0 : (fat1 & 0x8000u) != 0;
-    bool unclean = !fat_clean || boot_dirty;
+    bool hard_error = v->bits == 32 ? (fat1 & 0x04000000u) == 0 : (fat1 & 0x4000u) == 0;      /* "disk errors seen" flag */
+    bool unclean = !fat_clean || boot_dirty || hard_error;
+    const char *why_unclean = hard_error && fat_clean && !boot_dirty ? "the volume reported disk errors on its last use"
+                                                                       : "the volume was not cleanly unmounted";
     v->ro = o.ro || (flags & MNT_RDONLY) || dev->readonly;
     if (o.ro && o.rw) { klog("Keine", "fat32: conflicting ro and rw options"); fc_destroy(v); kfree(v); return -EINVAL; }
-    const char *note = "";
+    char note[200] = "";
     if (unclean && !v->ro) {
-        if (o.force) { v->forced = true; v->was_dirty = true; note = ", FORCED read-write on a volume that was not cleanly unmounted"; }
-        else { v->ro = true; note = ", read-only: the volume was not cleanly unmounted (mount with -o force to override)"; }
+        if (o.force) {
+            v->forced = true;
+            v->was_dirty = true;
+            snprintf(note, sizeof note, ", FORCED read-write although %s", why_unclean);
+        } else {
+            v->ro = true;
+            snprintf(note, sizeof note, ": %s (mount with -o force to override)", why_unclean);
+        }
     } else if (unclean) {
         v->was_dirty = true;
     }
     if (v->ro) m->flags |= MNT_RDONLY;
+
+    /* A small FAT is scanned now so that the free count is exact whatever FSInfo says; a big one trusts FSInfo (or is
+     * counted when df asks). */
+    if ((u64)(v->nclusters + 2) * (v->bits / 8) <= (8u << 20)) {
+        u32 counted;
+        if (fat_count_free(v, &counted) == 0) {
+            if (v->free_known && counted != v->free_clusters)
+                klog("Keine", "%s: %s: FSInfo says %u free clusters, the FAT has %u", v->fstype, dev->name, v->free_clusters, counted);
+            v->free_clusters = counted;
+            v->free_known = true;
+        }
+    }
 
     /* root directory */
     FatNode *root = fatd_node_new(v, NULL, "/");
@@ -955,8 +986,9 @@ static int fat_mount(const char *source, u32 flags, Mount *m) {
     mutex_unlock(&g_vols_lock);
     start_flusher();
 
-    klog("Keine", "%s: %s %s on %s, %lu MiB, %u-byte clusters, label '%s'%s%s", v->fstype, dev->name, v->ro ? "mounted read-only" : "mounted",
-         m->target, (unsigned long)(v->vol_bytes >> 20), v->cbytes, v->label[0] ? v->label : "", v->userdirs ? ", home directories per user" : "", note);
+    klog("Keine", "%s: %s mounted on %s, %lu MiB, %u-byte clusters, label '%s'%s%s%s", v->fstype, dev->name, m->target,
+         (unsigned long)(v->vol_bytes >> 20), v->cbytes, v->label[0] ? v->label : "", v->userdirs ? ", home directories per user" : "",
+         v->ro ? ", read-only" : "", note);
     return 0;
 }
 
@@ -970,7 +1002,7 @@ static void fat_unmount(Mount *m) {
     mutex_lock(&v->lock);
     v->dying = true;
     if (v->orphans) vol_reap(v);
-    int rc = vol_sync(v);
+    int rc = vol_sync(v, true);
     if (rc) klog("Keine", "%s: %s: could not write everything back to the device (%d) -- run a file system check", v->fstype, v->dev->name, rc);
     else if (!v->ro) klog("Keine", "%s: %s unmounted cleanly", v->fstype, v->dev->name);
     if (m->root) m->root->priv = NULL;                          /* the mount's own reference is dropped by the VFS afterwards */
@@ -988,16 +1020,25 @@ static void fat_unmount(Mount *m) {
     m->priv = NULL;
 }
 
+/* umount asks first: busy while anything but the mount's own root vnode is in use, or while the data cannot be
+ * written back (a failed flush must leave the volume mounted rather than lose it). */
 static int fat_busy(Mount *m) {
     FatVol *v = m->priv;
-    return v && v->nlive > 1;                                   /* the root vnode is the mount's own */
+    if (!v) return 0;
+    if (v->nlive > 1) return 1;
+    if (v->ro) return 0;
+    mutex_lock(&v->lock);
+    int rc = vol_sync(v, true);
+    mutex_unlock(&v->lock);
+    if (rc) klog("Keine", "%s: cannot unmount %s: writing the volume back failed (%d)", v->fstype, v->dev->name, rc);
+    return rc != 0;
 }
 
 static int fat_sync_mount(Mount *m) {
     FatVol *v = m->priv;
     if (!v || v->ro) return 0;
     mutex_lock(&v->lock);
-    int rc = vol_sync(v);
+    int rc = vol_sync(v, true);
     mutex_unlock(&v->lock);
     return rc;
 }
@@ -1030,13 +1071,17 @@ static void flusher_main(void *arg) {
             FatVol *v = g_vols[i];
             if (!v || v->ro) continue;
             u64 now = uptime_ms();
+            bool quiet = now - v->last_op_ms >= FLUSH_AGE_MS;           /* nobody has written for a while */
             bool aged = v->ndirty && now - v->dirty_since_ms >= FLUSH_AGE_MS;
-            bool idle = v->media_dirty && !v->ndirty && now - v->last_op_ms >= FLUSH_AGE_MS;
+            bool idle = v->media_dirty && !v->ndirty && quiet;
             if (!aged && !idle) continue;
             mutex_lock(&v->lock);
             if (!v->dying) {
-                int rc = vol_sync(v);
-                if (rc) klog("Keine", "%s: periodic flush of %s failed (%d)", v->fstype, v->dev->name, rc);
+                int rc = vol_sync(v, quiet);
+                if (rc && now - v->err_logged_ms >= 30000) {         /* a broken device must not flood the log every second */
+                    v->err_logged_ms = now;
+                    klog("Keine", "%s: periodic flush of %s failed (%d)", v->fstype, v->dev->name, rc);
+                }
             }
             mutex_unlock(&v->lock);
         }

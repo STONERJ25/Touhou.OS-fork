@@ -63,6 +63,8 @@ typedef struct FatExtent { u32 first, count, start; } FatExtent;     /* start = 
 #define FN_DAMAGED    0x10      /* on-disk values are inconsistent: reads fail with EIO, no writes */
 #define FN_CHAIN_OK   0x20      /* chain verified against the size and fully known */
 #define FN_CHAIN_END  0x40      /* the extent cache reaches the end of the chain (EOC seen) */
+#define FN_NOWRITE    0x80      /* chain disagrees with the size: readable, but never written to */
+#define FAT_MAX_EXTENTS (1u << 20)
 
 struct FatNode {
     FatVol *vol;
@@ -133,7 +135,7 @@ struct FatVol {
     bool ro, forced, was_dirty, media_dirty, sync_mode, dying;
     int io_error;
     char label[12];
-    u64 last_op_ms;
+    u64 last_op_ms, err_logged_ms;
     /* options */
     u32 uid, gid, fmask, dmask;
     bool userdirs;

@@ -203,7 +203,7 @@ int fc_read(FatVol *v, u64 off, void *buf, size_t n) { return fc_read_ra(v, off,
 const u8 *fc_peek(FatVol *v, u64 off, size_t *avail, int *err) {
     if (off >= v->vol_bytes) { *err = -EIO; return NULL; }
     FatPage *p;
-    int rc = fc_page(v, off / FAT_PAGE, PG_LOAD, 4, &p);
+    int rc = fc_page(v, off / FAT_PAGE, PG_LOAD, RA_DEFAULT, &p);        /* scans walk forward through the table */
     if (rc) { *err = rc; return NULL; }
     size_t po = (size_t)(off & (FAT_PAGE - 1));
     *avail = (size_t)MIN((u64)(FAT_PAGE - po), v->vol_bytes - off);
@@ -282,13 +282,30 @@ static int write_run(FatVol *v, FatPage **run, u32 n) {
     return 0;
 }
 
+/* When memory is too tight to sort the dirty pages: write them one by one, class by class (still correctly ordered). */
+static int flush_unsorted(FatVol *v) {
+    int rc = 0;
+    for (int cls = 0; cls < FPC_COUNT && !rc; cls++) {
+        bool wrote = false;
+        for (FatPage *p = v->lru_head; p && !rc; p = p->lru_next) {
+            if (!p->dirty || p->cls != cls) continue;
+            FatPage *one[1] = { p };
+            rc = write_run(v, one, 1);
+            wrote = true;
+        }
+        if (!rc && wrote) rc = blk_flush(v->dev);
+    }
+    if (!rc && !v->ndirty) v->dirty_since_ms = 0;
+    return rc;
+}
+
 /* Writes every dirty page (data, then FAT, then metadata, with a device flush between the classes). */
 int fc_flush(FatVol *v) {
     if (!v->ndirty) return 0;
     if (v->ro) return -EROFS;
     u32 n = v->ndirty, k = 0;
     FatPage **arr = kmalloc((size_t)n * sizeof *arr);
-    if (!arr) return -ENOMEM;
+    if (!arr) return flush_unsorted(v);
     for (FatPage *p = v->lru_head; p && k < n; p = p->lru_next)
         if (p->dirty) arr[k++] = p;
     heapsort_pages(arr, k);

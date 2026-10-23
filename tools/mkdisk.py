@@ -1160,6 +1160,39 @@ class FatReader:
             i = j + 1
         return bytes(data[:e.size])
 
+    # -- helpers for tests that damage a volume on purpose (open it with open_volume(..., writable=True))
+    def entry_offset(self, path):
+        """Window offset of the 32-byte short entry that describes `path`."""
+        e = self.find(path)
+        parent = path.rstrip("/").rsplit("/", 1)[0] or "/"
+        idx = e.slot * 32
+        if parent == "/":
+            if self.bits == 16:
+                return (self.reserved + self.nfats * self.fatsz) * self.bps + idx
+            chain = self.chain(self.root_cluster)
+        else:
+            chain = self.chain(self.find(parent).first)
+        return self.cluster_off(chain[idx // self.cluster_bytes]) + idx % self.cluster_bytes
+
+    def set_fat(self, cluster, value):
+        """Writes a FAT entry into every FAT copy."""
+        for i in range(self.nfats):
+            base = (self.reserved + i * self.fatsz) * self.bps
+            if self.bits == 32:
+                self.win.write(base + cluster * 4, struct.pack("<I", value))
+            else:
+                self.win.write(base + cluster * 2, struct.pack("<H", value))
+        self._fats = None
+
+    def set_entry(self, path, first=None, size=None):
+        """Rewrites the first-cluster and/or size fields of a short entry."""
+        off = self.entry_offset(path)
+        if first is not None:
+            self.win.write(off + 20, struct.pack("<H", (first >> 16) & 0xFFFF) if self.bits == 32 else b"\0\0")
+            self.win.write(off + 26, struct.pack("<H", first & 0xFFFF))
+        if size is not None:
+            self.win.write(off + 28, struct.pack("<I", size))
+
     def snapshot(self, with_data=True):
         """{path: ('d', 0, '') | ('f', size, sha256-hex)} for the whole tree (stored-case paths)."""
         out, tree, stack = {}, self._tree_cache(), ["/"]

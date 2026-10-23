@@ -375,9 +375,11 @@ def storage_write_roundtrip():
             assert v.read_file("/reimu/many/Mixed-Case_File Number 123.TextFile.dat") == b"123\n"
             assert v.read_file("/reimu/Deep/Er/Still/Bottom.TXT") == b"deepfile\n"
             assert v.find("/reimu/Deep").name == "Deep"                                                 # stored case survives
+            big_chain = v.chain(v.find("/reimu/big.bin").first)
+            assert big_chain == list(range(big_chain[0], big_chain[0] + len(big_chain))), "the allocator should keep a 5 MiB file in one run"
         finally:
             v.close()
-        with boot(img, name="t-storage-write2") as (g, vm):                                           # second boot: all still there
+        with boot(img, root=True, name="t-storage-write2") as (g, vm):                                # second boot (root: real poweroff)
             assert g.ok(f"sha256sum {H}/big.bin").split()[0] == big_sum
             assert g.ok(f"cat {H}/docs/a.txt").strip() == "newer"
             assert g.ok(f"ls {H}/many | wc -l").strip() == "298"
@@ -908,3 +910,167 @@ def storage_random_stress():
         bad = [p for p in want if want[p] != got[p]]
         assert not bad, f"{len(bad)} mismatches, first: {bad[:5]} want {want[bad[0]]} got {got[bad[0]]}"
         assert all(p in stored for p in want), "stored name case differs from the model"
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# power loss, periodic flush, read-only media, hostile volumes
+
+@test
+def storage_periodic_flush():
+    """Without any sync the flusher thread writes the data back within a few seconds and marks the volume clean."""
+    import time
+    with Image("periodic", 64 * MIB, [hv_part()]) as img:
+        with boot(img, name="t-storage-periodic") as (g, vm):
+            g.ok(f"echo written-without-sync > {H}/p.txt; dd if=/dev/urandom of={H}/p.bin bs=1k count=200 2>/dev/null")
+            time.sleep(7.5)                                         # more than the flush age (3 s) plus the tick (1 s)
+            try:
+                vm.qmp("quit")                                      # pull the plug: no sync, no poweroff
+            except Exception:                                       # noqa: BLE001
+                pass
+            vm.proc.wait(timeout=20)
+        img.check()                                                 # clean: the idle flush cleared the dirty flags
+        v = img.volume(1)
+        try:
+            assert v.read_file("/reimu/p.txt") == b"written-without-sync\n" and len(v.read_file("/reimu/p.bin")) == 200 * 1024
+        finally:
+            v.close()
+
+
+@test
+def storage_unclean_power_loss():
+    """Pulling the plug right after a write leaves the dirty flags set; the next boot refuses to write to that volume."""
+    with Image("powerloss", 64 * MIB, [hv_part({"/reimu/old.txt": b"old\n"})]) as img:
+        with boot(img, name="t-storage-loss") as (g, vm):
+            g.ok(f"echo new > {H}/new.txt")
+            try:
+                vm.qmp("quit")                                      # well inside the 3 s flush age
+            except Exception:                                       # noqa: BLE001
+                pass
+            vm.proc.wait(timeout=20)
+        rep = img.check(allow_dirty=True)
+        assert not rep.stats["p1"]["clean"], "the volume must be marked dirty while it has unwritten changes"
+        h1 = img.sha()
+        with boot(img, name="t-storage-loss2") as (g, vm):
+            assert re.search(r"read-only: the volume was not cleanly unmounted", klog(vm)), klog(vm)[-1200:]
+            assert g.ok(f"cat {H}/old.txt").strip() == "old"
+            g.fails(f"echo again > {H}/again.txt", r"[Rr]ead-only")
+            g.ok("sync")
+            g.poweroff()
+        assert img.sha() == h1, "a read-only mount wrote to the volume"
+
+
+@test
+def storage_readonly_device():
+    """A write-protected virtio disk (VIRTIO_BLK_F_RO): shown as RO, mounted read-only, never written, homes not created."""
+    with Image("rodev", 64 * MIB, [hv_part({"/reimu/a.txt": b"a\n"})]) as img:
+        h0 = img.sha()
+        extra = ["-drive", f"if=none,id=d0,format=raw,file={img.path},readonly=on", "-device", "virtio-blk-pci,drive=d0"]
+        with boot(None, root=True, name="t-storage-rodev", extra=extra) as (g, vm):
+            assert re.search(r"^vda\s+\S+\s+1\s+disk", g.ok("lsblk"), re.M)
+            assert re.search(r"virtio-blk .*read-only", klog(vm)) or "read-only" in klog(vm)
+            assert re.search(r"/dev/vda1 /HumanVillage fat32 ro ", g.ok("cat /proc/mounts"))
+            assert "cannot create /HumanVillage/marisa" in klog(vm) and "read-only" in klog(vm), klog(vm)[-1500:]
+            assert g.ok(f"cat {H}/a.txt").strip() == "a"
+            g.fails(f"echo x > {H}/b.txt", r"[Rr]ead-only")
+            assert "Read-only file system" in g.ok("dd if=/dev/zero of=/dev/vda bs=512 count=1 2>&1")      # even root cannot write the raw device
+            g.ok("sync")
+            g.poweroff()
+        assert img.sha() == h0
+
+
+def damaged_boot_sector_cases(total_sectors):
+    """(offset in the boot sector, bytes, reason the kernel must give) for a FAT32 volume of `total_sectors` sectors."""
+    return [
+        (11, struct.pack("<H", 768), "unsupported sector size"),
+        (13, bytes([3]), "bad cluster size"),
+        (16, bytes([0]), "bad number of FATs"),
+        (14, struct.pack("<H", 0), "no reserved sectors"),
+        (32, struct.pack("<I", total_sectors + 100), "larger than its device"),
+        (36, struct.pack("<I", 3), "FAT is too small"),
+        (44, struct.pack("<I", 0x0FFFFFF0), "root cluster out of range"),
+        (510, b"\x00\x00", "no boot sector signature"),
+        (22, struct.pack("<H", 5), "FAT32 geometry is inconsistent"),
+    ]
+
+
+@test
+def storage_refuses_damaged_volumes():
+    """Nine different broken boot sectors are refused with a reason, nothing is written, and the kernel stays alive."""
+    parts = [dict(name=f"BAD{i + 1}", kind="fat32", size=34 * MIB, label=f"BAD{i + 1}") for i in range(9)]
+    with Image("badbpb", 340 * MIB, parts) as img:
+        _, layout = mkdisk.partitions(img.path)
+        cases = damaged_boot_sector_cases(layout[0]["length"] // 512)
+        with open(img.path, "r+b") as f:
+            for p, (off, data, _) in zip(layout, cases):
+                f.seek(p["offset"] + off)
+                f.write(data)
+        h0 = img.sha()
+        with boot(img, root=True, name="t-storage-badbpb") as (g, vm):
+            assert "no HUMANVILLAGE volume found" in klog(vm)
+            for i, (off, data, reason) in enumerate(cases):
+                g.fails(f"mount -t fat32 /dev/vda{i + 1} /mnt", r"failed")
+                assert re.search(rf"vda{i + 1} is not a mountable FAT volume: .*{reason}", klog(vm)), (i + 1, reason, klog(vm)[-1500:])
+            assert "type fat32" not in g.ok("mount")
+            g.ok("sync")
+            g.poweroff()
+        assert img.sha() == h0, "refused volumes must not be touched"
+
+
+@test
+def storage_contains_damaged_files():
+    """Loops, out-of-range clusters, short/long chains and cross-linked directories give EIO, never a hang or a stray write."""
+    files = {
+        "/reimu/good.txt": b"good\n",
+        "/reimu/loop.bin": b"L" * 1500,
+        "/reimu/short.bin": b"S" * 2000,
+        "/reimu/surplus.bin": b"U" * 2000,
+        "/reimu/ghost.txt": b"G" * 10,
+        "/reimu/badfirst.bin": b"B" * 700,
+        "/reimu/evil/inner.txt": b"inner\n",
+        "/reimu/crossdir/x": b"x",
+        "/reimu/victim.bin": b"V" * 3000,
+        "/other/safe.txt": b"safe\n",
+    }
+    with Image("damaged", 64 * MIB, [hv_part(files)]) as img:
+        r = mkdisk.open_volume(img.path, 1, writable=True)
+        try:
+            loop = r.chain(r.find("/reimu/loop.bin").first)
+            r.set_fat(loop[-1], loop[0])                                                  # the chain runs in a circle
+            r.set_entry("/reimu/short.bin", size=4000)                                    # claims 8 clusters, owns 4
+            r.set_entry("/reimu/surplus.bin", size=600)                                   # claims 2 clusters, owns 4
+            r.set_entry("/reimu/ghost.txt", first=0)                                      # a size but no clusters
+            r.set_entry("/reimu/badfirst.bin", first=r.nclusters + 100)                   # first cluster beyond the volume
+            r.set_entry("/reimu/evil", first=r.nclusters + 100)                           # directory beyond the volume
+            r.set_entry("/reimu/crossdir", first=r.find("/reimu/good.txt").first)         # directory sharing a file's cluster
+            r.set_entry("/reimu/victim.bin", first=r.nclusters + 2)                       # exactly one past the last cluster
+        finally:
+            r.close()
+        with boot(img, root=True, name="t-storage-damaged") as (g, vm):
+            assert g.ok(f"cat {H}/good.txt").strip() == "good" and g.ok(f"cat {HV}/other/safe.txt").strip() == "safe"
+            out, _ = g.run(f"cat {H}/loop.bin | wc -c", timeout=30)                       # terminates, whatever it returns
+            assert out.strip().isdigit(), out
+            g.fails(f"printf x | cat - >> {H}/loop.bin", r"[Ii]nput/output|I/O")
+            assert g.ok(f"cat {H}/surplus.bin | wc -c").strip() == "600"                  # readable ...
+            g.fails(f"printf x | cat - >> {H}/surplus.bin", r"[Ii]nput/output|I/O")                 # ... but never written
+            g.fails(f"truncate -s 10 {H}/surplus.bin", r"[Ii]nput/output|I/O")
+            g.fails(f"cat {H}/short.bin > /dev/null", r"[Ii]nput/output|I/O")
+            g.fails(f"printf x | cat - >> {H}/short.bin", r"[Ii]nput/output|I/O")
+            g.fails(f"cat {H}/ghost.txt", r"[Ii]nput/output|I/O")
+            g.fails(f"cat {H}/badfirst.bin", r"[Ii]nput/output|I/O")
+            g.fails(f"cat {H}/victim.bin", r"[Ii]nput/output|I/O")
+            out, _ = g.run(f"ls {H}/evil", timeout=30)                                  # the damaged directory reads as empty
+            assert not out.strip(), out
+            g.run(f"ls -la {H}/crossdir", timeout=30)                                     # garbage entries, but no crash
+            assert re.search(r"^-rw-------\s+\d+\s+reimu\s+reimu\s+0\s.*ghost.txt", g.ok(f"ls -l {H}"), re.M)
+            g.ok(f"rm {H}/surplus.bin {H}/short.bin {H}/ghost.txt {H}/badfirst.bin")      # deleting is always possible
+            g.ok(f"echo still-writable > {H}/fine.txt && cat {H}/fine.txt")
+            assert g.ok("echo alive").strip() == "alive"
+            g.ok("sync")
+            g.poweroff()
+        assert "INCIDENT" not in klog(vm) and "BOUNDARY VIOLATION" not in klog(vm)
+        v = img.volume(1)
+        try:
+            assert v.read_file("/other/safe.txt") == b"safe\n" and v.read_file("/reimu/good.txt") == b"good\n"
+            assert v.read_file("/reimu/fine.txt") == b"still-writable\n"
+        finally:
+            v.close()

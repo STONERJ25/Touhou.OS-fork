@@ -264,6 +264,7 @@ static int ext_append(FatNode *n, u32 cluster, u32 count) {
             return 0;
         }
     }
+    if (n->next_ext >= FAT_MAX_EXTENTS) return -EIO;                    /* a corrupt chain must not eat the heap */
     if (n->next_ext == n->ext_cap) {
         u32 ncap = n->ext_cap ? n->ext_cap * 2 : 4;
         FatExtent *ne = krealloc(n->ext, ncap * sizeof *ne);
@@ -353,51 +354,36 @@ u32 chain_clusters(const FatNode *n) {
     return n->known;                    /* exact once FN_CHAIN_OK is set */
 }
 
-/* Walks a directory's chain to its end (directories have no size to check it against). */
+/* Walks a directory's chain to its end. No FAT directory can exceed 2 MiB, which bounds the walk (and a looping chain). */
 int chain_fill(FatNode *n) {
     if (n->flags & FN_CHAIN_OK) return 0;
     if (n->first == 0) return -EIO;
-    int rc = chain_walk(n, 0xFFFFFFFFu);
-    if (rc != -ENXIO) return rc ? rc : -EIO;
+    u32 limit = (u32)(((u64)FAT_MAX_DIR_SLOTS * FAT_SLOT) / n->vol->cbytes) + 1;
+    int rc = chain_walk(n, limit);
+    if (rc == 0) return -EIO;                                           /* longer than any directory may be */
+    if (rc != -ENXIO) return rc;
     n->flags |= FN_CHAIN_OK | FN_CHAIN_END;
     return 0;
 }
 
-/* Makes the chain safe to modify: walks it to the end, checks it against the size, trims surplus clusters and
- * zeroes the slack after the last byte so that growing the file can never expose stale data. */
+/* Makes the chain safe to modify: checks it against the size and zeroes the slack after the last byte so that growing
+ * the file can never expose stale data. The walk stops one cluster past what the size needs, so it is bounded by the
+ * size whatever the FAT says; a chain that is longer or shorter than the size claims is damage (what fsck would report),
+ * and we neither repair it by guessing nor write into it: the file stays readable and can be deleted. */
 int chain_prepare(FatNode *n) {
     FatVol *v = n->vol;
     if (n->flags & FN_CHAIN_OK) return 0;
-    if (n->flags & FN_DAMAGED) return -EIO;
+    if (n->flags & (FN_DAMAGED | FN_NOWRITE)) return -EIO;
     u32 want = (u32)(((u64)n->size + v->cbytes - 1) >> v->cshift);
     if (n->first == 0) {
         if (n->size) { n->flags |= FN_DAMAGED; return -EIO; }
         n->flags |= FN_CHAIN_OK | FN_CHAIN_END;
         return 0;
     }
-    int rc = chain_walk(n, 0xFFFFFFFFu);
-    if (rc != -ENXIO) return rc ? rc : -EIO;
-    if (n->known < want) { n->flags |= FN_DAMAGED; return -EIO; }
-    if (n->known > want) {
-        if (want == 0) {
-            u32 f = n->first;
-            n->first = 0;
-            chain_reset(n);
-            fatd_commit(n);                                     /* the entry must stop pointing at the freed chain */
-            fat_free_chain(v, f, NULL);
-        } else {
-            u32 c, run;
-            rc = chain_lookup(n, want - 1, 1, &c, &run);
-            if (rc) return rc;
-            u32 nxt;
-            rc = fat_get(v, c, &nxt);
-            if (rc) return rc;
-            rc = fat_put(v, c, eoc_value(v));
-            if (rc) return rc;
-            if (!fat_is_eoc(v, nxt) && fat_valid_cluster(v, nxt)) fat_free_chain(v, nxt, NULL);
-            ext_truncate(n, want);
-        }
-    }
+    int rc = chain_walk(n, want);
+    if (rc == 0) { n->flags |= FN_NOWRITE; return -EIO; }              /* more clusters than the size needs */
+    if (rc != -ENXIO) return rc;
+    if (n->known < want) { n->flags |= FN_NOWRITE; return -EIO; }       /* fewer than the size claims */
     n->flags |= FN_CHAIN_OK | FN_CHAIN_END;
     if (n->first && (n->size & (v->cbytes - 1))) {
         u64 d, avail;
