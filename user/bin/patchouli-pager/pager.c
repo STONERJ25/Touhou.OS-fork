@@ -317,9 +317,11 @@ static int match_text(const char *text, size_t n, size_t from, size_t *ms, size_
         return 1;
     }
     regmatch_t m[1];
-    if (regexec(&g_re, text + from, 1, m, from ? REG_NOTBOL : 0) != 0) return 0;
-    *ms = from + (size_t)m[0].rm_so;
-    *me = from + (size_t)m[0].rm_eo;
+    m[0].rm_so = (regoff_t)from;            /* REG_STARTEND: the text before `from` still counts for ^ and \b */
+    m[0].rm_eo = (regoff_t)n;
+    if (regexec(&g_re, text, 1, m, REG_STARTEND) != 0) return 0;
+    *ms = (size_t)m[0].rm_so;
+    *me = (size_t)m[0].rm_eo;
     if (*me == *ms) return 0;               /* empty matches are not worth showing */
     return 1;
 }

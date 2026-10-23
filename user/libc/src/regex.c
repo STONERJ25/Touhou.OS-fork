@@ -401,11 +401,17 @@ int regexec(const regex_t *re, const char *str, size_t nmatch, regmatch_t pmatch
     memset(&r, 0, sizeof r);
     r.p = p;
     r.start = str;
-    r.end = str + strlen(str);
+    const char *from = str;
+    if (eflags & REG_STARTEND) {                /* a window into str: the context before it still counts for ^ and \b */
+        from = str + pmatch[0].rm_so;
+        r.end = str + pmatch[0].rm_eo;
+    } else {
+        r.end = str + strlen(str);
+    }
     r.ncaps = (p->ngroups + 1) * 2;
     if (r.ncaps > 20) r.ncaps = 20;
     r.notbol = eflags & REG_NOTBOL;
-    for (const char *s = str; s <= r.end; s++) {
+    for (const char *s = from; s <= r.end; s++) {
         for (int i = 0; i < r.ncaps; i++) r.caps[i] = -1;
         r.steps = 0;
         if (run(&r, 0, s)) {

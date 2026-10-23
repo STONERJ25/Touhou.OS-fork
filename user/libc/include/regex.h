@@ -11,6 +11,8 @@ typedef struct { regoff_t rm_so, rm_eo; } regmatch_t;
 #define REG_NOSUB    4
 #define REG_NEWLINE  8
 #define REG_NOTBOL   1
+#define REG_STARTEND 4      /* regexec: search str[pmatch[0].rm_so .. pmatch[0].rm_eo) (no NUL needed); ^ and \b still see the whole
+                               of str, and the offsets that come back are relative to str */
 #define REG_NOMATCH  1
 #define REG_BADPAT   2
 #define REG_ESPACE   3

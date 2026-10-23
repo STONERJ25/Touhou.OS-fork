@@ -12,8 +12,6 @@ typedef struct {
     int ngroups;
 } Matcher;
 
-static PtBuf g_scratch;
-
 static int has_upper(const char *s) {
     for (; *s; s++) if (*s >= 'A' && *s <= 'Z') return 1;
     return 0;
@@ -61,21 +59,18 @@ static int matcher_find(Matcher *m, const char *s, size_t n, size_t from, size_t
         *me = *ms + m->plen;
         return 1;
     }
-    pb_clear(&g_scratch);
-    pb_add(&g_scratch, s, n);
-    const char *text = g_scratch.p;
+    if (!s) s = "";
     size_t pos = from;
     while (pos <= n) {
         regmatch_t mm[10];
-        if (regexec(&m->re, text + pos, 10, mm, pos ? REG_NOTBOL : 0) != 0) return 0;
-        size_t a = pos + (size_t)mm[0].rm_so, b = pos + (size_t)mm[0].rm_eo;
+        mm[0].rm_so = (regoff_t)pos;                    /* REG_STARTEND: look from pos on; ^ and \b still see the text before it */
+        mm[0].rm_eo = (regoff_t)n;
+        if (regexec(&m->re, s, 10, mm, REG_STARTEND) != 0) return 0;
+        size_t a = (size_t)mm[0].rm_so, b = (size_t)mm[0].rm_eo;
         if (b > a) {
             *ms = a;
             *me = b;
-            for (int i = 0; i < 10; i++) {
-                if (mm[i].rm_so < 0) { m->g[i].rm_so = m->g[i].rm_eo = -1; }
-                else { m->g[i].rm_so = (regoff_t)(pos + (size_t)mm[i].rm_so); m->g[i].rm_eo = (regoff_t)(pos + (size_t)mm[i].rm_eo); }
-            }
+            for (int i = 0; i < 10; i++) m->g[i] = mm[i];   /* offsets into the line; -1 for a group that did not take part */
             m->ngroups = (int)m->re.re_nsub;
             return 1;
         }
