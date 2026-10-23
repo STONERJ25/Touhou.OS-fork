@@ -5,6 +5,7 @@ typedef unsigned int tcflag_t;
 typedef unsigned char cc_t;
 struct termios { tcflag_t c_iflag, c_oflag, c_cflag, c_lflag; cc_t c_cc[NCCS]; };
 struct winsize { unsigned short ws_row, ws_col, ws_xpixel, ws_ypixel; };
+/* local mode flags are in abi.h: ISIG, ICANON, ECHO, ECHOE, ECHOK and TOSTOP (background writers get SIGTTOU) */
 #define TCSANOW 0
 #define TCSADRAIN 1
 #define TCSAFLUSH 2
