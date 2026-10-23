@@ -121,6 +121,27 @@ def cases(g, rows):
 
 
 @test
+def vi_manual():
+    """vi: the manual page parses, the vim and view applets exist and start the editor."""
+    with Qemu(cmdline="text", name="t-vi-manual") as vm:
+        g = Guest(vm)
+        out, rc = g.run("patchouli --check-all", timeout=90)
+        assert rc == 0 and re.search(r"\d+ pages checked, 0 problems", out), out
+        out, rc = g.run("patchouli vi | head -3; patchouli view | head -3; kappabox --list | tr ' ' '\\n' | grep -x -e vim -e view")
+        assert "vi(1)" in out and "vim" in out and "view" in out, out
+        # view starts read-only
+        s = start(g, "/tmp/nosuchfile", env="", size=SIZE)
+        g.type(ESC + ":q\n", wait=0.1)
+        g.wait_left(s)
+        g.sync()
+        s = g.mark()
+        vm.send(f"{SIZE}view /tmp/nosuchfile\n")
+        g.wait_screen(s, lambda rows: any("[RO]" in r for r in rows))
+        g.type(":q\n", wait=0.1)
+        g.wait_left(s)
+
+
+@test
 def vi_basic():
     """vi: insert, delete, change, yank and put, undo and redo, search, counts, saving."""
     with Qemu(cmdline="text", name="t-vi-basic") as vm:

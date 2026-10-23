@@ -1131,6 +1131,7 @@ void normal_command(void) {
     msg[0] = 0;
     Motion m;
     int in_vis = vis_mode;
+    if (in_vis) dot_nokeep_set();
 
     /* ---- motions */
     if (k != 'g' && k != 'z' && k != 'Z' && !(in_vis && (k == 'a' || k == 'i')) ? motion(k, count, hascount, 0, &m) : (k == 'g' ? motion(k, count, hascount, 0, &m) : 0)) {

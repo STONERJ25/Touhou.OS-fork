@@ -54,8 +54,8 @@ Most commands take a count (`3dd`, `d2w`, `2d3w`), and many take a register (`"a
     Find a character on the line, till just before it, repeat, repeat in the other direction.
 @ G gg H M L + - Enter _
     Line N (last or first line without a count), top, middle and bottom of the screen, first non-blank of the next or previous line.
-@ m{a-z} '{mark} `{mark}
-    Set a mark, go to its line, go to its position. `''` and ``` `` ``` return to where the last jump started. `'[ '] '< '> '.` are the changed, yanked, selected and last-change places.
+@ m{a-z}, '{mark}, and the backtick key with a mark
+    Set a mark, go to its line, go to its exact position. Typing the quote or the backtick twice returns to where the last jump started. The marks [ ] are the changed or yanked text, < > the selected area and . the last change.
 @ / ? n N * #
     Search forward and backward, repeat, search for the word under the cursor. Patterns are regular expressions (see regex(7)); `\<` `\>` `\(` `\)` `\|` `\+` `\?` `\{n,m}` `\w` `\s` `\d` work, `\c` forces ignoring case. An offset after the closing delimiter works: `/foo/e`, `/foo/+1`, `/foo/s-2`.
 @ Ctrl-D Ctrl-U Ctrl-F Ctrl-B Ctrl-E Ctrl-Y
@@ -78,7 +78,7 @@ An operator is followed by a motion or a text object; typed twice it works on wh
 
 Text objects, after an operator or in visual mode: `iw aw iW aW` words, `is as` sentences, `ip ap` paragraphs, `i( a( ib ab` `i{ a{ iB aB` `i[ a[` `i< a<` brackets, ``i" a" i' a' i` a` `` quotes, `it at` tags.
 
-Other changes: `x X D C s S Y r R ~ p P gp gP u Ctrl-R U . Ctrl-A Ctrl-X &`. `.` repeats the last change (also a whole insert session) and takes a count. `u` and Ctrl-R undo and redo many levels; an insert session or a compound command is one step. `Ctrl-A` and `Ctrl-X` add to and subtract from the number at or after the cursor (decimal and 0x hex).
+Other changes: `x X D C s S Y r R ~ p P gp gP u Ctrl-R . Ctrl-A Ctrl-X &`. `.` repeats the last change (also a whole insert session) and takes a count. `u` and Ctrl-R undo and redo many levels; an insert session or a compound command is one step. `Ctrl-A` and `Ctrl-X` add to and subtract from the number at or after the cursor (decimal and 0x hex).
 
 # INSERT MODE
 `i a I A o O gi gI` start inserting; a count repeats the typed text (`3ihi<Esc>`). In insert mode:
@@ -113,7 +113,7 @@ A range comes first: `N`, `.`, `$`, `%`, `'a`, `/pat/`, `?pat?`, `+N`, `-N`, joi
     Write the buffer or the range; append; send to a command. Refused with `E45` when read-only (use `!`).
 @ :q, :q!, :wq, :x, :wa, :qa, :wqa, :cq, ZZ, ZQ
     Quit; with unsaved changes `E37: No write since last change (add ! to override)`. `:cq` exits with status 1.
-@ :e [file], :e!, :r file, :r !cmd, :f [name], :n, :prev, :rew, :args, :ene
+@ :e [file], :e!, :r file, :r !cmd, :f [name], :n, :prev, :rew, :args
     Edit another file (or reload), read a file or command output below the line, show or set the file name, move through the file arguments.
 @ :d [x], :y [x], :pu[!] [x], :m {addr}, :t {addr}, :co {addr}, :j[!], :>, :<
     Delete, yank, put, move, copy, join and shift lines.
@@ -144,7 +144,7 @@ Lines of output are shown over the text with a `-- More --` or `Press ENTER` pro
     Not used: commands run through `/bin/gapsh -c`.
 
 # NOTES
-Differences from Vim that are worth knowing: there are no windows, tabs, folds, syntax colours, `.swp` files or Ex mode; `.` after a visual-mode change repeats the keys on the text under the cursor; matches are byte-based, so `.` in a pattern matches one byte of a multi-byte character; the jump list keeps only the last jump (`''`, Ctrl-O).
+Differences from Vim that are worth knowing: there are no windows, tabs, folds, syntax colours, `.swp` files or Ex mode; `.` does not repeat changes made in visual mode, and there is no `U` (line undo); matches are byte-based, so `.` in a pattern matches one byte of a multi-byte character; the jump list keeps only the last jump (`''`, Ctrl-O).
 
 # SEE ALSO
 pnote(1), patchouli-pager(1), regex(7), keys(7), sort(1)

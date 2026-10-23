@@ -188,10 +188,15 @@ void dot_begin(void) {
     dot_on = 1;
 }
 
+static int dot_nokeep;                                   /* set for visual-mode commands: "." does not repeat them */
+void dot_nokeep_set(void) { dot_nokeep = 1; }
+
 void dot_end(int keep) {
+    int nokeep = dot_nokeep;
+    dot_nokeep = 0;
     if (!dot_on) return;
     dot_on = 0;
-    if (!keep) return;
+    if (!keep || nokeep) return;
     free(dotkeys);
     dotkeys = malloc((size_t)dotn * sizeof *dotkeys + 4);
     if (!dotkeys) pt_oom();

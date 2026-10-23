@@ -118,6 +118,7 @@ void  dot_begin(void);
 void  dot_end(int keep);
 void  dot_replay(int count);
 void  dot_push(int k);
+void  dot_nokeep_set(void);
 int   dot_set(int on);
 extern int in_dot_replay;
 extern int normal_depth;                                /* > 0 inside :normal */
