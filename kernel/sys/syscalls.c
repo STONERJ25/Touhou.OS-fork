@@ -67,44 +67,77 @@ static long sys_umask(TrapFrame *tf) {
     return old;
 }
 
+/* A copy of a user's argv or envp: each string allocated at its real length, the pointer array NULL-terminated. */
+typedef struct ExecVec {
+    char **v;
+    int n, cap;
+} ExecVec;
+
+static void execvec_free(ExecVec *e) {
+    for (int i = 0; i < e->n; i++) kfree(e->v[i]);
+    kfree(e->v);
+    e->v = NULL;
+    e->n = e->cap = 0;
+}
+
+/* Copies the NULL-terminated vector of strings at uvec (0 = empty). `strings` and `nptrs` run across both vectors: together with
+ * the pointers and a fixed overhead they must stay within EXEC_MAX_TOTAL, one string within EXEC_MAX_STRING, one vector within
+ * EXEC_MAX_ARGS entries (-E2BIG). All sizes are bounded before they are added, so nothing here can overflow. */
+static long execvec_copy(ExecVec *e, u64 uvec, size_t *strings, size_t *nptrs) {
+    e->v = NULL;
+    e->n = e->cap = 0;
+    for (;;) {
+        if (e->n + 1 >= e->cap) {                       /* room for this entry and the closing NULL */
+            int ncap = e->cap ? e->cap * 2 : 32;
+            if (ncap > EXEC_MAX_ARGS + 1) ncap = EXEC_MAX_ARGS + 1;
+            char **nv = krealloc(e->v, (size_t)ncap * sizeof(char *));
+            if (!nv) return -ENOMEM;
+            e->v = nv;
+            e->cap = ncap;
+        }
+        e->v[e->n] = NULL;
+        if (!uvec) return 0;
+        u64 sp;
+        if (copy_from_user(&sp, (const u64 *)uvec + e->n, sizeof sp)) return -EFAULT;
+        if (!sp) return 0;
+        if (e->n >= EXEC_MAX_ARGS) return -E2BIG;
+        size_t used = exec_footprint(*strings, *nptrs + 1);          /* this entry's pointer counted, its string not yet */
+        if (used >= EXEC_MAX_TOTAL) return -E2BIG;
+        size_t room = MIN((size_t)EXEC_MAX_STRING, EXEC_MAX_TOTAL - used);     /* bytes the string may take, NUL included */
+        long len = strnlen_user((const char *)sp, room);
+        if (len == -ENAMETOOLONG) return -E2BIG;
+        if (len < 0) return len;
+        char *s = kmalloc((size_t)len + 1);
+        if (!s) return -ENOMEM;
+        if (copy_from_user(s, (const void *)sp, (size_t)len)) { kfree(s); return -EFAULT; }
+        s[len] = 0;                                     /* the string may have changed since it was measured: stop where we decided */
+        e->v[e->n++] = s;
+        e->v[e->n] = NULL;
+        *strings += (size_t)len + 1;
+        *nptrs += 1;
+    }
+}
+
 static long sys_execve(TrapFrame *tf) {
     char *path = kmalloc(PATH_MAX);
     if (!path) return -ENOMEM;
     long rc = get_path(A0(tf), path);
-    char **kargv = NULL, **kenvp = NULL;
-    int argc = 0, envc = 0;
-    size_t total = 0;
+    ExecVec argv = { 0 }, envp = { 0 };
+    size_t strings = 0, nptrs = 0;
 
-    for (int pass = 0; !rc && pass < 2; pass++) {
-        const u64 *uvec = (const u64 *)(pass ? A2(tf) : A1(tf));
-        int cnt = 0;
-        char **vec = kzalloc(sizeof(char *) * 257);
-        if (!vec) { rc = -ENOMEM; break; }
-        for (; uvec; cnt++) {
-            u64 sp;
-            if (cnt >= 256) { rc = -E2BIG; break; }
-            if (copy_from_user(&sp, uvec + cnt, sizeof sp)) { rc = -EFAULT; break; }
-            if (!sp) break;
-            vec[cnt] = kmalloc(1024);
-            if (!vec[cnt]) { rc = -ENOMEM; break; }
-            int n = strncpy_from_user(vec[cnt], (const char *)sp, 1024);
-            if (n < 0) { rc = n == -ENAMETOOLONG ? -E2BIG : n; cnt++; break; }
-            total += (size_t)n + 1;
-            if (total > 128 * 1024) { rc = -E2BIG; cnt++; break; }
-        }
-        if (pass) { kenvp = vec; envc = cnt; } else { kargv = vec; argc = cnt; }
-    }
+    if (!rc) rc = execvec_copy(&argv, A1(tf), &strings, &nptrs);
+    if (!rc) rc = execvec_copy(&envp, A2(tf), &strings, &nptrs);
+    if (!rc && exec_footprint(strings, nptrs) > EXEC_MAX_TOTAL) rc = -E2BIG;
 
     if (!rc) {
         TrapFrame ntf;
-        rc = process_exec(me(), path, kargv, kenvp, &ntf);
+        rc = process_exec(me(), path, argv.v, envp.v, &ntf);
         if (rc == 0) *tf = ntf;
     }
-    for (int i = 0; kargv && i < 257 && (i < argc || kargv[i]); i++) kfree(kargv[i]);
-    for (int i = 0; kenvp && i < 257 && (i < envc || kenvp[i]); i++) kfree(kenvp[i]);
-    kfree(kargv);
-    kfree(kenvp);
+    execvec_free(&argv);
+    execvec_free(&envp);
     kfree(path);
+    if (rc == EXEC_THREAD_LEAVES) thread_leave();                /* another thread is ending the process; nothing we hold is left */
     return rc == 0 ? 0 : rc;
 }
 

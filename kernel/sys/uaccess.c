@@ -27,6 +27,23 @@ int clear_user(void *dst, size_t n) {
     return __clear_user(dst, n) ? -EFAULT : 0;
 }
 
+/* Length of the user string at s (the NUL not counted), looking at no more than max bytes. The memory is read in pieces that never
+ * cross a page boundary, so a string that ends just before an unmapped page is fine. */
+long strnlen_user(const char *s, size_t max) {
+    char buf[256];
+    size_t done = 0;
+    while (done < max) {
+        const char *p = s + done;
+        size_t chunk = MIN(MIN(sizeof buf, max - done), PAGE_SIZE - ((u64)p & (PAGE_SIZE - 1)));
+        if (!user_range_ok(p, chunk)) return -EFAULT;
+        if (__copy_user(buf, p, chunk)) return -EFAULT;
+        for (size_t i = 0; i < chunk; i++)
+            if (buf[i] == 0) return (long)(done + i);
+        done += chunk;
+    }
+    return -ENAMETOOLONG;
+}
+
 /* Copies a NUL-terminated string (at most max bytes including the NUL). Returns its length. */
 int strncpy_from_user(char *dst, const char *src, size_t max) {
     size_t done = 0;
