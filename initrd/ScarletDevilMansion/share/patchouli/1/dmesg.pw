@@ -6,6 +6,8 @@
 # DESCRIPTION
 `dmesg` prints the kernel's log, read from `/dev/kmsg`: the boot messages and whatever the drivers have reported since, each tagged by the subsystem that spoke (Gensokyo, Boundary, Sakuya, Alice, Eiki, Kappa, Satori, Koishi, Keine, Yukari, Yuyuko ...; see gensokyo(7)). The option `-c` is accepted but the log is not cleared.
 
+When the Human Village is mounted read-write from a USB stick (or any disk), the kernel also keeps this log there as `TOUHOU.LOG` in the root of the volume, and the previous boot's as `TOUHOU.PRV`, so a machine without a serial port can be debugged by reading the stick on another computer. A log that does not end with the line about a clean run belongs to a boot that hung. The kernel command line word `bootlog=off` switches this off.
+
 # EXAMPLES
     dmesg | tail -20
     dmesg | grep -i kappa

@@ -133,7 +133,9 @@ struct FatVol {
     u32 alloc_cursor;
     /* state */
     bool ro, forced, was_dirty, media_dirty, sync_mode, dying, label_set;
+    bool vanished;              /* the device was unplugged while mounted (logged once) */
     int io_error;
+    s32 tz_sec;                 /* seconds EAST of UTC: FAT stores local time, the VFS speaks UTC (mount option tzoffset=MINUTES) */
     char label[12];
     u64 last_op_ms, err_logged_ms;
     /* options */
