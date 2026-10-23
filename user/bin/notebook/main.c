@@ -245,20 +245,21 @@ static void perform(ActKind k, const char *path) {
 }
 
 static void begin_save_as(void);
+static void save_flow(void);
+
+/* Called after a save that was part of "save, then carry on". */
+static void pending_done(void) {
+    if (!g_pend.valid) return;
+    g_pend.valid = false;
+    perform(g_pend.kind, g_pend.path);
+}
 
 static void on_unsaved(int choice, void *user) {
     (void)user;
     if (!g_pend.valid) return;
-    ActKind k = g_pend.kind;
-    char path[NB_PATH_MAX];
-    snprintf(path, sizeof path, "%s", g_pend.path);
-    if (choice == 0) {                                          /* Save, then carry on */
-        if (A.has_path && !A.readonly) {
-            if (write_to(A.path, false)) { g_pend.valid = false; perform(k, path); }
-            else g_pend.valid = false;
-        } else begin_save_as();                                 /* keeps g_pend: the save-as flow finishes the job */
-    } else if (choice == 1) { g_pend.valid = false; perform(k, path); }
-    else g_pend.valid = false;
+    if (choice == 0) save_flow();                               /* Save, then carry on (g_pend stays valid until the save is done) */
+    else if (choice == 1) pending_done();                       /* Don't save: just carry on */
+    else g_pend.valid = false;                                  /* Cancel */
 }
 
 /* Runs the action once unsaved changes are dealt with. */
@@ -279,8 +280,7 @@ static void guard(ActKind k, const char *path) {
 static char g_ow_path[NB_PATH_MAX];
 
 static void finish_save_as(const char *full) {
-    bool ok = write_to(full, true);
-    if (ok && g_pend.valid) { g_pend.valid = false; perform(g_pend.kind, g_pend.path); }
+    if (write_to(full, true)) pending_done();
     else g_pend.valid = false;
 }
 
@@ -332,12 +332,15 @@ static void begin_save_as(void) {
 static void on_changed_on_disk(bool yes, void *user) {
     (void)user;
     nb_modal_leave();
-    if (yes) write_to(A.path, false);
+    if (yes && write_to(A.path, false)) pending_done();
+    else g_pend.valid = false;
 }
 
-static void act_save(void) {
-    if (!A.has_path) { g_pend.valid = false; begin_save_as(); return; }
-    if (A.readonly) { msg_set("This file is read-only. Choose a new name to keep your changes."); g_pend.valid = false; begin_save_as(); return; }
+/* Saves the page (asking where to when it has no file, and before overwriting something that changed on disk). A pending
+ * action (g_pend) is carried out once the page is safe. */
+static void save_flow(void) {
+    if (!A.has_path) { begin_save_as(); return; }
+    if (A.readonly) { msg_set("This file is read-only. Choose a new name to keep your changes."); begin_save_as(); return; }
     struct stat st;
     if (A.trace && stat(A.path, &st) == 0) nb_trace("mtime disk=%lld loaded=%lld", (long long)st.st_mtime, (long long)A.mtime);
     if (A.mtime && stat(A.path, &st) == 0 && st.st_mtime != A.mtime) {
@@ -348,9 +351,11 @@ static void act_save(void) {
         k_confirm_dialog(A.app, "File changed on disk", msg, KI_WARNING, "Overwrite", "Cancel", on_changed_on_disk, NULL);
         return;
     }
-    write_to(A.path, false);
+    if (write_to(A.path, false)) pending_done();
+    else g_pend.valid = false;
 }
 
+static void act_save(void) { g_pend.valid = false; save_flow(); }
 static void act_save_as(void) { g_pend.valid = false; begin_save_as(); }
 
 /* ---------------------------------------------------------------- the other file actions */

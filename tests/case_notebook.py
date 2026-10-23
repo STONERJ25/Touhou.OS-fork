@@ -305,6 +305,25 @@ def notebook_confirm_dialogs():
             else:
                 vm.expect(r"nb: saved /tmp/b.txt", timeout=10)
                 expect_file(g, "/tmp/b.txt", b"xAAA\n", "Overwrite writes the page")
+        # "Save" in the unsaved-changes question goes through the same check, and quits only after the save really happened
+        g.type("y")
+        g.sh("sleep 2")
+        g.sh("echo ext2 > /tmp/b.txt")
+        for answer in ("esc", "ret"):
+            g.key("f4", alt=True)
+            vm.expect(r"nb: dialog Unsaved changes", timeout=10)
+            time.sleep(0.8)
+            g.key("ret")                                 # Save
+            vm.expect(r"nb: dialog changed-on-disk", timeout=10)
+            time.sleep(0.8)
+            g.key(answer)
+            if answer == "esc":
+                time.sleep(0.8)
+                expect_file(g, "/tmp/b.txt", b"ext2\n", "Cancel keeps what is on disk and the editor stays open")
+            else:
+                vm.expect(r"nb: saved /tmp/b.txt", timeout=10)
+                vm.expect(r"nb: quit", timeout=10)
+                expect_file(g, "/tmp/b.txt", b"xyAAA\n", "Overwrite, then quit")
 
 
 @test
