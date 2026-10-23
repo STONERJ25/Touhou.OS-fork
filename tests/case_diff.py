@@ -359,14 +359,13 @@ def diff_big():
         if "ROUNDTRIP" not in out:
             failures.append(f"big patch: {out!r}")
         out, rc = test_shell.run(vm, "seq 1 20000 > u1; seq 20001 40000 > u2; diff u1 u2 | wc -l; diff -q u1 u2", timeout=300)
-        if not out.startswith("20001\n") or "differ" not in out:
+        if not out.startswith("40002\n") or "differ" not in out:
             failures.append(f"unrelated files: {out!r}")
         # shuffled lines: every line matches something, so the real search runs; the result must still be a valid diff
         out, rc = test_shell.run(vm, "seq 1 3000 > s1; shuf s1 > s2; diff -u s1 s2 > s.diff; cp s1 w; patch -s w < s.diff; cmp w s2 && echo VALID", timeout=300)
         if "VALID" not in out:
             failures.append(f"shuffled: {out!r}")
-        out, rc = test_shell.run(vm, "i=0; while [ $i -lt 400 ]; do printf 'abcdefghijklmnopqrstuvwxyz0123456789%%.0s' 1 2 3 4 5 6 7 8; i=$((i+1)); done > ln1; "
-                                     "echo end >> ln1; sed 's/end/END/' ln1 > ln2; diff ln1 ln2 | wc -l", timeout=300)
+        out, rc = test_shell.run(vm, "seq 1 20000 | tr '\\n' ' ' > ln1; echo end >> ln1; sed 's/end/END/' ln1 > ln2; diff ln1 ln2 | wc -l", timeout=300)
         if out.strip() != "4":
             failures.append(f"long line: {out!r}")
     assert not failures, "\n".join(failures)
