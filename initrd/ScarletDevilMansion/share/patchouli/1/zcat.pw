@@ -1,0 +1,14 @@
+.page zcat 1 print compressed files
+
+# SYNOPSIS
+*zcat* [_FILE_...]
+
+# DESCRIPTION
+`zcat` decompresses each gzip _FILE_ to standard output and leaves the files alone; it is *gzip -dc*. With no _FILE_ it reads standard input.
+
+# EXAMPLES
+    zcat notes.txt.gz | wc -l
+    tar -cf - /Hakurei/etc | gzip | zcat | tar -tf -
+
+# SEE ALSO
+gzip(1)
