@@ -591,3 +591,141 @@ def sketchbook_select_ops():
         assert s.is_near(shot, cx + 5, cy + 5, WHITE, 8)
         s.menu("Image", 3)             # and back
         assert s.wait_pixel(*pic(180, 170), RED), "Rotate 90 anticlockwise should undo the rotation"
+
+
+# ---------------------------------------------------------------------------------------------------- text, spray, screenshot, guard
+
+
+def bbox_of(s, shot, rect, rgb, tol=12):
+    """Bounding box (x0, y0, x1, y1) of the pixels near rgb inside rect (base coordinates), or None."""
+    x0, y0, w, h = rect
+    xs, ys = [], []
+    for y in range(y0, y0 + h):
+        for x in range(x0, x0 + w):
+            if s.is_near(shot, x, y, rgb, tol):
+                xs.append(x)
+                ys.append(y)
+    return (min(xs), min(ys), max(xs), max(ys)) if xs else None
+
+
+@test
+def sketchbook_text_spray():
+    """The text tool types with the 8x16 font (newlines, scale, opaque, Esc cancels); the spray can scatters dots."""
+    with Qemu(cmdline="text", name="t-sketchbook-text", mem="768M") as vm:
+        s = Sk(vm)
+        g = s.g
+        s.click(*S_RED)
+        s.key("t")
+        s.click(*pic(40, 40))
+        s.type("Hi")
+        s.key("ret")                                   # Enter places the text
+        shot = s.screen()
+        box = bbox_of(s, shot, (OX + 30, OY + 30, 80, 60), RED)
+        assert box, "the text was not painted"
+        assert box[0] >= OX + 40 and box[2] <= OX + 40 + 16 and 8 <= box[3] - box[1] <= 15, f"two 8x16 letters should fit in 16 x 16 pixels: {box}"
+        # Shift+Enter starts a second line 16 pixels lower
+        s.click(*pic(200, 40))
+        s.type("A")
+        s.key("ret", shift=True)
+        s.type("B")
+        s.key("ret")
+        shot = s.screen()
+        box = bbox_of(s, shot, (OX + 190, OY + 30, 40, 60), RED)
+        assert box and box[3] - box[1] >= 22, f"two lines of text should be taller than 22 pixels: {box}"
+        # Esc throws unfinished text away
+        s.click(*pic(300, 40))
+        s.type("zzz")
+        s.key("esc")
+        shot = s.screen()
+        assert bbox_of(s, shot, (OX + 290, OY + 30, 60, 30), RED) is None, "Esc must cancel the text"
+        # scale 2 makes the letters twice as big; Opaque paints the background colour behind them
+        s.click(*swatch(6, 1), button="right")          # background yellow
+        s.click(102, 330)                                # the 2x button
+        s.click(59, 378)                                 # the Opaque check box
+        s.click(*pic(400, 40))
+        s.type("H")
+        s.key("ret")
+        shot = s.screen()
+        box = bbox_of(s, shot, (OX + 390, OY + 30, 60, 60), RED)
+        assert box and box[3] - box[1] >= 16 and box[2] - box[0] >= 11, f"scale 2 should give a big letter: {box}"
+        yellows = s.count_near(shot, (OX + 390, OY + 30, 60, 60), YELLOW)
+        assert yellows > 200, f"opaque text should paint the background colour behind the letter ({yellows})"
+        g.shot("text")
+        # the spray can: hold the button for a moment in one place; dots land inside the radius (12 by default)
+        s.click(*S_LIME)
+        s.key("a")
+        s.move_to(*pic(300, 300))
+        g.press()
+        time.sleep(1.2)
+        g.release()
+        shot = s.screen()
+        limes = s.count_near(shot, (OX + 270, OY + 270, 61, 61), LIME)
+        assert limes >= 60, f"the spray can should have scattered many dots ({limes})"
+        assert bbox_of(s, shot, (OX + 250, OY + 250, 101, 101), LIME)[0] >= OX + 287, "spray dots must stay within the radius"
+        assert s.count_near(shot, (OX + 250, OY + 250, 25, 101), LIME) == 0
+
+
+@test
+def sketchbook_screenshot():
+    """File > Open Screenshot shows /tmp/screenshot.ppm (written by Ctrl+F12) pixel for pixel."""
+    with Qemu(cmdline="text", name="t-sketchbook-shot", mem="768M") as vm:
+        s = Sk(vm)
+        g = s.g
+        g.move_to(900, 700)
+        time.sleep(0.5)
+        ref = vm.screen_ppm()
+        g.key("f12", ctrl=True)
+        assert s.wait_file("/tmp/screenshot.ppm", 2359312), "Ctrl+F12 should write a 1024x768 screenshot"
+        s.menu("File", 2)
+        # the 1024 x 768 picture starts at the top left of the canvas view; compare a grid of sample points
+        def same(sh):
+            bad = 0
+            for py in range(8, 480, 41):
+                for px in range(8, 640, 43):
+                    if vm.pixel(136 + px, 92 + py, sh) != vm.pixel(px, py, ref):
+                        bad += 1
+            return bad == 0
+        assert s.wait_until(same, 10), "the opened screenshot differs from the screen it was taken of"
+        g.shot("screenshot")
+        # the picture is an untitled copy: Ctrl+S must not overwrite /tmp/screenshot.ppm but ask for a name
+        s.key("s", ctrl=True)
+        assert s.wait_dialog(), "Save on the screenshot should open the Save As dialog"
+        time.sleep(0.4)
+        s.key("esc")                    # the first Esc leaves the name field of the file dialog, the second cancels it
+        s.key("esc")
+        assert s.wait_dialog_closed(), "Esc should cancel the Save As dialog"
+        s.menu("File", 7)
+        assert s.wait_gone(), "an unmodified picture closes without asking"
+
+
+@test
+def sketchbook_guard_save():
+    """Closing a modified picture asks; Save names the file in the dialog, writes it and then closes the program."""
+    with Qemu(cmdline="text", name="t-sketchbook-guard", mem="768M") as vm:
+        s = Sk(vm)
+        g = s.g
+        s.key("b")
+        s.drag(*pic(50, 50), *pic(150, 80))
+        assert s.wait_pixel(*pic(100, 65), BLACK)
+        s.key("q", ctrl=True)
+        assert s.wait_dialog() and s.dialog_has_icon(QUESTION_BLUE)
+        g.click(466, 416)               # the first button: Save
+        time.sleep(1.5)                 # the file dialog opens (it is not the question any more)
+        assert s.wait_dialog()
+        s.key("a", ctrl=True)
+        s.type("/tmp/sk/guard.bmp")
+        s.key("ret")
+        assert s.wait_gone(), "after saving, the program should close"
+        assert s.wait_file("/tmp/sk/guard.bmp", 921654), "the picture must have been saved before closing"
+        # Cancel (Esc) keeps the program and the picture: run it again with the saved file
+        s.start("/tmp/sk/guard.bmp")
+        assert s.wait_pixel(*pic(100, 65), BLACK)
+        s.key("z", ctrl=True)          # nothing to undo in a freshly opened picture
+        assert near(s.px(*pic(100, 65)), BLACK)
+        s.key("b")
+        s.drag(*pic(300, 300), *pic(340, 300))
+        s.key("w", ctrl=True)
+        assert s.wait_dialog()
+        s.key("esc")
+        assert s.wait_dialog_closed() and not s.wait_gone(2), "Cancel must keep the program running"
+        assert s.wait_pixel(*pic(320, 300), BLACK)

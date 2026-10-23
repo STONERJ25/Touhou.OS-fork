@@ -239,9 +239,10 @@ void panels_palette(KUI *ui, KRect r) {
     if (cur != hex_for) { snprintf(hex, sizeof hex, "%06X", (unsigned)cur); hex_for = cur; }
     int hx = mx + 16 + 124 + 8 + 32;
     k_label(ui, hx, r.y + 9, "#");
-    k_textfield(ui, kr(hx + 10, r.y + 6, 70, 22), hex, sizeof hex);
+    bool entered = k_textfield(ui, kr(hx + 10, r.y + 6, 70, 22), hex, sizeof hex);
     uint32_t v;
     if (parse_hex(hex, &v) && v != cur) { color_set(S.mix_target, v); hex_for = v; }
+    if (entered) { ui->focus = 0; hex_for = 0xFFFFFFFFu; }          /* Enter: back to the canvas, text shows the clean value */
     k_label_col(ui, hx, r.y + 34, "Editing the", ui->theme->text_dim);
     k_label_col(ui, hx, r.y + 50, S.mix_target ? "background" : "foreground", ui->theme->accent_dark);
 }

@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 #include <sys/stat.h>
 
@@ -438,7 +439,7 @@ static void handle_keys(KUI *ui) {
         else if (k->ch == 'x' || k->ch == 'X') color_swap();
         else if (k->ch >= 32 && tool_for_char(k->ch) != T_COUNT) tool_set(tool_for_char(k->ch));
         else used = false;
-        if (used) { k->down = 0; k->code = 0; }
+        if (used) { k->down = 0; k->code = 0; kapp_redraw(S.app); }
     }
 }
 
@@ -481,6 +482,7 @@ static void draw_inner(KApp *app, KUI *ui, void *user) {
 
 int main(int argc, char **argv) {
     memset(&S, 0, sizeof S);
+    srand((unsigned)time(NULL) ^ (unsigned)getpid() << 8);
     tools_init();
     panels_init();
     canvas_init();

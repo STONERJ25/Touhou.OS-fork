@@ -539,13 +539,17 @@ void tools_draw_overlays(KUI *ui, KCanvas *cv) {
     bool over = ui->mouse_inside && !ui->menu_open && kr_contains(S.view, ui->mx, ui->my);
     if (over && !D.active && !S.modal && (S.tool == T_BRUSH || S.tool == T_ERASER || S.tool == T_SPRAY)) {
         int ix = canvas_to_ix(ui->mx), iy = canvas_to_iy(ui->my);
-        ss.base.alpha = 110;
         if (S.tool == T_SPRAY) {
-            ss.base.color = 0x000000;
+            ss.base.alpha = 150;
             rs_ellipse(&ss.base, ix - S.size[T_SPRAY], iy - S.size[T_SPRAY], ix + S.size[T_SPRAY], iy + S.size[T_SPRAY], 1, 0x000000, 0, S_OUTLINE);
+        } else if (S.tool == T_ERASER) {                         /* the eraser's square, outlined so it shows on any colour */
+            int sz = S.size[T_ERASER], x0 = ix - sz / 2, y0 = iy - sz / 2;
+            ss.base.alpha = 170;
+            rs_rect(&ss.base, x0, y0, x0 + sz - 1, y0 + sz - 1, 1, 0x000000, 0, S_OUTLINE);
         } else {
-            ss.base.color = S.tool == T_ERASER ? 0xFFFFFF : S.fg;
-            rs_stamp(&ss.base, ix, iy, S.size[S.tool], S.tool == T_ERASER);
+            ss.base.alpha = 110;
+            ss.base.color = S.fg;
+            rs_stamp(&ss.base, ix, iy, S.size[S.tool], false);
         }
         ss.base.alpha = 255;
     }
