@@ -13,10 +13,8 @@
 
 int signbit_d(double x);
 
-/* Every stream has its own recursive lock (a printf is never torn by another thread's output, and a thread blocked reading
- * stdin does not stop the others from printing). __stdio_list_lock guards the list of open streams; the lock order is always
- * list first, then a stream, and fclose never holds a stream lock while it takes the list lock. */
-RLock __stdio_list_lock;
+/* One recursive lock serialises all of stdio: threads share the streams, and a printf is never torn by another thread's output. */
+RLock __stdio_lock;
 
 #define F_READ  1
 #define F_WRITE 2
@@ -35,7 +33,6 @@ struct FILE {
     size_t wlen;                 /* pending write bytes */
     int ungot;                   /* pushed-back char or -1 */
     struct FILE *next;
-    RLock lock;                  /* held by every operation on this stream */
 };
 
 static unsigned char g_inbuf[BUFSIZ], g_outbuf[BUFSIZ];
@@ -50,28 +47,10 @@ void __stdio_init(void) {
     g_stdin.bufmode = _IOFBF;
 }
 
-/* The two places stdio blocks in the kernel. A thread cancelled there must let go of the stream's lock on its way out
- * (pthread.c: __cancel_exit looks at stdio_blocked). */
-static ssize_t io_write(FILE *f, const void *p, size_t n) {
-    struct pthread *self = __pthread_self();
-    self->stdio_blocked = &f->lock;
-    ssize_t r = write(f->fd, p, n);
-    self->stdio_blocked = NULL;
-    return r;
-}
-
-static ssize_t io_read(FILE *f, void *p, size_t n) {
-    struct pthread *self = __pthread_self();
-    self->stdio_blocked = &f->lock;
-    ssize_t r = read(f->fd, p, n);
-    self->stdio_blocked = NULL;
-    return r;
-}
-
 static int flush_write(FILE *f) {
     size_t off = 0;
     while (off < f->wlen) {
-        ssize_t w = io_write(f, f->buf + off, f->wlen - off);
+        ssize_t w = write(f->fd, f->buf + off, f->wlen - off);
         if (w < 0) { if (errno == EINTR) continue; f->flags |= F_ERR; f->wlen = 0; return EOF; }
         off += (size_t)w;
     }
@@ -100,7 +79,7 @@ static int fill(FILE *f) {
         if (!f->buf) return EOF;
     }
     ssize_t r;
-    do r = io_read(f, f->buf, f->bufsize); while (r < 0 && errno == EINTR);
+    do r = read(f->fd, f->buf, f->bufsize); while (r < 0 && errno == EINTR);
     if (r < 0) { f->flags |= F_ERR; return EOF; }
     if (r == 0) { f->flags |= F_EOF; return EOF; }
     f->rpos = 0;
@@ -132,7 +111,7 @@ static int fputc_nl(int c, FILE *f) {
             if (f->buf) { f->bufsize = BUFSIZ; f->flags |= F_OWNBUF; }
         }
         if (!f->buf) {
-            return io_write(f, &ch, 1) == 1 ? c : EOF;
+            return write(f->fd, &ch, 1) == 1 ? c : EOF;
         }
     }
     if (f->rlen) { f->rpos = f->rlen = 0; }
@@ -157,7 +136,7 @@ static size_t fwrite_nl(const void *buf, size_t size, size_t n, FILE *f) {
         if (!f->buf) {
             size_t off = 0;
             while (off < total) {
-                ssize_t w = io_write(f, p + off, total - off);
+                ssize_t w = write(f->fd, p + off, total - off);
                 if (w <= 0) { f->flags |= F_ERR; break; }
                 off += (size_t)w;
             }
@@ -244,10 +223,8 @@ static FILE *fdopen_nl(int fd, const char *mode) {
     if (mode[0] == 'r') f->flags = F_READ | (plus ? F_WRITE : 0);
     else f->flags = F_WRITE | (plus ? F_READ : 0);
     if (mode[0] == 'a') f->flags |= F_APPEND;
-    __rlock(&__stdio_list_lock);
     f->next = g_files;
     g_files = f;
-    __runlock(&__stdio_list_lock);
     return f;
 }
 
@@ -272,23 +249,15 @@ FILE *freopen(const char *path, const char *mode, FILE *f) {
     return fopen(path, mode);
 }
 
-/* The stream lock is released before the stream leaves the list and is freed (list lock, then nothing: see the lock order). */
-int fclose(FILE *f) {
-    __rlock(&f->lock);
-    int r = fflush_nl(f);
-    int is_std = f == &g_stdin || f == &g_stdout || f == &g_stderr;
-    if (f->fd > 2 || !is_std) {
+static int fclose_nl(FILE *f) {
+    int r = fflush(f);
+    if (f->fd > 2 || (f != &g_stdin && f != &g_stdout && f != &g_stderr)) {
         if (close(f->fd) < 0) r = EOF;
     }
-    if (f->flags & F_OWNBUF) { free(f->buf); f->buf = NULL; f->flags &= ~F_OWNBUF; }
-    __runlock(&f->lock);
-    if (!is_std) {
-        __rlock(&__stdio_list_lock);
-        for (FILE **pp = &g_files; *pp; pp = &(*pp)->next)
-            if (*pp == f) { *pp = f->next; break; }
-        __runlock(&__stdio_list_lock);
-        free(f);
-    }
+    for (FILE **pp = &g_files; *pp; pp = &(*pp)->next)
+        if (*pp == f) { *pp = f->next; break; }
+    if (f->flags & F_OWNBUF) free(f->buf);
+    if (f != &g_stdin && f != &g_stdout && f != &g_stderr) free(f);
     return r;
 }
 
