@@ -1113,10 +1113,13 @@ int a_start_col(Pos start, long first) { (void)first; return start.c; }
 void normal_command(void) {
     int count = 0, reg = 0, k;
     cmd_is_change = 0;
-    int hascount;
-    if (!undo_nest) undo_begin();
+    int hascount, first_key = 1;
     for (;;) {
         k = norm_key(getkey());
+        if (first_key) {                                 /* a typed command starts an undo step; keys replayed from a macro join it */
+            first_key = 0;
+            if (!undo_nest && !key_from_ta) undo_begin();
+        }
         if (k == '"') { reg = getkey(); continue; }
         int nc = get_count_digit(k, count);
         if (nc >= 0) { count = nc; continue; }

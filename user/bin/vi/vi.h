@@ -128,6 +128,9 @@ void  map_list(int imode);
 void  abbr_add(const char *lhs, const char *rhs);
 const char *abbr_find(const char *w, size_t n);
 extern int last_typed_key;
+extern int key_from_ta;                                 /* the last key came from the type-ahead queue (macro, ".", mapping) */
+extern int script_mode;                                 /* keys come from a -s script file */
+int   script_open(const char *path);
 
 /* ---- screen.c */
 void  redraw(void);

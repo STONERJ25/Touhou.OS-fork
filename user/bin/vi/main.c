@@ -20,8 +20,9 @@ int nargfiles, argidx;
 
 static void usage(void) {
     static const char u[] =
-        "usage: vi [-R] [-c command] [+line | +/pattern | +command] [file ...]\n"
-        "  -R  read-only (view)   -c  run an ex command after loading   +N  start on line N\n";
+        "usage: vi [-R] [-s scriptfile] [-c command] [+line | +/pattern | +command] [file ...]\n"
+        "  -R  read-only (view)   -c  run an ex command after loading   +N  start on line N\n"
+        "  -s  take the keys from a file instead of the keyboard (vi quits when it is used up)\n";
     ssize_t w = write(2, u, sizeof u - 1);
     (void)w;
 }
@@ -50,6 +51,7 @@ int main(int argc, char **argv) {
     if (!strcmp(prog, "view")) { view_mode = 1; o.ro = 1; }
     char *startup[32];
     int nstartup = 0;
+    const char *script_path = NULL;
     argfiles = calloc((size_t)argc + 1, sizeof *argfiles);
     int i = 1;
     for (; i < argc; i++) {
@@ -69,7 +71,12 @@ int main(int argc, char **argv) {
         if (a[0] == '-' && a[1]) {
             if (!strcmp(a, "--version")) { puts("vi (TouhouOS) 1.0"); return 0; }
             if (!strcmp(a, "--help")) { usage(); return 0; }
-            if (!strcmp(a, "-c") || !strcmp(a, "-S") || !strcmp(a, "-s")) {
+            if (!strcmp(a, "-s")) {
+                if (i + 1 >= argc) { usage(); return 2; }
+                script_path = argv[++i];
+                continue;
+            }
+            if (!strcmp(a, "-c") || !strcmp(a, "-S")) {
                 if (!strcmp(a, "-c") && i + 1 < argc) { if (nstartup < 32) startup[nstartup++] = strdup(argv[++i]); continue; }
                 if (!strcmp(a, "-c")) { usage(); return 2; }
                 continue;
@@ -89,6 +96,10 @@ int main(int argc, char **argv) {
     for (; i < argc; i++) argfiles[nargfiles++] = argv[i];
 
     for (int k = 0; k < 26; k++) marks[k].l = -1;
+    if (script_path && script_open(script_path) != 0) {
+        fprintf(stderr, "vi: cannot read %s: %s\n", script_path, strerror(errno));
+        return 2;
+    }
     if (pt_term_open(&term) != 0) {
         const char *m = "vi: standard input and output must be a terminal\n";
         ssize_t w = write(2, m, strlen(m));

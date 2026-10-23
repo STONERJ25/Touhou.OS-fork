@@ -522,12 +522,14 @@ static int find_char(Pos *p, int cmd, const char *ch, int chlen, int cnt, int re
     return 1;
 }
 
-static void word_under_cursor(char *buf, size_t cap, int *is_word) {
+/* The keyword under or after the cursor (else the non-blank string); *start is its first byte. */
+static void word_under_cursor(char *buf, size_t cap, int *is_word, int *start) {
     const char *s = ls(cur.l);
     int len = (int)L[cur.l].len, c = cur.c;
     *is_word = 1;
+    *start = c;
     int i = c;
-    while (i < len && !pt_is_word_cp(cp_at(cur.l, i)) && !(s[i] != ' ' && s[i] != '\t' && 0)) i = next_c(cur.l, i);
+    while (i < len && !pt_is_word_cp(cp_at(cur.l, i))) i = next_c(cur.l, i);
     if (i >= len) {                                      /* no word characters ahead: use the non-blank run */
         *is_word = 0;
         i = c;
@@ -538,6 +540,7 @@ static void word_under_cursor(char *buf, size_t cap, int *is_word) {
         size_t n = (size_t)(e - i) < cap - 1 ? (size_t)(e - i) : cap - 1;
         memcpy(buf, s + i, n);
         buf[n] = 0;
+        *start = i;
         return;
     }
     int st = i;
@@ -547,6 +550,7 @@ static void word_under_cursor(char *buf, size_t cap, int *is_word) {
     size_t n = (size_t)(e - st) < cap - 1 ? (size_t)(e - st) : cap - 1;
     memcpy(buf, s + st, n);
     buf[n] = 0;
+    *start = st;
 }
 
 int motion(int c, int cnt, int hascnt, int op, Motion *m) {
@@ -556,9 +560,17 @@ int motion(int c, int cnt, int hascnt, int op, Motion *m) {
     int n1 = cnt > 0 ? cnt : 1;
     Pos p = cur;
     switch (c) {
-    case PT_K_LEFT: case 'h': case 8:
+    case PT_K_LEFT: case 'h':
         if (p.c <= 0) { m->fail = 1; return 1; }
         for (int i = 0; i < n1 && p.c > 0; i++) p.c = prev_c(p.l, p.c);
+        m->to = p;
+        return 1;
+    case K_BS: case 8:                                   /* <BS> also wraps to the end of the previous line ('whichwrap' has b) */
+        for (int i = 0; i < n1; i++) {
+            if (p.c > 0) p.c = prev_c(p.l, p.c);
+            else if (p.l > 0 && !op) { p.l--; p.c = last_c(p.l); }
+            else { if (i == 0) m->fail = 1; break; }
+        }
         m->to = p;
         return 1;
     case PT_K_RIGHT: case 'l': {
@@ -803,7 +815,7 @@ int motion(int c, int cnt, int hascnt, int op, Motion *m) {
         if (!last_search[0]) { set_err("E35: No previous regular expression"); m->fail = 1; return 1; }
         int dir = last_search_dir * (c == 'N' ? -1 : 1);
         char tmp[300];
-        snprintf(tmp, sizeof tmp, "%s%c%s", last_search, last_search_dir > 0 ? '/' : '?', last_search_off);
+        snprintf(tmp, sizeof tmp, "%s%c%s", last_search, dir > 0 ? '/' : '?', last_search_off);
         int incl = 0;
         char saved[256];
         snprintf(saved, sizeof saved, "%s", last_search);
@@ -817,7 +829,8 @@ int motion(int c, int cnt, int hascnt, int op, Motion *m) {
     case '*': case '#': {
         char word[200];
         int isw;
-        word_under_cursor(word, sizeof word, &isw);
+        int wstart;
+        word_under_cursor(word, sizeof word, &isw, &wstart);
         if (!word[0]) { set_err("E348: No string under cursor"); m->fail = 1; return 1; }
         char pat[260];
         PtBuf esc = { 0 };
@@ -828,11 +841,7 @@ int motion(int c, int cnt, int hascnt, int op, Motion *m) {
         last_search_off[0] = 0;
         last_search_dir = c == '*' ? 1 : -1;
         Pos from = cur;
-        if (isw) {                                       /* start at the beginning of the word so # does not find itself */
-            int st = from.c;
-            while (st > 0 && pt_is_word_cp(cp_at(from.l, prev_c(from.l, st)))) st = prev_c(from.l, st);
-            if (pt_is_word_cp(cp_at(from.l, st)) && st <= from.c) from.c = st;
-        }
+        from.c = wstart;                                 /* search from the start of the word, so # does not find itself */
         Pos res = from;
         for (int i = 0; i < n1; i++) {
             Pos nx;
