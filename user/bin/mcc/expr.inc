@@ -22,8 +22,17 @@ static i64 eval2(Node *node, Obj **label) {
     switch (node->kind) {
     case ND_ADD:
         return eval2(node->lhs, label) + eval(node->rhs);
-    case ND_SUB:
-        return eval2(node->lhs, label) - eval(node->rhs);
+    case ND_SUB: {
+        Obj *l2 = NULL;
+        i64 a = eval2(node->lhs, label);
+        i64 b = eval2(node->rhs, label ? &l2 : NULL);
+        if (l2) {
+            /* the difference of two addresses inside the same object is a constant */
+            if (*label != l2) error_tok(node->tok, "not a compile-time constant");
+            *label = NULL;
+        }
+        return a - b;
+    }
     case ND_MUL:
         return eval(node->lhs) * eval(node->rhs);
     case ND_DIV: {
@@ -773,6 +782,8 @@ static Node *builtin_node(int op, Type *ty, Node *arg0, Node *arg1, Token *tok) 
     node->ty = ty;
     node->lhs = arg0;
     node->rhs = arg1;
+    add_type(arg0);
+    add_type(arg1);
     return node;
 }
 
@@ -858,6 +869,7 @@ static Node *builtin_call(Token **rest, Token *tok) {
         tok = skip(tok, ",");
         Type *ty = typename(&tok, tok);
         *rest = skip(tok, ")");
+        add_type(ap);
         Node *node = new_unary(ND_VA_ARG, ap, start);
         node->ty = ty;
         return node;
@@ -899,6 +911,7 @@ static Node *builtin_call(Token **rest, Token *tok) {
         *rest = skip(tok, ")");
         if (!strcmp(name, "__builtin_va_start")) {
             if (!current_fn || !current_fn->va_area) error_tok(start, "va_start used in a function that is not variadic");
+            add_type(args[0]);
             Node *node = new_unary(ND_VA_START, args[0], start);
             node->ty = ty_void;
             return node;
@@ -978,6 +991,7 @@ static Node *builtin_call(Token **rest, Token *tok) {
     }
     if (!strcmp(name, "__builtin_alloca") && nargs == 1) {
         Node *node = new_unary(ND_ALLOCA, new_cast(args[0], ty_ulong), start);
+        add_type(node->lhs);
         node->ty = pointer_to(ty_void);
         return node;
     }

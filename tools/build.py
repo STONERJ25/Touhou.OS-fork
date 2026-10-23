@@ -421,7 +421,7 @@ def build_user(nproc):
 
 # Programs that run with their owner's authority (setuid root) and files that only root may read.
 SPECIAL_MODES = {"bin/eiki": 0o4755, "bin/su": 0o4755, "bin/passwd": 0o4755, "sbin/pwcheck": 0o4755, "Hakurei/etc/shadow": 0o600}
-EXTRA_LINKS = [("bin/sudo", "eiki")]
+EXTRA_LINKS = [("bin/sudo", "eiki"), ("bin/cc", "mcc"), ("bin/mld", "mcc"), ("bin/mar", "mcc")]
 
 
 def build_initrd(user_bins):
@@ -440,6 +440,10 @@ def build_initrd(user_bins):
         for p in sorted(root.rglob("*")):
             if p.is_file():
                 items.append((p.relative_to(root).as_posix(), p))
+    # the compiler's system root (headers, crt0.o, libgap.a ...) lives in /ScarletDevilMansion on the guest
+    import mccroot
+    have = {a for a, _ in items}
+    items += [(a, p) for a, p in mccroot.initrd_items() if a not in have]
     have = {a for a, _ in items}
     links = [(f"bin/{n}", "kappabox") for n in KAPPABOX_APPLETS if f"bin/{n}" not in have]
     links += [(a, t) for a, t in EXTRA_LINKS if a not in have]
@@ -518,6 +522,8 @@ def main():
     if "user" in want or "initrd" in want or "esp" in want:
         bins = build_user(args.jobs)
     if "initrd" in want or "esp" in want:
+        import mccroot
+        mccroot.stage_sysroot()
         build_initrd(bins)
     if "esp" in want:
         build_esp()

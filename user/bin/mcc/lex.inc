@@ -90,7 +90,10 @@ void warn_tok(Token *tok, const char *fmt, ...) {
 /* ---- token helpers */
 
 bool equal(Token *tok, const char *op) {
-    return memcmp(tok->loc, op, (size_t)tok->len) == 0 && op[tok->len] == '\0';
+    int n = tok->len;
+    for (int i = 0; i < n; i++)
+        if (op[i] != tok->loc[i]) return false; /* a shorter op ends with NUL, which never matches */
+    return op[n] == '\0';
 }
 
 Token *skip(Token *tok, const char *op) {
