@@ -164,9 +164,11 @@ The kernel has one CPU, so "a lock" is either interrupt disabling (short section
 
 ## Not done
 
-* **Stack reuse:** user thread stacks are mapped and unmapped for every thread, and kernel stacks take fresh virtual
-  addresses; page-table pages of the retired ranges stay until the process exits (about 100 KiB over the 25-iteration
-  stress test, which allows 1 MiB). No pages leak after the process ends.
+* **Kernel stack reuse:** user thread blocks of the default size are cached by libc (8 entries) and reused, but kernel
+  stacks still take fresh virtual addresses (`kstack_alloc` in `kernel/mm/vmm.c` never recycles them); their page-table
+  pages stay until reboot, about one 4 KiB page per 100 threads ever created. Reusing the addresses needs an explicit
+  `invlpg` in `kstack_free` (the shared kernel mappings are not flushed when the current CR3 is a user one). No pages leak
+  after a process ends; the stress test allows 1 MiB of slack and measured under 100 KiB before the cache existed.
 * **Descriptor races:** only `read`/`write` hold a reference across the call; closing a descriptor in one thread while
   another uses it in `ioctl`, `poll`, `lseek`, ... can still touch a freed `File`.
 * **Locks are not SMP-ready:** they are interrupt-disabling sections and sleeping mutexes; a port to several CPUs must
@@ -174,3 +176,26 @@ The kernel has one CPU, so "a lock" is either interrupt disabling (short section
 * A thread stuck in an uninterruptible kernel wait delays a group exit or an `execve` until that wait ends.
 * Async cancellation, robust mutexes, priority inheritance, process-shared attributes (the futex itself is shared-memory
   capable, the attributes are not parsed) and thread names are not provided.
+
+## State when paused
+
+Paused on 2026-10-23 at the user's request. The branch head builds and its tree is the one that was tested.
+
+* **Done and tested:** everything in the Status table. Last complete run (`python tests/run_all.py`, commit `a279b04`):
+  `35 tests, 0 failed`. After that only the thread-block cache and a `ps -T` row check in `utest` were added; for those
+  `python tests/run_all.py utest` (which also runs `threads_utest`) passed. The full suite was not re-run after them.
+* **Half done (parked, not in the tree):** per-stream stdio locks. Today one recursive lock (`__stdio_lock`) covers all
+  streams, so a thread blocked in `fgets(stdin)` holds it and stops every other thread from printing, and `exit()` called
+  while another thread is blocked in `read` on a stream waits for it. The unfinished edit is commit `8493a55` (it does
+  not build; `bb51167` reverts it). What is left is listed in that commit message. Resume with
+  `git show 8493a55 -- user/libc/src/stdio.c`, finish the wrappers, then run `python tests/run_all.py utest` and `shell`.
+* **Not started:** kernel stack address reuse (see "Not done"), `fd_get_ref` in the remaining descriptor syscalls,
+  `pthread_rwlock_timed*`, `pthread_getattr_np`, a timeout on the exec wait for a thread stuck in an uninterruptible wait.
+* **Known problems:** (1) the global stdio lock above. (2) The QEMU harness can lose the last serial bytes when the guest
+  powers off right after the verdict (seen once in a full run: `QEMU exited (code 1)` with truncated output, the guest
+  had actually finished); `tests/case_threads.py` repeats a run that ends without a verdict, other cases do not.
+  (3) A spurious `EINTR` is possible when two threads race to take a process-directed signal.
+* **How to resume:** `python tools/build.py`, then `python tests/run_all.py threads` (thread section of `utest` plus the
+  futex self test, about 15 s), then `python tests/run_all.py utest` and `shell` for the libc and userland regressions.
+  The tests in `user/bin/utest_threads.inc` are the specification of what must keep working; add a section there and to
+  `THREAD_SECTIONS` in `tests/case_threads.py` for anything new.
