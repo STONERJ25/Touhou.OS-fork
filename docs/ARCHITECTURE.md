@@ -50,6 +50,10 @@ Everything a PCI driver needs already exists; look at `kernel/include/pci.h`, `b
 - **Block devices:** fill in a `BlockDev` (heap allocated), set `read`/`write`/`flush`, then `blk_register()`. The block layer
   creates `/dev/<name>`, scans GPT/MBR into partition devices (`vda1`, `nvme0n1p2`), and lists everything in
   `/proc/partitions` (`lsblk`). Filesystems take a `BlockDev` by name (`blk_find("sda1")`, `blk_find_label("HUMANVILLAGE")`).
+- **Network cards:** fill in a `NetDev` (`kernel/include/net.h`: MAC, MTU, `tx(frame)`, `poll()` that calls `net_rx(frame)`), set
+  `NDF_LINK` when the carrier is up and `netdev_register("eth", d)`; the stack, DHCP and `/proc/net` do the rest, all under one
+  network lock so the driver needs none. Call `pci_enable(dev, PCI_CMD_MEM | PCI_CMD_MASTER)` first. See [NETWORK.md](NETWORK.md)
+  (design, sockets, tools, tunables, tests, current state); `kernel/net/` holds the stack, `kernel/drivers/{virtio_net,e1000}.c` the cards.
 - **Input:** USB HID turns reports into `input_key(KEY_*, down)` and `input_mouse(dx, dy, wheel, buttons)`; the same path as
   the PS/2 driver feeds the console tty and `/dev/input/events`. Repeat is generated in the input layer.
 - **/proc files:** `procfs_register("name", gen)` adds a text file generated on each read.
