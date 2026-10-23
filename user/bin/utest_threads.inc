@@ -755,6 +755,17 @@ static void test_threads_proc(void) {
     n = fd >= 0 ? read(fd, buf, sizeof buf - 1) : -1;
     if (fd >= 0) close(fd);
     CHECK(n > 0 && (buf[n] = 0, strstr(buf, "Threads:\t4") != NULL));
+    FILE *pf = popen("ps -T", "r");                                 /* also forks from a process that has threads */
+    int rows = 0;
+    if (pf) {
+        char row[200];
+        while (fgets(row, sizeof row, pf)) {
+            int a = 0, b = 0;
+            if (sscanf(row, "%d %d", &a, &b) == 2 && a == (int)getpid()) rows++;
+        }
+        pclose(pf);
+    }
+    CHECK(rows == 4);                                               /* one row per thread, the first with TID == PID */
     fd = open("/proc/tasks", O_RDONLY);
     char big[4096];
     n = fd >= 0 ? read(fd, big, sizeof big - 1) : -1;

@@ -192,6 +192,41 @@ static void run_destructors(struct pthread *self) {
 
 /* ---------------------------------------------------------------- threads */
 
+/* Thread blocks of the default size are kept for reuse instead of being unmapped: a program that creates thousands of threads
+ * then keeps reusing the same few address ranges, and the kernel never has to grow page tables for fresh ones. */
+#define STACK_CACHE_MAX 8
+static struct { void *map; size_t len; } g_stack_cache[STACK_CACHE_MAX];
+static int g_stack_cached;
+static volatile int g_stack_lock;
+
+static void block_release(void *map, size_t len, int cacheable) {
+    if (cacheable) {
+        __lock(&g_stack_lock);
+        if (g_stack_cached < STACK_CACHE_MAX) {
+            g_stack_cache[g_stack_cached].map = map;
+            g_stack_cache[g_stack_cached].len = len;
+            g_stack_cached++;
+            __unlock(&g_stack_lock);
+            return;
+        }
+        __unlock(&g_stack_lock);
+    }
+    munmap(map, len);
+}
+
+static void *block_acquire(size_t len) {
+    void *map = NULL;
+    __lock(&g_stack_lock);
+    for (int i = 0; i < g_stack_cached; i++) {
+        if (g_stack_cache[i].len != len) continue;
+        map = g_stack_cache[i].map;
+        g_stack_cache[i] = g_stack_cache[--g_stack_cached];
+        break;
+    }
+    __unlock(&g_stack_lock);
+    return map;
+}
+
 static struct pthread *volatile g_zombies;      /* exited detached threads whose block can be unmapped once the kernel says they are gone */
 
 static void zombie_push(struct pthread *t) {
@@ -207,7 +242,7 @@ static void reap_zombies(void) {
     struct pthread *list = __atomic_exchange_n(&g_zombies, NULL, __ATOMIC_ACQ_REL);
     while (list) {
         struct pthread *next = list->zombie_next;
-        if (list->tid == 0) munmap(list->map, list->maplen);
+        if (list->tid == 0) block_release(list->map, list->maplen, list->cacheable);
         else zombie_push(list);                 /* still on its way out of the kernel */
         list = next;
     }
@@ -271,9 +306,15 @@ int pthread_create(pthread_t *out, const pthread_attr_t *attr, void *(*fn)(void 
     size_t tcb = tcb_size();
     size_t total = (guard + stack + tls_reserve() + tcb + PAGE - 1) & ~(PAGE - 1);
 
-    char *map = mmap(NULL, total, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (map == MAP_FAILED) return EAGAIN;
-    if (guard && mprotect(map, guard, PROT_NONE) < 0) { munmap(map, total); return EAGAIN; }
+    int cacheable = guard == PAGE && stack == DEFAULT_STACK;
+    char *map = cacheable ? block_acquire(total) : NULL;                    /* the guard page of a reused block is still in place */
+    if (map) {
+        memset(map + total - tls_reserve() - tcb, 0, tls_reserve() + tcb);  /* fresh TLS block and control block */
+    } else {
+        map = mmap(NULL, total, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (map == MAP_FAILED) return EAGAIN;
+        if (guard && mprotect(map, guard, PROT_NONE) < 0) { munmap(map, total); return EAGAIN; }
+    }
 
     /* the mapping ends with [TLS block][control block]; the stack grows down below them */
     struct pthread *t = (struct pthread *)(map + total - tcb);
@@ -283,11 +324,12 @@ int pthread_create(pthread_t *out, const pthread_attr_t *attr, void *(*fn)(void 
     t->arg = arg;
     t->map = map;
     t->maplen = total;
+    t->cacheable = cacheable;
     if (attr && attr->__detach) t->flags = TF_DETACHED;
     char *top = (char *)t - tls_reserve() - 8;                       /* entry sees rsp = 8 mod 16, like after a call */
     *(void **)top = NULL;
     long r = __sc6(SYS_thread_create, 0, (long)top, (long)t, (long)&t->tid, (long)thread_entry, (long)t);
-    if (r < 0) { munmap(map, total); return (int)-r; }
+    if (r < 0) { block_release(map, total, cacheable); return (int)-r; }
     *out = t;
     return 0;
 }
@@ -314,7 +356,7 @@ int pthread_join(pthread_t t, void **ret) {
     while ((tid = __atomic_load_n(&t->tid, __ATOMIC_ACQUIRE)) != 0)         /* a cancellation point */
         if (__futex(&t->tid, FUTEX_WAIT | FUTEX_CANCELLABLE, tid, NULL, NULL, 0) == -ECANCELED) __cancel_exit();
     if (ret) *ret = t->retval;
-    if (t->map) munmap(t->map, t->maplen);
+    if (t->map) block_release(t->map, t->maplen, t->cacheable);
     return 0;
 }
 

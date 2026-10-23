@@ -4,6 +4,9 @@
 
 #include <pthread.h>
 
+/* Recursive lock (stdio streams). */
+typedef struct { volatile int lock; volatile int owner; int count; } RLock;
+
 /* The FS base of every thread points at its struct pthread; offsets 0 and 8 are fixed (errno.h reads them). */
 struct pthread {
     struct pthread *self;           /* 0: FS:0 holds the thread pointer itself */
@@ -12,12 +15,14 @@ struct pthread {
     volatile int tid;               /* kernel thread id; the kernel zeroes it and wakes it when the thread exits (join waits here) */
     volatile int flags;             /* TF_* */
     volatile int cancel_flag;       /* pthread_cancel was called on this thread */
+    RLock *stdio_blocked;           /* the stdio stream lock held while this thread is blocked in read or write (see stdio.c) */
     int cancel_disabled;            /* pthread_setcancelstate(DISABLE): SIGCANCEL is blocked in the kernel mask */
     void *(*fn)(void *);
     void *arg;
     void *retval;
     void *map;                      /* the mmap'd block holding guard page, stack and this struct (NULL for the main thread) */
     size_t maplen;
+    int cacheable;                  /* default-size block: kept for reuse after the thread is gone */
     struct pthread *zombie_next;    /* list of exited detached threads whose block can be unmapped */
     unsigned long long specific_set;
     void *specific[PTHREAD_KEYS_MAX];
@@ -43,7 +48,6 @@ void __lock(volatile int *l);
 void __unlock(volatile int *l);
 
 /* Recursive lock for stdio. */
-typedef struct { volatile int lock; volatile int owner; int count; } RLock;
 void __rlock(RLock *l);
 void __runlock(RLock *l);
 void __rlock_reset_after_fork(RLock *l);
