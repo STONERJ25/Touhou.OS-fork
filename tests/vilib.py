@@ -167,6 +167,22 @@ class ScriptRunner:
         out, _ = test_shell.run(self.vm, cmd, timeout=60)
         return parse_t(out)
 
+    def run_vi_file(self, path, keys, timeout=60, args="", repeat=None):
+        """Runs `vi -s keys path` on an existing file (no output capture). `repeat` = (unit, n) makes the key file start with the
+        unit repeated n times (built in the guest, so a long run needs no long command line). Returns (exit status, seconds)."""
+        keys = K(keys) + K("<Esc>:wq<CR>")
+        if repeat:
+            unit, n = repeat
+            pre = f"yes {unit} | head -n {n} | tr -d '\\n' >/tmp/k; printf {shq(keys)} >>/tmp/k"
+        else:
+            pre = f"printf {shq(keys)} >/tmp/k"
+        t0 = time.time()
+        out, _ = test_shell.run(self.vm, f"{pre}; vi -s /tmp/k {args} {path} >/dev/null 2>&1; echo \"rc=$?\"", timeout=timeout)
+        m = re.search(r"rc=(\d+)", out)
+        if not m:
+            raise AssertionError(f"vi gave no exit status: {out[-200:]!r}")
+        return int(m.group(1)), time.time() - t0
+
     def check_row(self, r):
         before, keys, after = r.before, r.keys, r.after
         if r.cursor:
