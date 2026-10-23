@@ -26,4 +26,4 @@
     df -T /HumanVillage
 
 # SEE ALSO
-mount(8), umount(8), du(1)
+mount(8), umount(8)

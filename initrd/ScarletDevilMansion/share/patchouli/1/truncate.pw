@@ -20,4 +20,4 @@
     truncate -s -1K log.txt
 
 # SEE ALSO
-dd(1), ls(1), du(1)
+dd(1), ls(1)
