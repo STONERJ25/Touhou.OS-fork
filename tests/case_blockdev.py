@@ -526,11 +526,14 @@ def blk_sata_timeout():
         for i in range(4):          # the lost command lands in the boot-time partition scan or in one of these; either way it must heal
             g.run(f"dd if=/dev/{dev} of=/dev/null bs=4096 skip={i * 8} count=8")
         text = g.log()
-        must(text, r"ahci0 port 1: command 25 \(lba \d+, \d+ sectors\) failed: timeout")
-        must(text, r"ahci0 port 1: link reset done, disk is back")
+        # The sixth command of the controller is the one that is lost. Which port it belongs to depends on what was read before
+        # the dd runs (the mount policy also probes the boot disk), so any port may be the victim; it must heal either way.
+        must(text, r"ahci0 port \d: command \d+ \(lba \d+, \d+ sectors\) failed: timeout")
+        must(text, r"ahci0 port \d: link reset done, disk is back")
         assert g.sha_of(f"sha256sum /dev/{dev}") == sha(data), "the disk must read back correctly after the recovery"
-        stats = must(g.ok("cat /proc/ahci"), r"port 1 \w+ \"TIMEOUT-SATA\".*errors (\d+) resets (\d+) flushes \d+ bounced \d+(\s+DEAD)?")
-        assert int(stats.group(2)) >= 1 and not stats.group(3), stats.group(0)
+        status = g.ok("cat /proc/ahci")
+        resets = re.findall(r"errors (\d+) resets (\d+) flushes \d+ bounced \d+(\s+DEAD)?", status)
+        assert sum(int(r[1]) for r in resets) >= 1 and not any(r[2] for r in resets), status
 
 
 @test
