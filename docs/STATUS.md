@@ -11,6 +11,7 @@ python tools/build.py                      # loader + kernel + userland + initrd
 python tools/mkimage.py                    # bootable GPT disk image for a USB stick: build/touhou-os.img
 python tests/run_all.py [name]             # the scripted QEMU tests (optionally only those matching name)
 python tools/qemu.py boot --until "Welcome to Gensokyo" --shot build/shot.png    # headless boot + screenshot
+$env:TOUHOU_CPU = "Skylake-Client-noTSX-IBRS"   # optional: run QEMU as a Skylake/Kaby Lake CPU instead of `-cpu max` (the real target is an i5-7500)
 ```
 
 Needs (all installed on this machine): LLVM/Clang 22 (clang, ld.lld, lld-link, llvm-objcopy, llvm-ar), NASM, QEMU 11

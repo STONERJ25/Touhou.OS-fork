@@ -164,7 +164,8 @@ static ssize_t slave_write(VNode *v, File *f, const void *buf, size_t n, u64 off
             current->intr = false;
         }
         irq_restore(fl);
-        tty_write(&p->slave, in + done, chunk);
+        ssize_t w = tty_write(&p->slave, in + done, chunk);
+        if (w < 0) return done ? (ssize_t)done : w;                 /* a background writer on a TOSTOP terminal (job control) */
         done += chunk;
     }
     return (ssize_t)done;

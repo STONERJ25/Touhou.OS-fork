@@ -172,6 +172,7 @@ static size_t gen_pidfile(const PidFile *pf, char *b, size_t cap) {
     const char *state = st[p->state == PROC_ZOMBIE];
     if (p->state == PROC_RUNNING && p->task && p->task->state == TASK_SLEEPING) state = "S";
     else if (p->state == PROC_RUNNING && p->task && p->task->state == TASK_BLOCKED) state = "S";
+    if (p->state == PROC_RUNNING && p->stopped) state = "T";                 /* stopped by SIGSTOP / SIGTSTP / SIGTTIN / SIGTTOU (job control) */
     u64 ticks = 0;                                      /* CPU time of the whole process: every thread counts */
     if (p->state == PROC_RUNNING) for (Task *t = p->threads; t; t = t->thread_next) ticks += t->cpu_ticks;
     u64 vm = 0, rss = 0;
@@ -186,9 +187,9 @@ static size_t gen_pidfile(const PidFile *pf, char *b, size_t cap) {
     case PF_STATUS:
         n = (size_t)snprintf(b, cap,
             "Name:\t%s\nState:\t%s\nPid:\t%d\nPPid:\t%d\nPGid:\t%d\nUid:\t%u\nGid:\t%u\nVmSize:\t%lu kB\nVmRSS:\t%lu kB\n"
-            "CpuTicks:\t%lu\nStartMs:\t%lu\nCwd:\t%s\nThreads:\t%d\n",
+            "CpuTicks:\t%lu\nStartMs:\t%lu\nCwd:\t%s\nThreads:\t%d\nNice:\t%d\n",
             p->name, state, p->pid, p->ppid, p->pgid, p->cred.uid, p->cred.gid, (unsigned long)(vm * 4),
-            (unsigned long)(rss * 4), (unsigned long)ticks, (unsigned long)p->start_ms, p->cwd_path, p->nthreads);
+            (unsigned long)(rss * 4), (unsigned long)ticks, (unsigned long)p->start_ms, p->cwd_path, p->nthreads, p->nice);
         break;
     case PF_CMDLINE:
         n = (size_t)snprintf(b, cap, "%s\n", p->cmdline[0] ? p->cmdline : p->name);
@@ -196,7 +197,7 @@ static size_t gen_pidfile(const PidFile *pf, char *b, size_t cap) {
     case PF_THREADS:                                    /* one line per thread: tid, state (R ready/running, S asleep), ticks, name */
         for (Task *t = p->threads; t && n + 80 < cap; t = t->thread_next)
             n += (size_t)snprintf(b + n, cap - n, "%d %s %lu %s\n", t->utid,
-                                  (t->state == TASK_SLEEPING || t->state == TASK_BLOCKED) ? "S" : "R",
+                                  p->stopped ? "T" : (t->state == TASK_SLEEPING || t->state == TASK_BLOCKED) ? "S" : "R",
                                   (unsigned long)t->cpu_ticks, t->name);
         if (!n) n = (size_t)snprintf(b, cap, "%d Z 0 %s\n", p->pid, p->name);     /* a zombie has no threads left; the process itself is listed */
         break;
