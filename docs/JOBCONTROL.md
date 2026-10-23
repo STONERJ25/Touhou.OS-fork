@@ -126,15 +126,61 @@ processes are stopped, not when the first one is; `waitpid(pid, ..., WUNTRACED)`
 with `WNOHANG` (stops are reported once); `fg` on a job that exited between the prompt and the command finds no process
 (`ECHILD`).
 
+## Priorities
+
+Every process has a **nice value** from -20 (greedy) to 19 (polite), 0 at boot; children inherit it, `exec` keeps it, all
+threads of a process share it (`Process.nice`, copied into each `Task.nice`).
+
+* **System calls** (`kernel/sys/priority.c`, numbers 116 and 117): `getpriority(which, who)` and
+  `setpriority(which, who, nice)` with `which` = `PRIO_PROCESS` (a pid), `PRIO_PGRP` (a process group) or `PRIO_USER`;
+  `who == 0` means the caller's own process, group or user. `getpriority` returns `20 - nice` (1 to 40) so that the return
+  code is never negative, and the lowest nice value among the matches; libc turns it back. `setpriority` clamps to the range,
+  returns `EPERM` for processes of other users (unless root) and `EACCES` when a non-root caller would *lower* a value.
+* **Scheduler** (`slice_for` in `kernel/sched/task.c`): the round robin is unchanged, but a thread's time slice is
+  `SCHED_SLICE` (10 ticks) at nice 0, shrinks linearly to 1 tick at nice 19 and grows by 5 ticks per step below 0 (110 at -20).
+  Two busy processes therefore share the CPU in proportion to their slices: in the test a nice-19 process got about an eighth
+  of what a nice-0 process got (`cpu ticks: nice 0 got 590, nice 19 got 67`). A sleeping thread uses no slice, so niceness
+  only matters under competition.
+* **libc and tools**: `getpriority`, `setpriority`, `nice` (`<sys/resource.h>`, `<unistd.h>`), the `nice` and `renice`
+  applets (`user/bin/kappabox/priority.c`), `ps -l` (NI column), `Nice:` in `/proc/<pid>/status`. `renice` takes the new
+  value itself, not an increment (the util-linux meaning).
+
+## Hard links
+
+`link(old, new)` (system call 118, `vfs_link` in `kernel/fs/vfs.c`) gives an existing file a second name. It links the
+file itself (not what a final symlink points to), refuses directories (`EPERM`), existing names (`EEXIST`), other mounts
+(`EXDEV`) and filesystems that cannot do it (`EPERM`). tmpfs implements it (`tmp_link`): every directory entry owns one
+reference to the node, `st_nlink` counts the entries, `unlink` and `rename` over a name drop one, and the data goes away with
+the last entry *and* the last open descriptor (an unlinked-but-open file reports `st_nlink == 0`). The root filesystem,
+`/tmp` and `/dev` are tmpfs instances, each its own mount, so a link across them fails with `EXDEV`. FAT has no hard links.
+The `ln` applet makes them without `-s`.
+
+## /proc/<pid>/fd, cwd and exe
+
+* `/proc/<pid>/cwd` is a symlink to the working directory (`Process.cwd_path`), `/proc/<pid>/exe` to the program, by the
+  normalised path `execve` was given (`Process.exe`; for a `#!` script it is the interpreter).
+* `/proc/<pid>/fd/` is a directory with a symlink for every open descriptor, named by its number. The target is the
+  absolute path the file was opened with (`File.path`, set by `open`, and `/dev/console` for init's descriptors; symlinks in the
+  path are not resolved), `pipe:[N]` / `socket:[N]` (both ends of a pipe show the same `N`: the vnode), or `anon_inode:[...]`
+  for things without a name such as the master side of a pty. Following the link opens the file again. The directory is
+  `dr-x------` and owned by the process's user, so only that user and root can list it; `cwd` and `exe` are world readable.
+  `readdir` and `readlink` look at the descriptor table with interrupts disabled, so a descriptor closed meanwhile simply
+  disappears (`ENOENT`). `fuser`-like tools can be built on it.
+
 ## Tests
 
-`python tests/run_all.py jobctl` (`tests/case_jobctl.py`) boots a text shell and runs `jctest` (`user/bin/jctest.c`). It
-covers: stop and continue of a two-thread process (both threads freeze, both resume), the `waitpid` words, `SIGCHLD` and
-`SA_NOCLDSTOP`, killing a stopped process, stop signals that are ignored, caught, blocked and discarded by `SIGCONT`,
+`python tests/run_all.py jobctl` (`tests/case_jobctl.py`) boots a text shell and runs `jctest` (`user/bin/jctest.c`, about
+15 s). It covers: stop and continue of a two-thread process (both threads freeze, both resume), the `waitpid` words, `SIGCHLD`
+and `SA_NOCLDSTOP`, killing a stopped process, stop signals that are ignored, caught, blocked and discarded by `SIGCONT`,
 `SIGCONT` with a handler or blocked, `kill -STOP/-CONT/-TSTP` through the kappabox applet and `ps` showing `T`, Ctrl-Z
 through a pty (the stopped job does not take the shell's next line, `fg` continues it, ^D ends it), background read
-(`SIGTTIN`, `EIO` when ignored), `TOSTOP` writes, background `tcsetattr`, an orphaned group reading (`EIO`), and the orphaned
-group rule (`SIGHUP` + `SIGCONT` for a stopped member, nothing without one, `SIGTSTP` dropped, `SIGSTOP` kept).
+(`SIGTTIN`, `EIO` when ignored), `TOSTOP` writes, background `tcsetattr`, an orphaned group reading (`EIO`), the orphaned
+group rule (`SIGHUP` + `SIGCONT` for a stopped member, nothing without one, `SIGTSTP` dropped, `SIGSTOP` kept), nice values
+(`setpriority`/`getpriority`/`nice`, clamping, `EACCES`/`EPERM`, inheritance, `renice`, `ps -l`, `PRIO_PGRP`, and the CPU
+share of a polite process), hard links (counts, shared data, unlink of one name, an unlinked open file, the applet, the
+errors) and `/proc/<pid>/{fd,cwd,exe}` (files, pipes, sockets, listing, closed descriptors, another process).
+The manual pages are checked by `python tests/run_all.py manual` (`nice(1)`, `renice(1)`, `ln(1)`, `ps(1)`, `kill(1)`,
+`jobcontrol(7)`, `proc(5)`).
 
 ## Limits and deviations
 

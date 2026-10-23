@@ -162,6 +162,23 @@ The kernel has one CPU, so "a lock" is either interrupt disabling (short section
   without a handler; a thread waiting for a signal that every thread blocks is woken by it (`Task.sigwait_set`).
   `sigpending` (115) reports pending-and-blocked signals of the thread and the process. `pause()` works per thread.
 
+## Stop, continue and priorities with threads
+
+Job control ([JOBCONTROL.md](JOBCONTROL.md)) is about the whole process: `SIGSTOP`, `SIGTSTP`, `SIGTTIN` and `SIGTTOU` stop **every
+thread**, whichever thread they were aimed at (`tgkill` and `pthread_kill` included), and `SIGCONT` resumes them all.
+
+* The stop takes effect when the signal is generated (`Process.stopped`); each thread parks (`job_park`) at its next trip
+  to user mode. A thread blocked inside the kernel stays blocked (nothing is interrupted, so there is no `EINTR` to
+  handle) and parks when its call returns. Parked threads sleep with `intr` set, so `SIGKILL`, `exit_group` and an `execve`
+  in another thread still wake them and they leave.
+* A stopped multi-threaded process is reported once to the parent (`waitpid(WUNTRACED)`), not once per thread, and
+  `/proc/<pid>/threads` shows `T` for each of its threads. `futex` waits keep sleeping while the process is stopped, and the
+  timeout of a timed wait keeps running.
+* The nice value belongs to the process; every thread carries a copy (`Task.nice`) and `pthread_create` threads start with the
+  process's value. The time slice of each thread is derived from it, so a threaded process does not get a bigger share by
+  having more threads: each thread competes with its own slice. (Threads are not a scheduling unit of the process; a
+  five-thread process at nice 0 gets five slices per round.)
+
 ## Not done
 
 * **Kernel stack reuse:** user thread blocks of the default size are cached by libc (8 entries) and reused, but kernel
