@@ -25,6 +25,7 @@ void virtio_blk_init(void);
 void ahci_init(void);
 void nvme_init(void);
 void usb_init(void);
+bool usb_wait_settled(u32 max_ms);
 void storage_mount_boot_volumes(void);
 
 u64 g_hhdm;
@@ -144,6 +145,7 @@ NORETURN void kmain(BootInfo *bi) {
         pmm_add_region(g_boot.initrd_phys, ALIGN_UP(g_boot.initrd_size, PAGE_SIZE));    /* contents now live in tmpfs */
     }
 
+    usb_wait_settled(8000);             /* a USB stick's HUMANVILLAGE volume is mounted before the first session starts (bounded; returns at once without USB) */
     process_init();
     klog("Gensokyo", "boot complete");
     printk("\n\x1b[1;35m Welcome to Gensokyo. \x1b[0m\n");

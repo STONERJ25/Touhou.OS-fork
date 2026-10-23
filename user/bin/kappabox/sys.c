@@ -455,13 +455,14 @@ APPLET(mount) {
         else if (!strcmp(argv[i], "-r")) flags |= MNT_RDONLY;
         else if (!strcmp(argv[i], "-w")) flags &= ~MNT_RDONLY;
         else { kb_error("usage: mount [-t type] [-o options] [-r] source target\n"
-                        "  fat32 options: ro,rw,force,sync,uid=N,gid=N,fmask=OCT,dmask=OCT,umask=OCT,userdirs,usermap=name:uid:gid/..."); return 1; }
+                        "  fat32 options: ro,rw,force,sync,uid=N,gid=N,fmask=OCT,dmask=OCT,umask=OCT,userdirs,usermap=name:uid:gid/...,tzoffset=MINUTES\n"
+                        "  (FAT stores local time: tzoffset defaults to this system's current offset from UTC, see timezone(5))"); return 1; }
     }
     if (argc - i < 2) { kb_error("usage: mount [-t type] [-o options] [-r] source target"); return 1; }
     const char *src = argv[i], *target = argv[i + 1];
     if (!type || !strcmp(type, "auto")) type = strncmp(src, "/dev/", 5) ? NULL : "fat32";
     if (!type) { kb_error("cannot guess the file system type of '%s': use -t type", src); return 1; }
-    char optbuf[128];
+    char optbuf[160];
     optbuf[0] = 0;
     if (opts) strlcpy(optbuf, opts, sizeof optbuf);
     for (const char *p = optbuf; *p;) {                         /* "ro" in the option list is also the read-only flag */
@@ -469,6 +470,18 @@ APPLET(mount) {
         p = strchr(p, ',');
         if (!p) break;
         p++;
+    }
+    /* FAT keeps local time, the kernel has no time zone: hand it this system's current offset (summer time included) unless the caller said. */
+    if ((!strcmp(type, "fat32") || !strcmp(type, "vfat") || !strcmp(type, "fat16")) && !strstr(optbuf, "tzoffset=")) {
+        time_t now = time(NULL);
+        struct tm tmv;
+        localtime_r(&now, &tmv);
+        long minutes = tmv.tm_gmtoff / 60;
+        if (minutes) {
+            char one[32];
+            snprintf(one, sizeof one, "%stzoffset=%ld", optbuf[0] ? "," : "", minutes);
+            strlcat(optbuf, one, sizeof optbuf);
+        }
     }
     if (strstr(optbuf, "userdirs") && !strstr(optbuf, "usermap=")) {   /* hand the kernel the users of /etc/passwd */
         FILE *pw = fopen("/etc/passwd", "r");
@@ -602,7 +615,7 @@ static void fmt_time(unsigned long ticks, char *out, size_t n) {
 }
 
 APPLET(ps) {
-    int full = 0, wide = 0, aux = 0, threads = 0;
+    int full = 0, wide = 0, aux = 0, threads = 0, lng = 0;
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
         if (a[0] == '-') a++;
@@ -612,6 +625,7 @@ APPLET(ps) {
             else if (*a == 'u') aux = 1;
             else if (*a == 'w') wide = 1;
             else if (*a == 'T') threads = 1;
+            else if (*a == 'l') lng = 1;
         }
     }
     int n;
@@ -643,6 +657,25 @@ APPLET(ps) {
         return 0;
     }
     int cols = kb_term_cols();
+    if (lng) {                                      /* -l: long format with the nice value (NI) from /proc/<pid>/status */
+        printf("%s %-8s %5s %5s %3s %6s  %s\n", "S", "USER", "PID", "PPID", "NI", "TIME", "COMMAND");
+        for (int i = 0; i < n; i++) {
+            ProcInfo *p = &v[i];
+            char path[64], buf[512], tm[16];
+            int nice = 0;
+            snprintf(path, sizeof path, "/proc/%d/status", p->pid);
+            int fd = open(path, O_RDONLY);
+            if (fd >= 0) {
+                ssize_t got = read(fd, buf, sizeof buf - 1);
+                close(fd);
+                if (got > 0) { buf[got] = 0; char *q = strstr(buf, "Nice:\t"); if (q) nice = atoi(q + 6); }
+            }
+            fmt_time(p->ticks, tm, sizeof tm);
+            printf("%s %-8s %5d %5d %3d %6s  %s\n", p->state, kb_user_name(p->uid), p->pid, p->ppid, nice, tm, p->name);
+        }
+        free(v);
+        return 0;
+    }
     if (aux) printf("%-8s %5s %5s %7s %6s  %s %6s  %s\n", "USER", "PID", "PPID", "VSZ", "RSS", "S", "TIME", "COMMAND");
     else if (full) printf("%-8s %5s %5s %s %6s  %s\n", "UID", "PID", "PPID", "S", "TIME", "COMMAND");
     else printf("%5s %-8s %s %6s  %s\n", "PID", "USER", "S", "TIME", "COMMAND");

@@ -143,6 +143,7 @@ void process_continue(Process *p);
 void job_park(Process *p);                                              /* sleep while the process is stopped (returns at SIGCONT, or when the thread must die) */
 bool pgrp_orphaned(int pgid);                                           /* no member has a parent in another group of the same session */
 void pgrp_check_orphaned(int pgid);                                     /* orphaned and holds a stopped member: SIGHUP, then SIGCONT */
+void pgrp_terminal_granted(int pgid);                                   /* the group became a terminal's foreground group: members stopped by SIGTTIN/SIGTTOU go on */
 bool signal_is_stop(int sig);
 int  tty_job_check(struct Tty *t, int kind);                            /* kernel/drivers/tty.c: 0, -EIO or -EINTR; may stop the caller */
 #define JC_READ  0

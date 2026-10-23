@@ -44,18 +44,44 @@ Use rear USB ports directly on the board rather than hubs for the first try.
 1. The firmware's boot menu entry loads `BOOTX64.EFI`; the loader prints a few lines (`loader: framebuffer 1920x1080 ...`).
 2. The kernel log scrolls by on the framebuffer console (there is no serial port to count on): `[Gensokyo] acpi: ...`,
    `[Marisa] pci ...` for every device found, drivers claiming devices, `[Keine]` filesystem lines, and `boot complete`.
-3. `init` opens the desktop for `reimu` (no password), the HakureiDE desktop with a panel. Press **Ctrl+Alt+T** for a
-   terminal, **Super+L** to lock, the power button for the shutdown dialog.
+3. About a second after the USB controller comes up the stick itself appears: `[Kappa] usb-storage 1-3: ... bulk-only transport`, then
+   `[Marisa] blk: sda ...` with its two partitions, `[Kappa] usb-storage ... carried over the river as sda`, `[Keine] fat32: sda2 mounted on
+   /HumanVillage` and `the Human Village keeps its records on the stick now`. The homes (`/HumanVillage/reimu` ...) are on the stick from
+   here on and survive the next boot. Boot waits for this (at most 8 s, `[Kappa] usb: the bus settled after N ms`).
+4. `init` opens the desktop for `reimu` (no password), the HakureiDE desktop with a panel. Press **Ctrl+Alt+T** for a
+   terminal, **Super+L** to lock, the power button for the shutdown dialog. **Shut down from the panel (or `poweroff`) before you pull the
+   stick**: that is what marks the volume clean; a stick that was just pulled is mounted read-only at the next boot (see below).
 
 If something is wrong, the useful things to look at (in a terminal window or the text console, `Ctrl+Alt+Backspace` leaves the desktop):
 
 ```
 dmesg | less           the whole boot log        cat /proc/pci        every PCI device and who claimed it
-cat /proc/acpi         what ACPI told us          cat /proc/usb        the USB device tree (keyboard, mouse, hubs)
-cat /proc/partitions   disks the kernel sees      cat /proc/ahci /proc/nvme   storage controller state
+cat /proc/acpi         what ACPI told us          cat /proc/usb        the USB device tree (keyboard, mouse, hubs, sticks)
+cat /proc/partitions   disks the kernel sees      cat /proc/ahci /proc/nvme /proc/usbstorage   storage controller state
 ```
 
 Photograph the screen if the machine dies before a shell exists; the last lines of the log say where.
+
+### The log on the stick (for a boot that fails, and for the next one)
+
+The PC has no serial port, so once the HUMANVILLAGE volume is mounted read-write the kernel keeps its log there too, in two ordinary
+files in the root of the stick's big partition (`/HumanVillage/TOUHOU.LOG`):
+
+| File | Holds |
+|------|-------|
+| `TOUHOU.LOG` | this boot's `dmesg`, from the very first line; written when the volume is mounted, appended every ~5 seconds *if there are new lines*, and once more at poweroff/reboot, where it ends with `-- bootlog: the machine is being shut down ... this line ends a clean run --` |
+| `TOUHOU.PRV` | the boot before (rotated at mount time), so a hang followed by a power cycle still leaves the failed boot readable |
+
+Plug the stick into another computer (Windows, macOS and Linux all open the big partition; the 64 MiB one is the boot partition, leave it
+alone) and open the files in any text editor. A file that **does not end with the "clean run" line** belongs to a boot that hung or was
+cut off; its last lines are the last thing the kernel said (at most ~5 s before the end). The file never grows beyond 256 KiB: past that it
+starts over with the newest part. Every write is followed by a sync, so the data is on the stick within a moment and the volume is almost
+never left flagged dirty by the log itself.
+
+What it does *not* do: a kernel panic is not written (every disk driver needs the scheduler and interrupts, which a panic has just given
+up; the panic text is on the screen: photograph it), nothing is written when the volume is mounted read-only (a stick that was pulled
+without shutting down is flagged dirty and mounted read-only on the next boot; the file of the failed boot is then still intact, and only
+a file system check clears the flag again, see section 5), and `bootlog=off` on the kernel command line switches the whole thing off.
 
 ## 4. The command line (`cmdline.txt` on the ESP)
 
@@ -68,11 +94,13 @@ clock is hours off on the first boot, the PC's clock chip holds local time (Wind
 | `video=native` | keep the screen mode the firmware chose (normally the monitor's native resolution) |
 | `video=max` | the largest mode the display offers, up to 2560x1600 |
 | `video=1280x800` | exactly that mode (default without any `video=`: 1024x768 with fallbacks) |
-| `blk.ro` | register every SATA disk and NVMe drive read-only: **keep this for the first boots** |
+| `blk.ro` | register every SATA disk and NVMe drive read-only: **keep this for the first boots**. It does not apply to USB sticks: the stick you booted from is where `/HumanVillage` lives |
+| `usbstorage=off` | do not drive USB sticks at all (they are listed by `lsusb` but never read or written) |
+| `bootlog=off` | do not keep `TOUHOU.LOG` / `TOUHOU.PRV` on the stick |
 | `text`, `nogui` | no desktop, a text shell |
 | `login` | ask who is at the door (login screen) instead of letting `reimu` in |
 | `autologin=NAME` | open NAME's desktop instead of reimu's |
-| `tz=EST5EDT,M3.2.0,M11.1.0` | the time zone (POSIX syntax, see `man timezone`) |
+| `tz=EST5EDT,M3.2.0,M11.1.0` | the time zone (POSIX syntax, see `man timezone`); also what makes the file times on the stick come out in local time on other computers (FAT stores local time) |
 | `rtc=local` | the clock chip keeps local time (a PC that also runs Windows does that) |
 | `nohumanvillage` | do not mount the HUMANVILLAGE volume |
 | `init=kshell` | skip userland, start the kernel's own tiny shell |
@@ -85,8 +113,19 @@ clock is hours off on the first boot, the PC's clock chip holds local time (Wind
   mounts, formats or probes anything else with writes.
 - Root can still write `/dev/<disk>` by hand (`dd`) or `mount` a disk yourself. `blk.ro` makes the SATA and NVMe drivers
   refuse writes entirely, so even that cannot hurt a Windows disk.
-- Reading the stick *from inside* TouhouOS needs USB mass storage, which is not part of this tree yet: the OS runs from
-  RAM, `/HumanVillage` is the in-memory tmpfs, and nothing you do in a session survives a reboot.
+- The stick you booted from is a disk inside TouhouOS too (USB mass storage): its big partition, labelled HUMANVILLAGE, is
+  `/HumanVillage` and everything you save in your home directory survives the reboot. The 64 MiB boot partition on the same stick is
+  never mounted. The kernel only *reads* the stick's partition tables and boot sectors to find the label; it writes only through the
+  mounted HUMANVILLAGE volume (your files, `TOUHOU.LOG`) or when root writes `/dev/sda` by hand. A second stick that also carries a
+  HUMANVILLAGE volume is ignored (the first one found wins; an internal disk that has one beats any stick), and any other stick is
+  readable (`mount -t fat32 /dev/sdb1 /mnt`) but is never mounted by itself.
+- Eject before you pull: `poweroff` (or the panel's shutdown) flushes and marks the volume clean. A stick that is pulled, or a machine that
+  is switched off with the power button held, while the volume is flagged dirty (a file was written in the last few seconds) is mounted
+  **read-only** at the next boot: the kernel says so in the log (`read-only: the volume was not cleanly unmounted`), nothing is written to
+  it, and `TOUHOU.LOG` is not updated. The data is fine; only a file system check clears the flag: plug the stick into Windows ("Scan and
+  fix"), or use `fsck.vfat -a` on Linux. From inside TouhouOS root can mount it read-write by hand
+  (`umount /HumanVillage; mount -t fat32 -o force,userdirs /dev/sda2 /HumanVillage`), but the flag then stays dirty. If you pull the
+  stick of a *running* system, `/HumanVillage` starts failing with "No such device" until you `umount /HumanVillage` and plug it in again.
 
 ## 6. Known gaps and things to try if it does not work
 
@@ -98,5 +137,15 @@ clock is hours off on the first boot, the PC's clock chip holds local time (Wind
   normally one device being skipped after a few seconds, not a hang.
 - **Sound** (Intel HD Audio, AC'97 as a fallback; never run on a real codec yet): `volume`, then `beep`; if the jack stays
   silent, `cat /proc/audio` and `dmesg | grep Nitori` say what the driver found; see [AUDIO.md](AUDIO.md).
-- Not implemented: network, USB mass storage, suspend, multi-core, GPU acceleration (software drawing at the
-  firmware's resolution is plenty for a desktop of this size).
+- **Network** (see [NETWORK.md](NETWORK.md)): the I219-LM of the target machine (and RTL8168/8111 boards) have drivers that have
+  never run on hardware. On boot the log shows `[Yukari] eth0: Intel I219-LM at ..., MAC ...` and, when a cable is plugged in
+  and autonegotiation finishes, `link up, N Mb/s` followed by the DHCP lease line; `ifconfig`, `ip addr` and `cat /proc/net/dev`
+  show the state, `ping GATEWAY` is the first test. A line saying `did not answer sensibly; leaving it alone` means the card
+  was not touched. The driver never resets the card or the PHY (the firmware's setup is kept), so if there is no link at all,
+  the usual suspects are a cable in a port the ME owns or a PHY in ultra-low-power mode that the ME did not release.
+- **The stick is not found** (no `usb-storage` line in the log): `cat /proc/usb` shows whether the stick enumerated and with which
+  driver (`driver usb-storage`); `class 08/06/62` means a UAS-only device, which is ignored; `cat /proc/usbstorage` shows the state of
+  each unit (`waiting for the unit to become ready`, `given up (...)` with the reason, `no medium`). A slow stick may need more than
+  the 8 s that boot waits for; it is then mounted a little after the desktop is up.
+- Not implemented: suspend, multi-core, GPU acceleration (software drawing at the firmware's resolution is plenty for a desktop of this
+  size); USB mass storage speaks only the bulk-only protocol (no UAS), so a very fast USB 3 SSD stick runs slower than it could.

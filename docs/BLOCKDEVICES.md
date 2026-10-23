@@ -59,7 +59,12 @@ the lot; `cat /proc/ahci` and `cat /proc/nvme` show the controllers with per-por
 ## How the block layer sees them
 
 * `BlockDev.name`: `sda`..`sdz`, `sdaa`.. (Linux scheme) in port order, controllers in PCI enumeration order; `nvme<controller>n<NSID>`
-  (the namespace id, as Linux names single-path namespaces, so nsid 1 and 3 give `nvme0n1` and `nvme0n3`).
+  (the namespace id, as Linux names single-path namespaces, so nsid 1 and 3 give `nvme0n1` and `nvme0n3`). The `sd` names are one pool
+  (`blk_register_sd()` in `blk.c`: the first letter no registered disk uses) shared by the SATA ports and the USB sticks (docs/USB.md,
+  "Mass storage"): sticks plugged in after boot get the next free letters, a pulled stick gives its letter back.
+* Hot-unplug (`blk_unregister()`, used by the USB driver; SATA and NVMe disks never go away): the disk and its partitions leave the
+  list, `/dev` and `/proc/partitions`, are marked `removed`, and every request on them (an open `/dev` node, a mounted filesystem) fails
+  with `-ENODEV`. The `BlockDev` structs stay allocated.
 * `BlockDev.model`: the IDENTIFY model / Identify Controller model, trimmed. `driver` is `"ahci"` or `"nvme"`.
 * `sector_size` is 512 or 4096 (logical size; 512e disks are 512). Other sizes are refused.
 * Buffers may be anywhere in the direct map or the kernel image and need not be aligned. **Nothing above 4 GiB is ever handed to a
@@ -88,6 +93,8 @@ the lot; `cat /proc/ahci` and `cat /proc/nvme` show the controllers with per-por
   and root writing to a `/dev/<disk>` node (mode 0600, as `blkdev_io` has always allowed). Partition scanning (GPT/MBR) only reads.
 * **`blk.ro` on the kernel command line** (cmdline.txt) registers every SATA disk and NVMe namespace read-only: `blk_write` returns `-EROFS` before
   the driver is reached, partitions inherit it, `lsblk` shows `RO 1`. The first boot on the owner's PC should use it (tested by `blk_readonly_switch`).
+  It is a switch for the *internal* disks: USB sticks ignore it and follow their own write-protect switch, because the stick the OS booted
+  from is where `/HumanVillage` lives and has to be writable.
 * The in-kernel check `blkselftest=<dev>:rw` is the only code in the drivers' files that overwrites a device on purpose. It needs that explicit
   command-line word, and before it writes anything it reads the device and compares it with the test pattern; a device that does not hold the
   pattern (any real disk) makes it log `refusing to write to it` and stay read-only.
@@ -222,7 +229,7 @@ These exist so the tests can reach paths that QEMU never takes by itself. They a
 | `ahci.iotimeout=ms` `ahci.dropcmd=N` | read/write timeout / never issue the N-th read or write (it then times out for real) |
 | `nvme.maxxfer=N` `nvme.window=N` `nvme.depth=N` | bytes per command / commands in flight / I/O queue entries (tiny values force queue wrap-around) |
 | `nvme.bounce` `nvme.nosync` | always bounce / no flush after writes |
-| `blk.ro` | register every disk these drivers find read-only (**use this for the first boot on real hardware**) |
+| `blk.ro` | register every SATA disk and NVMe namespace read-only (**use this for the first boot on real hardware**; USB sticks are not affected) |
 | `blk.dmalimit_mb=N` | test only: treat caller memory above N MiB as unreachable for DMA (stands in for 4 GiB; forces the bounce path for buffers up there) |
 | `nvme.iotimeout=ms` `nvme.dropcmd=N` | completion timeout / never ring the doorbell for the N-th read/write batch |
 

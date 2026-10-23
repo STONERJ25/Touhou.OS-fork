@@ -1,0 +1,40 @@
+.page fetch 1 download a web page or file over HTTP
+
+# SYNOPSIS
+*fetch* [*-q*] [*-i*] [*-O* _FILE_] [*-T* _SECONDS_] [*-U* _AGENT_] [*-H* _HEADER_] [*-r* _REDIRECTS_] _URL_...
+
+# DESCRIPTION
+`fetch` sends an HTTP/1.1 `GET` request to each _URL_ and writes the body of the answer to standard output (or to the file named with `-O`). Only plain `http://` is spoken: there is no TLS in this system, and a `https://` address is refused with a message rather than quietly downgraded.
+
+Redirects (301, 302, 303, 307, 308) are followed up to eight times, with relative and absolute `Location` headers. Bodies sent with a `Content-Length`, in chunks (`Transfer-Encoding: chunked`) or simply until the server closes the connection are all understood. The request carries `Connection: close`, a `Host` header (with the port when it is not 80) and a short `User-Agent`.
+
+Progress messages (`Connecting to ...`, the status line, the length) go to standard error unless `-q` is given. If the server answers with an error status (400 and up) nothing is written, the status is reported and the exit status is 8.
+
+`wget` is the same program with the habits of its namesake: without `-O` it saves the body in a file named after the last part of the URL path (`index.html` when there is none), adding `.1`, `.2` and so on rather than overwriting. `wget -O - URL` prints to standard output.
+
+# OPTIONS
+@ *-O* _FILE_
+    Write the body to FILE; `-` means standard output. (`-o` is the same.)
+@ *-q*
+    Quiet: no progress messages.
+@ *-i*
+    Include the status line and headers of the final response in the output.
+@ *-T* _SECONDS_
+    Give up on a silent connection after this long (default 30).
+@ *-U* _AGENT_
+    The User-Agent header to send.
+@ *-H* _HEADER_
+    One extra request header, such as `Accept-Language: ja`.
+@ *-r* _REDIRECTS_
+    How many redirects to follow (default 8).
+
+# EXAMPLES
+    fetch http://10.0.2.2:8000/hello.txt
+    fetch -q -O /tmp/page.html http://example.test/
+    wget http://10.0.2.2:8000/archive.tar
+
+# EXIT STATUS
+0 on success, 1 for protocol errors and local failures, 4 when the server could not be reached, 8 when it answered with an error status, 2 for a usage error.
+
+# SEE ALSO
+nc(1), httpd(1), nslookup(1), network(7)

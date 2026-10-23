@@ -119,6 +119,22 @@ raw mode with restore on exit and on signals, key decoding (`PT_K_*`, `PT_M_ALT`
 a sequence), the window size, and a diff-based screen painter that rewrites only the rows that changed. A directory
 under `user/bin` with no `.c` files is skipped by `tools/build.py`, so `ptlib` produces no binary of its own.
 
+## Process tools: kill, ps, nice, renice, ln
+
+Small kappabox applets that talk to the process-control side of the kernel; the mechanism is in [JOBCONTROL.md](JOBCONTROL.md)
+(stopped processes, terminals, priorities, hard links, `/proc/<pid>/fd`), the manual pages are in section 1 and 7.
+
+| Command | Source | What it does |
+|---|---|---|
+| `kill [-SIGNAL] pid...` | `kappabox/sys.c` | sends a signal by name or number; `-STOP`, `-CONT`, `-TSTP`, `-TTIN`, `-TTOU` work now (a stopped process shows `T` in `ps`) |
+| `ps [-fluTwaxeA]` | `kappabox/sys.c` | process list; state `T` for stopped, `-l` adds the nice value (`NI`), `-T` lists threads |
+| `nice [-n N \| -N \| --N] [cmd args...]` | `kappabox/priority.c` | runs a command with its nice value raised by N (10 by default); without a command prints the current value |
+| `renice [-n] PRIORITY [-p\|-g\|-u] ID...` | `kappabox/priority.c` | sets the nice value of running processes, process groups or users; prints old and new values |
+| `ln [-sf] target name` | `kappabox/fileops.c` | hard links (default) on tmpfs, symbolic links with `-s` |
+
+`jobs`, `fg` and `bg` belong to gapsh and are being built on the stop/continue support by the shell's owner;
+[JOBCONTROL.md](JOBCONTROL.md) lists exactly what the shell has to do.
+
 ## Tests
 
 ```

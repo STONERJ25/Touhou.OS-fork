@@ -263,6 +263,7 @@ int tty_ioctl(Tty *t, unsigned long req, void *arg) {
          * (the console for a process without a controlling terminal, a pty slave for its session leader). */
         Process *p = current ? current->proc : NULL;
         if (p && (p->ctty == t || (t == tty_console() && !p->ctty))) t->session = p->sid;
+        pgrp_terminal_granted(t->fg_pgid);                  /* members that stopped waiting for the terminal have it now */
         return 0;
     }
     case FIONREAD:

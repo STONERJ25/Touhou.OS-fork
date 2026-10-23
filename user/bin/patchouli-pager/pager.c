@@ -817,13 +817,13 @@ static void interactive(void) {
         g_prompt_extra[0] = 0;
         if (have_count) snprintf(g_prompt_extra, sizeof g_prompt_extra, " %ld", count);
         paint();
-        message[0] = 0;
         int k = pt_term_getkey(&term, 300);
         if (k == PT_KEY_EOF) break;
         if (k == PT_KEY_NONE) {
             if (pt_term_size(&term)) pts_resize(&scr, term.rows, term.cols);
-            continue;
+            continue;                           /* a message stays on screen until the next real key, not just one poll */
         }
+        message[0] = 0;
         if (k >= '0' && k <= '9' && (have_count || k != '0')) {
             count = count * 10 + (k - '0');
             if (count > 100000000) count = 100000000;

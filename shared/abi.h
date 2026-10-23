@@ -213,6 +213,13 @@ struct gdirent {
 #define WSTOPSIG(s)     (((s) >> 8) & 0xff)
 #define WIFCONTINUED(s) ((s) == 0xffff)
 
+/* scheduling priorities (setpriority / getpriority): nice values run from -20 (greedy) to 19 (polite) */
+#define PRIO_PROCESS 0
+#define PRIO_PGRP    1
+#define PRIO_USER    2
+#define NICE_MIN     (-20)
+#define NICE_MAX     19
+
 /* sigaction flags the kernel looks at */
 #define SA_NOCLDSTOP 0x1        /* SIGCHLD for a child that stops or continues is not wanted (it still dies noisily) */
 

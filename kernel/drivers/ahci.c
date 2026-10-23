@@ -165,7 +165,6 @@ struct AhciHba {
 
 static AhciHba *g_hba_head, *g_hba_tail;
 static int g_nhba;
-static int g_sd_next;
 
 /* Test knobs (kernel command line); the defaults are the production behaviour. They exist so that paths QEMU would never
  * take on its own (many PRDs per command, command splitting, bounce buffers, HBA reset) can be exercised in the tests. */
@@ -785,7 +784,6 @@ static void port_bringup(AhciHba *h, AhciPort *p) {
 
     BlockDev *bd = kzalloc(sizeof *bd);
     if (!bd) return;
-    sd_name(bd->name, sizeof bd->name, g_sd_next++);
     strlcpy(bd->model, p->model, sizeof bd->model);
     bd->driver = "ahci";
     bd->sector_size = p->sector_size;
@@ -796,7 +794,7 @@ static void port_bringup(AhciHba *h, AhciPort *p) {
     bd->readonly = blk_ro_requested();
     bd->priv = p;
     p->bd = bd;
-    blk_register(bd);
+    blk_register_sd(bd);                                    /* sda, sdb, ...: the pool USB sticks draw from as well */
     return;
 
 reject:

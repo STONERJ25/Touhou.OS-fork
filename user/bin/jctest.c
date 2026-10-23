@@ -15,6 +15,9 @@
 #include <sys/wait.h>
 #include <sys/mman.h>
 #include <termios.h>
+#include <sys/resource.h>
+#include <sys/socket.h>
+#include <dirent.h>
 #include <pty.h>
 #include <gensokyo.h>
 
@@ -172,14 +175,13 @@ static void test_stop_continue(void) {
     sigaction(SIGCHLD, &sa, NULL);
 }
 
-static volatile unsigned long *g_flag;                      /* g_shared[8..] are flags set by handlers in the children */
+/* g_shared[8..10] are flags the handlers set in the children and the test sets for them */
 static void on_flag_tstp(int sig) { (void)sig; g_shared[8]++; }
 static void on_flag_cont(int sig) { (void)sig; g_shared[9]++; }
 
 static void test_stop_semantics(void) {
     SECTION("stop signals: ignored, caught, blocked, pending discarded by SIGCONT, handler for SIGCONT");
     int st;
-    (void)g_flag;
 
     /* SIGTSTP ignored: nothing happens; SIGSTOP cannot be ignored */
     g_shared[0] = 0;
@@ -386,12 +388,13 @@ static int term_seen_before(Term *t, const char *needle, size_t upto) {     /* .
 
 static void term_send(Term *t, const char *s) { write(t->mfd, s, strlen(s)); }
 
-enum { M_CTRLZ, M_BGREAD, M_BGREAD_IGN, M_TOSTOP, M_TOSTOP_IGN, M_BGTCSET, M_ORPHAN_EIO };
+enum { M_CTRLZ, M_BGREAD, M_BGREAD_IGN, M_TOSTOP, M_TOSTOP_IGN, M_BGTCSET, M_ORPHAN_EIO, M_LATE_FG };
 
 static void job_body(int mode) {
     char buf[256];
     switch (mode) {
     case M_CTRLZ:
+    case M_LATE_FG:
         for (;;) {
             ssize_t n = read(0, buf, sizeof buf);
             if (n <= 0) { dprintf(1, "jobeof\n"); _exit(7); }
@@ -460,9 +463,16 @@ static void pty_shell(const char *spath, int mode) {
         job_body(mode);
     }
     setpgid(pid, pid);
-    if (mode == M_CTRLZ) tcsetpgrp(0, pid);                 /* the job gets the terminal; the others run in the background */
-    dprintf(1, "RUN\n");
     int st;
+    if (mode == M_CTRLZ) tcsetpgrp(0, pid);                 /* the job gets the terminal; the others run in the background */
+    if (mode == M_LATE_FG) {                                /* a shell that hands the terminal over late: the job reads first */
+        nap(400);
+        pid_t r = waitpid(pid, &st, WUNTRACED | WNOHANG);
+        if (r == pid && WIFSTOPPED(st)) dprintf(1, "EARLY STOP sig=%d\n", WSTOPSIG(st));
+        else dprintf(1, "NO EARLY STOP r=%d\n", (int)r);
+        tcsetpgrp(0, pid);                                  /* no SIGCONT: being in front is all the job was waiting for */
+    }
+    dprintf(1, "RUN\n");
     for (;;) {
         pid_t r = waitpid(pid, &st, WUNTRACED | WCONTINUED);
         if (r < 0) { if (errno == EINTR) continue; dprintf(1, "WAITERR %d\n", errno); _exit(91); }
@@ -576,6 +586,22 @@ static void test_background_io(void) {
     finish_shell(&t, sh);
 }
 
+static void test_late_foreground(void) {
+    SECTION("terminals: a job that reads before the shell has handed it the terminal stops, and goes on when it gets it");
+    Term t;
+    /* Shells fork the job and give it the terminal afterwards; if the job runs first it is a background process for a moment.
+     * It stops (SIGTTIN) and tcsetpgrp, which makes its group the foreground group, must be enough to wake it: no SIGCONT. */
+    pid_t sh = start_shell(&t, M_LATE_FG);
+    CHECK(term_expect(&t, "EARLY STOP sig=21", 10000));
+    CHECK(term_expect(&t, "CONTINUED", 10000));
+    term_send(&t, "hi\n");
+    CHECK(term_expect(&t, "job:hi", 10000));
+    term_send(&t, "\x04");
+    CHECK(term_expect(&t, "DONE code=7", 10000));
+    CHECK(!term_seen(&t, "NO EARLY STOP"));
+    finish_shell(&t, sh);
+}
+
 /* ---------------------------------------------------------------- orphaned process groups */
 
 static volatile int g_hup;
@@ -645,6 +671,256 @@ static void test_orphaned_group(void) {
     close(pfd[1]);
 }
 
+/* ---------------------------------------------------------------- priorities */
+
+static int proc_nice(pid_t pid) {                           /* the Nice: line of /proc/<pid>/status, or 99 */
+    char path[64], buf[512];
+    snprintf(path, sizeof path, "/proc/%d/status", (int)pid);
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return 99;
+    ssize_t n = read(fd, buf, sizeof buf - 1);
+    close(fd);
+    if (n <= 0) return 99;
+    buf[n] = 0;
+    char *s = strstr(buf, "Nice:\t");
+    return s ? atoi(s + 6) : 99;
+}
+
+static unsigned long proc_ticks(pid_t pid) {                /* CPU time in ticks (ms) from /proc/<pid>/stat */
+    char path[64], buf[256], state[8], name[64];
+    int p, pp, pg;
+    unsigned u, g;
+    unsigned long vsz, rss, ticks, start;
+    snprintf(path, sizeof path, "/proc/%d/stat", (int)pid);
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return 0;
+    ssize_t n = read(fd, buf, sizeof buf - 1);
+    close(fd);
+    if (n <= 0) return 0;
+    buf[n] = 0;
+    if (sscanf(buf, "%d %d %d %u %u %7s %lu %lu %lu %lu %63s", &p, &pp, &pg, &u, &g, state, &vsz, &rss, &ticks, &start, name) < 10) return 0;
+    return ticks;
+}
+
+static void test_nice(void) {
+    SECTION("priorities: setpriority, getpriority, nice, renice, inheritance, and a polite process gets less CPU");
+    char line[128], cmd[128];
+    int st;
+
+    /* the scheduler first, while we are still at nice 0: two busy processes, one of them polite */
+    pid_t hi = fork();
+    if (hi == 0) for (;;) { }
+    pid_t lo = fork();
+    if (lo == 0) { setpriority(PRIO_PROCESS, 0, 19); for (;;) { } }
+    long end = now_ms() + 90000;
+    while (proc_ticks(hi) < 500 && now_ms() < end) nap(100);
+    unsigned long t_hi = proc_ticks(hi), t_lo = proc_ticks(lo);
+    printf("  cpu ticks: nice 0 got %lu, nice 19 got %lu\n", t_hi, t_lo);
+    CHECK(t_hi >= 500 && t_hi > 3 * t_lo && t_lo > 0);       /* about ten to one: slices of 10 and 1 ticks */
+    kill_and_reap(hi);
+    kill_and_reap(lo);
+
+    errno = 0;
+    CHECK(getpriority(PRIO_PROCESS, 0) == 0 && errno == 0);
+    CHECK(setpriority(PRIO_PROCESS, 0, 4) == 0 && getpriority(PRIO_PROCESS, 0) == 4);
+    CHECK(nice(3) == 7 && getpriority(PRIO_PROCESS, 0) == 7);
+    CHECK(proc_nice(getpid()) == 7);
+    CHECK(setpriority(PRIO_PROCESS, 0, 99) == 0 && getpriority(PRIO_PROCESS, 0) == 19);     /* clamped to 19 */
+    if (getuid() != 0) {                                    /* lowering a nice value needs root */
+        CHECK(setpriority(PRIO_PROCESS, 0, 7) < 0 && errno == EACCES);
+        CHECK(nice(-1) == -1 && errno == EPERM);
+    }
+    if (getuid() == 0) setpriority(PRIO_PROCESS, 0, 19);
+    errno = 0;
+    CHECK(getpriority(PRIO_PROCESS, 987654) == -1 && errno == ESRCH);
+
+    /* children and exec'd programs inherit it; the nice and renice applets */
+    int base = getpriority(PRIO_PROCESS, 0);
+    CHECK(base == 19);
+    pid_t kid = fork();
+    if (kid == 0) _exit(getpriority(PRIO_PROCESS, 0) == base ? 0 : 1);
+    CHECK(wait_for(kid, &st, 0, 5000) == kid && WIFEXITED(st) && WEXITSTATUS(st) == 0);
+    FILE *f = popen("nice", "r");
+    line[0] = 0;
+    if (f) { fgets(line, sizeof line, f); pclose(f); }
+    CHECK(atoi(line) == base);
+
+    g_shared[0] = 0;
+    pid_t sleeper = fork();
+    if (sleeper == 0) for (;;) { g_shared[0]++; nap(5); }
+    CHECK(wait_counter(&g_shared[0], 1, 5000));
+    CHECK(proc_nice(sleeper) == base);
+    snprintf(cmd, sizeof cmd, "renice 19 -p %d", (int)sleeper);
+    f = popen(cmd, "r");
+    line[0] = 0;
+    if (f) { fgets(line, sizeof line, f); pclose(f); }
+    char want[96];
+    snprintf(want, sizeof want, "%d (process ID) old priority %d, new priority 19", (int)sleeper, base);
+    CHECK(strstr(line, want) != NULL);
+    CHECK(proc_nice(sleeper) == 19 && getpriority(PRIO_PROCESS, sleeper) == 19);
+    f = popen("ps -l", "r");                                /* the NI column */
+    int seen = 0;
+    while (f && fgets(line, sizeof line, f)) {
+        char s[8], u[32];
+        int pid = 0, ppid = 0, ni = -99;
+        if (sscanf(line, "%7s %31s %d %d %d", s, u, &pid, &ppid, &ni) == 5 && pid == (int)sleeper && ni == 19) seen = 1;
+    }
+    if (f) pclose(f);
+    CHECK(seen);
+    if (getuid() != 0) CHECK(system("renice 5 -p 1 > /dev/null 2>&1") != 0);              /* init is not ours */
+    kill_and_reap(sleeper);
+
+    /* PRIO_PGRP reaches every process of the group (all at 19 already: check a fresh one) */
+    pid_t mate = fork();
+    if (mate == 0) for (;;) pause();
+    CHECK(setpriority(PRIO_PGRP, 0, 19) == 0 && proc_nice(mate) == 19 && getpriority(PRIO_PROCESS, 0) == 19);
+    kill_and_reap(mate);
+    (void)cmd;
+}
+
+/* ---------------------------------------------------------------- hard links and /proc/<pid>/{fd,cwd,exe} */
+
+static long file_nlink(const char *path) {
+    struct stat st;
+    return stat(path, &st) == 0 ? (long)st.st_nlink : -1;
+}
+
+static ssize_t slurp(const char *path, char *buf, size_t cap) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return -1;
+    ssize_t n = read(fd, buf, cap - 1);
+    close(fd);
+    if (n >= 0) buf[n] = 0;
+    return n;
+}
+
+static void test_links(void) {
+    SECTION("hard links: link(), st_nlink, one inode, unlink one name, the ln applet, errors");
+    char buf[64];
+    mkdir("/tmp/jl", 0755);
+    int fd = open("/tmp/jl/a", O_CREAT | O_RDWR | O_TRUNC, 0644);
+    CHECK(fd >= 0 && write(fd, "gensokyo", 8) == 8);
+    close(fd);
+    CHECK(file_nlink("/tmp/jl/a") == 1);
+    CHECK(link("/tmp/jl/a", "/tmp/jl/b") == 0);
+    CHECK(file_nlink("/tmp/jl/a") == 2 && file_nlink("/tmp/jl/b") == 2);
+    struct stat sa, sb;
+    CHECK(stat("/tmp/jl/a", &sa) == 0 && stat("/tmp/jl/b", &sb) == 0 && sa.st_ino == sb.st_ino && sa.st_dev == sb.st_dev);
+    fd = open("/tmp/jl/b", O_WRONLY | O_APPEND);
+    CHECK(fd >= 0 && write(fd, "!", 1) == 1);
+    close(fd);
+    CHECK(slurp("/tmp/jl/a", buf, sizeof buf) == 9 && !strcmp(buf, "gensokyo!"));          /* one file, two names */
+    CHECK(unlink("/tmp/jl/a") == 0);
+    CHECK(file_nlink("/tmp/jl/b") == 1);
+    CHECK(slurp("/tmp/jl/b", buf, sizeof buf) == 9 && !strcmp(buf, "gensokyo!"));           /* the data lives on */
+
+    fd = open("/tmp/jl/b", O_RDWR);                                                         /* an unlinked file that is still open */
+    CHECK(fd >= 0 && link("/tmp/jl/b", "/tmp/jl/c") == 0 && file_nlink("/tmp/jl/b") == 2);
+    CHECK(unlink("/tmp/jl/b") == 0 && unlink("/tmp/jl/c") == 0);
+    struct stat so;
+    CHECK(fstat(fd, &so) == 0 && so.st_nlink == 0);
+    CHECK(
+          lseek(fd, 0, SEEK_SET) == 0 && read(fd, buf, 9) == 9 && !memcmp(buf, "gensokyo!", 9));
+    close(fd);
+
+    CHECK(system("echo ln > /tmp/jl/d; ln /tmp/jl/d /tmp/jl/e") == 0 && file_nlink("/tmp/jl/d") == 2);        /* the applet */
+    CHECK(system("ln /tmp/jl/d /tmp/jl/e 2>/dev/null") != 0);                                                 /* exists */
+    CHECK(symlink("d", "/tmp/jl/s") == 0 && link("/tmp/jl/s", "/tmp/jl/s2") == 0);
+    struct stat ls;
+    CHECK(lstat("/tmp/jl/s2", &ls) == 0 && S_ISLNK(ls.st_mode));                           /* a link to the symlink itself */
+
+    errno = 0;
+    CHECK(link("/tmp/jl", "/tmp/jl2") < 0 && errno == EPERM);                               /* directories */
+    CHECK(link("/tmp/jl/nonexistent", "/tmp/jl/x") < 0 && errno == ENOENT);
+    CHECK(link("/tmp/jl/d", "/tmp/jl/e") < 0 && errno == EEXIST);
+    CHECK(link("/tmp/jl/d", "/nosuchdir/x") < 0 && errno == ENOENT);
+    struct stat home;
+    if (stat("/HumanVillage/reimu", &home) == 0 && access("/HumanVillage/reimu", W_OK) == 0)
+        CHECK(link("/tmp/jl/d", "/HumanVillage/reimu/jl-x") < 0 && errno == EXDEV);       /* another mount */
+    if (getuid() != 0) {                                    /* other people's files: only those you could read and write yourself */
+        CHECK(link("/etc/passwd", "/tmp/jl/pw") < 0 && errno == EPERM);
+        CHECK(link("/bin/su", "/tmp/jl/su") < 0 && errno == EPERM);                       /* set-user-id program, owned by root */
+    }
+    unlink("/tmp/jl/d"); unlink("/tmp/jl/e"); unlink("/tmp/jl/s"); unlink("/tmp/jl/s2");
+}
+
+static void test_proc_links(void) {
+    SECTION("/proc/<pid>/fd, cwd and exe");
+    char target[256], path[96];
+    mkdir("/tmp/jl", 0755);
+    int fd = open("/tmp/jl/proc.txt", O_CREAT | O_RDWR | O_TRUNC, 0600);
+    CHECK(fd >= 0);
+    snprintf(path, sizeof path, "/proc/%d/fd/%d", (int)getpid(), fd);
+    ssize_t n = readlink(path, target, sizeof target - 1);
+    CHECK(n > 0 && (target[n] = 0, !strcmp(target, "/tmp/jl/proc.txt")));
+    CHECK(write(fd, "via proc", 8) == 8);
+    char buf[32] = "";
+    CHECK(slurp(path, buf, sizeof buf) == 8 && !strcmp(buf, "via proc"));                  /* open() follows the link */
+    struct stat st;
+    CHECK(lstat(path, &st) == 0 && S_ISLNK(st.st_mode));
+
+    int fds[2], sv[2];
+    CHECK(pipe(fds) == 0 && socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
+    char t2[256];
+    snprintf(path, sizeof path, "/proc/self/fd/%d", fds[0]);
+    n = readlink(path, target, sizeof target - 1);
+    snprintf(path, sizeof path, "/proc/self/fd/%d", fds[1]);
+    ssize_t n2 = readlink(path, t2, sizeof t2 - 1);
+    CHECK(n > 6 && n2 == n && (target[n] = 0, t2[n2] = 0, !strncmp(target, "pipe:[", 6) && !strcmp(target, t2)));
+    snprintf(path, sizeof path, "/proc/self/fd/%d", sv[0]);
+    n = readlink(path, target, sizeof target - 1);
+    CHECK(n > 8 && (target[n] = 0, !strncmp(target, "socket:[", 8)));
+
+    int seen = 0;
+    snprintf(path, sizeof path, "/proc/%d/fd", (int)getpid());
+    DIR *d = opendir(path);
+    CHECK(d != NULL);
+    for (struct dirent *e; d && (e = readdir(d));) {
+        int num = atoi(e->d_name);
+        if (e->d_name[0] >= '0' && e->d_name[0] <= '9' && (num == fd || num == fds[0] || num == fds[1] || num == sv[0])) seen++;
+    }
+    if (d) closedir(d);
+    CHECK(seen == 4);
+    CHECK(stat(path, &st) == 0 && S_ISDIR(st.st_mode) && (st.st_mode & 0777) == 0500);       /* only the owner may look */
+
+    FILE *f = popen("ls -l /proc/$PPID/fd 2>&1 | head -1", "r");                           /* (just exercises ls on a link directory) */
+    if (f) pclose(f);
+
+    close(fd);
+    snprintf(path, sizeof path, "/proc/self/fd/%d", fd);
+    CHECK(readlink(path, target, sizeof target) < 0 && errno == ENOENT);                    /* closed descriptors are gone */
+    close(fds[0]); close(fds[1]); close(sv[0]); close(sv[1]);
+
+    char cwd0[128];
+    CHECK(getcwd(cwd0, sizeof cwd0) != NULL);
+    CHECK(chdir("/tmp/jl") == 0);
+    n = readlink("/proc/self/cwd", target, sizeof target - 1);
+    CHECK(n > 0 && (target[n] = 0, !strcmp(target, "/tmp/jl")));
+    chdir(cwd0);
+    n = readlink("/proc/self/exe", target, sizeof target - 1);
+    CHECK(n > 0 && (target[n] = 0, !strcmp(target, "/bin/jctest")));
+
+    g_shared[0] = 0;
+    pid_t kid = fork();
+    if (kid == 0) { chdir("/tmp"); execl("/bin/sleep", "sleep", "30", (char *)NULL); _exit(127); }
+    long end = now_ms() + 10000;
+    for (;;) {                                              /* wait for the exec: the link then names /bin/kappabox or /bin/sleep */
+        snprintf(path, sizeof path, "/proc/%d/exe", (int)kid);
+        n = readlink(path, target, sizeof target - 1);
+        if (n > 0) target[n] = 0;
+        if (n > 0 && strcmp(target, "/bin/jctest") != 0) break;
+        if (now_ms() > end) break;
+        nap(10);
+    }
+    CHECK(n > 0 && !strcmp(target, "/bin/sleep"));
+    snprintf(path, sizeof path, "/proc/%d/cwd", (int)kid);
+    n = readlink(path, target, sizeof target - 1);
+    CHECK(n > 0 && (target[n] = 0, !strcmp(target, "/tmp")));
+    kill_and_reap(kid);
+    unlink("/tmp/jl/proc.txt");
+    rmdir("/tmp/jl");
+}
+
 int main(void) {
     printf("jctest: the shrine's job control test begins\n");
     setup_shared();
@@ -653,7 +929,11 @@ int main(void) {
     test_applets();
     test_ctrl_z();
     test_background_io();
+    test_late_foreground();
     test_orphaned_group();
+    test_nice();
+    test_links();
+    test_proc_links();
     if (g_fail) printf("JCTEST FAIL (%d failures)\n", g_fail);
     else printf("JCTEST PASS\n");
     return g_fail ? 1 : 0;

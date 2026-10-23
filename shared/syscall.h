@@ -114,6 +114,10 @@
 #define SYS_sigsuspend    113     /* (mask): replace the thread's mask and sleep until a handler has run; returns -EINTR */
 #define SYS_sigtimedwait  114     /* (set, timeout): accept one pending signal of set without a handler; returns its number, -EAGAIN on timeout */
 #define SYS_sigpending    115     /* (u32 *set): signals pending and blocked */
+/* Process control (kernel/sys/priority.c, kernel/fs/vfs.c): 116-118 */
+#define SYS_getpriority   116     /* (which, who) -> 20 - nice, i.e. 1 (polite) .. 40 (greedy); -ESRCH if nobody matches */
+#define SYS_setpriority   117     /* (which, who, nice): PRIO_PROCESS / PRIO_PGRP / PRIO_USER; only root may lower a nice value */
+#define SYS_link          118     /* (oldpath, newpath): a hard link; tmpfs only */
 #define SYS_nsyscalls     128
 
 #define FUTEX_WAIT        0       /* sleep while *uaddr == val; timeout is a struct gtimespec* (relative) or NULL */

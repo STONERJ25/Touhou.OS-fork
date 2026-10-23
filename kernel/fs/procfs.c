@@ -331,8 +331,121 @@ static int proc_root_readdir(VNode *dir, u64 cookie, DirEntry *out) {
     return 1;
 }
 
+/* ---- symlinks into a process: /proc/<pid>/cwd, exe and fd/N (docs/JOBCONTROL.md) ---- */
+
+typedef struct { int pid; int kind; int fd; } ProcLink;
+enum { PL_CWD, PL_EXE, PL_FD };
+
+static const VNodeOps proclink_ops, pid_fd_ops;
+
+/* What a descriptor refers to, the way Linux prints it: the path it was opened by, or pipe:[N], socket:[N], anon_inode:[...]. */
+static void describe_file(const File *f, char *out, size_t n) {
+    if (f->path) { strlcpy(out, f->path, n); return; }
+    unsigned long id = f->vn ? (unsigned long)(((u64)f->vn >> 4) & 0xFFFFFF) : 0;       /* both ends of a pipe share the vnode */
+    if (f->vn && S_ISFIFO(f->vn->mode)) snprintf(out, n, "pipe:[%lu]", id);
+    else if (f->vn && (f->vn->mode & S_IFMT) == S_IFSOCK) snprintf(out, n, "socket:[%lu]", id);
+    else snprintf(out, n, "anon_inode:[%s]", f->vn && S_ISCHR(f->vn->mode) ? "tty" : "file");
+}
+
+static ssize_t proclink_readlink(VNode *v, char *buf, size_t n) {
+    const ProcLink *pl = v->priv;
+    char tmp[256];
+    tmp[0] = 0;
+    u64 f = irq_save();                                         /* the process cannot exit while we copy */
+    Process *p = process_by_pid(pl->pid);
+    if (p && p->state != PROC_ZOMBIE) {
+        switch (pl->kind) {
+        case PL_CWD: strlcpy(tmp, p->cwd_path, sizeof tmp); break;
+        case PL_EXE: strlcpy(tmp, p->exe, sizeof tmp); break;
+        case PL_FD: {
+            File *fl = (pl->fd >= 0 && pl->fd < MAX_FD) ? p->fds[pl->fd] : NULL;
+            if (fl) describe_file(fl, tmp, sizeof tmp);
+            break;
+        }
+        }
+    }
+    irq_restore(f);
+    if (!tmp[0]) return -ENOENT;
+    size_t len = strlen(tmp);
+    if (len > n) len = n;
+    memcpy(buf, tmp, len);
+    return (ssize_t)len;
+}
+
+static void proclink_release(VNode *v) { kfree(v->priv); }
+
+static VNode *make_proclink(Mount *m, int pid, int kind, int fd) {
+    VNode *v = vnode_alloc(&proclink_ops, m, S_IFLNK | 0777);
+    ProcLink *pl = kmalloc(sizeof *pl);
+    if (!v || !pl) { kfree(pl); if (v) vnode_put(v); return NULL; }
+    pl->pid = pid;
+    pl->kind = kind;
+    pl->fd = fd;
+    v->priv = pl;
+    u64 f = irq_save();                             /* the link belongs to the user of the process, as ls -l shows it */
+    Process *p = process_by_pid(pid);
+    if (p) { v->uid = p->cred.uid; v->gid = p->cred.gid; }
+    irq_restore(f);
+    v->ino = 0x10000 + (u64)pid * 8 + 2 + (u64)(kind == PL_FD ? 0x100 + (u64)fd : (u64)kind);
+    return v;
+}
+
+/* /proc/<pid>/fd: one symlink per open descriptor; only the owner of the process (and root) may look. */
+static int fd_dir_lookup(VNode *dir, const char *name, VNode **out) {
+    if (!strcmp(name, ".") || !strcmp(name, "..")) { vnode_get(dir); *out = dir; return 0; }
+    if (!name[0] || strlen(name) > 3) return -ENOENT;
+    int fd = 0;
+    for (const char *s = name; *s; s++) {
+        if (*s < '0' || *s > '9') return -ENOENT;
+        fd = fd * 10 + (*s - '0');
+    }
+    int pid = (int)(long)dir->priv;
+    u64 f = irq_save();
+    Process *p = process_by_pid(pid);
+    bool open = p && fd < MAX_FD && p->fds[fd];
+    irq_restore(f);
+    if (!open) return -ENOENT;
+    VNode *v = make_proclink(dir->mount, pid, PL_FD, fd);
+    if (!v) return -ENOMEM;
+    *out = v;
+    return 0;
+}
+
+static int fd_dir_readdir(VNode *dir, u64 cookie, DirEntry *out) {
+    int pid = (int)(long)dir->priv, found = -1;
+    u64 k = 0;
+    u64 f = irq_save();
+    Process *p = process_by_pid(pid);
+    if (p) for (int i = 0; i < MAX_FD && found < 0; i++) if (p->fds[i] && k++ == cookie) found = i;
+    irq_restore(f);
+    if (found < 0) return 0;
+    out->ino = 0x10000 + (u64)pid * 8 + 0x102 + (u64)found;
+    out->type = DT_LNK;
+    snprintf(out->name, sizeof out->name, "%d", found);
+    return 1;
+}
+
 static int pid_dir_lookup(VNode *dir, const char *name, VNode **out) {
     if (!strcmp(name, ".") || !strcmp(name, "..")) { vnode_get(dir); *out = dir; return 0; }
+    int dpid = (int)(long)dir->priv;
+    if (!strcmp(name, "cwd") || !strcmp(name, "exe")) {
+        VNode *v = make_proclink(dir->mount, dpid, name[0] == 'c' ? PL_CWD : PL_EXE, 0);
+        if (!v) return -ENOMEM;
+        *out = v;
+        return 0;
+    }
+    if (!strcmp(name, "fd")) {
+        VNode *d = vnode_alloc(&pid_fd_ops, dir->mount, S_IFDIR | 0500);
+        if (!d) return -ENOMEM;
+        u64 f = irq_save();
+        Process *p = process_by_pid(dpid);
+        if (p) { d->uid = p->cred.uid; d->gid = p->cred.gid; }
+        irq_restore(f);
+        d->priv = (void *)(long)dpid;
+        d->ino = 0x10000 + (u64)dpid * 8 + 1;
+        *out = d;
+        return 0;
+    }
     for (int i = 0; i < PF_COUNT; i++) {
         if (strcmp(g_pidfile_names[i], name)) continue;
         VNode *v = vnode_alloc(&pid_file_ops, dir->mount, S_IFREG | 0444);
@@ -349,7 +462,15 @@ static int pid_dir_lookup(VNode *dir, const char *name, VNode **out) {
 
 static int pid_dir_readdir(VNode *dir, u64 cookie, DirEntry *out) {
     (void)dir;
-    if (cookie >= PF_COUNT) return 0;
+    if (cookie >= PF_COUNT) {                           /* after the files: cwd, exe (links) and fd (a directory) */
+        static const char *const extra[] = { "cwd", "exe", "fd" };
+        u64 e = cookie - PF_COUNT;
+        if (e >= ARRAY_SIZE(extra)) return 0;
+        out->ino = 1;
+        out->type = e == 2 ? DT_DIR : DT_LNK;
+        strlcpy(out->name, extra[e], sizeof out->name);
+        return 1;
+    }
     out->ino = 1;
     out->type = DT_REG;
     strlcpy(out->name, g_pidfile_names[cookie], sizeof out->name);
@@ -395,6 +516,8 @@ static const VNodeOps proc_sub_ops = { .lookup = proc_sub_lookup, .readdir = pro
 static const VNodeOps proc_file_ops = { .read = proc_read, .write = proc_write };
 static const VNodeOps pid_dir_ops = { .lookup = pid_dir_lookup, .readdir = pid_dir_readdir };
 static const VNodeOps pid_file_ops = { .read = pidfile_read, .release = pidfile_release };
+static const VNodeOps proclink_ops = { .readlink = proclink_readlink, .release = proclink_release };
+static const VNodeOps pid_fd_ops = { .lookup = fd_dir_lookup, .readdir = fd_dir_readdir };
 
 static int procfs_mount(const char *source, u32 flags, Mount *m) {
     (void)source; (void)flags;

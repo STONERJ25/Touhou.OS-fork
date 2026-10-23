@@ -1,0 +1,46 @@
+.page network 7 Yukari's gaps: the network stack, its tools and its files
+
+# DESCRIPTION
+Yukari Yakumo opens gaps between places; the network stack opens them between machines. It lives in the kernel (`kernel/net/`) and speaks Ethernet, ARP, IPv4, ICMP, UDP and TCP. Programs reach it through the usual socket calls (`socket`, `bind`, `listen`, `accept`, `connect`, `send`, `recvfrom`, `setsockopt`, `poll` and the rest) with `AF_INET` and `SOCK_STREAM` or `SOCK_DGRAM`; the C library adds `getaddrinfo`, `gethostbyname`, `inet_pton` and the byte-order functions. There is no IPv6 and no TLS.
+
+# INTERFACES
+@ lo
+    The loopback, always there, 127.0.0.1/8. It works without any network card, which is how most of the system's own tests run.
+@ eth0, eth1, ...
+    Network cards, in the order the kernel finds them. Drivers exist for virtio-net, Intel e1000 and e1000e (including the I217, I218 and I219 chips of recent PCs, untried on real hardware) and Realtek RTL8139; see `lspci` and the `[Yukari]` lines of `dmesg` for what was found.
+
+When a card reports that a cable is plugged in, the kernel starts a DHCP client on it in the background; the boot never waits for it. A lease sets the address, the default route and `/etc/resolv.conf`. Nothing else ever sends a packet on its own, and nothing phones home.
+
+# TOOLS
+@ ifconfig(1), ip(1), route(1)
+    Look at and change addresses, links, routes and the neighbour (ARP) table.
+@ ping(1)
+    ICMP echo.
+@ nslookup(1), host(1)
+    Ask the DNS.
+@ fetch(1), wget(1)
+    Download over HTTP.
+@ nc(1)
+    Raw TCP and UDP.
+@ httpd(1)
+    Serve a directory.
+@ sntp(1), ntpdate(1)
+    Read and set the clock from an NTP server.
+@ netstat(1), ss(1)
+    Sockets, routes and counters.
+
+# FILES
+@ /etc/resolv.conf, /etc/hosts
+    See resolv.conf(5) and hosts(5).
+@ /proc/net/dev, route, arp, tcp, udp
+    The stack's state in the usual text formats.
+@ /proc/net/tune
+    Root can write `name value` lines to change timers and to make the loopback lose, duplicate, reorder or corrupt a percentage of its frames (`lo_drop`, `lo_dup`, `lo_reorder`, `lo_corrupt`), which is how the stack's recovery from loss is tested. Reading it shows the settings and a few error counters.
+@ /proc/net/inject
+    Root can write one raw Ethernet frame per `write()`; the stack handles it as if it had arrived on the loopback. Used to feed it garbage.
+
+# LIMITS
+Ports below 1024 may only be bound by root. A socket has two 128 KiB rings (send and receive); a connection that has been closed lingers in TIME_WAIT for half a minute. UDP datagrams up to 65507 bytes are fragmented and reassembled; at most four incomplete datagrams are kept at a time. TCP implements window scaling but not selective acknowledgements or timestamps.
+
+# SEE ALSO
+ifconfig(1), ping(1), fetch(1), nc(1), resolv.conf(5), hosts(5), gensokyo(7)

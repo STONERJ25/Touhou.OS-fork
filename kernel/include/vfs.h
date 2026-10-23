@@ -71,6 +71,7 @@ struct VNodeOps {
     int     (*create)(VNode *dir, const char *name, u32 mode, VNode **out);
     int     (*mkdir)(VNode *dir, const char *name, u32 mode, VNode **out);
     int     (*symlink)(VNode *dir, const char *name, const char *target, VNode **out);
+    int     (*link)(VNode *dir, const char *name, VNode *target);    /* a new name for an existing non-directory (hard link); the entry takes its own reference and nlink++ */
     int     (*unlink)(VNode *dir, const char *name);                 /* files and symlinks */
     int     (*rmdir)(VNode *dir, const char *name);
     int     (*rename)(VNode *olddir, const char *oldname, VNode *newdir, const char *newname);
@@ -89,7 +90,7 @@ struct Mount {
     VNode *covered;         /* directory this is mounted on (referenced) */
     void *priv;
     char source[64];
-    char opts[96];          /* comma-separated mount options, handed to the filesystem's mount() */
+    char opts[160];         /* comma-separated mount options, handed to the filesystem's mount() */
     u32 flags;              /* MNT_* (abi.h) */
     u32 id;
 };
@@ -120,6 +121,7 @@ struct File {
     int refs;
     const FileOps *fops;    /* overrides the vnode ops (pipes, anonymous files) */
     void *priv;
+    char *path;             /* absolute path it was opened by (kmalloc'd; NULL for pipes, sockets and kernel-made files): /proc/<pid>/fd */
 };
 
 /* ---- vnodes and open files ---- */
@@ -130,6 +132,7 @@ void   vnode_stat(VNode *v, struct gstat *st);
 File  *file_new(VNode *v, int flags, const FileOps *fops, void *priv);   /* takes over the caller's vnode reference */
 void   file_get(File *f);
 void   file_put(File *f);
+void   file_set_path(File *f, const char *abs_path);                      /* remembers how the file was opened (copy) */
 
 /* ---- namespace ---- */
 #define LOOKUP_NOFOLLOW 1
@@ -164,6 +167,7 @@ int    vfs_unlink(const char *path, const Cred *c, VNode *cwd);
 int    vfs_rmdir(const char *path, const Cred *c, VNode *cwd);
 int    vfs_rename(const char *from, const char *to, const Cred *c, VNode *cwd);
 int    vfs_symlink(const char *target, const char *path, const Cred *c, VNode *cwd);
+int    vfs_link(const char *from, const char *to, const Cred *c, VNode *cwd);     /* hard link: -EPERM for a directory or a filesystem without them, -EXDEV across mounts */
 ssize_t vfs_readlink(const char *path, char *buf, size_t n, VNode *cwd, const Cred *c);
 int    vfs_truncate(const char *path, u64 size, const Cred *c, VNode *cwd);
 int    vfs_chmod(const char *path, u32 mode, const Cred *c, VNode *cwd);

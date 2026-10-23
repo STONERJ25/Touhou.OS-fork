@@ -1,0 +1,15 @@
+.page host 1 look up a host name or address in the DNS
+
+# SYNOPSIS
+*host* [*-t* _TYPE_] _NAME_ [_SERVER_]
+
+# DESCRIPTION
+`host` is the terse cousin of `nslookup`: it asks one question and prints one short sentence per record: `kappa.gensokyo has address 10.0.2.2`, `www.gensokyo is an alias for kappa.gensokyo.`, `gensokyo mail is handled by 10 mx.gensokyo.`, `2.2.0.10.in-addr.arpa domain name pointer kappa.gensokyo.`.
+
+_NAME_ may be a dotted IPv4 address, which asks for the name (`PTR`). `-t` chooses another record type: `A`, `AAAA`, `NS`, `CNAME`, `SOA`, `PTR`, `MX`, `TXT`, `ANY`. Without _SERVER_ the servers of `/etc/resolv.conf` are tried in order.
+
+# EXIT STATUS
+0 when the name was found, 1 when it does not exist or no server answered, 2 for a usage error.
+
+# SEE ALSO
+nslookup(1), resolv.conf(5), network(7)

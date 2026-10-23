@@ -260,11 +260,12 @@ static void thread_entry(void *arg) {
  * which every cancellation point turns into pthread_exit(PTHREAD_CANCELED). Blocking SIGCANCEL is how a thread disables
  * cancellation. Only deferred cancellation exists: PTHREAD_CANCEL_ASYNCHRONOUS is accepted and behaves as deferred. */
 
-extern RLock __stdio_lock;
 
 void __cancel_exit(void) {
     struct pthread *self = __pthread_self();
-    if (__stdio_lock.count && __stdio_lock.owner == self->tid) { __stdio_lock.count = 1; __runlock(&__stdio_lock); }   /* cancelled inside stdio */
+    RLock *held = self->stdio_blocked;              /* cancelled inside a stdio read or write: let go of that stream's lock */
+    if (held && held->count && held->owner == self->tid) { held->count = 1; __runlock(held); }
+    self->stdio_blocked = NULL;
     pthread_exit(PTHREAD_CANCELED);
 }
 
