@@ -3,6 +3,7 @@
 # SYNOPSIS
 *beep* [*-f* _HZ_] [*-l* _MS_] [*-a* _PERCENT_] [*-w* _WAVE_] [*-r* _RATE_] [*-c* _1|2_] [*-b* _BITS_] [*-o* _FILE_] [*-n*]
 *beep* *-e* _NAME_ [*-o* _FILE_]
+*beep* *-E* _NAME_
 
 # DESCRIPTION
 `beep` makes a sound with the sound card: a pure tone by default, 440 Hz for half a second at half volume. It writes to `/dev/audio` like any other program, so it can play at the same time as `play(1)` or anything else, and the master volume of `volume(1)` applies. If the machine has no sound device it says so and exits with status 1.
@@ -22,6 +23,8 @@ With `-o` the sound is written to a WAV file instead of being played, which work
     Send the sound to the device in another format: any rate from 4000 to 192000, 1 or 2 channels, 8, 16, 24 or 32 bits. The kernel converts it, so a mono 22050 Hz 8-bit beep sounds the same pitch as the default one. This is mostly useful for testing.
 @ *-e* _NAME_
     Play one of the system sounds instead: `login`, `dialog`, `error` or `shutdown`. It plays even when the system sounds are switched off (see audio(7)).
+@ *-E* _NAME_
+    The same sound, played the way the desktop does it: only if the system sounds are on, and it returns when the sound has been heard.
 @ *-o* _FILE_
     Write a WAV file instead of playing.
 @ *-n*

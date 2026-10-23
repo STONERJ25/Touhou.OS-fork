@@ -10,10 +10,16 @@ Each open of `/dev/audio` is a stream with its own format, volume and queue. The
 
 The device belongs to group `shrine`, like the display: those who sit at the machine may use it.
 
-# CONTROLS
-The master volume is shown and set by `volume(1)`. It is software, in the kernel mixer, and lasts until the next boot. The hardware amplifiers are left at their 0 dB setting.
+# VOLUME
+The master volume is shown and set by `volume(1)`, by the speaker in the desktop panel (click for a slider, scroll to change, middle click to mute) and by the Jukebox. It is software, in the kernel mixer, and lasts until the next boot. The scale follows the ear: 50 is a quarter of the amplitude of 100. The hardware amplifiers are left at their 0 dB setting.
 
 When headphones are plugged into a jack that can sense them, the speaker and the rear line out are silenced, like Linux's auto-mute; jacks that cannot be sensed stay on.
+
+# SYSTEM SOUNDS
+The desktop has four short sounds of its own: a rising bell when the desktop opens (`login`), a small bell when a dialog opens (`dialog`), a low buzz for an error such as a wrong password (`error`) and a falling tune before the machine is shut down (`shutdown`). They are on unless the switch says otherwise, in this order: the environment variable `HAKUREI_SOUNDS` (`on` or `off`), then the file `/etc/hakurei/sounds` (containing `on` or `off`), then `nosounds` on the kernel command line. `beep -E NAME` plays one the way the desktop does, `beep -e NAME` plays it whatever the switch says.
+
+# MUSIC
+`play(1)` plays WAV files and songs; the Jukebox (jukebox(1)) is the window for it. Songs are text files in the format of tms(5), written in a small music notation and synthesized from pulse, triangle, saw, noise and FM voices; the ones that ship with the system are in `/ScarletDevilMansion/share/music`.
 
 # FILES
 @ /dev/audio
@@ -21,7 +27,9 @@ When headphones are plugged into a jack that can sense them, the speaker and the
 @ /proc/audio
     The sound card, the path from the converter to the jack, the master volume, counters (frames mixed, underruns) and one line per stream.
 @ /etc/hakurei/sounds
-    The system sounds (the login chime, the dialog bell, the error sound and the shutdown tune) are on unless this file says `off`. The environment variable `HAKUREI_SOUNDS` (`on` or `off`) overrides it, and `nosounds` on the kernel command line turns them off.
+    `on` or `off`: the system sounds.
+@ /ScarletDevilMansion/share/music
+    The songs that come with the system.
 
 # SEE ALSO
-beep(1), play(1), volume(1), dmesg(1)
+beep(1), play(1), volume(1), jukebox(1), tms(5), dmesg(1)
