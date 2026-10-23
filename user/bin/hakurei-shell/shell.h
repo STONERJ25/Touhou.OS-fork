@@ -3,6 +3,7 @@
 #define HAKUREI_SHELL_H
 
 #include <kappa.h>
+#include <kappa_media.h>
 
 typedef struct AppEntry {
     const char *name;               /* shown in menus and on icons */
@@ -36,8 +37,9 @@ typedef struct Shell {
 
 extern Shell G;
 
-/* the wallpaper itself lives in libkappa (scenery.c) so the login screen can share it */
-#define wallpaper_render k_scenery_night
+/* the wallpaper lives in libkappa so the lock and login screens share it: the user's picture (~/.config/hakurei/wallpaper,
+ * see kappa_media.h) or the procedural night scene (scenery.c) */
+#define wallpaper_render k_wallpaper_render
 
 /* panel.c */
 #define PANEL_H 36

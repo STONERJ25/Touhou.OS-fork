@@ -1,0 +1,23 @@
+.page imginfo 1 describe picture files
+
+# SYNOPSIS
+*imginfo* [*-s*] _FILE_...
+
+# DESCRIPTION
+`imginfo` reads the header of each picture and prints one line: the file name, the format (PNG, JPEG, GIF, BMP, PNM or TGA), the size in pixels, whether the picture has transparency, the number of frames (animated GIFs have several) and the size of the file. A JPEG with an EXIF orientation tag is reported the way it is displayed, so a photo taken upright with the camera on its side shows the upright size.
+
+A file that is not a picture, or is damaged, gets a line that says why, and the exit status is 1.
+
+# OPTIONS
+@ *-s*
+    Also decode the whole picture and print the CRC-32 of the pixels, taken over the bytes red, green, blue, alpha of every pixel in reading order. Two decoders that agree give the same number, which makes it a handy way to compare results.
+
+# EXIT STATUS
+0, or 1 if any file could not be read as a picture, 2 for bad usage.
+
+# EXAMPLES
+    imginfo moon.png
+    imginfo -s *.jpg
+
+# SEE ALSO
+convert(1), gallery(1)

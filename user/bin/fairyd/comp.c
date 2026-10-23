@@ -5,6 +5,11 @@
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
+#include <unistd.h>
+#include <strings.h>
+#include <img.h>
+#include <kappa_media.h>
+#include <gensokyo.h>
 
 static KCanvas g_cv;
 
@@ -360,8 +365,10 @@ void comp_flush(void) {
     flush_rect(r);
 }
 
-void comp_screenshot(const char *path) {
-    FILE *f = fopen(path, "w");
+static void snapshot_ppm(const char *path) {
+    char tmp[sizeof(((FmPath *)0)->path) + 8];                      /* written under another name and renamed, so the file is never seen half-done */
+    snprintf(tmp, sizeof tmp, "%s.part", path);
+    FILE *f = fopen(tmp, "w");
     if (!f) return;
     fprintf(f, "P6\n%d %d\n255\n", S.screen_w, S.screen_h);
     uint8_t *row = malloc((size_t)S.screen_w * 3);
@@ -375,5 +382,50 @@ void comp_screenshot(const char *path) {
         }
         free(row);
     }
-    fclose(f);
+    if (fclose(f) == 0) rename(tmp, path);
+    else unlink(tmp);
+}
+
+/* The screen as a libimg picture, then PNG (kind 0) or BMP. */
+static int snapshot_image(const char *path, int bmp) {
+    Image im;
+    if (img_alloc(&im, S.screen_w, S.screen_h) != IMG_OK) return -1;
+    for (size_t i = 0; i < (size_t)S.screen_w * S.screen_h; i++) im.px[i] = 0xFF000000u | S.back[i];
+    int rc = bmp ? img_save_bmp(path, &im) : img_save_png(path, &im, 2);
+    img_free(&im);
+    return rc;
+}
+
+/* Compressing a full screen takes a while on a slow machine, so a child process (a copy of the screen as it was at this
+ * moment) does it and the compositor goes on painting. img_save_png writes "name.part" and renames, so the file only
+ * appears under its real name when it is complete. */
+static void snapshot_png_in_background(const char *path) {
+    pid_t pid = fork();
+    if (pid == 0) {
+        gap_setname("aya");
+        int rc = snapshot_image(path, 0);
+        char note[400];
+        if (rc == 0) snprintf(note, sizeof note, "Aya took a photo of the screen (%dx%d): %s", S.screen_w, S.screen_h, path);
+        else snprintf(note, sizeof note, "Aya's film jammed: could not write %s", path);
+        gap_log(note);
+        _exit(rc == 0 ? 0 : 1);
+    }
+    if (pid < 0) snapshot_image(path, 0);                           /* no process to spare: do it here */
+}
+
+static int ends_with(const char *s, const char *ext) {
+    size_t n = strlen(s), e = strlen(ext);
+    return n >= e && !strcasecmp(s + n - e, ext);
+}
+
+/* path "" = the defaults: /tmp/screenshot.ppm (what the tests and the Sketchbook use) and a PNG named by date in ~/Pictures. */
+void comp_screenshot(const char *path) {
+    if (!path || !path[0]) {
+        snapshot_ppm("/tmp/screenshot.ppm");
+        char png[640];
+        k_screenshot_path(png, sizeof png);
+        snapshot_png_in_background(png);
+    } else if (ends_with(path, ".png")) snapshot_png_in_background(path);
+    else if (ends_with(path, ".bmp")) snapshot_image(path, 1);
+    else snapshot_ppm(path);
 }

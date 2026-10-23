@@ -4,6 +4,7 @@
  * helper that only ever answers for the user running it.
  */
 #include <kappa.h>
+#include <kappa_media.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -52,7 +53,7 @@ static void ensure_wallpaper(KCanvas *cv) {
     g_wall = malloc((size_t)cv->w * (size_t)cv->h * 4);
     g_wall_w = cv->w;
     g_wall_h = cv->h;
-    if (g_wall) k_scenery_night(g_wall, cv->w, cv->h, cv->w);
+    if (g_wall) k_wallpaper_render(g_wall, cv->w, cv->h, cv->w);
 }
 
 static void lock_draw(KApp *app, KUI *ui, void *user) {

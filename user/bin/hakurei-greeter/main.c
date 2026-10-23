@@ -4,6 +4,7 @@
  * writing the name to the pipe init handed down in $GREETER_FD. init then opens that resident's desktop.
  */
 #include <kappa.h>
+#include <kappa_media.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -101,7 +102,7 @@ static void ensure_wallpaper(KCanvas *cv) {
     g_wall = malloc((size_t)cv->w * (size_t)cv->h * 4);
     g_wall_w = cv->w;
     g_wall_h = cv->h;
-    if (g_wall) k_scenery_night(g_wall, cv->w, cv->h, cv->w);
+    if (g_wall) k_wallpaper_render(g_wall, cv->w, cv->h, cv->w);
 }
 
 static void greeter_draw(KApp *app, KUI *ui, void *user) {

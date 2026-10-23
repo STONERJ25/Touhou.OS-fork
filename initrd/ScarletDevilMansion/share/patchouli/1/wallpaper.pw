@@ -1,0 +1,28 @@
+.page wallpaper 1 set the desktop picture
+
+# SYNOPSIS
+*wallpaper* [*-m* _MODE_] _IMAGE_
+*wallpaper* *-c*
+*wallpaper*
+
+# DESCRIPTION
+`wallpaper` chooses the picture behind the windows. The choice is stored in *~/.config/hakurei/wallpaper* (first line: the full path of the picture, second line: the mode), and the desktop notices the change within a second or two and redraws. The picture is decoded once and scaled to the size of the screen; the original is not kept in memory.
+
+Without arguments it prints the current setting. If the picture cannot be read, or the file is later removed, the desktop falls back to the built-in night scene (the moon, the torii and the bamboo). The login screen uses the system-wide setting in */etc/hakurei/wallpaper* if there is one, since nobody is signed in yet.
+
+# OPTIONS
+@ *-m* _MODE_
+    How the picture fills the screen: *cover* (the default: fill the screen and crop what sticks out), *fit* (show all of it, with night-blue bars), *center* (original size, cropped or surrounded by bars), *tile* (repeat it) or *stretch* (fill the screen and ignore the proportions). Without *-m* the mode that was set before is kept.
+@ *-c*
+    Remove the setting and go back to the built-in scene.
+
+# EXIT STATUS
+0, 1 if the picture cannot be read or the setting cannot be saved, 2 for bad usage.
+
+# EXAMPLES
+    wallpaper ~/Pictures/moon.jpg
+    wallpaper -m tile pattern.png
+    wallpaper -c
+
+# SEE ALSO
+gallery(1), imginfo(1), screenshot(1)

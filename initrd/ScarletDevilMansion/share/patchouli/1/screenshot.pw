@@ -1,0 +1,23 @@
+.page screenshot 1 take a picture of the screen
+
+# SYNOPSIS
+*screenshot* [*-d* _SECONDS_] [_FILE_]
+
+# DESCRIPTION
+`screenshot` asks the window server (Aya, with her camera) for a picture of the whole screen. Without _FILE_ it is saved as a PNG named by the date and time, such as *~/Pictures/Screenshot-2026-10-23-142530.png* (the folder is created if needed), and the name is printed. With _FILE_ the ending decides the format: *.png*, *.bmp* or *.ppm*.
+
+The same picture is taken by Ctrl+F12 and by "Take screenshot" in the desktop menu; those also leave an uncompressed copy in */tmp/screenshot.ppm* for programs that want the latest one. A PNG takes a moment to compress on a slow machine; the window server does that in a separate process, and this command waits until the file is complete.
+
+# OPTIONS
+@ *-d* _SECONDS_
+    Wait that many seconds first, to give you time to arrange the windows.
+
+# EXIT STATUS
+0, 1 if there is no window server or the file did not appear, 2 for bad usage.
+
+# EXAMPLES
+    screenshot
+    screenshot -d 5 /tmp/menu.png
+
+# SEE ALSO
+gallery(1), convert(1), wallpaper(1)

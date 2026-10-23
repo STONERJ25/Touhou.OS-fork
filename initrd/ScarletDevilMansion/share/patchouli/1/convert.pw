@@ -1,0 +1,38 @@
+.page convert 1 convert, resize and rotate pictures
+
+# SYNOPSIS
+*convert* [_OPTIONS_] _INPUT_ _OUTPUT_
+
+# DESCRIPTION
+`convert` reads a picture (PNG, JPEG, GIF, BMP, PNM or TGA; the first frame of an animated GIF), applies the transformations asked for and writes it as PNG, BMP or PPM, chosen by the ending of _OUTPUT_ (*.png*, *.bmp*, *.ppm*). Transparency is kept in PNG and 32-bit BMP and flattened onto a background colour for PPM. Rotating and flipping come first, then resizing.
+
+Shrinking averages the pixels each new pixel covers (no jagged edges); enlarging interpolates between neighbours.
+
+# OPTIONS
+@ *-resize* _W_x_H_
+    Make the picture exactly that size, ignoring its proportions.
+@ *-fit* _W_x_H_
+    Shrink it, keeping the proportions, until it fits inside that box. A picture that already fits is not enlarged.
+@ *-scale* _N_
+    Scale both sides to _N_ percent.
+@ *-rotate* _90|180|270_
+    Rotate clockwise.
+@ *-flip*
+    Mirror top to bottom.
+@ *-flop*
+    Mirror left to right.
+@ *-level* _N_
+    PNG compression, 0 (none) to 9 (smallest, slowest). The default is 6.
+@ *-background* _RRGGBB_
+    The colour behind transparent pixels when writing PPM (default white).
+
+# EXIT STATUS
+0, 1 if the input cannot be read or the output cannot be written, 2 for bad usage.
+
+# EXAMPLES
+    convert photo.jpg -fit 320x240 thumb.png
+    convert scan.bmp -rotate 90 scan.png
+    convert logo.png -background 000000 logo.ppm
+
+# SEE ALSO
+imginfo(1), gallery(1)

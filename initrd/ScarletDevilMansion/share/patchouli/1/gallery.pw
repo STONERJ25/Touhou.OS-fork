@@ -1,0 +1,33 @@
+.page gallery 1 view pictures
+
+# SYNOPSIS
+*gallery* [*--trace*] [*--slideshow* _SECONDS_] [_FILE_ | _FOLDER_]
+*gallery* *--info* _FILE_...
+
+# DESCRIPTION
+The Gensokyo Gallery shows pictures in a window: PNG, JPEG (baseline and progressive, upright according to the camera's orientation tag), GIF (animated ones play), BMP, PNM and TGA. Given a file it opens that file and the other pictures in the same folder; given a folder it opens the first picture in it; with nothing it waits for Ctrl+O. Pictures are ordered by name, with numbers compared as numbers (pic2 before pic10).
+
+A picture that cannot be read is explained in the window and in the status line (a damaged, truncated or too large file is reported, never fatal) and the next picture can still be opened. Transparent pictures are shown over a checkerboard. Rotating and flipping change only what is shown, never the file.
+
+Start it from the Gensokyo menu or the Explorer, or with a file name. *gallery --info* prints what *imginfo* would, without a window.
+
+# KEYS
+@ Left, Right, PageUp, PageDown, Backspace, Space
+    Previous or next picture in the folder (wrapping around). Home and End jump to the first and the last.
+@ + - and the mouse wheel
+    Zoom in and out around the pointer. *0* or *F* fits the picture to the window (large pictures are shrunk, small ones are never enlarged), *1* shows it at 100%, *2* to *4* at 200% to 400%.
+@ Dragging, the arrow keys Up and Down
+    Move a zoomed picture around. A double-click switches between fit and 100%.
+@ R, L, H, V
+    Rotate right, rotate left, flip horizontally, flip vertically.
+@ F5 or S
+    Start or stop a slideshow (*--slideshow* sets the seconds per picture; 4 by default). Esc stops it.
+@ W
+    Use the picture as the desktop wallpaper (mode "cover", see wallpaper(1)).
+@ I
+    Show or hide the details: name, format, size in pixels and bytes, position in the folder, zoom.
+@ Ctrl+O, Ctrl+Q, F1
+    Open a picture or folder, quit, show the keys. Esc also quits when no slideshow is running.
+
+# SEE ALSO
+imginfo(1), convert(1), wallpaper(1), screenshot(1)

@@ -11,6 +11,7 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/wait.h>
 
 static volatile int g_term;
 static void on_term(int sig) { (void)sig; g_term = 1; }
@@ -116,6 +117,7 @@ int main(int argc, char **argv) {
         }
         server_flush_list();
         comp_flush();
+        while (waitpid(-1, NULL, WNOHANG) > 0) { }              /* screenshot encoders that have finished */
     }
 
     ioctl(S.input_fd, INPUT_GRAB, &(int){ 0 });

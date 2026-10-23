@@ -75,7 +75,7 @@ typedef struct { int32_t x, y, w, h; } FmMove;                              /* o
 typedef struct { uint32_t edge; int32_t size; } FmStrut;                    /* edge: 0 top, 1 bottom, 2 left, 3 right */
 typedef struct { int32_t w, h; } FmMinSize;
 typedef struct { uint32_t len; char data[1024]; } FmClipboard;
-typedef struct { char path[96]; } FmPath;                                   /* FM_SCREENSHOT: write a .ppm there */
+typedef struct { char path[256]; } FmPath;                                  /* FM_SCREENSHOT: write the picture there (.png, .bmp or .ppm; "" = the defaults) */
 typedef struct { int32_t x, y; } FmWarp;
 typedef struct { int32_t w, h; } FmMode;
 
@@ -153,7 +153,7 @@ void          fairy_register_shell(FairyDisplay *d);                /* receive F
 void          fairy_set_strut(FairyWindow *win, int edge, int size);
 void          fairy_clipboard_set(FairyDisplay *d, const char *text, size_t len);
 void          fairy_clipboard_request(FairyDisplay *d);             /* answer arrives as FEV_CLIPBOARD */
-void          fairy_screenshot(FairyDisplay *d, const char *path);  /* PPM file */
+void          fairy_screenshot(FairyDisplay *d, const char *path);  /* by extension: .png (written in the background), .bmp, else PPM; "" = /tmp/screenshot.ppm plus a PNG in ~/Pictures */
 void          fairy_quit_server(FairyDisplay *d);
 void          fairy_warp_pointer(FairyDisplay *d, int x, int y);
 void          fairy_set_mode(FairyDisplay *d, int w, int h);

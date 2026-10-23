@@ -314,7 +314,7 @@ static void handle_msg(Client *c, const FairyHdr *h, const uint8_t *p) {
     }
     case FM_SCREENSHOT:
         if (plen >= sizeof(FmPath)) {
-            char path[96];
+            char path[sizeof(((FmPath *)0)->path)];
             strncpy(path, ((const FmPath *)p)->path, sizeof path - 1);
             path[sizeof path - 1] = 0;
             comp_screenshot(path);

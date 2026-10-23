@@ -496,7 +496,7 @@ bool wm_key_shortcut(uint8_t code, uint8_t down) {
         if (alt && code == KEY_F4 && S.focus) { wm_request_close(S.focus); return true; }
         if (ctrl && alt && code == KEY_T) { if (!S.clients) spawn("/bin/gapterm"); else server_send_hotkey(FH_TERMINAL); return true; }
         if (ctrl && alt && code == KEY_DELETE) { server_send_hotkey(FH_TASKS); return true; }
-        if (ctrl && code == KEY_F12) { comp_screenshot("/tmp/screenshot.ppm"); return true; }
+        if (ctrl && code == KEY_F12) { comp_screenshot(""); return true; }
         if (alt && code == KEY_F2) { server_send_hotkey(FH_RUN); return true; }
         if ((S.mods & MOD_SUPER) && code == KEY_L) { server_send_hotkey(FH_LOCK); return true; }
         if (code == KEY_POWER && server_have_shell()) { server_send_hotkey(FH_POWER); return true; }     /* otherwise the focused window (the login screen) gets the key */
