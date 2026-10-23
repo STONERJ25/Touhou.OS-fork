@@ -10,8 +10,8 @@ this branch; update it when you change something.
 | `libz` (inflate, deflate, crc32, adler32) | **done**, tested on the host against zlib (see below) and in the guest through `gzip` |
 | `gzip`, `gunzip`, `zcat` | **done**, manual pages written, checked by hand in the guest |
 | `utimes()` system call, `<utime.h>` | **done** (`SYS_utimes` = 82, `kernel/fs/utimes.c`); `gunzip` and `gzip` restore file times with it |
-| `tar` (create, extract, list, `-z`, `-C`, `-v`, `-f`, `--strip-components`, `--exclude`) | **written**, manual page written; round trip (long paths, symlinks, modes, `-z`, pipes, truncated archive) checked by hand in the guest. Archives made by Python's `tarfile` (GNU and pax formats) have **not** been tried yet |
-| `zip`, `unzip` | not written yet |
+| `tar` (create, extract, list, `-z`, `-C`, `-v`, `-f`, `--strip-components`, `--exclude`) | **written**, manual page written; round trip (long paths, symlinks, modes, `-z`, pipes, truncated archive) checked by hand in the guest. Archives made by Python's `tarfile` (pax and GNU formats, long paths, unicode names, symlinks, modes, times) unpack correctly in the guest, and a `tar -czf` archive made in the guest is read correctly by Python |
+| `zip`, `unzip` (store and deflate, directories, symlinks, modes, times) | **written**, manual pages written; a zip made by Python's `zipfile` unpacks and tests correctly in the guest, and a zip made in the guest passes Python's `testzip()`. `zip` cannot add to an existing archive yet (it refuses) and has no zip64 |
 | `libimg` (PNG, JPEG, GIF, BMP, PNM, TGA decoders; PNG/BMP/PPM encoders; scaling and rotation) | not written yet |
 | Gensokyo Gallery (image viewer) | not written yet |
 | User wallpaper (`~/.config/hakurei/wallpaper`, `wallpaper` command) | not written yet |
