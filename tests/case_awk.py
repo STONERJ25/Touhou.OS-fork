@@ -150,6 +150,9 @@ TABLE = [
     ("awk -f /nonexistent", "can't open", 2),
     ("awk 'BEGIN{x[1]=1; print x}'", "array", 2),
     ("awk 'BEGIN{f(1)}'", "undefined function", 2),
+    # --- the manual page
+    ("patchouli awk | head -6", "awk - pattern scanning", 0),
+    ("patchouli --check-all", "0 problems", 0),
 ]
 
 
