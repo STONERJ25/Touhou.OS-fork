@@ -105,6 +105,9 @@ written for real silicon first. Verified, with the function that does it:
 * HID boot keyboards: `SET_PROTOCOL(boot)` and `SET_IDLE(0)`, neither fatal if the device stalls; LED report; mice by report descriptor.
 * Every wait is bounded and a controller that stops answering is switched off with one log line (`x_die`).
 
+This audit changed nothing in `kernel/drivers/usb/`. The USB mass storage driver (`usb/storage.c`) and the log on the stick were merged from main after
+the review and are not part of it.
+
 Check on the machine: `[Kappa] xhci 00:14.0: took the controller over from the firmware` (or nothing, if the firmware had already
 released it), the `xHCI 8086:a2af ... ports (N usb2, M usb3) ...` line, `N of M ports have something attached: ...`, then
 `usb 1-X: new ... device` and `keyboard online` / `mouse online`. If no keyboard is bound 8 seconds after boot the kernel prints the
@@ -187,9 +190,10 @@ Read against AHCI 1.3.1 and NVMe 1.4 and Linux's `libahci`/`nvme-pci`. **No defe
 
 ### Network and audio drivers on main (noted, not changed; their owners review the details)
 
-* `e1000.c` (I219 family on the target): the PCH parts get no global reset and no PHY access, by design; `pci_enable` does not check or clear the
-  PCI power state first (the xHCI driver does), which matters if the BIOS leaves the LAN powered down. The MAC address is taken from RAL/RAH; the
-  link may stay down without a driver-side PHY/ME handshake: the driver logs and leaves the card alone, boot is not affected.
+* `e1000.c` (I219 family on the target): the network branch has since added the PCH-specific care (ME handshake, PHY semaphore and power-up,
+  explicit ring registers, a transmit watchdog), which is its owner's to review. One thing seen while reading: `pci_enable` does not check or clear the
+  PCI power state first (the xHCI driver does), which matters only if the BIOS leaves the LAN function in D3; the MAC address comes from RAL/RAH.
+  Boot is not affected either way: the driver logs and leaves a card that does not answer alone.
 * `audio/hda.c`: matches by class (`04/03`), all waits are bounded (reset 100-200 ms, codec wait up to 500 ms, stream resets 5-20 ms), so a codec that does not
   answer costs less than a second of boot.
 
