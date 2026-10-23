@@ -446,22 +446,7 @@ static void handle_keys(KUI *ui) {
 
 /* ---------------------------------------------------------------- the main window */
 
-static void draw_inner(KApp *app, KUI *ui, void *user);
-
 static void draw(KApp *app, KUI *ui, void *user) {
-    static int profile = -1;
-    if (profile < 0) profile = getenv("SKETCHBOOK_PROFILE") != NULL;
-    uint64_t t0 = profile ? k_now_ms() : 0;
-    draw_inner(app, ui, user);
-    if (profile) {
-        uint64_t t1 = k_now_ms();
-        static uint64_t last_end;
-        fprintf(stderr, "frame: draw %llu ms, since previous frame %llu ms\n", (unsigned long long)(t1 - t0), (unsigned long long)(t0 - last_end));
-        last_end = t1;
-    }
-}
-
-static void draw_inner(KApp *app, KUI *ui, void *user) {
     (void)app; (void)user;
     S.iter++;
     S.now = ui->now_ms;

@@ -479,11 +479,26 @@ def sketchbook_files():
         assert s.wait_pixel(469, 344, LIME) and s.wait_pixel(468, 345, BLUE) and s.wait_pixel(469, 345, YELLOW), "tiny.ppm shows the wrong colours"
         assert s.quit(), "Ctrl+Q should close the program when nothing is unsaved"
 
+        # a relative path (the shell's directory is /tmp/sk) and a path with a space both arrive as one argument
+        g.sh("cp /tmp/sk/tiny.ppm \"/tmp/sk/two words.ppm\"")
+        g.sh("cd /tmp/sk")
+        s.start("tiny.ppm", ready=(468, 344, RED))
+        assert s.wait_pixel(469, 345, YELLOW), "a relative path should open the file"
+        assert s.quit()
+        s.start("\"/tmp/sk/two words.ppm\"", ready=(468, 344, RED))
+        assert s.wait_pixel(469, 345, YELLOW), "a path with a space should open the file"
+        assert s.quit()
+        g.sh("cd /")
+
         # a 3x2 BMP (24-bit, bottom-up, rows padded to 4 bytes) opens with the right orientation
         s.make_file("/tmp/sk/tiny.bmp", bmp_hex(3, 2, [RED, LIME, BLUE, YELLOW, CYAN, WHITE]))
         s.start("/tmp/sk/tiny.bmp", ready=(467, 344, RED))
         assert s.wait_pixel(468, 344, LIME) and s.wait_pixel(469, 344, BLUE) and s.wait_pixel(467, 345, YELLOW) \
             and s.wait_pixel(468, 345, CYAN) and s.wait_pixel(469, 345, WHITE), "tiny.bmp shows the wrong colours"
+        # writing it back out keeps the pixel rows (bottom-up, padded to 4 bytes) and the 54-byte header size
+        s.save_as("/tmp/sk/tiny2.bmp")
+        assert s.wait_file("/tmp/sk/tiny2.bmp", 54 + 12 * 2)
+        assert s.file_hex("/tmp/sk/tiny2.bmp", 54, 24) == s.file_hex("/tmp/sk/tiny.bmp", 54, 24) != "", "the BMP writer changed the pixel rows"
         assert s.quit()
 
         # draw a red rectangle and a black pixel on a new picture called pic.bmp, then save it with Ctrl+S
@@ -718,6 +733,19 @@ def sketchbook_select_ops():
         assert s.wait_pixel(*pic(180, 170), WHITE), "Delete should clear the selection"
         s.key("z", ctrl=True)
         assert s.wait_pixel(*pic(180, 170), RED)
+        # Ctrl+drag copies: the original stays and a second rectangle appears
+        s.drag(*pic(145, 145), *pic(214, 194))
+        hold(vm, "ctrl")
+        s.drag(*pic(180, 170), *pic(380, 170))
+        unhold(vm, "ctrl")
+        s.click(*pic(550, 440))
+        assert s.wait_pixel(*pic(380, 170), RED) and near(s.px(*pic(180, 170)), RED), "Ctrl+drag should leave the original and add a copy"
+        # Esc puts a lifted selection back where it came from
+        s.drag(*pic(145, 145), *pic(214, 194))
+        s.drag(*pic(180, 170), *pic(100, 300))
+        s.key("esc")
+        assert s.wait_pixel(*pic(180, 170), RED) and near(s.px(*pic(100, 300)), WHITE), "Esc should cancel the move"
+        s.key("esc")                   # a second Esc deselects
         g.shot("select")
 
         # Image > Flip Horizontal: the red rectangle jumps to the right edge (x -> 639 - x)
