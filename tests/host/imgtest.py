@@ -20,7 +20,7 @@ from pathlib import Path
 from PIL import Image, ImageOps
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from imgdata import png_chunk, pack_row, filter_row, ADAM7, make_png, expect_png, photo  # noqa: E402
+from imgdata import make_png, expect_png, photo, build_corpus, mutate  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent.parent
 OUT = REPO / "build" / "host-img"
@@ -369,43 +369,17 @@ def test_writers():
 
 # ---------------------------------------------------------------------------------------------- hostile files
 
-def mutate(rnd, data):
-    b = bytearray(data)
-    mode = rnd.choice(("flip", "flip", "trunc", "junk", "insert", "zero"))
-    if mode == "flip":
-        for _ in range(rnd.randint(1, 6)):
-            b[rnd.randrange(len(b))] ^= 1 << rnd.randrange(8)
-    elif mode == "trunc":
-        del b[rnd.randrange(1, len(b)):]
-    elif mode == "junk":
-        k = rnd.randrange(len(b))
-        b[k:k + rnd.randint(1, 20)] = os.urandom(rnd.randint(1, 20))
-    elif mode == "insert":
-        k = rnd.randrange(len(b))
-        b[k:k] = os.urandom(rnd.randint(1, 8))
-    else:
-        k = rnd.randrange(len(b))
-        b[k:k + rnd.randint(1, 16)] = bytes(rnd.randint(1, 16))
-    return bytes(b)
-
-
 def test_fuzz():
-    rnd = random.Random(2024)
-    corpus = []
-    for i in range(10):
-        d = sorted(OUT.glob("t*.*")) + sorted(OUT.glob("*.gif")) + sorted(OUT.glob("*.bmp"))
-    for p in sorted(OUT.glob("*")):
-        if p.suffix.lower() in (".png", ".jpg", ".gif", ".bmp", ".ppm", ".pgm", ".pbm", ".tga") and p.stat().st_size < 20000:
-            corpus.append(p.read_bytes())
-    # extra seeds: progressive and restart JPEGs and an interlaced PNG exist from the earlier tests only as the last written file
+    rnd = random.Random(int(os.environ.get("FUZZ_SEED", "2024")))
+    corpus = [data for data in build_corpus()[0].values() if len(data) > 8]       # every picture the guest test decodes
+    corpus.append(make_png(9, 7, 2, 8, [[(1, 2, 3)] * 9] * 7, interlace=1))
+    corpus.append(make_png(9, 7, 3, 4, [[(3,)] * 9] * 7, plte=[(i, i, i) for i in range(16)], trns=b"\x00\x80"))
     base = photo(40, 24)
-    for kw in (dict(progressive=True, optimize=True), dict(subsampling=2), dict(subsampling=1, quality=30), dict()):
+    for kw in (dict(progressive=True, optimize=True, subsampling=0), dict(restart_marker_blocks=2), dict(restart_marker_rows=1, subsampling=2)):
         buf = io.BytesIO()
         base.save(buf, "JPEG", **kw)
         corpus.append(buf.getvalue())
-    corpus.append(make_png(9, 7, 2, 8, [[(1, 2, 3)] * 9] * 7, interlace=1))
-    corpus.append(make_png(9, 7, 3, 4, [[(3,)] * 9] * 7, plte=[(i, i, i) for i in range(16)], trns=b"\x00\x80"))
-    n = 200 if QUICK else 1200
+    n = int(os.environ.get("FUZZ_N", 200 if QUICK else 1200))
     bad = 0
     stats = {}
     for i in range(n):
@@ -450,7 +424,10 @@ def test_fuzz():
 
 def main():
     build()
-    for fn in (test_png, test_jpeg, test_gif, test_bmp_pnm_tga, test_writers, test_fuzz):
+    tests = (test_png, test_jpeg, test_gif, test_bmp_pnm_tga, test_writers, test_fuzz)
+    if os.environ.get("ONLY") == "fuzz":                      # ONLY=fuzz FUZZ_N=6000 FUZZ_SEED=7 for a long hostile-input run
+        tests = (test_fuzz,)
+    for fn in tests:
         before = len(FAILS)
         fn()
         print(f"{fn.__name__}: {'ok' if len(FAILS) == before else str(len(FAILS) - before) + ' failure(s)'}", flush=True)

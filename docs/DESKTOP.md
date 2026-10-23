@@ -81,7 +81,19 @@ pointer, focus, resize (CONFIGURE) and close events. Shell clients (`fairy_regis
 (`fairy_subscribe_windows`) and global hotkeys (Super = launcher, Ctrl+Alt+T = terminal, Ctrl+Alt+Del = Spell Manager).
 
 Other keys handled by the server: Alt+Tab (switcher), Alt+F4 (close), Alt+drag (move), double click on a title bar (maximize),
-Ctrl+F12 (screenshot to `/tmp/screenshot.ppm`).
+Ctrl+F12 (screenshot: `~/Pictures/Screenshot-<date>-<time>.png` and `/tmp/screenshot.ppm`; `FM_SCREENSHOT` takes a path ending in `.png`,
+`.bmp` or anything else for PPM, or `""` for both defaults, see `MEDIA.md`).
+
+## Pictures: wallpaper, screenshots, thumbnails, the Gallery
+
+`user/lib/kappa/include/kappa_media.h` (on top of libimg, see `MEDIA.md`) is what desktop programs use for pictures:
+
+* **Wallpaper**: `~/.config/hakurei/wallpaper` names a picture and a mode (cover, fit, center, tile, stretch). `k_wallpaper_render()` draws it (or the
+  built-in night scene when nothing is set or the picture cannot be read) and `k_wallpaper_stamp()` changes when the setting or the picture file changes:
+  `hakurei-shell` re-renders when it does, `hakurei-lock` and `hakurei-greeter` call the same render function. `wallpaper IMAGE` and the Gallery's W key set it.
+* **Screenshots**: `k_screenshot_path()` makes the `~/Pictures/Screenshot-...png` name; `fairy_screenshot(display, path)` asks the window server for the picture.
+* **Thumbnails**: `k_image_thumbnail(path, size, &canvas)` (cached) for file browsers; `k_image_thumbnail_cached()` for painting without reading.
+* **Gensokyo Gallery** (`user/bin/gallery/`, start menu entry in `hakurei-shell/launch.c`): the viewer; `gallery FILE` opens a picture and the folder it is in.
 
 ## Testing and looking at your work
 

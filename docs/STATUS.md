@@ -30,6 +30,7 @@ Running on a real PC: [REAL_HARDWARE.md](REAL_HARDWARE.md).
 | Userland | libgap (C library with regex, getopt, sockets, ptys, crypto, time zones), gapsh (POSIX-style shell), kappabox (~120 applets), pnote editor, pager, manual pages for everything (`man`), omikuji and friends | [TOOLS](TOOLS.md) |
 | Applications | Ran's Calculator, Sakuya's Pocket Watch, Spell Manager (task manager), Kappa Control Panel, Bunbunmaru News, Patchouli's Notebook (text editor), Sketchbook (paint), a danmaku shooter, Minesweeper (fairies under the grass), Snake; the Gensokyo Explorer (file manager) is still on a branch | [APPS](APPS.md), [GAMES](GAMES.md) |
 | Window system | Fairies server (compositor, decorations, damage tracking, clipboard), Kappa toolkit (immediate-mode widgets, dialogs, icons), HakureiDE desktop (wallpaper, panel, start menu, task list, terminal), login screen, screen lock | [DESKTOP](DESKTOP.md) |
+| Media | libz (inflate/deflate, zlib/gzip), libimg (PNG, JPEG baseline + progressive, GIF + animation, BMP, PNM, TGA readers; PNG/BMP/PPM writers; scaling, rotation), `gzip` `gunzip` `zcat` `tar` `zip` `unzip`, `imginfo` `convert`, the Gensokyo Gallery viewer, a wallpaper picture (`wallpaper`), PNG screenshots in `~/Pictures` (`screenshot`, Ctrl+F12), thumbnails for file browsers (`k_image_thumbnail`), `SYS_utimes` | [MEDIA](MEDIA.md) |
 
 ## Known issues / next
 
