@@ -195,8 +195,10 @@ static int hub_probe(UsbDevice *dev, UsbInterface *intf) {
     hi->hub.port = kzalloc(hi->hub.nports * sizeof(UsbPort));
     if (!hi->hub.port) { kfree(hi); return -ENOMEM; }
 
-    /* Hubs with a transaction translator per port switch to it with alternate setting 1 (protocol 2). */
-    if (dev->speed == USB_SPEED_HIGH && intf->proto == 2 &&
+    /* A high-speed hub whose device descriptor says "multiple TTs" (bDeviceProtocol 2) has a transaction translator per port,
+     * enabled by selecting alternate setting 1 of its interface (the interface itself reports protocol 1 until then). Same test as
+     * Linux's hub_probe(). */
+    if (dev->speed == USB_SPEED_HIGH && dev->desc.bDeviceProtocol == 2 &&
         usb_control(dev, USB_RECIP_IFACE, USB_REQ_SET_INTERFACE, 1, intf->number, NULL, 0, HUB_TIMEOUT) >= 0)
         hi->hub.mtt = true;
     if (ss) usb_control(dev, RT_HUB_OUT, HUB_REQ_SET_DEPTH, dev->depth, 0, NULL, 0, HUB_TIMEOUT);       /* failure is not fatal */

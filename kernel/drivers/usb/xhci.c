@@ -16,6 +16,7 @@
 #include "mm.h"
 #include "task.h"
 #include "abi.h"
+#include "cmdline.h"
 
 #define RING_TRBS     256               /* one 4 KiB page per ring; the last entry is the link TRB */
 #define CMD_TIMEOUT   5000              /* Linux XHCI_CMD_DEFAULT_TIMEOUT */
@@ -123,6 +124,11 @@ static inline void ring_db(Xhci *x, u32 doorbell, u32 target) {
     mb();                                           /* TRBs and contexts must be visible before the controller is told */
     x->db[doorbell] = target;
 }
+
+/* Test aid, kernel command line "usbfault=ctl:N" or "usbfault=cmd:N": the doorbell of the Nth control transfer / command (counted
+ * from boot, the start-up No-Op is command 1) is never rung, so the timeout and recovery paths run exactly as they would for a
+ * device or controller that stops answering. */
+static u32 g_fault_ctl, g_fault_cmd, g_ctl_count, g_cmd_count;
 
 static const char *cc_name(u32 cc) {
     switch (cc) {
@@ -329,7 +335,8 @@ static int xhci_cmd(Xhci *x, u32 control, u64 param, CmdResult *res) {
     x->cmd_done = false;
     x->cmd_trb = ring_push(&x->cmd, param, 0, control);
     x->cmd_pending = true;
-    ring_db(x, 0, 0);
+    if (g_fault_cmd && ++g_cmd_count == g_fault_cmd) usb_dbg("xhci: fault injection: command doorbell not rung");
+    else ring_db(x, 0, 0);
     int rc = wait_flag(x, &x->cmd_done, CMD_TIMEOUT);
     x->cmd_pending = false;
     if (rc == -ETIMEDOUT) {
@@ -505,7 +512,8 @@ static int xhci_control(UsbHc *hc, UsbDevice *dev, const UsbSetup *su, void *buf
     if (len)
         s->cw.data_trb = ring_push(ring, x->ctl_phys, len, TRB_TYPE(TRB_DATA) | TRB_IOC | (in ? (TRB_DIR_IN | TRB_ISP) : 0));
     s->cw.status_trb = ring_push(ring, 0, 0, TRB_TYPE(TRB_STATUS) | TRB_IOC | ((in && len) ? 0 : TRB_DIR_IN));
-    ring_db(x, s->id, 1);
+    if (g_fault_ctl && ++g_ctl_count == g_fault_ctl) usb_dbg("usb %s: fault injection: control doorbell not rung", dev->path);
+    else ring_db(x, s->id, 1);
 
     int rc = wait_flag(x, &s->cw.done, timeout_ms);
     s->cw.active = false;
@@ -562,17 +570,18 @@ static int xhci_add_endpoints(UsbHc *hc, UsbDevice *dev, UsbEndpoint **eps, int 
     Xhci *x = XH(hc);
     XSlot *s = dev_slot(dev);
     if (!s) return -ENODEV;
-    int last = 1;
+    int last = 1, done = 0, rc;
     in_ctx_zero(x, s);
     volatile u32 *ctrl = ctx_in_ctrl(x, s);
     for (int i = 0; i < n; i++) {
         UsbEndpoint *ep = eps[i];
         int dci = ep->dci;
-        if (dci < 2 || dci > 31 || s->ep[dci].ring) return -EINVAL;
-        if (ep->type == USB_EP_ISOC) return -ENOTSUP;                   /* out of scope */
+        if (dci < 2 || dci > 31 || s->ep[dci].ring) { rc = -EINVAL; goto fail; }
+        if (ep->type == USB_EP_ISOC) { rc = -ENOTSUP; goto fail; }      /* out of scope */
         XEp *xe = &s->ep[dci];
         xe->ring = ring_alloc(x);
-        if (!xe->ring) return -ENOMEM;
+        if (!xe->ring) { rc = -ENOMEM; goto fail; }
+        done++;
         xe->uep = ep;
         ep->hc = xe;
         ctrl[1] |= 1u << dci;
@@ -598,18 +607,24 @@ static int xhci_add_endpoints(UsbHc *hc, UsbDevice *dev, UsbEndpoint **eps, int 
     slot[0] = (slot[0] & ~SLOT_DW0_ENTRIES_MASK) | SLOT_DW0_ENTRIES(last);
     ctrl[1] |= 1u;                                                      /* A0 */
     CmdResult r;
-    int rc = xhci_cmd(x, TRB_TYPE(TRB_CMD_CONFIGURE) | TRB_SLOT(s->id), s->in_phys, &r);
+    rc = xhci_cmd(x, TRB_TYPE(TRB_CMD_CONFIGURE) | TRB_SLOT(s->id), s->in_phys, &r);
     if (rc) {
-        if (rc == -EIO) klog("Kappa", "usb %s: Configure Endpoint failed: %s", dev->path, cc_name(r.cc));
-        for (int i = 0; i < n; i++) {                                   /* nothing was configured: forget the rings */
-            XEp *xe = eps[i]->hc;
-            if (xe && xe->ring) { ring_free(xe->ring); xe->ring = NULL; xe->uep = NULL; }
-            eps[i]->hc = NULL;
+        if (rc == -EIO) {
+            klog("Kappa", "usb %s: Configure Endpoint failed: %s", dev->path, cc_name(r.cc));
+            rc = (r.cc == CC_BANDWIDTH || r.cc == CC_RESOURCE) ? -ENOSPC : -EIO;
         }
-        return rc == -EIO ? (r.cc == CC_BANDWIDTH || r.cc == CC_RESOURCE ? -ENOSPC : -EIO) : rc;
+        goto fail;
     }
     for (int i = 0; i < n; i++) eps[i]->configured = true;
     return 0;
+
+fail:                                                                   /* nothing was configured: forget the rings we made */
+    for (int i = 0; i < done; i++) {
+        XEp *xe = eps[i]->hc;
+        if (xe && xe->ring) { ring_free(xe->ring); xe->ring = NULL; xe->uep = NULL; }
+        eps[i]->hc = NULL;
+    }
+    return rc;
 }
 
 /* Hub bits of the slot context. Linux uses Evaluate Context for this; the specification describes Configure Endpoint.
@@ -836,7 +851,15 @@ static int x_wait_reg(Xhci *x, u32 off, u32 mask, u32 want, u32 timeout_ms) {
     }
 }
 
-#define FAIL(x, ...) do { snprintf((x)->hc.status, sizeof (x)->hc.status, __VA_ARGS__); return -EIO; } while (0)
+/* A controller that was started and then failed a sanity check is stopped again so it cannot touch memory we no longer track. */
+static void x_stop(Xhci *x) {
+    if (!x->running || !x->op) return;
+    u32 cmd = rd32(x->op, XOP_USBCMD);
+    if (cmd != 0xFFFFFFFFu) wr32(x->op, XOP_USBCMD, cmd & ~(CMD_RUN | CMD_INTE));
+    x->running = false;
+}
+
+#define FAIL(x, ...) do { snprintf((x)->hc.status, sizeof (x)->hc.status, __VA_ARGS__); x_stop(x); return -EIO; } while (0)
 
 /* Walks the extended capability list: Supported Protocol (port speeds, slot types) and USB Legacy Support. */
 static void parse_ext_caps(Xhci *x) {
@@ -908,6 +931,10 @@ static void bios_handoff(Xhci *x) {
 static void intel_route_ports(Xhci *x) {
     PciDev *p = x->pci;
     if (p->vendor != 0x8086) return;
+    switch (p->device) {                                                /* the chipsets that have an EHCI to share ports with: 7, 8 and 9 series */
+    case 0x1E31: case 0x8C31: case 0x9C31: case 0x8CB1: case 0x9CB1: break;
+    default: return;                                                    /* Sunrise Point and newer are xHCI only: nothing to route */
+    }
     u32 usb3prm = pci_read32(p, 0xDC), usb2prm = pci_read32(p, 0xD4);
     if (usb3prm == 0xFFFFFFFFu || usb2prm == 0xFFFFFFFFu) return;
     if (usb3prm) pci_write32(p, 0xD8, usb3prm);                         /* USB3_PSSEN: SuperSpeed terminations on */
@@ -1090,6 +1117,13 @@ UsbHc *xhci_create(PciDev *pci, int busnum) {
     x->hc.ops = &xhci_ops;
     x->hc.pci = pci;
     x->hc.busnum = busnum;
+    snprintf(x->hc.desc, sizeof x->hc.desc, "xHCI %04x:%04x at %02x:%02x.%x", pci->vendor, pci->device, pci->bus, pci->dev, pci->fn);
+    char fault[24];
+    if (cmdline_value("usbfault", fault, sizeof fault) && (!strncmp(fault, "ctl:", 4) || !strncmp(fault, "cmd:", 4))) {
+        u32 n = 0;
+        for (const char *q = fault + 4; *q >= '0' && *q <= '9'; q++) n = n * 10 + (u32)(*q - '0');
+        if (fault[1] == 't') g_fault_ctl = n; else g_fault_cmd = n;
+    }
     /* Make sure the function is in D0 and decodes memory; the BIOS may have left it asleep. */
     u8 pm = pci_find_cap(pci, PCI_CAP_PM);
     if (pm) {

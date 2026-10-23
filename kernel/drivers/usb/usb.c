@@ -516,6 +516,16 @@ static void port_connect(UsbHub *hub, int port, UsbPortStatus *st0) {
     bool warm = st.warm_reset;
     for (int attempt = 0; attempt < PORT_INIT_TRIES; attempt++) {
         if (hub->dead || hc->dead) return;
+        if (warm) {                                                    /* a USB 3 link that will not train: a few warm resets, then leave it */
+            if (pt->warm_tries >= 3) {
+                if (pt->warm_tries == 3) {
+                    pt->warm_tries++;
+                    klog("Kappa", "usb: port %d: link does not come up after 3 warm resets; ignoring the port until something changes", port);
+                }
+                return;
+            }
+            pt->warm_tries++;
+        }
         usb_dbg("usb: port %d reset (attempt %d%s)", port, attempt + 1, warm ? ", warm" : "");
         int rc = hub->ops->reset(hub, port, warm, &st);
         warm = false;
@@ -551,6 +561,7 @@ static void port_event(UsbHub *hub, int port) {
     usb_dbg("usb: bus %d%s%s port %d event: connected %d enabled %d reset %d link %u change %#x speed %s", hub->hc->busnum, hub->dev ? " hub " : " root",
             hub->dev ? hub->dev->path : "", port, st.connected, st.enabled, st.resetting, st.link_state, st.change, usb_speed_name(st.speed));
     if (st.change) hub->ops->clear_change(hub, port, st.change);
+    if (st.connected && st.enabled && st.link_state == 0) pt->warm_tries = 0;      /* the link is healthy again */
     if (st.overcurrent) klog("Kappa", "usb: over-current condition on port %d", port);
     if (!st.connected || (st.change & UPC_CONNECT)) pt->failed = false;
     if (pt->dev && (!st.connected || (st.change & UPC_CONNECT) || !st.enabled)) usb_disconnect(pt->dev);

@@ -190,6 +190,7 @@ typedef struct UsbHubOps {
 typedef struct UsbPort {
     UsbDevice *dev;
     u8 failed;                      /* enumeration gave up on this connection; wait for the next connect change */
+    u8 warm_tries;                  /* USB 3: warm resets spent on a link that will not train (reset once a link comes up) */
 } UsbPort;
 
 typedef struct UsbHub {

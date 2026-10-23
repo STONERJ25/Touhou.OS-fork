@@ -1,22 +1,27 @@
-"""USB host stack: xHCI + hubs + HID keyboards and mice, hot-plug, and the "nothing there" cases (QEMU's qemu-xhci).
+"""USB host stack: xHCI + hubs + HID keyboards and mice, hot-plug, error recovery, and the "nothing there" cases (QEMU's qemu-xhci).
 
 QEMU routes injected keyboard events to the most recently plugged USB keyboard and mouse events to the mouse the guest is polling,
 so no explicit device selection is needed (input-send-event's `device` argument names a display, not an input device).
 The kernel exposes two text files for these tests: /proc/usb (the device tree, what `lsusb` prints) and /proc/usbstat
 (counters of what the HID drivers fed into the input layer, plus the input layer's own mouse position and buttons).
+
+The keyboard and mouse scenarios run twice: with the devices on root ports and behind a (full-speed) usb-hub.
 """
 import re
 import time
 
-from harness import test, Qemu, BUILD
+from harness import test, TESTS, Qemu, BUILD
 from test_shell import run, PROMPT
 
 XHCI = ["-device", "qemu-xhci,id=xhci"]
 KBD = ["-device", "usb-kbd,id=ukbd"]
 MOUSE = ["-device", "usb-mouse,id=umouse"]
+BEHIND_HUB = ["-device", "usb-hub,id=hub1,bus=xhci.0,port=1", "-device", "usb-kbd,id=ukbd,bus=xhci.0,port=1.1",
+              "-device", "usb-mouse,id=umouse,bus=xhci.0,port=1.2"]
 KBD_UP = r"\[Satori\] usb \S+: keyboard online \(interface"
 MOUSE_UP = r"\[Koishi\] usb \S+: mouse online \(interface"
 GONE = r"\[Kappa\] usb \S+: device disconnected"
+NEW_DEVICE = r"\[Kappa\] usb \S+: new \S+ device"
 
 
 # ---------------------------------------------------------------- helpers
@@ -38,12 +43,12 @@ def wait_count(vm, pattern, n=1, timeout=60):
     raise TimeoutError(f"expected {n} x /{pattern}/ in the log, got {len(rx.findall(vm.text()))}:\n" + vm.text()[-2500:])
 
 
-def boot(vm, keyboards=1, mice=1):
-    """Waits for the shell and for the USB drivers to bind the expected number of keyboards and mice."""
+def boot(vm, keyboards=1, mice=1, hubs=0, timeout=60):
+    """Waits for the shell and for the USB drivers to bind the expected number of keyboards, mice and hubs."""
     vm.expect(PROMPT, timeout=90)
-    wait_count(vm, KBD_UP, keyboards)
-    wait_count(vm, MOUSE_UP, mice)
-    wait_count(vm, r"\[Kappa\] usb \S+: new \S+ device", keyboards + mice)
+    wait_count(vm, KBD_UP, keyboards, timeout)
+    wait_count(vm, MOUSE_UP, mice, timeout)
+    wait_count(vm, NEW_DEVICE, keyboards + mice + hubs, timeout)
     time.sleep(0.5)
 
 
@@ -84,6 +89,19 @@ def no_errors(vm):
         assert bad not in text, f"unexpected {bad!r} in the log:\n" + text[-2500:]
 
 
+def both_topologies(doc):
+    """Registers the scenario twice: devices on root ports, and devices behind a hub. The scenario gets (devices, hubs, vm name)."""
+    def deco(fn):
+        for suffix, devs, hubs in (("", KBD + MOUSE, 0), ("_hub", BEHIND_HUB, 1)):
+            def case(devs=devs, hubs=hubs, suffix=suffix):
+                fn(devs, hubs, f"t-{fn.__name__}{suffix}".replace("_", "-"))
+            case.__name__ = fn.__name__ + suffix
+            case.__doc__ = doc + (" (behind a hub)" if suffix else "")
+            TESTS.append(case)
+        return fn
+    return deco
+
+
 # ---------------------------------------------------------------- enumeration
 
 @test
@@ -101,6 +119,16 @@ def usb_enumerate():
         assert "[xhci]" in out, out
         out, rc = run(vm, "lsusb | grep -c '^Bus.*driver hid'")
         assert out.strip() == "2", out
+        no_errors(vm)
+
+
+@test
+def usb_nec_controller():
+    """The same devices on QEMU's other xHCI model (NEC uPD720200 personality) enumerate and work."""
+    with Qemu(extra=["-device", "nec-usb-xhci,id=xhci"] + KBD + MOUSE, name="t-usb-nec") as vm:
+        boot(vm)
+        assert "xHCI 1033:0194" in vm.text()
+        type_run(vm, "echo $((6*7))\n", r"\n42\r?\n")
         no_errors(vm)
 
 
@@ -136,12 +164,11 @@ def usb_tablet_declined():
 
 # ---------------------------------------------------------------- keyboard
 
-@test
-def usb_keyboard_text():
-    """Typing through the USB keyboard reaches the gapsh prompt (letters, digits, punctuation, shifted symbols)."""
+@both_topologies("Typing through the USB keyboard reaches the gapsh prompt (letters, digits, punctuation, shifted symbols).")
+def usb_keyboard_text(devs, hubs, name):
     msg = "Hello, Gensokyo: [a-z] {0-9} ~ ^ & ; # @ % ! | < > ? _ + = - / \" $ ( ) * ."
-    with usb_vm(KBD + MOUSE, name="t-usb-kbd") as vm:
-        boot(vm)
+    with usb_vm(devs, name=name) as vm:
+        boot(vm, hubs=hubs)
         s0 = stat(vm)
         type_run(vm, "echo $((6*7))\n", r"\n42\r?\n")
         type_run(vm, f"echo '{msg}'\n", re.escape(msg) + r"\r?\n")
@@ -152,11 +179,10 @@ def usb_keyboard_text():
         no_errors(vm)
 
 
-@test
-def usb_keyboard_modifiers():
-    """Shift (letters and symbols), Ctrl chords (Ctrl+W, Ctrl+C), arrows, Delete, Home/End, keypad and history."""
-    with usb_vm(KBD + MOUSE, name="t-usb-mods") as vm:
-        boot(vm)
+@both_topologies("Shift (letters and symbols), Ctrl chords (Ctrl+W, Ctrl+C), arrows, Delete, Home/End, keypad and history.")
+def usb_keyboard_modifiers(devs, hubs, name):
+    with usb_vm(devs, name=name) as vm:
+        boot(vm, hubs=hubs)
         type_run(vm, "echo ABC Def GHI $((2*3))\n", r"\nABC Def GHI 6\r?\n")
         # Ctrl+W deletes the last word
         vm.type("echo one two")
@@ -201,12 +227,13 @@ def usb_keyboard_modifiers():
 
 @test
 def usb_keyboard_keymap():
-    """Every key class maps to something: F1-F12, navigation, GUI, menu, modifiers and keypad each produce a key event."""
+    """Every key class maps to something: F1-F12, navigation, GUI, modifiers, locks and keypad each produce a key event."""
     keys = (["f%d" % i for i in range(1, 13)] + ["pgup", "pgdn", "insert", "home", "end", "delete", "up", "down", "left", "right",
             "meta_l", "meta_r", "caps_lock", "caps_lock", "num_lock", "num_lock", "scroll_lock", "scroll_lock",
             "kp_0", "kp_5", "kp_9", "kp_divide", "kp_multiply", "kp_subtract", "kp_add", "kp_decimal",
             "ctrl_r", "alt_r", "shift_r", "esc", "tab", "backspace", "spc", "minus", "equal", "bracket_left", "bracket_right",
             "backslash", "semicolon", "apostrophe", "grave_accent", "comma", "dot", "slash"])
+    # (QEMU's usb-kbd has no usage for the "menu" key, so the Application key cannot be exercised here)
     with usb_vm(KBD + MOUSE, name="t-usb-keymap") as vm:
         boot(vm)
         s0 = stat(vm)
@@ -223,11 +250,10 @@ def usb_keyboard_keymap():
         no_errors(vm)
 
 
-@test
-def usb_key_repeat():
-    """Holding a key on the USB keyboard repeats it (the input layer's typematic generator)."""
-    with usb_vm(KBD + MOUSE, name="t-usb-repeat") as vm:
-        boot(vm)
+@both_topologies("Holding a key on the USB keyboard repeats it (the input layer's typematic generator).")
+def usb_key_repeat(devs, hubs, name):
+    with usb_vm(devs, name=name) as vm:
+        boot(vm, hubs=hubs)
         s0 = stat(vm)
         key_event(vm, "x", True)
         time.sleep(4.0)
@@ -244,11 +270,10 @@ def usb_key_repeat():
 
 # ---------------------------------------------------------------- mouse
 
-@test
-def usb_mouse():
-    """USB mouse: motion, buttons and wheel reach the input layer."""
-    with usb_vm(KBD + MOUSE, name="t-usb-mouse") as vm:
-        boot(vm)
+@both_topologies("USB mouse: motion, buttons and wheel reach the input layer.")
+def usb_mouse(devs, hubs, name):
+    with usb_vm(devs, name=name) as vm:
+        boot(vm, hubs=hubs)
         assert vm.select_mouse("HID") is not None
         s0 = stat(vm)
         vm.mouse_move(40, 25)
@@ -311,27 +336,28 @@ def usb_report_protocol():
 
 @test
 def usb_hub():
-    """Keyboard and mouse behind a hub: tree, speeds, typing and mouse motion; unplugging the hub takes both away."""
-    extra = ["-device", "usb-hub,id=hub1,bus=xhci.0,port=1", "-device", "usb-kbd,id=ukbd,bus=xhci.0,port=1.1",
-             "-device", "usb-mouse,id=umouse,bus=xhci.0,port=1.2"]
-    with usb_vm(extra, name="t-usb-hub") as vm:
-        boot(vm)
+    """Devices behind a hub: tree, speeds; unplug a keyboard from the hub and plug another in; pull the hub out and put one back."""
+    with usb_vm(BEHIND_HUB, name="t-usb-hub") as vm:
+        boot(vm, hubs=1)
         out, rc = run(vm, "lsusb")
         assert re.search(r"^Bus 1 Port (\d+): ID 0409:55aa QEMU QEMU USB Hub, full-speed, class 09, driver hub$", out, re.M), out
         hub_port = re.search(r"^Bus 1 Port (\d+): ID 0409:55aa", out, re.M).group(1)
         assert re.search(rf"^Bus 1 Port {hub_port}\.1: ID 0627:0001 QEMU QEMU USB Keyboard, full-speed, .*driver hid-keyboard$", out, re.M), out
         assert re.search(rf"^Bus 1 Port {hub_port}\.2: ID 0627:0001 QEMU QEMU USB Mouse, full-speed, .*driver hid-mouse$", out, re.M), out
         type_run(vm, "echo $((6*7))\n", r"\n42\r?\n")
-        vm.select_mouse("HID")
-        s0 = stat(vm)
-        vm.mouse_move(15, 9)
-        time.sleep(0.5)
-        s1 = stat(vm)
-        assert s1["mouse_dx"] - s0["mouse_dx"] == 15 and s1["mouse_dy"] - s0["mouse_dy"] == 9, (s0, s1)
         no_errors(vm)
+        # unplug the keyboard from its hub port, plug another one into a different port
+        vm.qmp("device_del", id="ukbd")
+        wait_count(vm, GONE, 1, timeout=30)
+        time.sleep(0.5)
+        assert len(devices(vm)) == 2 and stat(vm)["keyboards"] == 0
+        vm.qmp("device_add", driver="usb-kbd", id="ukbd3", bus="xhci.0", port="1.4")
+        wait_count(vm, KBD_UP, 2, timeout=40)
+        assert any(ln.startswith(f"Bus 1 Port {hub_port}.4:") and "hid-keyboard" in ln for ln in devices(vm)), devices(vm)
+        type_run(vm, "echo $((7*7))\n", r"\n49\r?\n")
         # pull the hub out: the children go with it
         vm.qmp("device_del", id="hub1")
-        wait_count(vm, GONE, 3, timeout=30)
+        wait_count(vm, GONE, 4, timeout=30)
         time.sleep(0.5)
         assert devices(vm) == [], devices(vm)
         s = stat(vm)
@@ -339,11 +365,39 @@ def usb_hub():
         # put a hub back with a keyboard behind it
         vm.qmp("device_add", driver="usb-hub", id="hub2", bus="xhci.0", port="2")
         vm.qmp("device_add", driver="usb-kbd", id="ukbd2", bus="xhci.0", port="2.3")
-        wait_count(vm, KBD_UP, 2, timeout=40)
+        wait_count(vm, KBD_UP, 3, timeout=40)
         lines = devices(vm)
         assert len(lines) == 2 and any("hid-keyboard" in ln and "." in ln.split(":")[0] for ln in lines), lines
-        type_run(vm, "echo $((7*7))\n", r"\n49\r?\n")
+        type_run(vm, "echo $((8*8))\n", r"\n64\r?\n")
         no_errors(vm)
+
+
+@test
+def usb_nested_hubs():
+    """A hub behind a hub: route strings through two tiers, keyboard and mouse on different tiers both work."""
+    extra = ["-device", "usb-hub,id=h1,bus=xhci.0,port=1", "-device", "usb-hub,id=h2,bus=xhci.0,port=1.1",
+             "-device", "usb-kbd,id=ukbd,bus=xhci.0,port=1.1.2", "-device", "usb-mouse,id=umouse,bus=xhci.0,port=1.3"]
+    with usb_vm(extra, name="t-usb-nested") as vm:
+        boot(vm, hubs=2)
+        lines = devices(vm)
+        hub_port = re.search(r"^Bus 1 Port (\d+): ID 0409:55aa", "\n".join(lines), re.M).group(1)
+        text = "\n".join(lines)
+        assert re.search(rf"^Bus 1 Port {hub_port}\.1: ID 0409:55aa .*driver hub$", text, re.M), text
+        assert re.search(rf"^Bus 1 Port {hub_port}\.1\.2: ID 0627:0001 .*USB Keyboard.*driver hid-keyboard$", text, re.M), text
+        assert re.search(rf"^Bus 1 Port {hub_port}\.3: ID 0627:0001 .*USB Mouse.*driver hid-mouse$", text, re.M), text
+        type_run(vm, "echo $((6*7))\n", r"\n42\r?\n")
+        vm.select_mouse("HID")
+        s0 = stat(vm)
+        vm.mouse_move(5, 6)
+        time.sleep(0.5)
+        s1 = stat(vm)
+        assert s1["mouse_dx"] - s0["mouse_dx"] == 5 and s1["mouse_dy"] - s0["mouse_dy"] == 6, (s0, s1)
+        no_errors(vm)
+        vm.qmp("device_del", id="h2")                                   # the inner hub and the keyboard on it go away
+        wait_count(vm, GONE, 2, timeout=30)
+        time.sleep(0.5)
+        lines = devices(vm)
+        assert len(lines) == 2 and stat(vm)["keyboards"] == 0 and stat(vm)["mice"] == 1, (lines, stat(vm))
 
 
 # ---------------------------------------------------------------- hot plug
@@ -413,7 +467,7 @@ def usb_two_keyboards():
         no_errors(vm)
 
 
-# ---------------------------------------------------------------- control pipe recovery
+# ---------------------------------------------------------------- error recovery
 
 @test
 def usb_stall_recovery():
@@ -423,6 +477,32 @@ def usb_stall_recovery():
         wait_count(vm, r"stall test: bogus request returned -32, device descriptor afterwards returned 18", 2, timeout=30)
         type_run(vm, "echo $((6*7))\n", r"\n42\r?\n")
         assert "INCIDENT" not in vm.text()
+
+
+@test
+def usb_recover_control_timeout():
+    """A control transfer that never completes times out, the endpoint is stopped and re-pointed, the device is enumerated again."""
+    with usb_vm(KBD + MOUSE, cmdline="usb=debug usbfault=ctl:3", name="t-usb-ctlfault") as vm:
+        boot(vm, timeout=90)
+        text = vm.text()
+        assert "control doorbell not rung" in text, text[-2000:]
+        assert re.search(r"setup failed at 'configuration descriptor' \(-110\), attempt 1 of 4", text), text[-2000:]
+        assert "giving up" not in text
+        assert len(devices(vm)) == 2
+        type_run(vm, "echo $((6*7))\n", r"\n42\r?\n")
+
+
+@test
+def usb_recover_command_timeout():
+    """A command the controller never answers times out, the command ring is aborted and restarted, the device is enumerated again."""
+    with usb_vm(KBD + MOUSE, cmdline="usb=debug usbfault=cmd:4", name="t-usb-cmdfault") as vm:
+        boot(vm, timeout=90)
+        text = vm.text()
+        assert "command doorbell not rung" in text and "command type 11 timed out" in text, text[-2000:]
+        assert "command ring aborted and restarted" in text, text[-2000:]
+        assert re.search(r"setup failed at 'address device' \(-110\), attempt 1 of 4", text), text[-2000:]
+        assert len(devices(vm)) == 2
+        type_run(vm, "echo $((6*7))\n", r"\n42\r?\n")
 
 
 # ---------------------------------------------------------------- nothing to drive

@@ -543,12 +543,18 @@ static int hid_probe(UsbDevice *dev, UsbInterface *intf) {
     h->ep = ep;
     h->led_sent = 0xFF;
     bool boot_class = intf->subcls == 1;
-    bool force_report = g_usb_hidreport;
     HidParsed *p = NULL;
 
-    if (boot_class && intf->proto == 1 && !force_report) {
+    if (boot_class && intf->proto == 1 && !g_usb_hidreport) {
+        /* The classic: boot protocol, 8 byte reports. A keyboard that refuses SET_PROTOCOL keeps talking in its own report format,
+         * so then its report descriptor decides. */
         h->kind = HID_KBD;
         h->boot = true;
+        if (usb_control(dev, USB_TYPE_CLASS | USB_RECIP_IFACE, HID_REQ_SET_PROTOCOL, 0, intf->number, NULL, 0, HID_TIMEOUT) < 0 &&
+            !dev->dead && !dev->broken) {
+            p = fetch_and_parse(dev, intf);
+            if (p && find_keyboard(p, &h->km)) h->boot = false;
+        }
     } else {
         p = fetch_and_parse(dev, intf);
         if (p) {
@@ -564,12 +570,12 @@ static int hid_probe(UsbDevice *dev, UsbInterface *intf) {
         if (!h->kind && boot_class) {                                    /* no usable report descriptor: boot protocol */
             h->kind = intf->proto == 1 ? HID_KBD : HID_MOUSE;
             h->boot = true;
+            usb_control(dev, USB_TYPE_CLASS | USB_RECIP_IFACE, HID_REQ_SET_PROTOCOL, 0, intf->number, NULL, 0, HID_TIMEOUT);
         }
     }
     kfree(p);
     if (!h->kind) { kfree(h); return -ENODEV; }
 
-    if (h->boot) usb_control(dev, USB_TYPE_CLASS | USB_RECIP_IFACE, HID_REQ_SET_PROTOCOL, 0, intf->number, NULL, 0, HID_TIMEOUT);
     if (h->kind == HID_KBD) usb_control(dev, USB_TYPE_CLASS | USB_RECIP_IFACE, HID_REQ_SET_IDLE, 0, intf->number, NULL, 0, HID_TIMEOUT);
     if (dev->broken || dev->dead) { kfree(h); return -ETIMEDOUT; }
 
