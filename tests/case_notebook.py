@@ -75,7 +75,7 @@ def trace_lines(vm):
 
 @test
 def notebook_selftest():
-    """notebook --selftest: gap buffer, line index, undo/redo, wrap rules, highlighters and file layer (31000+ checks)."""
+    """notebook --selftest: gap buffer, line index, undo/redo, wrap rules, highlighters and file layer, editor operations and fuzz (34000+ checks)."""
     with Qemu(cmdline="text", name="t-notebook-self", mem="512M") as vm:
         vm.expect(PROMPT, timeout=90)
         vm.send("notebook --selftest\n")
@@ -457,6 +457,31 @@ def notebook_bad_input():
         g.key("q", ctrl=True)
         vm.expect(r"nb: quit", timeout=10)
 
+        g.sh("echo secret > /tmp/noread.txt")
+        g.sh("chmod 000 /tmp/noread.txt")
+        launch(vm, "/tmp/noread.txt", ready=r"nb: error Cannot read:")
+        vm.expect(r"nb: dialog Cannot open file", timeout=10)
+        time.sleep(0.8)
+        g.key("esc")
+        g.key("q", ctrl=True)
+        vm.expect(r"nb: quit", timeout=10)
+
+        g.sh("mkdir /tmp/rodir")
+        g.sh("chmod 555 /tmp/rodir")
+        launch(vm, "/tmp/rodir/new.txt")
+        g.type("cannot be saved")
+        g.key("s", ctrl=True)
+        vm.expect(r"nb: error The page could not be written", timeout=10)
+        vm.expect(r"nb: dialog Cannot save", timeout=10)
+        time.sleep(0.8)
+        g.key("esc")
+        time.sleep(0.5)
+        g.key("q", ctrl=True)                            # still modified: asks, Don't save
+        vm.expect(r"nb: dialog Unsaved changes", timeout=10)
+        time.sleep(0.8)
+        g.click(585, 413)
+        vm.expect(r"nb: quit", timeout=10)
+
         t0 = time.time()
         vm.send("notebook /tmp/oneline.txt &\n")
         vm.expect(r"nb: pos 1 1 ", timeout=60)
@@ -523,6 +548,52 @@ def notebook_wrap_and_mouse():
         g.click(44 + 300, 56 + 36, count=3)              # triple click: the whole first line (one line = 255 chars + newline)
         vm.expect(r"nb: pos \d+ \d+ mod=0 lines=3 sel=\d{3}", timeout=10)
         g.shot("wrap")
+
+
+@test
+def notebook_gui_fuzz():
+    """A hundred and twenty random keys, clicks, drags, wheel turns and View/Edit menu picks: the editor survives and still saves."""
+    import random
+    rng = random.Random(1990)
+    with session("t-notebook-fuzz") as (vm, g):
+        make_demo(g)
+        g.sh("echo 'a very long line to give the horizontal scroll bar something to do, and word wrap too: " + "word " * 40 + "' >> /tmp/demo.c")
+        launch(vm, "/tmp/demo.c")
+        keys = ["left", "right", "up", "down", "home", "end", "pgup", "pgdn", "backspace", "delete", "ret", "tab", "spc"]
+        for step in range(120):
+            r = rng.random()
+            if r < 0.30:
+                g.type("".join(rng.choice("abcdefgh {}();\"'") for _ in range(rng.randint(1, 4))))
+            elif r < 0.55:
+                g.key(rng.choice(keys), shift=rng.random() < 0.3, ctrl=rng.random() < 0.15)
+            elif r < 0.62:
+                g.key(rng.choice("zyaxcvdk"), ctrl=True, shift=rng.random() < 0.3)
+            elif r < 0.78:
+                g.click(44 + rng.randint(0, 715), 56 + rng.randint(26, 495), count=rng.choice([1, 1, 2, 3]))
+            elif r < 0.86:
+                x, y = 44 + rng.randint(40, 700), 56 + rng.randint(30, 480)
+                g.drag(x, y, x + rng.randint(-150, 150), y + rng.randint(-120, 120), steps=4)
+            elif r < 0.92:
+                vm.mouse_button(rng.choice(["wheel-up", "wheel-down"]), True)
+                vm.mouse_button("wheel-down", False)
+            elif r < 0.97:
+                g.click(rng.choice([118, 167]), 68)           # Edit or View menu
+                time.sleep(0.2)
+                g.click(100 if rng.random() < 0.5 else 170, 56 + rng.choice([38, 60, 82, 104, 126, 150, 172, 194]))
+                time.sleep(0.2)
+            else:
+                g.key("esc")
+        g.key("esc")
+        g.key("esc")
+        time.sleep(0.5)
+        g.shot("after")
+        assert "BOUNDARY VIOLATION" not in vm.text(), "the editor crashed:\n" + vm.text()[-1500:]
+        g.key("s", ctrl=True)
+        vm.expect(r"nb: (saved|dialog save-as)", timeout=20)                 # a View menu pick may have switched things around
+        slow = [int(x) for x in re.findall(r"nb: slow-frame (\d+) ms", vm.text())]
+        assert not slow or max(slow) < 3000, f"slow frames: {slow}"
+        out = g.sh("pidof notebook")
+        assert any(p.isdigit() for p in out.split()), "the editor is gone: " + out
 
 
 @test

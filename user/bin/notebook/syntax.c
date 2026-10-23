@@ -223,6 +223,7 @@ static SynState scan_md(const char *s, size_t n, SynState st, uint8_t *cls) {
 /* ---------------------------------------------------------------- interface */
 
 SynState syn_scan(Lang lang, const char *s, size_t len, SynState st, uint8_t *cls) {
+    if (cls && len) memset(cls, SC_NORMAL, len);                /* the scanners only mark what they recognise */
     switch (lang) {
     case LANG_C: return scan_c(s, len, st, cls);
     case LANG_SHELL: return scan_sh(s, len, st, cls);

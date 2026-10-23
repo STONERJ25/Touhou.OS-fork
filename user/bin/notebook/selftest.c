@@ -259,6 +259,9 @@ static void test_wrap(void) {
 
 static void test_syntax(void) {
     uint8_t cls[64];
+    memset(cls, 0xEE, sizeof cls);
+    syn_scan(LANG_C, "x = 1;", 6, 0, cls);
+    CHECK(cls[0] == SC_NORMAL && cls[1] == SC_NORMAL && cls[2] == SC_NORMAL && cls[4] == SC_NUMBER, "unrecognised text is plain, whatever the buffer held before");
     SynState st = syn_scan(LANG_C, "int x = 5; /* open", 18, 0, cls);
     CHECK(st == 1, "block comment opens");
     CHECK(cls[0] == SC_TYPE && cls[1] == SC_TYPE && cls[2] == SC_TYPE, "int is a type");
@@ -339,6 +342,188 @@ static void test_fileio(void) {
     CHECK(!strcmp(out, "/"), "abspath root: %s", out);
 }
 
+/* ---------------------------------------------------------------- the editor operations */
+
+static void verify_doc(Doc *d, const char *what) {
+    size_t len = doc_len(d);
+    const char *t = doc_all(d);
+    int nl = 1;
+    for (size_t i = 0; i < len; i++) if (t[i] == '\n') nl++;
+    CHECK(d->nls == nl, "%s: %d lines in the index, %d in the text", what, d->nls, nl);
+    if (d->nls == nl) {
+        int k = 1;
+        for (size_t i = 0; i < len; i++) if (t[i] == '\n') { CHECK(d->ls[k] == i + 1, "%s: line %d start %zu != %zu", what, k, d->ls[k], i + 1); k++; }
+    }
+    CHECK(d->caret <= len && d->anchor <= len, "%s: caret %zu anchor %zu beyond %zu", what, d->caret, d->anchor, len);
+}
+
+static void key(Editor *e, int code, int mods) {
+    KKey k = { (uint8_t)code, (uint8_t)mods, 1, 0 };
+    ed_key(e, NULL, &k);
+}
+
+static void typestr(Editor *e, const char *s) {
+    for (; *s; s++) {
+        if (*s == '\n') key(e, KEY_ENTER, 0);
+        else { KKey k = { KEY_Q, 0, 1, (uint32_t)(unsigned char)*s }; ed_key(e, NULL, &k); }
+    }
+}
+
+static char *text_of(Editor *e) {
+    size_t n = doc_len(&e->doc);
+    char *s = malloc(n + 1);
+    doc_get(&e->doc, 0, n, s);
+    s[n] = 0;
+    return s;
+}
+
+static bool is_text(Editor *e, const char *want) {
+    char *s = text_of(e);
+    bool ok = !strcmp(s, want);
+    if (!ok) printf("  got [%s] wanted [%s]\n", s, want);
+    free(s);
+    return ok;
+}
+
+static void test_editor_ops(void) {
+    Editor *e = &A.ed;
+    ed_init(e);
+    A.readonly = false;
+    doc_set_text(&e->doc, "", 0);
+    e->spaces = true;
+    e->tab_w = 4;
+
+    typestr(e, "  foo\nbar");
+    CHECK(is_text(e, "  foo\n  bar"), "auto-indent keeps the indentation");
+    key(e, KEY_TAB, 0);
+    CHECK(is_text(e, "  foo\n  bar   "), "Tab goes to the next tab stop (column 8)");
+    key(e, KEY_TAB, MOD_SHIFT);
+    CHECK(is_text(e, "  foo\nbar   "), "Shift+Tab removes the indentation of the line");
+
+    /* indent and unindent a selection of three lines */
+    doc_set_text(&e->doc, "one\n\ntwo\nthree\nfour", 19);
+    ed_set_selection(e, 0, 14);                                  /* from the start of "one" into "three" */
+    ed_indent(e, false);
+    CHECK(is_text(e, "    one\n\n    two\n    three\nfour"), "indent skips the blank line");
+    CHECK(e->doc.anchor == 0 && e->doc.caret > 14, "the selection still covers the lines");
+    ed_indent(e, true);
+    CHECK(is_text(e, "one\n\ntwo\nthree\nfour"), "unindent restores the text");
+    ed_undo(e);
+    CHECK(is_text(e, "    one\n\n    two\n    three\nfour"), "undo of unindent is one step");
+    ed_undo(e);
+    CHECK(is_text(e, "one\n\ntwo\nthree\nfour"), "undo of indent is one step");
+    e->spaces = false;
+    ed_set_selection(e, 0, 3);
+    ed_indent(e, false);
+    CHECK(is_text(e, "\tone\n\ntwo\nthree\nfour"), "indent with real tabs");
+    e->spaces = true;
+
+    /* line operations */
+    doc_set_text(&e->doc, "a\nb\nc", 5);
+    ed_set_selection(e, 2, 2);                                   /* in "b" */
+    ed_duplicate_line(e);
+    CHECK(is_text(e, "a\nb\nb\nc"), "duplicate line");
+    ed_move_lines(e, -1);
+    CHECK(is_text(e, "a\nb\nb\nc"), "moving equal lines up");
+    ed_set_selection(e, 4, 4);                                   /* second "b" */
+    ed_delete_line(e);
+    CHECK(is_text(e, "a\nb\nc"), "delete line");
+    ed_set_selection(e, 0, 0);
+    ed_move_lines(e, 1);
+    CHECK(is_text(e, "b\na\nc"), "move line down");
+    ed_move_lines(e, 1);
+    CHECK(is_text(e, "b\nc\na"), "move line down again");
+    ed_move_lines(e, 1);
+    CHECK(is_text(e, "b\nc\na"), "the last line cannot move down");
+    ed_set_selection(e, 4, 4);                                   /* in "a", the last line */
+    ed_delete_line(e);
+    CHECK(is_text(e, "b\nc"), "delete the last line removes the line break before it");
+
+    /* braces in C */
+    e->lang = LANG_C;
+    doc_set_text(&e->doc, "int f() {}", 10);
+    ed_set_selection(e, 9, 9);
+    key(e, KEY_ENTER, 0);
+    CHECK(is_text(e, "int f() {\n    \n}"), "{|} opens a block");
+    CHECK(e->doc.caret == 14, "caret on the indented line (%zu)", e->doc.caret);
+    e->lang = LANG_PLAIN;
+
+    /* word wrap and vertical movement */
+    char longline[256];
+    memset(longline, 'x', sizeof longline - 1);
+    for (int i = 9; i < 255; i += 10) longline[i] = ' ';
+    longline[255] = 0;
+    doc_set_text(&e->doc, longline, 255);
+    e->wrap = true;
+    e->cols = 40;
+    e->vis_rows = 5;
+    ed_invalidate(e);
+    int rows = ed_rows_in_line(e, 0);
+    CHECK(rows >= 6 && rows <= 8, "255 characters in 40 columns need about 7 rows, got %d", rows);
+    ed_set_selection(e, 0, 0);
+    key(e, KEY_DOWN, 0);
+    CHECK(e->doc.caret >= 30 && e->doc.caret <= 44, "Down moves one visual row (caret %zu)", e->doc.caret);
+    size_t first_row = e->doc.caret;
+    key(e, KEY_END, 0);
+    CHECK(e->doc.caret > first_row && e->doc.caret < 90, "End goes to the end of the row (%zu)", e->doc.caret);
+    key(e, KEY_UP, 0);
+    CHECK(e->doc.caret < 40, "Up moves back to the first row (%zu)", e->doc.caret);
+    for (int i = 0; i < 20; i++) key(e, KEY_DOWN, 0);
+    CHECK(e->doc.caret == 255, "Down on the last row goes to the end (%zu)", e->doc.caret);
+    e->wrap = false;
+    ed_free(e);
+}
+
+static void test_editor_fuzz(void) {
+    Editor *e = &A.ed;
+    static const int codes[] = { KEY_LEFT, KEY_RIGHT, KEY_UP, KEY_DOWN, KEY_HOME, KEY_END, KEY_PAGEUP, KEY_PAGEDOWN, KEY_BACKSPACE, KEY_DELETE, KEY_ENTER, KEY_TAB };
+    for (int round = 0; round < 6; round++) {
+        ed_init(e);
+        A.readonly = false;
+        const char *start = "The quick brown fox\n\tjumps over\n  the lazy dog;\n\nlast {line}";
+        doc_set_text(&e->doc, start, strlen(start));
+        e->wrap = round & 1;
+        e->spaces = (round & 2) == 0;
+        e->tab_w = round % 3 == 0 ? 2 : round % 3 == 1 ? 4 : 8;
+        e->cols = 12 + round * 7;
+        e->vis_rows = 3 + round;
+        e->lang = round % 2 ? LANG_C : LANG_PLAIN;
+        for (int step = 0; step < 1500; step++) {
+            int r = (int)rndn(100);
+            int mods = rndn(4) == 0 ? MOD_SHIFT : 0;
+            if (r < 40) {
+                static const char chars[] = "abcdef xyz{}();\n";
+                char c = chars[rndn(sizeof chars - 1)];
+                if (c == '\n') key(e, KEY_ENTER, 0);
+                else { KKey k = { KEY_Q, 0, 1, (uint32_t)(unsigned char)c }; ed_key(e, NULL, &k); }
+            } else if (r < 80) key(e, codes[rndn(sizeof codes / sizeof codes[0])], mods);
+            else if (r < 84) key(e, KEY_Z, MOD_CTRL);
+            else if (r < 88) key(e, KEY_Y, MOD_CTRL);
+            else if (r < 90) key(e, KEY_D, MOD_CTRL | MOD_SHIFT);
+            else if (r < 92) key(e, KEY_K, MOD_CTRL | MOD_SHIFT);
+            else if (r < 94) key(e, rndn(2) ? KEY_UP : KEY_DOWN, MOD_ALT);
+            else if (r < 96) key(e, rndn(2) ? KEY_LEFT : KEY_RIGHT, MOD_CTRL | mods);
+            else if (r < 97) key(e, rndn(2) ? KEY_BACKSPACE : KEY_DELETE, MOD_CTRL);
+            else if (r < 98) key(e, KEY_A, MOD_CTRL);
+            else if (r < 99) ed_goto(e, (int)rndn(8), (int)rndn(10));
+            else ed_indent(e, rndn(2));
+            if (step % 25 == 0) verify_doc(&e->doc, "fuzz");
+        }
+        verify_doc(&e->doc, "fuzz end");
+        char *final_text = text_of(e);
+        int guard = 0;
+        while (doc_undo(&e->doc) && guard++ < 100000) { }
+        CHECK(is_text(e, start), "undoing the whole fuzz history restores the start (round %d)", round);
+        CHECK(!doc_modified(&e->doc), "back at the start, the page is not modified");
+        guard = 0;
+        while (doc_redo(&e->doc) && guard++ < 100000) { }
+        CHECK(is_text(e, final_text), "redoing everything reproduces the final text (round %d)", round);
+        free(final_text);
+        verify_doc(&e->doc, "after redo");
+        ed_free(e);
+    }
+}
+
 static void test_big_and_bench(void) {
     /* 100,000 lines: build, index, random access and edits stay fast */
     size_t lines = 100000;
@@ -385,6 +570,8 @@ int selftest_run(void) {
     test_wrap();
     test_syntax();
     test_fileio();
+    test_editor_ops();
+    test_editor_fuzz();
     test_big_and_bench();
     if (g_fail) printf("NOTEBOOK SELFTEST FAIL (%d of %d checks)\n", g_fail, g_checks);
     else printf("NOTEBOOK SELFTEST PASS (%d checks)\n", g_checks);
