@@ -96,7 +96,7 @@ int ftruncate(int fd, off_t n) { return (int)__ret(__sc2(SYS_ftruncate, fd, n));
 int chmod(const char *p, mode_t m) { return (int)__ret(__sc2(SYS_chmod, (long)p, (long)m)); }
 int chown(const char *p, uid_t u, gid_t g) { return (int)__ret(__sc3(SYS_chown, (long)p, (long)u, (long)g)); }
 mode_t umask(mode_t m) { return (mode_t)__sc1(SYS_umask, (long)m); }
-int link(const char *a, const char *b) { (void)a; (void)b; errno = ENOSYS; return -1; }
+int link(const char *a, const char *b) { return (int)__ret(__sc2(SYS_link, (long)a, (long)b)); }
 int sync(void) { return (int)__sc0(SYS_sync); }
 int stat(const char *p, struct stat *st) { return (int)__ret(__sc2(SYS_stat, (long)p, (long)st)); }
 int lstat(const char *p, struct stat *st) { return (int)__ret(__sc2(SYS_lstat, (long)p, (long)st)); }

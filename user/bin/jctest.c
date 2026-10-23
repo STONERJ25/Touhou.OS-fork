@@ -16,6 +16,8 @@
 #include <sys/mman.h>
 #include <termios.h>
 #include <sys/resource.h>
+#include <sys/socket.h>
+#include <dirent.h>
 #include <pty.h>
 #include <gensokyo.h>
 
@@ -753,6 +755,145 @@ static void test_nice(void) {
     (void)cmd;
 }
 
+/* ---------------------------------------------------------------- hard links and /proc/<pid>/{fd,cwd,exe} */
+
+static long file_nlink(const char *path) {
+    struct stat st;
+    return stat(path, &st) == 0 ? (long)st.st_nlink : -1;
+}
+
+static ssize_t slurp(const char *path, char *buf, size_t cap) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return -1;
+    ssize_t n = read(fd, buf, cap - 1);
+    close(fd);
+    if (n >= 0) buf[n] = 0;
+    return n;
+}
+
+static void test_links(void) {
+    SECTION("hard links: link(), st_nlink, one inode, unlink one name, the ln applet, errors");
+    char buf[64];
+    mkdir("/tmp/jl", 0755);
+    int fd = open("/tmp/jl/a", O_CREAT | O_RDWR | O_TRUNC, 0644);
+    CHECK(fd >= 0 && write(fd, "gensokyo", 8) == 8);
+    close(fd);
+    CHECK(file_nlink("/tmp/jl/a") == 1);
+    CHECK(link("/tmp/jl/a", "/tmp/jl/b") == 0);
+    CHECK(file_nlink("/tmp/jl/a") == 2 && file_nlink("/tmp/jl/b") == 2);
+    struct stat sa, sb;
+    CHECK(stat("/tmp/jl/a", &sa) == 0 && stat("/tmp/jl/b", &sb) == 0 && sa.st_ino == sb.st_ino && sa.st_dev == sb.st_dev);
+    fd = open("/tmp/jl/b", O_WRONLY | O_APPEND);
+    CHECK(fd >= 0 && write(fd, "!", 1) == 1);
+    close(fd);
+    CHECK(slurp("/tmp/jl/a", buf, sizeof buf) == 9 && !strcmp(buf, "gensokyo!"));          /* one file, two names */
+    CHECK(unlink("/tmp/jl/a") == 0);
+    CHECK(file_nlink("/tmp/jl/b") == 1);
+    CHECK(slurp("/tmp/jl/b", buf, sizeof buf) == 9 && !strcmp(buf, "gensokyo!"));           /* the data lives on */
+
+    fd = open("/tmp/jl/b", O_RDWR);                                                         /* an unlinked file that is still open */
+    CHECK(fd >= 0 && link("/tmp/jl/b", "/tmp/jl/c") == 0 && file_nlink("/tmp/jl/b") == 2);
+    CHECK(unlink("/tmp/jl/b") == 0 && unlink("/tmp/jl/c") == 0);
+    struct stat so;
+    CHECK(fstat(fd, &so) == 0 && so.st_nlink == 0);
+    CHECK(
+          lseek(fd, 0, SEEK_SET) == 0 && read(fd, buf, 9) == 9 && !memcmp(buf, "gensokyo!", 9));
+    close(fd);
+
+    CHECK(system("echo ln > /tmp/jl/d; ln /tmp/jl/d /tmp/jl/e") == 0 && file_nlink("/tmp/jl/d") == 2);        /* the applet */
+    CHECK(system("ln /tmp/jl/d /tmp/jl/e 2>/dev/null") != 0);                                                 /* exists */
+    CHECK(symlink("d", "/tmp/jl/s") == 0 && link("/tmp/jl/s", "/tmp/jl/s2") == 0);
+    struct stat ls;
+    CHECK(lstat("/tmp/jl/s2", &ls) == 0 && S_ISLNK(ls.st_mode));                           /* a link to the symlink itself */
+
+    errno = 0;
+    CHECK(link("/tmp/jl", "/tmp/jl2") < 0 && errno == EPERM);                               /* directories */
+    CHECK(link("/tmp/jl/nonexistent", "/tmp/jl/x") < 0 && errno == ENOENT);
+    CHECK(link("/tmp/jl/d", "/tmp/jl/e") < 0 && errno == EEXIST);
+    CHECK(link("/tmp/jl/d", "/nosuchdir/x") < 0 && errno == ENOENT);
+    struct stat home;
+    if (stat("/HumanVillage/reimu", &home) == 0 && access("/HumanVillage/reimu", W_OK) == 0)
+        CHECK(link("/tmp/jl/d", "/HumanVillage/reimu/jl-x") < 0 && errno == EXDEV);       /* another mount */
+    unlink("/tmp/jl/d"); unlink("/tmp/jl/e"); unlink("/tmp/jl/s"); unlink("/tmp/jl/s2");
+}
+
+static void test_proc_links(void) {
+    SECTION("/proc/<pid>/fd, cwd and exe");
+    char target[256], path[96];
+    mkdir("/tmp/jl", 0755);
+    int fd = open("/tmp/jl/proc.txt", O_CREAT | O_RDWR | O_TRUNC, 0600);
+    CHECK(fd >= 0);
+    snprintf(path, sizeof path, "/proc/%d/fd/%d", (int)getpid(), fd);
+    ssize_t n = readlink(path, target, sizeof target - 1);
+    CHECK(n > 0 && (target[n] = 0, !strcmp(target, "/tmp/jl/proc.txt")));
+    CHECK(write(fd, "via proc", 8) == 8);
+    char buf[32] = "";
+    CHECK(slurp(path, buf, sizeof buf) == 8 && !strcmp(buf, "via proc"));                  /* open() follows the link */
+    struct stat st;
+    CHECK(lstat(path, &st) == 0 && S_ISLNK(st.st_mode));
+
+    int fds[2], sv[2];
+    CHECK(pipe(fds) == 0 && socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
+    char t2[256];
+    snprintf(path, sizeof path, "/proc/self/fd/%d", fds[0]);
+    n = readlink(path, target, sizeof target - 1);
+    snprintf(path, sizeof path, "/proc/self/fd/%d", fds[1]);
+    ssize_t n2 = readlink(path, t2, sizeof t2 - 1);
+    CHECK(n > 6 && n2 == n && (target[n] = 0, t2[n2] = 0, !strncmp(target, "pipe:[", 6) && !strcmp(target, t2)));
+    snprintf(path, sizeof path, "/proc/self/fd/%d", sv[0]);
+    n = readlink(path, target, sizeof target - 1);
+    CHECK(n > 8 && (target[n] = 0, !strncmp(target, "socket:[", 8)));
+
+    int seen = 0;
+    snprintf(path, sizeof path, "/proc/%d/fd", (int)getpid());
+    DIR *d = opendir(path);
+    CHECK(d != NULL);
+    for (struct dirent *e; d && (e = readdir(d));) {
+        int num = atoi(e->d_name);
+        if (e->d_name[0] >= '0' && e->d_name[0] <= '9' && (num == fd || num == fds[0] || num == fds[1] || num == sv[0])) seen++;
+    }
+    if (d) closedir(d);
+    CHECK(seen == 4);
+    CHECK(stat(path, &st) == 0 && S_ISDIR(st.st_mode) && (st.st_mode & 0777) == 0500);       /* only the owner may look */
+
+    FILE *f = popen("ls -l /proc/$PPID/fd 2>&1 | head -1", "r");                           /* (just exercises ls on a link directory) */
+    if (f) pclose(f);
+
+    close(fd);
+    snprintf(path, sizeof path, "/proc/self/fd/%d", fd);
+    CHECK(readlink(path, target, sizeof target) < 0 && errno == ENOENT);                    /* closed descriptors are gone */
+    close(fds[0]); close(fds[1]); close(sv[0]); close(sv[1]);
+
+    char cwd0[128];
+    CHECK(getcwd(cwd0, sizeof cwd0) != NULL);
+    CHECK(chdir("/tmp/jl") == 0);
+    n = readlink("/proc/self/cwd", target, sizeof target - 1);
+    CHECK(n > 0 && (target[n] = 0, !strcmp(target, "/tmp/jl")));
+    chdir(cwd0);
+    n = readlink("/proc/self/exe", target, sizeof target - 1);
+    CHECK(n > 0 && (target[n] = 0, !strcmp(target, "/bin/jctest")));
+
+    g_shared[0] = 0;
+    pid_t kid = fork();
+    if (kid == 0) { chdir("/tmp"); execl("/bin/sleep", "sleep", "30", (char *)NULL); _exit(127); }
+    long end = now_ms() + 10000;
+    for (;;) {                                              /* wait for the exec: the link then names /bin/kappabox or /bin/sleep */
+        snprintf(path, sizeof path, "/proc/%d/exe", (int)kid);
+        n = readlink(path, target, sizeof target - 1);
+        if (n > 0) target[n] = 0;
+        if (n > 0 && strcmp(target, "/bin/jctest") != 0) break;
+        if (now_ms() > end) break;
+        nap(10);
+    }
+    CHECK(n > 0 && !strcmp(target, "/bin/sleep"));
+    snprintf(path, sizeof path, "/proc/%d/cwd", (int)kid);
+    n = readlink(path, target, sizeof target - 1);
+    CHECK(n > 0 && (target[n] = 0, !strcmp(target, "/tmp")));
+    kill_and_reap(kid);
+    unlink("/tmp/jl/proc.txt");
+    rmdir("/tmp/jl");
+}
+
 int main(void) {
     printf("jctest: the shrine's job control test begins\n");
     setup_shared();
@@ -763,6 +904,8 @@ int main(void) {
     test_background_io();
     test_orphaned_group();
     test_nice();
+    test_links();
+    test_proc_links();
     if (g_fail) printf("JCTEST FAIL (%d failures)\n", g_fail);
     else printf("JCTEST PASS\n");
     return g_fail ? 1 : 0;
