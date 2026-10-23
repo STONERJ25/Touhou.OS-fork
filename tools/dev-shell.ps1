@@ -1,10 +1,6 @@
-# Sets up PATH for TouhouOS build tools in the CURRENT PowerShell session only.
-# Must be dot-sourced to affect your interactive shell:
-#
-#   . .\tools\dev-shell.ps1
-#
-# Running it normally (.\tools\dev-shell.ps1) would only change the PATH of a
-# throwaway child process and have no effect on your terminal.
+# Puts the TouhouOS toolchain on PATH for the CURRENT PowerShell session only.
+# Dot-source it:   . .\tools\dev-shell.ps1
+# (tools/build.py and tools/qemu.py find the tools themselves; this is just for manual use.)
 
 $ToolPaths = @(
     'C:\Program Files\LLVM\bin',
@@ -19,7 +15,7 @@ foreach ($p in $ToolPaths) {
 }
 
 Write-Output 'TouhouOS dev environment:'
-foreach ($tool in 'clang', 'lld-link', 'lldb', 'nasm', 'qemu-system-x86_64') {
+foreach ($tool in 'clang', 'lld-link', 'ld.lld', 'llvm-objdump', 'llvm-symbolizer', 'nasm', 'qemu-system-x86_64', 'python') {
     $cmd = Get-Command $tool -ErrorAction SilentlyContinue
     if ($cmd) {
         Write-Output "  $tool -> $($cmd.Source)"

@@ -4,13 +4,16 @@ build/
 *.obj
 *.img
 *.efi
+*.elf
 *.pdb
+*.d
+__pycache__/
+*.pyc
 
-# Project notes
-docs/
-TOUHOU_OS_CONTEXT.md
+# Agent-process notes stay local (same convention as the upstream repo)
 CLAUDE.md
 AGENTS.md
+docs/AI_SUMMARY.md
 
 # Editor / OS cruft
 .vs/

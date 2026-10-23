@@ -1,29 +1,21 @@
-# TouhouOS
+# TouhouOS (build-first fork)
 
-TouhouOS is an early-stage hobby operating system project inspired by Touhou Project. It aims to build an independent x86-64 operating system that boots through UEFI and can be developed and tested in QEMU.
+TouhouOS is a hobby x86-64 operating system inspired by Touhou Project. This fork of the learning-first project drops
+the teaching constraints and builds the system as far as possible: a UEFI loader, a higher-half ELF kernel written in C,
+and (as milestones land) a scheduler, virtual memory, ring-3 processes, a VFS, drivers, a window system and applications.
+Current progress is tracked in [docs/STATUS.md](docs/STATUS.md); the design is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-UEFI loads `BOOTX64.EFI`, which prints a welcome banner through the firmware's text console, then goes on to run independently of firmware entirely:
+## Build and run (Windows, PowerShell)
 
-```text
-TouhouOS
-Gensokyo Kernel 0.0.1
-
-Welcome to Gensokyo.
-```
-
-Since then it has grown its own framebuffer graphics (via the Graphics Output Protocol), a bitmap-font text console (word-wrap, scrolling, backspace), serial (COM1) output, PS/2 keyboard input, and an interactive command shell — `gapsh` — supporting `HELP`, `CLEAR`, `VERSION`, `ECHO`, `PANIC`, `MEMMAP`, `CPUINFO`, and `REBOOT`. It calls `ExitBootServices` and keeps running afterward, so past that point none of this depends on UEFI anymore.
-
-## Build and run
-
-On Windows, install Clang/LLVM and QEMU, then run these commands from the repository root in PowerShell:
+Requires LLVM/Clang, NASM, QEMU (with its bundled OVMF firmware) and Python 3:
 
 ```powershell
-Set-ExecutionPolicy -Scope Process RemoteSigned -Force
-.\tools\build.ps1
-.\tools\run-qemu.ps1
+python tools/build.py          # or .\tools\build.ps1
+.\tools\run-qemu.ps1           # QEMU window; kernel log on this terminal's serial output
 ```
 
-The execution-policy setting applies only to the current PowerShell session. The build script creates `build/BOOTX64.EFI`; the run script boots it with QEMU and bundled UEFI firmware. Close QEMU to stop the application, which currently stays in a loop after printing.
+`python tools/qemu.py boot --until "REGEX" --shot build/shot.png` boots headless and saves a screenshot, which is how the
+tests drive the system (keyboard/mouse injection over QMP).
 
 ## Disclaimer
 
