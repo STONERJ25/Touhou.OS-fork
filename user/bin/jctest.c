@@ -304,6 +304,53 @@ static void test_stop_semantics(void) {
     CHECK(sigaction(SIGSTOP, &sa, NULL) < 0 && errno == EINVAL);        /* SIGSTOP cannot be caught */
 }
 
+/* /bin/kill is a kappabox applet; run it as a program, with the signal given by name */
+static int run_kill(const char *sig, pid_t pid) {
+    char pidstr[16];
+    snprintf(pidstr, sizeof pidstr, "%d", (int)pid);
+    pid_t k = fork();
+    if (k == 0) { execl("/bin/kill", "kill", sig, pidstr, (char *)NULL); _exit(127); }
+    int st = 0;
+    wait_for(k, &st, 0, 10000);
+    return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+}
+
+/* the state column ps prints for a process: popen("ps") and read the line of `pid` */
+static void ps_state(pid_t pid, char *out) {
+    out[0] = 0;
+    FILE *f = popen("ps", "r");
+    char line[256];
+    while (f && fgets(line, sizeof line, f)) {
+        int p = 0;
+        char user[32], st[8];
+        if (sscanf(line, "%d %31s %7s", &p, user, st) == 3 && p == (int)pid) strcpy(out, st);
+    }
+    if (f) pclose(f);
+}
+
+static void test_applets(void) {
+    SECTION("kill -STOP / -CONT / -TSTP through the kappabox applet and the shell builtin; ps shows T");
+    g_shared[0] = 0;
+    pid_t pid = fork();
+    if (pid == 0) for (;;) { g_shared[0]++; nap(1); }
+    CHECK(wait_counter(&g_shared[0], 3, 5000));
+    char st[8], cmd[64];
+    CHECK(run_kill("-STOP", pid) == 0);
+    CHECK(wait_state(pid, 'T', 5000));
+    ps_state(pid, st);
+    CHECK(!strcmp(st, "T"));
+    CHECK(run_kill("-CONT", pid) == 0);
+    CHECK(wait_state(pid, 'T', 100) == 0);
+    ps_state(pid, st);
+    CHECK(strcmp(st, "T") != 0 && st[0] != 0);
+    CHECK(run_kill("-TSTP", pid) == 0);
+    CHECK(wait_state(pid, 'T', 5000));
+    snprintf(cmd, sizeof cmd, "kill -CONT %d", (int)pid);       /* gapsh's own kill */
+    CHECK(system(cmd) == 0);
+    CHECK(wait_state(pid, 'S', 2000) || wait_state(pid, 'R', 2000));
+    kill_and_reap(pid);
+}
+
 /* ---------------------------------------------------------------- terminals
  *
  * The test plays terminal emulator: it owns a pty master and starts a "shell" (a session leader on the slave) that runs a
@@ -603,6 +650,7 @@ int main(void) {
     setup_shared();
     test_stop_continue();
     test_stop_semantics();
+    test_applets();
     test_ctrl_z();
     test_background_io();
     test_orphaned_group();
