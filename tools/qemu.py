@@ -72,8 +72,13 @@ def char_to_key(ch):
 class Qemu:
     def __init__(self, cmdline="", mem="512M", display="none", disk=None, net=False, no_reboot=True,
                  trace_int=False, extra=(), esp=None, name="vm", video=None, headless_serial=True,
-                 boot_image=None, boot_bus="usb"):
+                 boot_image=None, boot_bus="usb", audio=None, audio_path=None, sounds=False):
+        # audio: None (no sound hardware), "hda" / "hda-output" (Intel HDA + output-only codec), "hda-duplex", "ac97".
+        # The sound card plays into a WAV file (audio_path, default build/<name>-audio.wav) that is complete once stop() ran.
+        # sounds: system sounds (login chime...) are switched off with "nosounds" on the command line unless a test wants them.
         self.cmdline, self.mem, self.display = cmdline, mem, display
+        self.audio, self.sounds = audio, sounds
+        self.audio_path = Path(audio_path) if audio_path else BUILD / f"{name_safe(name)}-audio.wav"
         self.disk, self.net, self.no_reboot, self.trace_int = disk, net, no_reboot, trace_int
         self.extra = list(extra)
         self.esp = Path(esp) if esp else BUILD / "esp"
@@ -99,6 +104,10 @@ class Qemu:
         if not vars_copy.exists():
             vars_copy.write_bytes(OVMF_VARS.read_bytes())
         cmdline = self.cmdline
+        if not self.sounds and "nosounds" not in cmdline.split():
+            cmdline = (cmdline + " nosounds").strip()
+        if self.audio and self.audio_path.exists():
+            self.audio_path.unlink()
         if self.video:
             cmdline = (cmdline + f" video={self.video}").strip()
         (self.esp / "cmdline.txt").write_text(cmdline + "\n")
@@ -134,6 +143,13 @@ class Qemu:
             a += ["-netdev", "user,id=net0", "-device", "e1000,netdev=net0"]
         else:
             a += ["-net", "none"]
+        if self.audio:
+            a += ["-audiodev", f"wav,id=snd0,path={str(self.audio_path).replace(chr(92), '/')},out.frequency=48000,out.channels=2,out.format=s16"]
+            if self.audio == "ac97":
+                a += ["-device", "AC97,audiodev=snd0"]
+            else:
+                codec = "hda-duplex" if self.audio == "hda-duplex" else "hda-output"
+                a += ["-device", "intel-hda,id=hda0", "-device", f"{codec},bus=hda0.0,audiodev=snd0"]
         if self.no_reboot:
             a += ["-no-reboot"]
         if self.display:

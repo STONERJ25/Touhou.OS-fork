@@ -69,6 +69,9 @@ Everything a PCI driver needs already exists; look at `kernel/include/pci.h`, `b
   (image builder and fsck) are described in [STORAGE.md](STORAGE.md).
 - **Input:** USB HID turns reports into `input_key(KEY_*, down)` and `input_mouse(dx, dy, wheel, buttons)`; the same path as
   the PS/2 driver feeds the console tty and `/dev/input/events`. Repeat is generated in the input layer.
+- **Sound:** a sound driver (`kernel/drivers/audio/hda.c`, `ac97.c`) fills in an `AudioBackend` (`kernel/include/audiodev.h`: a
+  looping 48 kHz 16-bit stereo DMA ring plus "where is the hardware now?") and calls `audio_register()`; the core in
+  `audio.c` owns `/dev/audio`, the mixer thread and `/proc/audio`. See [AUDIO.md](AUDIO.md).
 - **/proc files:** `procfs_register("name", gen)` adds a text file generated on each read.
 - **Logging:** `klog("Kappa", ...)` for hardware (see THEMING.md for tags). Never `printk` raw from a driver.
 - **Safety:** never write to a disk or partition on your own initiative. Only the explicit mount path and `/dev` writes by root
