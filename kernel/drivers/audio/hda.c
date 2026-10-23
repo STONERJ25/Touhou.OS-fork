@@ -418,6 +418,8 @@ static void apply_jacks(Hda *h, bool initial) {
         HdaOutPin *p = &pl->pin[i];
         before[i] = p->want;
         if (!p->detect) continue;
+        const HdaWidget *pw = hda_widget(&h->graph, p->nid);
+        if (pw && (pw->pincap & (1u << 1))) verb8(h, p->nid, 0x709, 0);        /* "trigger required": ask the pin to sense first */
         bool now = (verb8(h, p->nid, 0xF09, 0) & 0x80000000u) != 0;
         if (now != p->plugged && !initial) klog("Nitori", "hda: pin 0x%02x (%s) %s", p->nid, hda_dev_name(p->dev), now ? "plugged in" : "unplugged");
         p->plugged = now;
@@ -579,6 +581,18 @@ static bool hda_probe(PciDev *d) {
         if (h->posbuf_on && cmdline_flag("hda.posbuf")) h->use_posbuf = true;
     }
 
+    if (cmdline_flag("hda.dump")) {                      /* the whole widget graph in the log, for diagnosing a codec on real hardware */
+        klog("Nitori", "hda: codec %08x subsystem %08x, widgets 0x%02x..0x%02x", h->vendor_id, h->subsys_id, h->graph.first, h->graph.first + h->graph.count - 1);
+        for (u32 i = 0; i < h->graph.count; i++) {
+            const HdaWidget *w = &h->w[i];
+            char conn[96];
+            int n = 0;
+            for (u32 k = 0; k < w->nconn && n < (int)sizeof conn - 6; k++) n += snprintf(conn + n, sizeof conn - (size_t)n, " %02x", w->conn[k]);
+            conn[n] = 0;
+            klog("Nitori", "hda:  0x%02x type %u caps %08x pincap %08x config %08x ampout %08x ampin %08x pcm %08x conn[%u]%s", h->graph.first + i, w->type,
+                 w->caps, w->pincap, w->pincfg, w->ampout, w->ampin, w->pcm, w->nconn, conn);
+        }
+    }
     program_paths(h);
     apply_jacks(h, true);
 

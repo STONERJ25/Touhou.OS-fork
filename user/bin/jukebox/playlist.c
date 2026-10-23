@@ -24,22 +24,6 @@ static void base_title(const char *path, char *out, size_t n) {
     if (dot && dot != out) *dot = 0;
 }
 
-static int g_names_n;
-
-static void rebuild_names(void) {
-    for (int i = 0; J.names && i < g_names_n; i++) free(J.names[i]);
-    free(J.names);
-    g_names_n = J.ntr;
-    J.names = calloc((size_t)(J.ntr ? J.ntr : 1), sizeof(char *));
-    for (int i = 0; i < J.ntr && J.names; i++) {
-        char clock[16], label[120];
-        if (J.tr[i].length > 0) fmt_clock(J.tr[i].length, clock, sizeof clock);
-        else snprintf(clock, sizeof clock, "?");
-        snprintf(label, sizeof label, "%s  (%s)", J.tr[i].title, clock);
-        J.names[i] = strdup(label);
-    }
-}
-
 int playlist_add(const char *path, bool shipped) {
     for (int i = 0; i < J.ntr; i++) if (!strcmp(J.tr[i].path, path)) return i;
     TrackKind kind;
@@ -85,7 +69,6 @@ int playlist_add(const char *path, bool shipped) {
         }
     }
     J.ntr++;
-    rebuild_names();
     return J.ntr - 1;
 }
 
@@ -123,11 +106,7 @@ void playlist_scan(void) {
 }
 
 void playlist_free(void) {
-    if (J.names) for (int i = 0; i < g_names_n; i++) free(J.names[i]);
-    free(J.names);
-    g_names_n = 0;
     free(J.tr);
-    J.names = NULL;
     J.tr = NULL;
     J.ntr = J.cap = 0;
 }

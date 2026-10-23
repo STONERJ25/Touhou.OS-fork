@@ -184,11 +184,13 @@ def audio_hda_graph():
 @test
 def audio_hda_fallbacks():
     """The duplex codec works, and so do the fallbacks: immediate commands instead of CORB/RIRB, the position buffer instead of LPIB."""
-    with Qemu(cmdline="text hda.imm hda.posbuf", name="t-audio-fallback", audio="hda-duplex") as vm:
+    with Qemu(cmdline="text hda.imm hda.posbuf hda.dump", name="t-audio-fallback", audio="hda-duplex") as vm:
         vm.expect(test_shell.PROMPT, timeout=90)
         out, rc = sh(vm, "cat /proc/audio")
         assert "commands by the immediate registers" in out and "position from the position buffer" in out, out
         assert "line out" in out and "output:   pin" in out, out
+        out, rc = sh(vm, "dmesg | grep 'hda:  0x'")
+        assert out.count("hda:  0x") >= 4 and "type 4" in out and "config 00004010" in out, out        # hda.dump: every widget of the codec
         out, rc = sh(vm, "volume 100 && beep -f 660 -l 1500 -a 50")
         assert rc == 0, out
         rate, x = capture(vm)

@@ -42,7 +42,6 @@ typedef struct Jukebox {
     int ntr, cap;
     int cur;                            /* the track that is loaded (playing or paused), -1 for none */
     KListState list;
-    char **names;                       /* the labels the list widget shows */
 
     /* playing */
     Audio *au;
