@@ -555,7 +555,8 @@ def storage_mount_umount_cli():
         with boot(img, root=True, name="t-storage-cli") as (g, vm):
             g.fails(f"cd {HV} && umount {HV}", r"busy")                            # the shell itself is inside
             g.ok("cd /")
-            g.ok(f"(while [ ! -e /BambooForest/stopholder ]; do sleep 1; done) < {HV}/shared/x.txt &")
+            g.ok(f"(echo held > /BambooForest/holding; while [ ! -e /BambooForest/stopholder ]; do sleep 1; done) < {HV}/shared/x.txt &")
+            g.ok("while [ ! -e /BambooForest/holding ]; do sleep 1; done")        # the file is open once the marker exists (a slow guest can be late)
             g.fails(f"umount {HV}", r"busy")                                      # a background process holds a file open
             g.ok("touch /BambooForest/stopholder; sleep 3")                       # let it finish
             g.ok(f"echo before-umount > {HV}/shared/u.txt")                       # no sync: umount must flush
