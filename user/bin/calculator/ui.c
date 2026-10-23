@@ -805,6 +805,7 @@ int calc_gui(int argc, char **argv) {
     kapp_set_draw(app, draw, NULL);
     kapp_set_close_handler(app, on_close, NULL);
     set_mode(C.scientific, app);
+    trace("calc: ready");
     int rc = kapp_run(app);
     kapp_destroy(app);
     return rc;

@@ -253,6 +253,7 @@ int main(int argc, char **argv) {
     kapp_set_close_handler(app, on_close, NULL);
     kapp_set_minsize(app, 400, 360);
     kapp_set_tick(app, 1000);
+    pw_trace("pocketwatch: ready");
     rc = kapp_run(app);
     kapp_destroy(app);
     return rc;
