@@ -116,7 +116,7 @@ def hexof(text):
 @test
 def pnote_edit():
     """pnote: typing, saving, the unsaved-changes prompt, no final newline, CRLF, UTF-8, auto-indent, new and read-only files."""
-    with Qemu(cmdline="", name="t-pnote-edit") as vm:
+    with Qemu(cmdline="text", name="t-pnote-edit") as vm:
         g = Guest(vm)
         g.run("printf 'one\\ntwo\\nthree\\n' > /tmp/e1.txt; printf 'abc' > /tmp/nonl.txt; printf 'a\\r\\nb\\r\\n' > /tmp/crlf.txt")
         g.run("echo 'café' > /tmp/u8.txt; echo secret > /tmp/ro.txt; chmod 444 /tmp/ro.txt; : > /tmp/empty.txt")
@@ -234,7 +234,7 @@ def pnote_edit():
 @test
 def pnote_commands():
     """pnote: search and repeat, replace, undo and redo, cut and paste, selection, go to line, help, line numbers."""
-    with Qemu(cmdline="", name="t-pnote-cmds") as vm:
+    with Qemu(cmdline="text", name="t-pnote-cmds") as vm:
         g = Guest(vm)
         g.run("printf 'alpha\\nbeta\\ngamma\\ndelta\\nalpha two\\n' > /tmp/c1.txt")
 
@@ -380,7 +380,7 @@ def pnote_commands():
 @test
 def pnote_big():
     """pnote: a 5000-line file, a very long line, standard input and the filter mode."""
-    with Qemu(cmdline="", name="t-pnote-big") as vm:
+    with Qemu(cmdline="text", name="t-pnote-big") as vm:
         g = Guest(vm)
         g.run("seq 1 5000 > /tmp/big.txt")
         s = g.edit("-n /tmp/big.txt")
@@ -443,7 +443,7 @@ def pnote_big():
 @test
 def pager():
     """patchouli-pager (and less, more): paging, search, line numbers, chopping, -F, pipes, restoring the terminal."""
-    with Qemu(cmdline="", name="t-pager") as vm:
+    with Qemu(cmdline="text", name="t-pager") as vm:
         g = Guest(vm)
         g.run("seq 1 100 > /tmp/n.txt; printf 'short\\n%s\\nend\\n' \"$(seq 1 60 | tr '\\n' ' ')\" > /tmp/long.txt")
 
@@ -556,7 +556,7 @@ def pager():
 @test
 def manual():
     """patchouli / man: pages, search, listing, --check-all, one page for every applet, rendering for terminals."""
-    with Qemu(cmdline="", name="t-manual") as vm:
+    with Qemu(cmdline="text", name="t-manual") as vm:
         g = Guest(vm)
 
         # plain text when not on a terminal
@@ -624,7 +624,7 @@ def manual():
 @test
 def shrine():
     """omikuji, saisen, reimusay, kappasay: output shapes, the daily seed, the offering box, bubbles."""
-    with Qemu(cmdline="", name="t-shrine") as vm:
+    with Qemu(cmdline="text", name="t-shrine") as vm:
         g = Guest(vm)
 
         out = g.out("omikuji | cat")           # a pipe: plain text

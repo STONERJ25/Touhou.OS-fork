@@ -31,7 +31,7 @@ def usb_vm(devices, cmdline="", name="t-usb", xhci=True):
     ring = os.environ.get("USB_RING")                    # USB_RING=16 python tests/run_all.py usb_  runs everything on 15 entry rings
     if ring and "usbring" not in cmdline:
         cmdline = (cmdline + f" usbring={ring}").strip()
-    return Qemu(cmdline=cmdline, extra=(XHCI if xhci else []) + list(devices), name=name)
+    return Qemu(cmdline=("text " + cmdline).strip(), extra=(XHCI if xhci else []) + list(devices), name=name)
 
 
 def wait_count(vm, pattern, n=1, timeout=60):
@@ -129,7 +129,7 @@ def usb_enumerate():
 @test
 def usb_nec_controller():
     """The same devices on QEMU's other xHCI model (NEC uPD720200 personality) enumerate and work."""
-    with Qemu(extra=["-device", "nec-usb-xhci,id=xhci"] + KBD + MOUSE, name="t-usb-nec") as vm:
+    with Qemu(cmdline="text", extra=["-device", "nec-usb-xhci,id=xhci"] + KBD + MOUSE, name="t-usb-nec") as vm:
         boot(vm)
         assert "xHCI 1033:0194" in vm.text()
         type_run(vm, "echo $((6*7))\n", r"\n42\r?\n")
@@ -422,7 +422,7 @@ def usb_ring_wrap():
 @test
 def usb_hid_parser():
     """HID report descriptor parser and report decoders against descriptors of common mice and keyboards (kernel self test)."""
-    with Qemu(cmdline="usb=parsertest", name="t-usb-parser") as vm:
+    with Qemu(cmdline="text usb=parsertest", name="t-usb-parser") as vm:
         m = vm.expect(r"hid parser self test: (\d+) checks, (\d+) failed", timeout=60)
         assert int(m.group(1)) >= 20 and m.group(2) == "0", vm.text()[-1500:]
         assert "FAILED" not in vm.text(), vm.text()[-1500:]

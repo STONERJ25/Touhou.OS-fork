@@ -141,7 +141,7 @@ class Guest:
 
 @contextlib.contextmanager
 def boot(image=None, root=False, cmdline="", name="t-storage", extra=(), mem="512M"):
-    cl = (cmdline + (" user=root" if root else "")).strip()
+    cl = ("text " + cmdline + (" user=root" if root else "")).strip()          # text: these tests type into the console shell, not the desktop
     disk = image.path if image is not None else None
     with Qemu(cmdline=cl, disk=disk, name=name, extra=list(extra), mem=mem) as vm:
         vm.expect(ROOT_PROMPT if root else USER_PROMPT, timeout=90)

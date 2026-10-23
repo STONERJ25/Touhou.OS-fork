@@ -184,7 +184,7 @@ class Guest:
         self.vm = None
 
     def __enter__(self):
-        self.vm = Qemu(cmdline=("user=root " + self.cmdline).strip(), name=self.name, extra=self.extra, mem=self.mem)
+        self.vm = Qemu(cmdline=("text user=root " + self.cmdline).strip(), name=self.name, extra=self.extra, mem=self.mem)
         self.vm.start()
         try:
             self.vm.expect(PROMPT, timeout=self.boot_timeout)
@@ -729,7 +729,7 @@ def blk_system_with_devices():
     nv = pattern_image("sys-nvme", 4)
     extra = sata_disk("s0", sata, "ide.1", model="SYS-SATA") + nvme_ctrl("sy", "SYS001", [(nv, 1)])
     for cmdline, marker, name in (("selftest", r"SELFTEST (PASS|FAIL)", "selftest"), ("utest", r"UTEST (PASS|FAIL)", "utest")):
-        with Qemu(cmdline=cmdline, name=f"t-blk-sys-{name}", extra=extra) as vm:
+        with Qemu(cmdline=("text " + cmdline).strip(), name=f"t-blk-sys-{name}", extra=extra) as vm:
             vm.expect(marker, timeout=90)
             assert f"{name.upper()} PASS" in vm.text(), vm.text()[-1500:]
             assert vm.wait_exit(10) == 0
