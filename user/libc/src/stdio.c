@@ -7,11 +7,9 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <ctype.h>
-#include <math.h>
 #include <limits.h>
 #include "pthread_impl.h"
-
-int signbit_d(double x);
+#include "format.h"
 
 /* One recursive lock serialises all of stdio: threads share the streams, and a printf is never torn by another thread's output. */
 RLock __stdio_lock;
@@ -303,279 +301,33 @@ char *tmpnam(char *buf) {
     return b;
 }
 
-/* ---------------------------------------------------------------- printf engine */
+/* ---------------------------------------------------------------- printf */
+/* The engine itself is in format.c; this is only the FILE sink. */
 
-typedef struct {
-    void (*put)(void *ctx, const char *s, size_t n);
-    void *ctx;
-    size_t count;
-} Sink;
-
-static void emit(Sink *s, const char *p, size_t n) {
-    if (n) s->put(s->ctx, p, n);
-    s->count += n;
+static int file_flush(Sink *s) {
+    size_t n = fwrite(s->buf, 1, s->pos, s->ctx);
+    int bad = n != s->pos;
+    s->pos = 0;
+    return bad ? -1 : 0;
 }
 
-static void pad(Sink *s, char c, int n) {
-    char buf[32];
-    memset(buf, c, sizeof buf);
-    while (n > 0) {
-        int k = n < (int)sizeof buf ? n : (int)sizeof buf;
-        emit(s, buf, (size_t)k);
-        n -= k;
-    }
-}
-
-#define FL_LEFT 1
-#define FL_ZERO 2
-#define FL_PLUS 4
-#define FL_SPACE 8
-#define FL_ALT 16
-
-static void fmt_int(Sink *s, unsigned long long v, int base, int upper, int neg, int width, int prec, unsigned flags,
-                    int force_prefix) {
-    char tmp[72];
-    int n = 0;
-    const char *dig = upper ? "0123456789ABCDEF" : "0123456789abcdef";
-    int nonzero = v != 0;
-    if (v == 0) { if (prec != 0) tmp[n++] = '0'; }
-    else while (v) { tmp[n++] = dig[v % (unsigned)base]; v /= (unsigned)base; }
-    if (base == 8 && (flags & FL_ALT) && (n == 0 || tmp[n - 1] != '0')) tmp[n++] = '0';
-    char prefix[3];
-    int plen = 0;
-    if (neg) prefix[plen++] = '-';
-    else if (flags & FL_PLUS) prefix[plen++] = '+';
-    else if (flags & FL_SPACE) prefix[plen++] = ' ';
-    if (base == 16 && (force_prefix || ((flags & FL_ALT) && nonzero))) { prefix[plen++] = '0'; prefix[plen++] = upper ? 'X' : 'x'; }
-    int zeros = prec > n ? prec - n : 0;
-    int total = plen + zeros + n;
-    if ((flags & FL_ZERO) && !(flags & FL_LEFT) && prec < 0 && width > total) zeros += width - total;
-    total = plen + zeros + n;
-    if (!(flags & FL_LEFT)) pad(s, ' ', width - total);
-    emit(s, prefix, (size_t)plen);
-    pad(s, '0', zeros);
-    for (int i = n - 1; i >= 0; i--) emit(s, &tmp[i], 1);
-    if (flags & FL_LEFT) pad(s, ' ', width - total);
-}
-
-static double pow10i(int e) {
-    double r = 1.0, b = 10.0;
-    int neg = e < 0;
-    if (neg) e = -e;
-    while (e) { if (e & 1) r *= b; b *= b; e >>= 1; }
-    return neg ? 1.0 / r : r;
-}
-
-/* Formats a non-negative finite double. conv is 'f', 'e' or 'g'. Returns length written into out (size >= 400). */
-static int fmt_double(char *out, double v, char conv, int prec, int alt, int upper) {
-    int n = 0;
-    if (prec < 0) prec = 6;
-    if (conv == 'g' && prec == 0) prec = 1;
-
-    int exp10 = 0;
-    if (v != 0) {
-        exp10 = (int)floor(log10(v));
-        if (pow10i(exp10) > v) exp10--;
-        if (pow10i(exp10 + 1) <= v) exp10++;
-    }
-    char c = conv;
-    if (conv == 'g') {
-        int p = prec;
-        if (exp10 < -4 || exp10 >= p) { c = 'e'; prec = p - 1; }
-        else { c = 'f'; prec = p - 1 - exp10; if (prec < 0) prec = 0; }
-    }
-
-    if (c == 'e') {
-        double m = v == 0 ? 0 : v / pow10i(exp10);
-        double round = 0.5 / pow10i(prec);
-        m += round;
-        if (m >= 10.0) { m /= 10.0; exp10++; }
-        int d = (int)m;
-        out[n++] = (char)('0' + d);
-        if (prec > 0 || alt) out[n++] = '.';
-        m -= d;
-        for (int i = 0; i < prec; i++) { m *= 10; int dd = (int)m; out[n++] = (char)('0' + dd); m -= dd; }
-        out[n++] = upper ? 'E' : 'e';
-        out[n++] = exp10 < 0 ? '-' : '+';
-        int e = exp10 < 0 ? -exp10 : exp10;
-        if (e >= 100) out[n++] = (char)('0' + e / 100);
-        out[n++] = (char)('0' + e / 10 % 10);
-        out[n++] = (char)('0' + e % 10);
-    } else {
-        v += 0.5 / pow10i(prec);
-        if (v >= 1.8e19) {                      /* too large for 64-bit integer part: print scaled digits */
-            int e = (int)floor(log10(v));
-            double m = v / pow10i(e);
-            for (int i = 0; i <= e; i++) { int d = (int)m; out[n++] = (char)('0' + d % 10); m = (m - d) * 10; }
-        } else {
-            unsigned long long ip = (unsigned long long)v;
-            double fp = v - (double)ip;
-            char tmp[24];
-            int t = 0;
-            if (!ip) tmp[t++] = '0';
-            while (ip) { tmp[t++] = (char)('0' + ip % 10); ip /= 10; }
-            while (t) out[n++] = tmp[--t];
-            if (prec > 0 || alt) out[n++] = '.';
-            for (int i = 0; i < prec; i++) { fp *= 10; int d = (int)fp; out[n++] = (char)('0' + d); fp -= d; }
-        }
-    }
-    if (conv == 'g' && !alt) {                  /* strip trailing zeros of the fraction */
-        char *dot = memchr(out, '.', (size_t)n);
-        if (dot) {
-            char *e = memchr(out, upper ? 'E' : 'e', (size_t)n);
-            int end = e ? (int)(e - out) : n;
-            int k = end;
-            while (k > 0 && out[k - 1] == '0') k--;
-            if (k > 0 && out[k - 1] == '.') k--;
-            memmove(out + k, out + end, (size_t)(n - end));
-            n -= end - k;
-        }
-    }
-    out[n] = 0;
-    return n;
-}
-
-static int vformat(Sink *s, const char *fmt, va_list ap) {
-    for (; *fmt; fmt++) {
-        if (*fmt != '%') {
-            const char *p = fmt;
-            while (*fmt && *fmt != '%') fmt++;
-            emit(s, p, (size_t)(fmt - p));
-            fmt--;
-            continue;
-        }
-        fmt++;
-        unsigned flags = 0;
-        for (;; fmt++) {
-            if (*fmt == '-') flags |= FL_LEFT;
-            else if (*fmt == '0') flags |= FL_ZERO;
-            else if (*fmt == '+') flags |= FL_PLUS;
-            else if (*fmt == ' ') flags |= FL_SPACE;
-            else if (*fmt == '#') flags |= FL_ALT;
-            else break;
-        }
-        int width = 0;
-        if (*fmt == '*') { width = va_arg(ap, int); if (width < 0) { flags |= FL_LEFT; width = -width; } fmt++; }
-        else while (isdigit((unsigned char)*fmt)) width = width * 10 + (*fmt++ - '0');
-        int prec = -1;
-        if (*fmt == '.') {
-            fmt++;
-            prec = 0;
-            if (*fmt == '*') { prec = va_arg(ap, int); fmt++; }
-            else while (isdigit((unsigned char)*fmt)) prec = prec * 10 + (*fmt++ - '0');
-        }
-        int lm = 0;                              /* 0 int, 1 long, 2 long long, -1 short, -2 char */
-        for (;; fmt++) {
-            if (*fmt == 'l') lm = lm >= 1 ? 2 : 1;
-            else if (*fmt == 'z' || *fmt == 'j' || *fmt == 't' || *fmt == 'q') lm = 2;
-            else if (*fmt == 'h') lm = lm <= -1 ? -2 : -1;
-            else if (*fmt == 'L') lm = 3;
-            else break;
-        }
-        char c = *fmt;
-        switch (c) {
-        case 'd': case 'i': {
-            long long v;
-            if (lm >= 1) v = va_arg(ap, long long);
-            else if (lm == -1) v = (short)va_arg(ap, int);
-            else if (lm == -2) v = (signed char)va_arg(ap, int);
-            else v = va_arg(ap, int);
-            int neg = v < 0;
-            fmt_int(s, neg ? 0ULL - (unsigned long long)v : (unsigned long long)v, 10, 0, neg, width, prec, flags, 0);
-            break;
-        }
-        case 'u': case 'x': case 'X': case 'o': {
-            unsigned long long v;
-            if (lm >= 1) v = va_arg(ap, unsigned long long);
-            else if (lm == -1) v = (unsigned short)va_arg(ap, unsigned);
-            else if (lm == -2) v = (unsigned char)va_arg(ap, unsigned);
-            else v = va_arg(ap, unsigned);
-            fmt_int(s, v, c == 'u' ? 10 : c == 'o' ? 8 : 16, c == 'X', 0, width, prec, flags, 0);
-            break;
-        }
-        case 'p':
-            fmt_int(s, (unsigned long long)(size_t)va_arg(ap, void *), 16, 0, 0, width, prec, flags, 1);
-            break;
-        case 'c': {
-            char ch = (char)va_arg(ap, int);
-            if (!(flags & FL_LEFT)) pad(s, ' ', width - 1);
-            emit(s, &ch, 1);
-            if (flags & FL_LEFT) pad(s, ' ', width - 1);
-            break;
-        }
-        case 's': {
-            const char *str = va_arg(ap, const char *);
-            if (!str) str = "(null)";
-            int len = prec >= 0 ? (int)strnlen(str, (size_t)prec) : (int)strlen(str);
-            if (!(flags & FL_LEFT)) pad(s, ' ', width - len);
-            emit(s, str, (size_t)len);
-            if (flags & FL_LEFT) pad(s, ' ', width - len);
-            break;
-        }
-        case 'f': case 'F': case 'e': case 'E': case 'g': case 'G': {
-            double v = lm == 3 ? (double)va_arg(ap, long double) : va_arg(ap, double);
-            int neg = signbit_d(v);
-            if (neg) v = -v;
-            char body[420];
-            int n;
-            if (v != v) { strcpy(body, c < 'a' ? "NAN" : "nan"); n = 3; flags &= ~FL_ZERO; neg = 0; }
-            else if (v == INFINITY) { strcpy(body, c < 'a' ? "INF" : "inf"); n = 3; flags &= ~FL_ZERO; }
-            else n = fmt_double(body, v, (char)tolower(c), prec, (flags & FL_ALT) != 0, c < 'a');
-            char sign = neg ? '-' : (flags & FL_PLUS) ? '+' : (flags & FL_SPACE) ? ' ' : 0;
-            int total = n + (sign ? 1 : 0);
-            if (!(flags & FL_LEFT) && !(flags & FL_ZERO)) pad(s, ' ', width - total);
-            if (sign) emit(s, &sign, 1);
-            if (!(flags & FL_LEFT) && (flags & FL_ZERO)) pad(s, '0', width - total);
-            emit(s, body, (size_t)n);
-            if (flags & FL_LEFT) pad(s, ' ', width - total);
-            break;
-        }
-        case 'n':
-            *va_arg(ap, int *) = (int)s->count;
-            break;
-        case '%':
-            emit(s, "%", 1);
-            break;
-        case 0:
-            fmt--;
-            break;
-        default:
-            emit(s, "%", 1);
-            emit(s, &c, 1);
-            break;
-        }
-    }
-    return (int)s->count;
-}
-
-static void put_file(void *ctx, const char *p, size_t n) { fwrite(p, 1, n, ctx); }
-
-typedef struct { char *buf; size_t size, pos; } StrCtx;
-
-static void put_str(void *ctx, const char *p, size_t n) {
-    StrCtx *c = ctx;
-    for (size_t i = 0; i < n; i++) {
-        if (c->pos + 1 < c->size) c->buf[c->pos] = p[i];
-        c->pos++;
-    }
-}
+static int file_direct(Sink *s, const char *p, size_t n) { return fwrite(p, 1, n, s->ctx) != n ? -1 : 0; }
 
 static int vfprintf_nl(FILE *f, const char *fmt, va_list ap) {
-    Sink s = { put_file, f, 0 };
-    return vformat(&s, fmt, ap);
+    char stage[1024];
+    Sink s = { 0 };
+    s.buf = stage;
+    s.cap = sizeof stage;
+    s.flush = file_flush;
+    s.direct = file_direct;
+    s.ctx = f;
+    __vformat(&s, fmt, ap);
+    if (!s.err && s.pos && file_flush(&s)) s.err = 1;
+    if (s.err) return -1;
+    return s.count > INT_MAX ? INT_MAX : (int)s.count;
 }
 
 int vprintf(const char *fmt, va_list ap) { return vfprintf(stdout, fmt, ap); }
-
-int vsnprintf(char *buf, size_t n, const char *fmt, va_list ap) {
-    StrCtx c = { buf, n, 0 };
-    Sink s = { put_str, &c, 0 };
-    int r = vformat(&s, fmt, ap);
-    if (n) buf[c.pos < n ? c.pos : n - 1] = 0;
-    return r;
-}
-
-int vsprintf(char *buf, const char *fmt, va_list ap) { return vsnprintf(buf, (size_t)INT_MAX, fmt, ap); }
 
 int printf(const char *fmt, ...) {
     va_list ap;
@@ -591,45 +343,6 @@ int fprintf(FILE *f, const char *fmt, ...) {
     int r = vfprintf(f, fmt, ap);
     va_end(ap);
     return r;
-}
-
-int sprintf(char *buf, const char *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    int r = vsnprintf(buf, (size_t)INT_MAX, fmt, ap);
-    va_end(ap);
-    return r;
-}
-
-int snprintf(char *buf, size_t n, const char *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    int r = vsnprintf(buf, n, fmt, ap);
-    va_end(ap);
-    return r;
-}
-
-int dprintf(int fd, const char *fmt, ...) {
-    char buf[1024];
-    va_list ap;
-    va_start(ap, fmt);
-    int r = vsnprintf(buf, sizeof buf, fmt, ap);
-    va_end(ap);
-    if (r > (int)sizeof buf - 1) r = (int)sizeof buf - 1;
-    return (int)write(fd, buf, (size_t)r);
-}
-
-int asprintf(char **out, const char *fmt, ...) {
-    va_list ap, ap2;
-    va_start(ap, fmt);
-    va_copy(ap2, ap);
-    int n = vsnprintf(NULL, 0, fmt, ap);
-    va_end(ap);
-    *out = malloc((size_t)n + 1);
-    if (!*out) { va_end(ap2); return -1; }
-    vsnprintf(*out, (size_t)n + 1, fmt, ap2);
-    va_end(ap2);
-    return n;
 }
 
 /* ---------------------------------------------------------------- scanf */

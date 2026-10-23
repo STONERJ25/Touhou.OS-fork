@@ -59,7 +59,9 @@ int    vfprintf(FILE *f, const char *fmt, va_list ap);
 int    vsprintf(char *buf, const char *fmt, va_list ap);
 int    vsnprintf(char *buf, size_t n, const char *fmt, va_list ap);
 int    dprintf(int fd, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
-int    asprintf(char **out, const char *fmt, ...);
+int    asprintf(char **out, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+int    vasprintf(char **out, const char *fmt, va_list ap);
+int    vdprintf(int fd, const char *fmt, va_list ap);
 
 int    sscanf(const char *s, const char *fmt, ...);
 int    vsscanf(const char *s, const char *fmt, va_list ap);
