@@ -6,6 +6,17 @@
 
 #define TH_SECTION(name) printf("utest: threads: %s\n", name)
 
+/* The raw futex system call, so the tests can check its own contract (-ETIMEDOUT, -EAGAIN, wake counts). */
+static long th_futex(volatile int *addr, int op, int val, const struct timespec *rel) {
+    struct gtimespec g;
+    long t = 0, r;
+    if (rel) { g.tv_sec = rel->tv_sec; g.tv_nsec = rel->tv_nsec; t = (long)&g; }
+    register long r10 __asm__("r10") = t;
+    __asm__ volatile ("syscall" : "=a"(r) : "a"((long)SYS_futex), "D"((long)addr), "S"((long)op), "d"((long)val), "r"(r10)
+                      : "rcx", "r11", "memory");
+    return r;
+}
+
 static void *th_return_arg(void *arg) { return (void *)((long)arg * 2); }
 
 static pthread_mutex_t g_th_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -213,9 +224,335 @@ static void test_threads_many(void) {
     CHECK(sum_ok == 100);
 }
 
+/* ---- signals and threads ---- */
+
+static volatile int g_th_sig_tid, g_th_sig_hits;
+static sem_t g_th_ready;
+
+static void th_on_sig(int sig) {
+    (void)sig;
+    g_th_sig_tid = gettid();
+    __atomic_fetch_add(&g_th_sig_hits, 1, __ATOMIC_SEQ_CST);
+}
+
+static void *th_wait_for_signal(void *arg) {
+    int unblock = (int)(long)arg;
+    if (unblock) {
+        sigset_t s;
+        sigemptyset(&s);
+        sigaddset(&s, SIGUSR2);
+        pthread_sigmask(SIG_UNBLOCK, &s, NULL);
+    }
+    sem_post(&g_th_ready);
+    for (int i = 0; i < 4000 && !g_th_sig_hits; i++) usleep(2000);     /* the signal interrupts the sleep */
+    return (void *)(long)gettid();
+}
+
+static void test_threads_signals(void) {
+    TH_SECTION("signals: pthread_kill, per-thread masks, process-directed delivery");
+    struct sigaction sa = { th_on_sig, 0, 0 };
+    CHECK(sigaction(SIGUSR1, &sa, NULL) == 0);
+    CHECK(sigaction(SIGUSR2, &sa, NULL) == 0);
+    sem_init(&g_th_ready, 0, 0);
+
+    /* thread-directed: the handler must run in the thread that was aimed at, not in main */
+    g_th_sig_hits = 0;
+    g_th_sig_tid = 0;
+    pthread_t t;
+    void *ret = NULL;
+    CHECK(pthread_create(&t, NULL, th_wait_for_signal, (void *)0) == 0);
+    sem_wait(&g_th_ready);
+    CHECK(pthread_kill(t, SIGUSR1) == 0);
+    CHECK(pthread_join(t, &ret) == 0);
+    CHECK(g_th_sig_hits == 1 && g_th_sig_tid != 0 && g_th_sig_tid == (int)(long)ret && g_th_sig_tid != gettid());
+
+    /* process-directed: main blocks SIGUSR2, so the thread that does not block it must take it */
+    sigset_t s;
+    sigemptyset(&s);
+    sigaddset(&s, SIGUSR2);
+    CHECK(pthread_sigmask(SIG_BLOCK, &s, NULL) == 0);
+    g_th_sig_hits = 0;
+    g_th_sig_tid = 0;
+    CHECK(pthread_create(&t, NULL, th_wait_for_signal, (void *)1) == 0);
+    sem_wait(&g_th_ready);
+    CHECK(kill(getpid(), SIGUSR2) == 0);
+    CHECK(pthread_join(t, &ret) == 0);
+    CHECK(g_th_sig_hits == 1 && g_th_sig_tid == (int)(long)ret && g_th_sig_tid != gettid());
+    pthread_sigmask(SIG_UNBLOCK, &s, NULL);
+
+    /* raise() is aimed at the calling thread */
+    g_th_sig_hits = 0;
+    raise(SIGUSR1);
+    CHECK(g_th_sig_hits == 1 && g_th_sig_tid == gettid());
+    signal(SIGUSR1, SIG_DFL);
+    signal(SIGUSR2, SIG_DFL);
+}
+
+/* ---- processes and threads ---- */
+
+static void *th_segv(void *arg) { (void)arg; *(volatile int *)0 = 1; return NULL; }
+
+static void *th_forker(void *arg) {
+    (void)arg;
+    pid_t pid = fork();
+    if (pid == 0) {                                                 /* only the calling thread exists here */
+        char *p = malloc(100);                                      /* the allocator lock must not be left held by another thread */
+        char buf[32];
+        snprintf(buf, sizeof buf, "%d", (int)getpid());
+        _exit(p && gettid() == getpid() && getppid() > 0 && buf[0] ? 7 : 8);
+    }
+    int status = 0;
+    pid_t w = waitpid(pid, &status, 0);
+    return (void *)(long)(w == pid && WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+}
+
+static void *th_execer(void *arg) {
+    (void)arg;
+    execl("/bin/hello", "hello", "from", "thread", (char *)NULL);
+    _exit(111);
+    return NULL;
+}
+
+static int g_th_pipe[2];
+static pthread_mutex_t g_th_block_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int g_th_futex_word;
+
+static void *th_block_read(void *arg) { char c; (void)arg; read(g_th_pipe[0], &c, 1); return NULL; }
+static void *th_block_poll(void *arg) { struct pollfd p = { g_th_pipe[0], POLLIN, 0 }; (void)arg; poll(&p, 1, -1); return NULL; }
+static void *th_block_futex(void *arg) { (void)arg; th_futex(&g_th_futex_word, FUTEX_WAIT, 0, NULL); return NULL; }
+static void *th_block_sleep(void *arg) { (void)arg; sleep(600); return NULL; }
+static void *th_block_cond(void *arg) {
+    static pthread_cond_t c = PTHREAD_COND_INITIALIZER;
+    (void)arg;
+    pthread_mutex_lock(&g_th_block_mutex);
+    pthread_cond_wait(&c, &g_th_block_mutex);
+    return NULL;
+}
+static void *th_exit_other(void *arg) { (void)arg; usleep(20000); exit(6); return NULL; }
+
+/* Waits for a child with a generous bound; kills it and reports a failure instead of hanging the suite. */
+static int th_wait_child(pid_t pid, int *status) {
+    for (int i = 0; i < 3000; i++) {
+        pid_t w = waitpid(pid, status, WNOHANG);
+        if (w == pid) return 1;
+        if (w < 0) return 0;
+        usleep(10000);
+    }
+    kill(pid, SIGKILL);
+    waitpid(pid, status, 0);
+    return 0;
+}
+
+static void test_threads_processes(void) {
+    TH_SECTION("SIGSEGV in a thread ends the whole process");
+    int status = 0;
+    pid_t pid = fork();
+    if (pid == 0) {
+        pthread_t t;
+        pthread_create(&t, NULL, th_segv, NULL);
+        pthread_join(t, NULL);                                      /* never returns: the process is torn down around us */
+        _exit(0);
+    }
+    CHECK(th_wait_child(pid, &status) && WIFSIGNALED(status) && WTERMSIG(status) == SIGSEGV);
+
+    TH_SECTION("fork from a thread");
+    pthread_t t;
+    void *ret = NULL;
+    CHECK(pthread_create(&t, NULL, th_forker, NULL) == 0 && pthread_join(t, &ret) == 0);
+    CHECK((long)ret == 7);
+
+    TH_SECTION("exec from a thread (the other threads are killed)");
+    int fds[2];
+    CHECK(pipe(fds) == 0);
+    pid = fork();
+    if (pid == 0) {
+        dup2(fds[1], 1);
+        close(fds[0]);
+        close(fds[1]);
+        pthread_t sleeper, e;
+        pthread_create(&sleeper, NULL, th_block_sleep, NULL);       /* asleep in the kernel while execve runs */
+        pthread_create(&e, NULL, th_execer, NULL);
+        pthread_join(e, NULL);
+        _exit(112);
+    }
+    close(fds[1]);
+    char out[256];
+    ssize_t n = 0, total = 0;
+    while ((n = read(fds[0], out + total, sizeof out - 1 - (size_t)total)) > 0) total += n;
+    out[total] = 0;
+    close(fds[0]);
+    CHECK(th_wait_child(pid, &status) && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    CHECK(strstr(out, "Hello from Gensokyo") && strstr(out, "argv[2] = thread"));
+
+    TH_SECTION("exit while other threads block in read, poll, futex, sleep and a condition variable");
+    pid = fork();
+    if (pid == 0) {
+        pipe(g_th_pipe);
+        pthread_t b[5];
+        pthread_create(&b[0], NULL, th_block_read, NULL);
+        pthread_create(&b[1], NULL, th_block_poll, NULL);
+        pthread_create(&b[2], NULL, th_block_futex, NULL);
+        pthread_create(&b[3], NULL, th_block_sleep, NULL);
+        pthread_create(&b[4], NULL, th_block_cond, NULL);
+        for (int i = 0; i < 50; i++) sched_yield();
+        usleep(30000);
+        exit(5);
+    }
+    CHECK(th_wait_child(pid, &status) && WIFEXITED(status) && WEXITSTATUS(status) == 5);
+
+    TH_SECTION("exit_group from a thread other than the main one");
+    pid = fork();
+    if (pid == 0) {
+        pthread_t b;
+        pthread_create(&b, NULL, th_exit_other, NULL);
+        pthread_join(b, NULL);                                      /* main is blocked in the join when the other thread exits the process */
+        _exit(9);
+    }
+    CHECK(th_wait_child(pid, &status) && WIFEXITED(status) && WEXITSTATUS(status) == 6);
+
+    TH_SECTION("the last thread to leave ends the process with status 0");
+    pid = fork();
+    if (pid == 0) {
+        pthread_t b;
+        pthread_create(&b, NULL, th_nothing, NULL);
+        pthread_join(b, NULL);
+        pthread_exit(NULL);                                         /* main thread leaves; nobody else is left */
+    }
+    CHECK(th_wait_child(pid, &status) && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+}
+
+/* ---- timeouts and limits ---- */
+
+static sem_t g_th_hold;
+
+static void *th_hold(void *arg) { (void)arg; sem_wait(&g_th_hold); return NULL; }
+
+static long th_now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
+}
+
+static void th_abs_after(struct timespec *ts, long ms) {
+    clock_gettime(CLOCK_REALTIME, ts);
+    ts->tv_nsec += (ms % 1000) * 1000000L;
+    ts->tv_sec += ms / 1000 + ts->tv_nsec / 1000000000L;
+    ts->tv_nsec %= 1000000000L;
+}
+
+static void test_threads_timeouts(void) {
+    TH_SECTION("futex, condition variable, semaphore and mutex timeouts");
+    volatile int word = 5;
+    struct timespec rel = { 0, 30 * 1000000L };
+    long t0 = th_now_ms();
+    CHECK(th_futex(&word, FUTEX_WAIT, 5, &rel) == -ETIMEDOUT);
+    CHECK(th_now_ms() - t0 >= 25);                                  /* guest time: it did wait */
+    CHECK(th_futex(&word, FUTEX_WAIT, 6, &rel) == -EAGAIN); /* the word no longer holds the expected value */
+    CHECK(th_futex(&word, FUTEX_WAKE, 1, NULL) == 0);       /* nobody to wake */
+
+    pthread_mutex_t m = PTHREAD_MUTEX_INITIALIZER;
+    pthread_cond_t c = PTHREAD_COND_INITIALIZER;
+    struct timespec abs;
+    pthread_mutex_lock(&m);
+    th_abs_after(&abs, 30);
+    CHECK(pthread_cond_timedwait(&c, &m, &abs) == ETIMEDOUT);
+    pthread_mutex_unlock(&m);
+
+    sem_t s;
+    sem_init(&s, 0, 0);
+    th_abs_after(&abs, 30);
+    CHECK(sem_timedwait(&s, &abs) < 0 && errno == ETIMEDOUT);
+    CHECK(sem_trywait(&s) < 0 && errno == EAGAIN);
+    sem_post(&s);
+    CHECK(sem_trywait(&s) == 0);
+
+    pthread_mutex_t held = PTHREAD_MUTEX_INITIALIZER;
+    pthread_mutex_lock(&held);
+    pthread_mutexattr_t ma;
+    pthread_mutexattr_init(&ma);
+    pthread_mutexattr_settype(&ma, PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutex_t rec;
+    pthread_mutex_init(&rec, &ma);
+    CHECK(pthread_mutex_lock(&rec) == 0 && pthread_mutex_lock(&rec) == 0 && pthread_mutex_unlock(&rec) == 0 && pthread_mutex_unlock(&rec) == 0);
+    CHECK(pthread_mutex_unlock(&rec) == EPERM);
+    pthread_mutexattr_settype(&ma, PTHREAD_MUTEX_ERRORCHECK);
+    pthread_mutex_init(&rec, &ma);
+    CHECK(pthread_mutex_lock(&rec) == 0 && pthread_mutex_lock(&rec) == EDEADLK && pthread_mutex_trylock(&rec) == EBUSY);
+    pthread_mutex_unlock(&rec);
+    pthread_mutex_unlock(&held);
+
+    TH_SECTION("thread limit: creation fails cleanly with EAGAIN");
+    sem_init(&g_th_hold, 0, 0);
+    pthread_attr_t small;
+    pthread_attr_init(&small);
+    pthread_attr_setstacksize(&small, PTHREAD_STACK_MIN);
+    static pthread_t held_threads[PTHREAD_THREADS_MAX + 8];
+    int made = 0, err = 0;
+    while (made < PTHREAD_THREADS_MAX + 8) {
+        err = pthread_create(&held_threads[made], &small, th_hold, NULL);
+        if (err) break;
+        made++;
+    }
+    CHECK(err == EAGAIN && made >= 200 && made < PTHREAD_THREADS_MAX + 8);
+    for (int i = 0; i < made; i++) sem_post(&g_th_hold);
+    int joined = 0;
+    for (int i = 0; i < made; i++) if (pthread_join(held_threads[i], NULL) == 0) joined++;
+    CHECK(joined == made);
+    pthread_t again;
+    CHECK(pthread_create(&again, NULL, th_nothing, NULL) == 0 && pthread_join(again, NULL) == 0);     /* the slots came back */
+}
+
+/* ---- stress: threads, pipes, mmap/munmap and fork together, then check for leaked pages ---- */
+
+static int g_th_stress_pipe[2];
+
+static void *th_stress(void *arg) {
+    long id = (long)arg;
+    char c = (char)('a' + id);
+    char *m = mmap(NULL, 64 * 1024, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (m != MAP_FAILED) { m[0] = c; m[64 * 1024 - 1] = c; munmap(m, 64 * 1024); }
+    void *p = malloc(1000 + (size_t)id * 100);
+    free(p);
+    write(g_th_stress_pipe[1], &c, 1);
+    char got;
+    read(g_th_stress_pipe[0], &got, 1);
+    return NULL;
+}
+
+static unsigned long th_free_kib(void) {
+    struct gsysinfo si;
+    gap_sysinfo(&si);
+    return (unsigned long)(si.free_ram >> 10);
+}
+
+static void test_threads_stress(void) {
+    TH_SECTION("stress: threads + pipes + mmap/munmap + fork, no pages leaked");
+    pipe(g_th_stress_pipe);
+    unsigned long before = 0;
+    for (int iter = 0; iter < 25; iter++) {
+        if (iter == 2) before = th_free_kib();                      /* warm up first: page tables and slabs settle */
+        pthread_t ts[6];
+        for (long i = 0; i < 6; i++) pthread_create(&ts[i], NULL, th_stress, (void *)i);
+        pid_t pid = fork();
+        if (pid == 0) _exit(0);
+        int status = 0;
+        CHECK(waitpid(pid, &status, 0) == pid && WIFEXITED(status));
+        for (int i = 0; i < 6; i++) pthread_join(ts[i], NULL);
+    }
+    unsigned long after = th_free_kib();
+    printf("  stress: free memory %lu KiB before, %lu KiB after\n", before, after);
+    CHECK(after + 1024 >= before);                                  /* within 1 MiB: page-table pages for fresh address ranges stay until exit */
+    close(g_th_stress_pipe[0]);
+    close(g_th_stress_pipe[1]);
+}
+
 static void test_threads(void) {
     test_threads_basic();
     test_threads_sync();
     test_threads_local();
     test_threads_many();
+    test_threads_signals();
+    test_threads_timeouts();
+    test_threads_processes();
+    test_threads_stress();
 }
