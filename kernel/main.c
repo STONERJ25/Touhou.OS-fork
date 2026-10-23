@@ -95,6 +95,9 @@ NORETURN void kmain(BootInfo *bi) {
     print_banner();
     klog("Gensokyo", "kernel %s \"%s\" starting", KERNEL_VERSION, KERNEL_CODENAME);
     klog("Gensokyo", "cpu: %s (%s)", g_cpu.brand, g_cpu.vendor);
+    char cpudesc[160];
+    cpu_describe(cpudesc, sizeof cpudesc);
+    klog("Gensokyo", "cpu: %s", cpudesc);
     klog("Gensokyo", "image %p .. %p, cmdline '%s'", __kernel_start, __kernel_end, cmdline_string());
 
     char crash[24];
@@ -118,6 +121,7 @@ NORETURN void kmain(BootInfo *bi) {
     input_init();
     sti();
     klog("Sakuya", "interrupts enabled, scheduler running");
+    timer_verify();                     /* no tick from the PIT? the local APIC timer takes over (a PC gives no other hint why it froze) */
     rtc_init();
     random_init();
 

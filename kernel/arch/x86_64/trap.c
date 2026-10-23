@@ -83,8 +83,16 @@ void trap_handler(TrapFrame *tf) {
         handle_exception(tf);
     } else if (v < 48) {
         irq_dispatch((int)v - 32, tf);
+    } else if (v == LAPIC_TIMER_VECTOR) {
+        lapic_timer_irq();                              /* the tick, when the PIT could not provide one */
+    } else if (v == 0xFF) {
+        /* local APIC spurious vector: by definition no end-of-interrupt */
     } else {
-        klog("Eiki", "unexpected interrupt vector %lu at rip=%#lx", v, tf->rip);
+        /* Something the firmware left armed (APIC local source, an IOAPIC line). It is in service until acknowledged, and an
+         * unacknowledged vector at 48 or above would hold back the PIC's timer and keyboard (vectors 32..47) for good. */
+        static u32 stray;
+        if (stray++ < 5) klog("Eiki", "unexpected interrupt vector %lu at rip=%#lx", v, tf->rip);      /* a storm must not drown the log */
+        lapic_eoi();
     }
     task_on_trap_return(tf);
 }

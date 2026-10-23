@@ -2,12 +2,13 @@
 #include "process.h"
 #include "kernel.h"
 #include "cpu.h"
+#include "cpuinfo.h"
 
 u64 pte_flags_for(u32 prot, u32 vflags) {
     u64 f = PTE_U;
     if (prot & PROT_WRITE) f |= PTE_W;
     if (!(prot & PROT_EXEC)) f |= PTE_NX;
-    if (vflags & VMA_WC) f |= PTE_PWT;
+    if (vflags & VMA_WC) f |= pte_wc_flags();          /* write-combining (PAT entry 1), or uncached on a CPU without PAT */
     return f;
 }
 

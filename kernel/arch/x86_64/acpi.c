@@ -52,6 +52,9 @@ static struct {
     Gas reset_reg;
     u8 reset_value;
     int cpus;
+    u16 pm_tmr;                         /* PM timer I/O port (3.579545 MHz), 0 = none */
+    bool tmr_wide;                      /* the timer counts 32 bits instead of 24 */
+    int bad_checksums, tables;          /* tables seen / tables whose checksum did not add up (used anyway, like Linux does) */
 } A;
 
 static bool ram_mapped(u64 phys, u64 len) {
@@ -69,7 +72,7 @@ static bool ram_mapped(u64 phys, u64 len) {
 
 /* The kernel's direct map only covers RAM-like regions; firmware sometimes parks tables elsewhere. */
 static const void *acpi_map(u64 phys, u64 len) {
-    if (!phys || phys + len < phys) return NULL;
+    if (!phys || phys + len < phys || phys + len > (1ULL << 48)) return NULL;       /* a garbage pointer must not become a mapping */
     if (ram_mapped(phys, len)) return phys_to_virt(phys);
     return ioremap(phys, len, 0);
 }
@@ -84,7 +87,12 @@ static bool checksum_ok(const void *p, size_t len) {
 static const SdtHeader *map_table(u64 phys) {
     const SdtHeader *h = acpi_map(phys, sizeof(SdtHeader));
     if (!h || h->length < sizeof(SdtHeader) || h->length > (16u << 20)) return NULL;
-    return acpi_map(phys, h->length);
+    const SdtHeader *t = acpi_map(phys, h->length);
+    if (t) {
+        A.tables++;
+        if (!checksum_ok(t, h->length)) A.bad_checksums++;      /* firmware with a wrong sum is common; the table is still read */
+    }
+    return t;
 }
 
 static bool sig_is(const SdtHeader *h, const char *s) { return !memcmp(h->sig, s, 4); }
@@ -125,6 +133,13 @@ static void parse_fadt(const SdtHeader *t) {
     A.pm1a_cnt = pm1a <= 0xFFFF ? (u16)pm1a : 0;
     A.pm1b_cnt = pm1b <= 0xFFFF ? (u16)pm1b : 0;
     u32 flags = len >= 116 ? *(const u32 *)(b + 112) : 0;
+    u32 tmr = len >= 80 ? *(const u32 *)(b + 76) : 0;                  /* PM_TMR_BLK */
+    if (len >= 208 + 12) {
+        const Gas *xt = (const Gas *)(b + 208);                       /* X_PM_TMR_BLK */
+        if (xt->address && xt->space == GAS_IO) tmr = (u32)xt->address;
+    }
+    A.pm_tmr = tmr && tmr <= 0xFFFF ? (u16)tmr : 0;
+    A.tmr_wide = (flags & (1u << 8)) != 0;                             /* TMR_VAL_EXT */
     A.pm1a_evt = len >= 60 && *(const u32 *)(b + 56) <= 0xFFFF ? (u16)*(const u32 *)(b + 56) : 0;
     A.pm1b_evt = len >= 64 && *(const u32 *)(b + 60) <= 0xFFFF ? (u16)*(const u32 *)(b + 60) : 0;
     A.pm1_evt_len = len >= 89 ? b[88] : 4;
@@ -155,6 +170,7 @@ void acpi_init(void) {
     const Rsdp *r = acpi_map(rsdp_phys, sizeof(Rsdp));
     if (!r || memcmp(r->sig, "RSD PTR ", 8) || !checksum_ok(r, 20)) { klog("Gensokyo", "acpi: bad RSDP at %#lx, ignoring ACPI", (unsigned long)rsdp_phys); return; }
     A.rsdp = rsdp_phys;
+    if (r->revision >= 2 && !checksum_ok(r, sizeof(Rsdp))) klog("Gensokyo", "acpi: the RSDP's extended checksum is wrong (used anyway)");
     memcpy(A.oem, r->oem, 6);
     A.oem[6] = 0;
 
@@ -174,6 +190,16 @@ void acpi_init(void) {
     }
     klog("Gensokyo", "acpi: rev %u, oem '%s', %d processor%s, PM1a_CNT %#x, S5 %s, reset %s", A.revision, A.oem, A.cpus,
          A.cpus == 1 ? "" : "s", A.pm1a_cnt, A.have_s5 ? "known" : "unknown", A.reset_ok ? "register" : "legacy only");
+    klog("Gensokyo", "acpi: %d tables read via the %s%s, PM timer %#x", A.tables, use_xsdt ? "XSDT" : "RSDT",
+         A.bad_checksums ? " (some have a bad checksum; used anyway)" : "", A.pm_tmr);
+}
+
+/* The ACPI PM timer, for calibrating the TSC when the PIT is not there. */
+bool acpi_pm_timer(u16 *port, bool *wide) {
+    if (!A.present || !A.pm_tmr) return false;
+    *port = A.pm_tmr;
+    *wide = A.tmr_wide;
+    return true;
 }
 
 int acpi_cpu_count(void) { return A.cpus; }
