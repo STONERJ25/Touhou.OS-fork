@@ -78,6 +78,7 @@ static void evict_some(FatVol *v) {
 
 static FatPage *pg_alloc(FatVol *v, u64 key) {
     if (v->npages >= v->max_pages) evict_some(v);
+    if (v->npages >= v->max_pages * 2) return NULL;             /* the device keeps failing and the cache is all dirty: stop growing */
     FatPage *p = kzalloc(sizeof *p);
     if (p) p->data = kmalloc(FAT_PAGE);
     if (!p || !p->data) {

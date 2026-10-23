@@ -544,7 +544,7 @@ static ssize_t file_write_locked(FatNode *nd, const void *buf, size_t n, u64 off
         if (rc == -ENOSPC) {                                     /* take whatever still fits */
             u32 freec = 0;
             if (v->free_known) freec = v->free_clusters;
-            else if (fat_count_free(v, &freec) == 0) { v->free_clusters = freec; v->free_known = true; }
+            else if (fat_count_free(v, &freec) == 0) { v->free_clusters = freec; v->free_known = true; v->free_verified = true; }
             u32 more = freec < need - nd->known ? freec : need - nd->known;
             rc = more ? chain_grow(nd, more) : -ENOSPC;
             if (rc) {
@@ -954,6 +954,7 @@ static int fat_mount(const char *source, u32 flags, Mount *m) {
                 klog("Keine", "%s: %s: FSInfo says %u free clusters, the FAT has %u", v->fstype, dev->name, v->free_clusters, counted);
             v->free_clusters = counted;
             v->free_known = true;
+            v->free_verified = true;
         }
     }
 
@@ -1051,9 +1052,10 @@ static int fat_sync_mount(Mount *m) {
 static int fat_statfs(Mount *m, struct gstatfs *out) {
     FatVol *v = m->priv;
     mutex_lock(&v->lock);
+    if (v->orphans) vol_reap(v);                                 /* files unlinked while open and closed since: space is free now */
     if (!v->free_known) {
         u32 n;
-        if (fat_count_free(v, &n) == 0) { v->free_clusters = n; v->free_known = true; }
+        if (fat_count_free(v, &n) == 0) { v->free_clusters = n; v->free_known = true; v->free_verified = true; }
     }
     out->f_type = MSDOS_SUPER_MAGIC;
     out->f_bsize = v->cbytes;

@@ -129,7 +129,7 @@ struct FatVol {
     u32 fsinfo_sector;
     /* allocation state */
     u32 free_clusters;
-    bool free_known;
+    bool free_known, free_verified;      /* free_verified: free_clusters came from a scan of the FAT, not from FSInfo */
     u32 alloc_cursor;
     /* state */
     bool ro, forced, was_dirty, media_dirty, sync_mode, dying, label_set;

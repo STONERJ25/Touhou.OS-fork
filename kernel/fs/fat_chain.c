@@ -240,7 +240,10 @@ int fat_free_chain(FatVol *v, u32 first, u32 *freed) {
         if (is_bad(v, nxt)) { rc = -EIO; break; }
         c = nxt;
     }
-    if (v->free_known) v->free_clusters += n;
+    if (v->free_known) {
+        v->free_clusters += n;
+        if (v->free_clusters > v->nclusters) v->free_clusters = v->nclusters;      /* a damaged chain must not make the count absurd */
+    }
     if (freed) *freed = n;
     return rc;
 }
@@ -408,6 +411,15 @@ int chain_grow(FatNode *n, u32 count) {
         if (rc != -ENXIO) return rc ? rc : -EIO;
     }
     if (n->known + (u64)count > v->nclusters) return -ENOSPC;
+    if (v->free_known && count > v->free_clusters) {            /* fail fast on a full volume (once the count is known to be true) */
+        if (v->free_verified) return -ENOSPC;
+        u32 counted;
+        int crc = fat_count_free(v, &counted);                  /* the count came from FSInfo, which is only a hint */
+        if (crc) return crc;
+        v->free_clusters = counted;
+        v->free_verified = true;
+        if (count > counted) return -ENOSPC;
+    }
     u32 saved = n->known, saved_tail = n->tail;
     u32 first = 0, last = 0;
     struct grow_ctx g = { n, 0 };

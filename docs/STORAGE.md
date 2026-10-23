@@ -41,7 +41,9 @@ partition name has room for the full text. The mount policy accepts both spellin
    (`tests/case_storage.py` compares checksums of whole images and of single partitions).
 3. When nothing matches, boot continues with the in-RAM tmpfs home directories exactly as today.
 4. After a successful mount `/HumanVillage/reimu`, `marisa` and `sakuya` are created if missing.
-5. The command line word `nohumanvillage` skips all of this.
+5. The command line word `nohumanvillage` skips all of this. The policy runs once, before USB is initialised; a driver that discovers
+   disks later may call `storage_mount_boot_volumes()` again (it does nothing when `/HumanVillage` is already a mount point),
+   or root mounts by hand: `mount -t fat32 -o userdirs /dev/sdb1 /HumanVillage`.
 6. Writes to a device happen only through (a) a FAT volume that was selected by the policy or by `mount`, and (b) root
    writing `/dev/<disk>` by hand. Nothing else in the kernel writes to a block device.
 
@@ -188,8 +190,10 @@ by the kernel were also mounted read-only with Linux's vfat driver and compared 
 
 ## Tests
 
-`python tests/run_all.py storage` (about three minutes) - see `tests/case_storage.py`. Besides the scenarios listed in
-the task it covers: both virtio transports, 512 and 4096-byte sectors, 512 B and 4 KiB clusters, FAT16 root-directory
+`python tests/run_all.py storage` (about five minutes) - see `tests/case_storage.py`. `/bin/fstest` (user/bin/fstest.c) is a
+system-call level checker that the tests run inside the guest (errno values, open-then-unlink, renames over files and
+directories, 255-character and Unicode names, holes, cluster-boundary sizes, 700-entry directories); you can run it on any
+mounted volume (`fstest /HumanVillage/reimu`). Besides the scenarios listed in the task the suite covers: both virtio transports, 512 and 4096-byte sectors, 512 B and 4 KiB clusters, FAT16 root-directory
 exhaustion, a write-protected disk, power loss (unflushed write leaves the dirty flag), periodic flush without `sync`,
 nine different corrupt boot sectors, damaged chains and directories, and a seeded random stress run (create, append,
 overwrite, truncate, delete, rename over files, move directories, mkdir/rmdir) mirrored in a Python model whose final tree

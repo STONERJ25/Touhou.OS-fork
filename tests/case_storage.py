@@ -14,6 +14,7 @@ import random
 import re
 import shutil
 import struct
+from pathlib import Path
 
 from harness import test, Qemu, BUILD
 import mkdisk
@@ -139,10 +140,10 @@ class Guest:
 
 
 @contextlib.contextmanager
-def boot(image=None, root=False, cmdline="", name="t-storage", extra=()):
+def boot(image=None, root=False, cmdline="", name="t-storage", extra=(), mem="512M"):
     cl = (cmdline + (" user=root" if root else "")).strip()
     disk = image.path if image is not None else None
-    with Qemu(cmdline=cl, disk=disk, name=name, extra=list(extra)) as vm:
+    with Qemu(cmdline=cl, disk=disk, name=name, extra=list(extra), mem=mem) as vm:
         vm.expect(ROOT_PROMPT if root else USER_PROMPT, timeout=90)
         yield Guest(vm, root), vm
 
@@ -554,6 +555,9 @@ def storage_mount_umount_cli():
         with boot(img, root=True, name="t-storage-cli") as (g, vm):
             g.fails(f"cd {HV} && umount {HV}", r"busy")                            # the shell itself is inside
             g.ok("cd /")
+            g.ok(f"(while [ ! -e /BambooForest/stopholder ]; do sleep 1; done) < {HV}/shared/x.txt &")
+            g.fails(f"umount {HV}", r"busy")                                      # a background process holds a file open
+            g.ok("touch /BambooForest/stopholder; sleep 3")                       # let it finish
             g.ok(f"echo before-umount > {HV}/shared/u.txt")                       # no sync: umount must flush
             g.fails("mount -t fat32 /dev/vda1 /mnt", r"[Bb]usy")                  # already mounted
             g.ok(f"umount {HV}")
@@ -697,6 +701,23 @@ def storage_4096_byte_sectors():
             assert v.bps == 4096
         finally:
             v.close()
+
+
+@test
+def storage_posix_semantics():
+    """/bin/fstest (380 checks of errno values, open-unlinked files, renames, names, holes, 700-entry directories) on three FAT geometries."""
+    for tag, size, part, root in (("c512", 80 * MIB, hv_part(), False), ("c4k", 320 * MIB, hv_part(cluster=4096), True),
+                                  ("fat16", 80 * MIB, hv_part(kind="fat16"), True)):
+        with Image("posix-" + tag, size, [part]) as img:
+            with boot(img, root=root, name="t-storage-posix") as (g, vm):
+                out = g.ok(f"fstest {H}", timeout=300)
+                assert "FSTEST PASS" in out, f"{tag}:\n{out[-2500:]}"
+                if root:
+                    out = g.ok(f"fstest {HV}", timeout=300)                 # the root directory of the volume (FAT16: fixed table)
+                    assert "FSTEST PASS" in out, f"{tag} root:\n{out[-2500:]}"
+                g.poweroff()
+            rep = img.check()
+            assert rep.stats["p1"]["files"] == 0, "fstest must clean up after itself"
 
 
 @test
@@ -1076,3 +1097,122 @@ def storage_contains_damaged_files():
             assert v.read_file("/reimu/fine.txt") == b"still-writable\n"
         finally:
             v.close()
+
+
+@test
+def storage_fsinfo_hints():
+    """A lying FSInfo does not mislead df or the allocator, and is corrected by the next clean sync."""
+    homes = {"/reimu/a.txt": b"a\n", "/marisa/m.txt": b"m\n", "/sakuya/s.txt": b"s\n"}        # all three homes exist: boot creates nothing
+    with Image("fsinfo", 64 * MIB, [hv_part(homes)]) as img:
+        v = mkdisk.open_volume(img.path, 1, writable=True)
+        try:
+            true_free = img.check().stats["p1"]["free"]
+            cluster = v.cluster_bytes
+            v.win.write(v.fsinfo_sector * v.bps + 488, struct.pack("<II", 12345, 7))        # free count and next-free hint
+        finally:
+            v.close()
+        rep = mkdisk.check_image(img.path)
+        assert any("FSInfo free count" in e for e in rep.errors), rep.text()
+        with boot(img, name="t-storage-fsinfo") as (g, vm):
+            assert df_row(g, HV)[2] == true_free * cluster // 1024, "df must come from the FAT, not from the hint"
+            g.ok(f"echo fresh > {H}/b.txt; dd if=/dev/urandom of={H}/c.bin bs=1k count=100 2>/dev/null")
+            g.poweroff()
+        img.check()                                             # FSInfo is right again
+
+
+@test
+def storage_mkdisk_cli():
+    """tools/mkdisk.py as a command: build, --check (exit status), --ls, --cat, --extract, --tree; MBR, FAT16, 4096-byte sectors."""
+    import subprocess
+    import sys
+    tool = [sys.executable, str(Path(mkdisk.__file__))]
+    d = WORK / "cli-tool"
+    shutil.rmtree(d, ignore_errors=True)
+    (d / "src" / "a dir").mkdir(parents=True)
+    (d / "src" / "hello.txt").write_bytes(b"hello from the host\n")
+    (d / "src" / "a dir" / "file two with a long name.txt").write_bytes(b"two\n" * 1000)
+    run = lambda *a: subprocess.run(tool + [str(x) for x in a], capture_output=True)
+    try:
+        img = d / "t.img"
+        r = run(img, "--size", "140M", "--esp", d / "src", "--hv-dir", d / "src", "--hv-size", "60M")
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert b"TOUHOUOS-ESP" in r.stdout and b"HUMANVILLAGE" in r.stdout, r.stdout
+        r = run("--check", img)
+        assert r.returncode == 0 and b"0 error(s)" in r.stdout, r.stdout
+        assert b"file two with a long name.txt" in run("--ls", f"{img}:2", "/a dir").stdout
+        assert b"[FILETW~1.TXT]" in run("--ls", f"{img}:2", "/a dir").stdout                    # the generated short name is shown
+        assert run("--cat", f"{img}:2", "/hello.txt").stdout == b"hello from the host\n"
+        assert run("--cat", f"{img}:1", "/HELLO.TXT").stdout == b"hello from the host\n"        # ESP, case-insensitive
+        assert b"/a dir/file two with a long name.txt" in run("--tree", f"{img}:2").stdout
+        out = d / "out"
+        assert run("--extract", f"{img}:2", "/", out).returncode == 0
+        assert (out / "a dir" / "file two with a long name.txt").read_bytes() == b"two\n" * 1000
+        with open(img, "r+b") as f:                                                                # damage: a FAT byte
+            v = mkdisk.open_volume(img, 2)
+            try:
+                off = v.part["offset"] + v.reserved * v.bps + 4000 * 4
+            finally:
+                v.close()
+            f.seek(off)
+            f.write(b"\xff\xff\xff\x0f")
+        r = run("--check", img)
+        assert r.returncode == 1 and b"lost cluster" in r.stdout, r.stdout
+        for opts in (["--table", "mbr", "--no-esp"], ["--no-esp", "--hv-fat16", "--size", "80M"], ["--no-hv", "--size", "100M"],
+                     ["--sector-size", "4096", "--size", "600M", "--no-esp"]):
+            kw = ["--size", "100M"] if "--size" not in opts else []
+            r = run(d / "t2.img", *kw, *opts)
+            assert r.returncode == 0, (opts, r.stdout, r.stderr)
+            assert run("--check", d / "t2.img").returncode == 0, opts
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+@test
+def storage_small_ram():
+    """With 96 MiB of RAM (a small page cache) a 60 MiB file and 200 files still go through intact."""
+    with Image("smallram", 200 * MIB, [hv_part()]) as img:
+        with boot(img, name="t-storage-smallram", mem="96M") as (g, vm):
+            g.ok(f"dd if=/dev/urandom of={H}/big bs=1k count=61440 2>/dev/null", timeout=300)
+            s = g.ok(f"sha256sum {H}/big", timeout=120).split()[0]
+            g.ok(f"mkdir {H}/d; i=0; while [ $i -lt 200 ]; do echo $i > \"{H}/d/file number $i with a longish name.txt\"; i=$((i+1)); done",
+                 timeout=180)
+            assert g.ok(f"sha256sum {H}/big", timeout=120).split()[0] == s                     # re-read after eviction
+            g.poweroff()
+        img.check()
+        v = img.volume(1)
+        try:
+            assert sha(v.read_file("/reimu/big")) == s and len(v.listdir("/reimu/d")) == 200
+        finally:
+            v.close()
+
+
+@test
+def storage_two_disks():
+    """Two virtio disks: HUMANVILLAGE on vda, another FAT32 volume mounted by hand from vdb; copy and move between them."""
+    other = dict(name="DATA", kind="fat32", size="rest", label="DATA", files={"/in-b.txt": b"from b\n"})
+    with Image("two-a", 64 * MIB, [hv_part()]) as a, Image("two-b", 64 * MIB, [other]) as b:
+        with boot(a, root=True, name="t-storage-two", extra=["-drive", f"if=none,id=d1,format=raw,file={b.path}",
+                                                              "-device", "virtio-blk-pci,drive=d1"]) as (g, vm):
+            out = g.ok("lsblk")
+            assert re.search(r"^vda\s", out, re.M) and re.search(r"^vdb1\s.*DATA", out, re.M), out
+            g.ok("mount -t fat32 /dev/vdb1 /mnt")
+            assert re.search(r"/dev/vdb1 on /mnt type fat32", g.ok("mount"))
+            g.ok(f"dd if=/dev/urandom of={H}/x.bin bs=1k count=2000 2>/dev/null")
+            g.ok(f"cp {H}/x.bin /mnt/x-copy.bin")
+            g.ok(f"cmp {H}/x.bin /mnt/x-copy.bin")
+            g.ok(f"mv /mnt/in-b.txt {H}/moved.txt")                                          # EXDEV: copy, then remove
+            g.ok(f"mv {H}/x.bin /mnt/x-moved.bin")
+            sums = g.ok("sha256sum /mnt/x-copy.bin /mnt/x-moved.bin").split()
+            assert sums[0] == sums[2]
+            out = g.ok("df -T")
+            assert "/dev/vda1" in out and "/dev/vdb1" in out, out
+            g.poweroff()
+        a.check()
+        b.check()
+        va, vb = a.volume(1), b.volume(1)
+        try:
+            assert va.read_file("/reimu/moved.txt") == b"from b\n" and va.find("/reimu/x.bin") is None
+            assert sha(vb.read_file("/x-copy.bin")) == sums[0] and vb.find("/in-b.txt") is None
+        finally:
+            va.close()
+            vb.close()

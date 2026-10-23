@@ -134,10 +134,18 @@ static void ensure_homes(void) {
     }
 }
 
-/* Called by kmain once the block devices exist. */
+/* Called by kmain once the block devices exist. A driver that finds disks later (USB, hot-plug) may call it again: it does
+ * nothing when /HumanVillage is already a mount point. */
 void storage_mount_boot_volumes(void) {
-    vfs_register_fs(&g_vfat_type);
-    vfs_register_fs(&g_fat16_type);
+    static bool registered;
+    if (!registered) {
+        registered = true;
+        vfs_register_fs(&g_vfat_type);
+        vfs_register_fs(&g_fat16_type);
+    }
+    char t[64], y[16], s[64];
+    for (int i = 0; vfs_mount_list(i, t, sizeof t, y, sizeof y, s, sizeof s); i++)
+        if (!strcmp(t, "/HumanVillage")) return;
     if (cmdline_flag("nohumanvillage")) {
         klog("Keine", "nohumanvillage: persistent storage is left alone, homes stay in RAM");
         return;
