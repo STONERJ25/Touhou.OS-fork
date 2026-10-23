@@ -1,0 +1,71 @@
+.page patchouli 1 the manual viewer (Patchouli's library)
+.alias man
+
+# SYNOPSIS
+*patchouli* [*-atrW* _N_] [_SECTION_] _NAME_...
+*patchouli* *-k* _WORD_...
+*patchouli* *-f* _NAME_...
+*patchouli* *-l*
+*patchouli* *-w* _NAME_...
+*patchouli* *--check-all*
+*patchouli* *--check* _FILE_...
+
+# DESCRIPTION
+`patchouli` shows the manual pages that live in Patchouli's library. A page is a short text file in the `.pw` format (see pw(5)); the installed ones are kept under `/ScarletDevilMansion/share/patchouli`, one directory per section. `man` is another name for the same program.
+
+When standard output is a terminal the page is formatted with bold and colour and handed to the pager (see patchouli-pager(1)); `q` leaves it and `h` lists the keys. When output goes to a file or a pipe, or with `-t`, the page is plain text.
+
+The sections are numbered the traditional way: 1 commands, 5 file formats, 7 overviews and conventions, 8 system administration. Without a section number the search goes through 1, 8, 5 and 7 in that order and the first page found is shown.
+
+# OPTIONS
+@ *-a*, *--all*
+    Show the page from every section that has one of that name.
+@ *-t*, *--text*
+    Plain text: no colours, no pager.
+@ *-W* _N_, *--width*=_N_
+    Make the lines at most _N_ columns long. The default is the terminal width, but never more than 78.
+@ *-r*, *--raw*
+    Print the page source instead of the formatted page.
+@ *-k*, *--apropos*
+    Search the names and one-line descriptions of all pages for each _WORD_ (ignoring case) and list the matches.
+@ *-f*, *--whatis*
+    List the one-line description of the pages called _NAME_.
+@ *-l*, *--list*
+    List every page in the library, one per line.
+@ *-w*, *--where*
+    Print the file a page lives in instead of showing it.
+@ *--check-all*
+    Parse and render every page and report mistakes in them: unknown directives, missing sections, references to pages that do not exist. The exit status is 1 if anything was found.
+@ *--check* _FILE_...
+    The same for particular files.
+@ *-h*, *--help*
+    Print a short usage message.
+@ *-V*, *--version*
+    Print the version.
+
+An argument that contains a slash or ends in `.pw` is taken to be a file and is formatted directly, which is handy while writing a page.
+
+# ENVIRONMENT
+@ PAGER
+    The pager to use on a terminal. The default is `patchouli-pager`. An empty value or `cat` disables paging.
+@ PATCHOULI_PATH
+    A colon separated list of directories to search instead of the installed library. Each holds one directory per section.
+@ MANWIDTH
+    Line length to use instead of the terminal width.
+@ COLUMNS
+    The terminal width, if it cannot be asked of the console.
+
+# EXAMPLES
+    patchouli ls
+    patchouli 7 regex
+    patchouli -k directory
+    patchouli -l | grep '^ps'
+    patchouli --check-all
+
+# EXIT STATUS
+0 on success; 1 if a page was not found or a check failed; 2 for a usage error.
+
+# SEE ALSO
+patchouli-pager(1), pw(5), gensokyo(7)
+
+Patchouli would like you to know that she has read every page in here, and that she sneezes when it is dusty.
