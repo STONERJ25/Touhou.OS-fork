@@ -5,7 +5,7 @@
 *gallery* *--info* _FILE_...
 
 # DESCRIPTION
-The Gensokyo Gallery shows pictures in a window: PNG, JPEG (baseline and progressive, upright according to the camera's orientation tag), GIF (animated ones play), BMP, PNM and TGA. Given a file it opens that file and the other pictures in the same folder; given a folder it opens the first picture in it; with nothing it waits for Ctrl+O. Pictures are ordered by name, with numbers compared as numbers (pic2 before pic10).
+The Gensokyo Gallery shows pictures in a window: PNG, JPEG (baseline and progressive, upright according to the camera's orientation tag), GIF (animated ones play), BMP, PNM and TGA. Given a file it opens that file and the other pictures in the same folder; given a folder it opens the first picture in it; with nothing it opens the newest picture in *~/Pictures* (screenshots are named by date), if there is one, and otherwise waits for Ctrl+O. Pictures are ordered by name, with numbers compared as numbers (pic2 before pic10).
 
 A picture that cannot be read is explained in the window and in the status line (a damaged, truncated or too large file is reported, never fatal) and the next picture can still be opened. Transparent pictures are shown over a checkerboard. Rotating and flipping change only what is shown, never the file.
 
@@ -23,7 +23,7 @@ Start it from the Gensokyo menu or the Explorer, or with a file name. *gallery -
 @ F5 or S
     Start or stop a slideshow (*--slideshow* sets the seconds per picture; 4 by default). Esc stops it.
 @ W
-    Use the picture as the desktop wallpaper (mode "cover", see wallpaper(1)).
+    Use the picture as the desktop wallpaper, with the placement chosen before ("cover" at first, see wallpaper(1)).
 @ I
     Show or hide the details: name, format, size in pixels and bytes, position in the folder, zoom.
 @ Ctrl+O, Ctrl+Q, F1

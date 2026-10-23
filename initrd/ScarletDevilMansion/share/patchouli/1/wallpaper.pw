@@ -8,7 +8,7 @@
 # DESCRIPTION
 `wallpaper` chooses the picture behind the windows. The choice is stored in *~/.config/hakurei/wallpaper* (first line: the full path of the picture, second line: the mode), and the desktop notices the change within a second or two and redraws. The picture is decoded once and scaled to the size of the screen; the original is not kept in memory.
 
-Without arguments it prints the current setting. If the picture cannot be read, or the file is later removed, the desktop falls back to the built-in night scene (the moon, the torii and the bamboo). The login screen uses the system-wide setting in */etc/hakurei/wallpaper* if there is one, since nobody is signed in yet.
+The Control Panel (Appearance, Wallpaper) and the Gallery (W) change the same setting. Without arguments it prints the current setting. If the picture cannot be read, or the file is later removed, the desktop falls back to the built-in night scene (the moon, the torii and the bamboo). The login screen uses the system-wide setting in */etc/hakurei/wallpaper* if there is one, since nobody is signed in yet.
 
 # OPTIONS
 @ *-m* _MODE_
