@@ -1679,6 +1679,7 @@ static Token *global_variable(Token *tok, Type *basety, VarAttr *attr) {
         if (as.align > var->align) var->align = as.align;
 
         if (equal(tok, "=")) {
+            if (var->init_data) error_tok(ty->name, "redefinition of '%s'", name);
             if (attr->is_extern) var->is_definition = true;
             gvar_initializer(&tok, tok->next, var);
             var->is_const_data = is_const_type(var->ty) && !var->is_tls;
