@@ -1,0 +1,10 @@
+.page hostname 1 print the name of this machine
+
+# SYNOPSIS
+*hostname*
+
+# DESCRIPTION
+`hostname` prints the host name. It is initially `gensokyo`, read from `/Hakurei/etc/hostname`. Setting the name is not supported: with an argument `hostname` only apologises.
+
+# SEE ALSO
+uname(1)

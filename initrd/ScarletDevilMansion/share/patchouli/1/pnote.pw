@@ -1,0 +1,100 @@
+.page pnote 1 Patchouli's Notebook, a full-screen text editor
+
+# SYNOPSIS
+*pnote* [*-nSIER*] [*-T* _N_] [*-l* _LANG_] [*+*_LINE_[,_COLUMN_]] [_FILE_]
+*pnote* [_OPTIONS_] *-*
+
+# DESCRIPTION
+`pnote` is the text editor of Gensokyo: a notebook under a shrine-red title bar, with the keys of a traditional terminal editor. It opens _FILE_, which is created when you save it if it does not exist, or an empty unnamed notebook if no file is named. The login profile sets `EDITOR=pnote`.
+
+The screen has a title bar with the file name and a `Modified` mark, the text, a status line (messages and prompts appear there) and two lines of key hints. `^X` means hold Control and press X; `Alt-X` means press Escape and then X, or hold Alt. The window size is read from the console on every redraw, so a console that changes size is followed.
+
+Files are kept exactly as they are: UTF-8 text is shown one column per character, line endings (LF or CR LF) are remembered line by line and written back unchanged, and a file that has no newline at its end still has none after saving. A new or empty file gets a final newline once it has text. Very long lines scroll sideways, with `<` and `>` marking text beyond the edges. A file of a hundred thousand lines opens at once and every command stays quick.
+
+# OPTIONS
+@ *-n*, *--linenumbers*
+    Show line numbers.
+@ *-S*, *--nohighlight*
+    Turn syntax highlighting off.
+@ *-I*, *--noindent*
+    Turn auto-indent off. Normally a new line starts with the same indentation as the one above.
+@ *-E*, *--tabstospaces*
+    The Tab key inserts spaces up to the next tab stop instead of a tab character.
+@ *-T* _N_, *--tabsize*=_N_
+    Tab stops every _N_ columns (default 8, at most 32).
+@ *-R*, *--readonly*
+    View only: every command that would change the text is refused.
+@ *-l* _LANG_, *--language*=_LANG_
+    Highlight as `c`, `sh` (shell), `md` (markdown) or `none`, whatever the file is called.
+@ *+*_LINE_[,_COLUMN_]
+    Put the cursor on that line (and column) when the file is opened.
+@ *-*
+    Read the text from standard input. The keyboard is then read from the terminal itself. If standard output is not a terminal either (`ls | pnote - | grep x`), leaving the editor writes the edited text to standard output; answer `n` to the question at ^X to throw it away. `^S` still saves a copy to a named file.
+@ *-V*, *--version*; *-h*, *--help*
+    Print the version / a short summary.
+
+# KEYS
+The same list is on the help screen (`^G`).
+
+@ ^S
+    Save. A notebook with no name asks for one. If the file cannot be written, `pnote` offers to save under another name.
+@ ^X
+    Exit. When there are unsaved changes it asks: `Y` saves, `N` discards, Esc stays.
+@ ^O
+    Insert another file at the cursor.
+@ ^W
+    Search forward. Enter on an empty prompt repeats the last search. Case is ignored unless the pattern has an upper case letter. In the prompt, Alt-C cycles smartcase, case-sensitive and ignore-case, and Alt-R switches extended regular expressions on and off (see regex(7)).
+@ ^N, ^P
+    Next match, previous match (F3 also searches again). The search wraps around the ends.
+@ ^R
+    Search and replace. After the pattern and the replacement it asks for each match: `Y` replace, `N` skip, `A` replace this and all the rest, Esc stop. In the replacement `\n` and `\t` are a newline and a tab; with regular expressions `&` is the whole match and `\1` to `\9` the groups.
+@ ^L
+    Go to a line: a number, or `LINE,COLUMN`; a negative number counts from the end.
+@ ^K
+    Cut the current line. Pressing ^K again adds the next line to the same cut buffer. With a selection it cuts the selection.
+@ ^U
+    Paste. Whole lines that were cut go above the current line; other text goes at the cursor.
+@ Alt-A
+    Start (or cancel) a selection. Move the cursor to the other end; the selection is shown in reverse. ^K cuts it and Alt-6 copies it. Shift with the arrow keys starts a selection too. Typing or deleting with a selection active replaces or removes it.
+@ ^Z, ^Y
+    Undo and redo, many levels deep. Typing, backspacing and deleting in a row count as one step. Alt-U and Alt-E do the same.
+@ Tab, Shift-Tab
+    Insert a tab (or spaces); remove one level of indentation from the line.
+@ Backspace, Delete, ^D
+    Delete the character before / under the cursor.
+@ Arrows, ^B, ^F
+    Move. Alt-B and Alt-F (or Alt-Left and Alt-Right, Ctrl-Left and Ctrl-Right) move by words.
+@ Home, End, ^A, ^E
+    Start and end of the line.
+@ PgUp, PgDn, ^V, Alt-V
+    A page up or down.
+@ Alt-\\, Alt-/
+    First line, last line (Ctrl-Home and Ctrl-End also).
+@ ^T
+    The toggles: `N` line numbers, `H` highlighting, `L` language, `A` auto-indent, `T` tabs as spaces, `D` convert the whole file between LF and CR LF.
+@ ^C
+    Show where the cursor is: line, column and byte position.
+@ ^G, F1
+    The help screen.
+@ F5, Alt-L
+    Repaint the screen.
+
+# SYNTAX HIGHLIGHTING
+Highlighting is on for files that look like C (`.c .h .cc .cpp .hpp`), shell scripts (`.sh .bash .gap`, a first line starting `#!` with `sh` in it, and a few well-known names such as `profile`) and markdown (`.md`). Comments, strings, numbers, keywords, types, preprocessor lines and shell variables are coloured; in markdown headings, lists, emphasis and code are. Only the visible lines are examined, so big files stay fast.
+
+# EXIT STATUS
+0 normally; 1 if the file could not be read or (when used as a filter) the text was thrown away; 2 for bad options.
+
+# ENVIRONMENT
+@ LINES, COLUMNS
+    If set, they override the size reported by the console.
+@ EDITOR
+    Set to `pnote` by the login profile so that programs which want an editor start this one.
+
+# NOTES
+The kernel's framebuffer console cannot underline and shows bold text in the normal colour, so `pnote` uses reverse video and colours instead.
+
+`pnote` never saves by itself. Patchouli holds that a draft is ready when its author says so, and not a minute before.
+
+# SEE ALSO
+patchouli-pager(1), regex(7), keys(7), cat(1)

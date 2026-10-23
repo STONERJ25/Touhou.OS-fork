@@ -1,0 +1,10 @@
+.page shutdown 8 power off or restart the machine
+
+# SYNOPSIS
+*shutdown* [*-r*]
+
+# DESCRIPTION
+`shutdown` powers the machine off like poweroff(8), or with `-r` (or `--reboot`) restarts it like reboot(8). There is no delay and no warning to other users.
+
+# SEE ALSO
+poweroff(8), reboot(8), halt(8)

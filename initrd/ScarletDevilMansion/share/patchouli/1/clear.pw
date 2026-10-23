@@ -1,0 +1,10 @@
+.page clear 1 clear the terminal screen
+
+# SYNOPSIS
+*clear*
+
+# DESCRIPTION
+`clear` homes the cursor and wipes the screen and the scrollback with the ANSI sequences `ESC [H ESC [2J ESC [3J`.
+
+# SEE ALSO
+reset(1)

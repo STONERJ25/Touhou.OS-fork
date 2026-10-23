@@ -1,0 +1,14 @@
+.page init 8 the first process, the shrine maiden
+
+# SYNOPSIS
+*init*
+
+# DESCRIPTION
+`init` is process 1. When the kernel has mounted the filesystem and unpacked the initrd it starts `/sbin/init`, which opens the shrine for the day: it prints a greeting, starts a login shell (`gapsh -l`) for the resident of the Human Village and respawns it whenever it exits. It also adopts and collects every orphaned process.
+
+The shell runs as `reimu` (user 1000, home `/HumanVillage/reimu`). With `user=root` on the kernel command line it runs as root with `/root` as home. The environment it hands over has `HOME`, `USER`, `LOGNAME`, `SHELL`, `PATH=/bin:/sbin:/usr/bin`, `HOSTNAME` and `TERM=xterm`; the login profile adds the rest (see profile(5)).
+
+If the word `utest` is on the kernel command line `init` does not start a shell: it runs utest(1) and powers the machine off.
+
+# SEE ALSO
+gapsh(1), profile(5), gensokyo(7), utest(1)

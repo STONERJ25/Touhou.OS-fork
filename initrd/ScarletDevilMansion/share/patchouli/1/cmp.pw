@@ -1,0 +1,25 @@
+.page cmp 1 compare two files byte by byte
+
+# SYNOPSIS
+*cmp* [*-sl*] _FILE1_ _FILE2_
+
+# DESCRIPTION
+`cmp` compares two files. If they are identical it prints nothing. At the first difference it prints the byte number and line number, for example `a b differ: byte 9, line 2`.
+
+# OPTIONS
+@ *-s*
+    Silent: print nothing, only set the exit status.
+@ *-l*
+    Print every differing byte: its position in decimal followed by the two byte values in octal. The comparison does not stop at the first difference.
+
+If one file is a prefix of the other, `cmp: EOF on FILE after byte N` is printed on standard error.
+
+# EXIT STATUS
+0 if the files are the same, 1 if they differ, 2 if a file could not be opened or the usage was wrong.
+
+# EXAMPLES
+    cmp a.bin b.bin
+    cmp -s a.txt b.txt && echo same
+
+# SEE ALSO
+comm(1), md5sum(1), sha256sum(1)

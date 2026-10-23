@@ -1,0 +1,14 @@
+.page yes 1 repeat a line forever
+
+# SYNOPSIS
+*yes* [_STRING_]
+
+# DESCRIPTION
+`yes` writes _STRING_ (or `y`) followed by a newline, over and over, until it is killed or whoever reads it goes away. Only the first argument is used.
+
+# EXAMPLES
+    yes | head -3
+    yes "n" | rm -i *.tmp
+
+# SEE ALSO
+seq(1), head(1)

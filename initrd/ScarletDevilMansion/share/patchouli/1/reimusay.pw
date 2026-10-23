@@ -1,0 +1,23 @@
+.page reimusay 1 let Reimu say something
+
+# SYNOPSIS
+*reimusay* [*-nt*] [*-W* _COLUMNS_] [_TEXT_...]
+
+# DESCRIPTION
+`reimusay` draws a speech bubble containing _TEXT_ and Reimu Hakurei underneath it. If no text is given on the command line it is read from standard input. The text is wrapped to 40 columns.
+
+# OPTIONS
+@ *-W* _COLUMNS_
+    Wrap the text at _COLUMNS_ instead of 40.
+@ *-n*
+    Do not wrap: keep the lines of the input as they are.
+@ *-t*
+    A thought bubble instead of a speech bubble.
+
+# EXAMPLES
+    reimusay "Offerings are welcome."
+    fortune -a | reimusay -n
+    echo "I am not lazy, I am conserving energy." | reimusay -t
+
+# SEE ALSO
+kappasay(1), omikuji(1), saisen(1)

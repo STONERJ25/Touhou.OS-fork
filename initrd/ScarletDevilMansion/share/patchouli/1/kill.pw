@@ -1,0 +1,30 @@
+.page kill 1 send a signal to processes
+
+# SYNOPSIS
+*kill* [*-*_SIGNAL_ | *-s* _SIGNAL_] _PID_...
+*kill* *-l*
+
+# DESCRIPTION
+`kill` sends a signal (SIGTERM by default) to each process _PID_. A _SIGNAL_ is a number or a name with or without the `SIG` prefix: `kill -9 12`, `kill -KILL 12`, `kill -s SIGUSR1 12`. A process may catch most signals; `KILL` (9) and `STOP` cannot be caught, which is why the login profile defines the alias `exorcise` as `kill -9`.
+
+The signals known by name are HUP INT QUIT ILL TRAP ABRT BUS FPE KILL USR1 SEGV USR2 PIPE ALRM TERM CHLD CONT STOP TSTP TTIN TTOU.
+
+gapsh has a builtin `kill` as well. It does the same and also accepts job specifications such as `%1`.
+
+# OPTIONS
+@ *-l*
+    List the signal names with their numbers.
+@ *-s* _SIGNAL_, *-*_SIGNAL_
+    The signal to send.
+
+# EXIT STATUS
+0 if every signal was sent, 1 if a process did not exist, the signal was unknown or the permission was refused; the message names the process.
+
+# EXAMPLES
+    kill 123
+    kill -9 123 124
+    kill -s INT 77
+    kill -l
+
+# SEE ALSO
+ps(1), pkill(1), pidof(1), gapsh(1)

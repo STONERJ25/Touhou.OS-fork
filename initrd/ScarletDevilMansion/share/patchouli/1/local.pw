@@ -1,0 +1,13 @@
+.page local 1 make a variable private to a function
+
+# SYNOPSIS
+*local* _NAME_[=_VALUE_]...
+
+# DESCRIPTION
+`local` is a gapsh builtin for use inside functions. It gives each _NAME_ the value _VALUE_ (empty if none) and arranges for the previous value, or the absence of one, to come back when the function returns. Functions called from there see the new value: the scope is dynamic.
+
+# EXAMPLES
+    count() { local n=0; for x in "$@"; do n=$((n+1)); done; echo $n; }
+
+# SEE ALSO
+export(1), return(1), gapsh-language(7)

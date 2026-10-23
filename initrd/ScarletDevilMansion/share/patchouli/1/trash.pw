@@ -1,0 +1,26 @@
+.page trash 1 move files to the Netherworld
+
+# SYNOPSIS
+*trash* [*-fq*] _FILE_...
+
+# DESCRIPTION
+`trash` is `rm` with a second chance. Each _FILE_ is moved into `/Netherworld`, the directory where Yuyuko keeps what the living have let go of. If a file of that name is already there the newcomer is called `NAME.1`, `NAME.2` and so on. For each file one line says where it went.
+
+Nothing in the Netherworld is deleted automatically. To get a file back, move it out again with mv(1); to forget it for good, remove it with `rm`.
+
+# OPTIONS
+@ *-q*, *-f*
+    Quiet: say nothing, ignore files that do not exist.
+
+The options `-r` and `-v` are accepted and ignored.
+
+# EXIT STATUS
+0, or 1 if a file could not be moved.
+
+# EXAMPLES
+    trash draft.txt
+    ls /Netherworld
+    mv /Netherworld/draft.txt .
+
+# SEE ALSO
+rm(1), mv(1), gensokyo(7)

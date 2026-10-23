@@ -1,0 +1,14 @@
+.page dmesg 1 print the kernel message log
+
+# SYNOPSIS
+*dmesg* [*-c*]
+
+# DESCRIPTION
+`dmesg` prints the kernel's log, read from `/dev/kmsg`: the boot messages and whatever the drivers have reported since, each tagged by the subsystem that spoke (Gensokyo, Boundary, Sakuya, Alice, Eiki, Kappa, Satori, Koishi, Keine, Yukari, Yuyuko ...; see gensokyo(7)). The option `-c` is accepted but the log is not cleared.
+
+# EXAMPLES
+    dmesg | tail -20
+    dmesg | grep -i kappa
+
+# SEE ALSO
+grep(1), tail(1), gensokyo(7)

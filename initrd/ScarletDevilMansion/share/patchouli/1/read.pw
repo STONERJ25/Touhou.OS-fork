@@ -1,0 +1,23 @@
+.page read 1 read a line into variables
+
+# SYNOPSIS
+*read* [*-r*] [*-p* _PROMPT_] [_NAME_...]
+
+# DESCRIPTION
+`read` is a gapsh builtin. It reads one line from standard input, splits it at blanks and assigns the words to the _NAME_s in order; the last name takes the rest of the line. With no name the line goes to `REPLY`. A backslash at the end of the line joins the next line unless `-r` is given, which also stops backslashes from quoting anything.
+
+# OPTIONS
+@ *-r*
+    Do not treat backslash specially.
+@ *-p* _PROMPT_
+    Write _PROMPT_ on standard error first.
+
+# EXIT STATUS
+0 if a line was read, 1 at the end of the input.
+
+# EXAMPLES
+    read -p "name? " who
+    while read a b; do echo "$b $a"; done < pairs.txt
+
+# SEE ALSO
+gapsh-language(7), cat(1)

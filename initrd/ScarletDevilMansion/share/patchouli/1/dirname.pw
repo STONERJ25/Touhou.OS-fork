@@ -1,0 +1,14 @@
+.page dirname 1 strip the last component from a path
+
+# SYNOPSIS
+*dirname* _PATH_
+
+# DESCRIPTION
+`dirname` prints _PATH_ without its last component: `/a/b/c.txt` gives `/a/b`, a bare name gives `.` and `/x` gives `/`.
+
+# EXAMPLES
+    dirname /a/b/c.txt
+    cd "$(dirname "$0")"
+
+# SEE ALSO
+basename(1), realpath(1)

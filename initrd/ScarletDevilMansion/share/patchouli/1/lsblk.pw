@@ -1,0 +1,13 @@
+.page lsblk 1 list block devices
+
+# SYNOPSIS
+*lsblk*
+
+# DESCRIPTION
+`lsblk` reads `/proc/partitions` and prints a table of the block devices the kernel found: the name (as in `/dev`), the size, whether it is read-only (RO), whether it is a whole disk or a partition (TYPE), its filesystem label, the driver that serves it and the model. If there are no devices it says so.
+
+# EXAMPLES
+    lsblk
+
+# SEE ALSO
+mount(8), dd(1), lspci(1)

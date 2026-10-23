@@ -1,0 +1,18 @@
+.page mv 1 move or rename files
+
+# SYNOPSIS
+*mv* _SOURCE_ _DEST_
+*mv* _SOURCE_... _DIRECTORY_
+
+# DESCRIPTION
+`mv` renames _SOURCE_ to _DEST_, or moves the sources into _DIRECTORY_. If the destination is on another filesystem the data is copied (directories recursively) and the original removed afterwards. Words that start with a dash are skipped, so no options are available.
+
+# EXIT STATUS
+0, or 1 if any move failed.
+
+# EXAMPLES
+    mv draft.txt final.txt
+    mv *.log /tmp
+
+# SEE ALSO
+cp(1), rm(1), trash(1)

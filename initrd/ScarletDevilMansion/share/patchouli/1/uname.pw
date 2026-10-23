@@ -1,0 +1,30 @@
+.page uname 1 print system information
+
+# SYNOPSIS
+*uname* [*-asnrvmpc*]
+
+# DESCRIPTION
+`uname` prints facts about the running system. With no option it prints the kernel name.
+
+# OPTIONS
+@ *-s*
+    The kernel name (`Gensokyo`).
+@ *-n*
+    The node name: the host name.
+@ *-r*
+    The kernel release.
+@ *-v*
+    The kernel version string.
+@ *-m*, *-p*
+    The machine hardware name.
+@ *-c*
+    The release's code name, named after a game of the series (an extension of this system).
+@ *-a*, *--all*
+    Everything above, in that order.
+
+# EXAMPLES
+    uname -a
+    uname -sr
+
+# SEE ALSO
+hostname(1), uptime(1), gensokyo(7)

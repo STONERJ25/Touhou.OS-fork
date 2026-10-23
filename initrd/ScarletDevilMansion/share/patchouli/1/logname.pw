@@ -1,0 +1,10 @@
+.page logname 1 print the login name of the user
+
+# SYNOPSIS
+*logname*
+
+# DESCRIPTION
+`logname` prints the name that goes with the real user id, looked up in `/Hakurei/etc/passwd`. There are no setuid programs here, so it answers like whoami(1).
+
+# SEE ALSO
+whoami(1), id(1)

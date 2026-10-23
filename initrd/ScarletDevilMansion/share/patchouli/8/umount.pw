@@ -1,0 +1,10 @@
+.page umount 8 unmount a filesystem
+
+# SYNOPSIS
+*umount* _TARGET_
+
+# DESCRIPTION
+`umount` detaches the filesystem mounted on the directory _TARGET_. It fails if the filesystem is busy.
+
+# SEE ALSO
+mount(8), sync(1)

@@ -1,0 +1,10 @@
+.page reset 1 put the terminal back in order
+
+# SYNOPSIS
+*reset*
+
+# DESCRIPTION
+`reset` sends the full reset sequence (`ESC c`), turns off colours and attributes and clears the screen. Use it after something left the terminal in a strange state. A program that stopped without cleaning up after itself is the usual culprit.
+
+# SEE ALSO
+clear(1), tty(1)

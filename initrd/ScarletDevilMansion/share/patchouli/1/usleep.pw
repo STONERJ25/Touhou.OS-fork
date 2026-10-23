@@ -1,0 +1,13 @@
+.page usleep 1 pause for some microseconds
+
+# SYNOPSIS
+*usleep* _MICROSECONDS_
+
+# DESCRIPTION
+`usleep` pauses for the given number of microseconds (a millionth of a second). The kernel clock ticks once per millisecond, so shorter pauses end up as about a millisecond.
+
+# EXAMPLES
+    usleep 500000
+
+# SEE ALSO
+sleep(1)

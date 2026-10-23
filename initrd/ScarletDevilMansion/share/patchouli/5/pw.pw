@@ -1,0 +1,60 @@
+.page pw 5 the format of manual pages
+
+# DESCRIPTION
+The pages in Patchouli's library are small text files with the extension `.pw`, kept as `SECTION/NAME.pw` under `/ScarletDevilMansion/share/patchouli`. The format is meant to be easy to write and to read in the source, and to survive being shown on a plain 80-column terminal. patchouli(1) turns a page into bold and coloured text for the pager, or into plain text.
+
+A file is a sequence of lines. The first line that matters is the header; then come sections.
+
+# THE HEADER
+    .page NAME SECTION One line description
+    .alias OTHERNAME ...
+
+`.page` must come first (comments and blank lines may precede it). The name and the section must agree with the file's name and directory. The description is what `patchouli -k` searches; it should fit in one line of 72 characters and have no full stop. `.alias` gives other names the page can be found under; there may be several lines, all before the first heading. The page then shows `NAME - description` as its NAME section, so the source has no NAME heading.
+
+# SECTIONS AND TEXT
+@ # HEADING
+    A section heading, by convention in capitals: `# SYNOPSIS`, `# DESCRIPTION`, `# OPTIONS`, `# EXIT STATUS`, `# ENVIRONMENT`, `# FILES`, `# EXAMPLES`, `# NOTES`, `# SEE ALSO`. Commands (sections 1 and 8) need SYNOPSIS and DESCRIPTION; every page needs DESCRIPTION.
+@ ## Subheading
+    A subheading inside a section.
+@ Paragraphs
+    Lines of text that are not indented, up to a blank line, are joined and wrapped to the width of the screen.
+@ Verbatim text
+    A block of lines indented by four or more spaces is shown as it is, indented, without wrapping: examples and tables go here.
+@ - bullets
+    A line starting with `- ` begins a bullet; the following lines of the same paragraph go with it.
+@ ; comments
+    A line starting with a semicolon is ignored.
+
+In a SYNOPSIS section every line stays a line of its own instead of being joined into a paragraph; a blank line between two of them leaves a gap.
+
+# DEFINITION ITEMS
+`@ term` at the start of a line begins an item, used for options, keys, variables and the like. Its description follows, indented by four spaces; a longer indentation (eight spaces) inside the description is a verbatim block. The item ends at the first line that is not indented. A short term (up to six columns) shares its line with the beginning of the description:
+
+    @ *-n*
+        Do not print the trailing newline.
+
+# MARKUP INSIDE TEXT
+    *bold*         commands, options and literal text
+    _underline_    arguments the reader replaces (underlined, in cyan)
+    `literal`      bold; nothing inside it is special: `*.c`, `$HOME`
+    \c             the next character, taken literally (\*, \_, \\)
+
+A `*` or `_` starts a span only at the start of a word and ends it at the end of a word, so `snake_case` and `2 * 3` are safe; if a pair of marks would be taken for markup by accident, put a backslash in front of one of them or use a literal span.
+
+# CHECKING
+`patchouli --check-all` reads every page, reports mistakes (a missing header, an unknown directive, a tab character, an unmatched backquote, an item without a description, a `NAME(N)` in SEE ALSO that does not name a page) and exits with status 1 if there were any. `patchouli --check FILE` checks single files. New pages are picked up as soon as they are installed in the initrd.
+
+# A SMALL PAGE
+    .page frob 1 turn the frob
+    # SYNOPSIS
+    *frob* [*-v*] _FILE_
+    # DESCRIPTION
+    `frob` turns _FILE_ one notch.
+    # OPTIONS
+    @ *-v*
+        Say how far.
+    # SEE ALSO
+    cat(1)
+
+# SEE ALSO
+patchouli(1), gensokyo(7)

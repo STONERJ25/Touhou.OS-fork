@@ -1,0 +1,15 @@
+.page trap 1 run a command when the shell exits
+
+# SYNOPSIS
+*trap* _COMMAND_ *EXIT*
+*trap* '' _SIGNAL_...
+
+# DESCRIPTION
+`trap` is a gapsh builtin. `trap 'COMMANDS' EXIT` (or `0`) arranges for _COMMANDS_ to be run when the shell exits; `trap - EXIT` removes it. For signals only two things are supported: `trap '' SIGNAL` ignores the signal, and any other command restores its default action. The signal can be given as a number or a name with or without `SIG`.
+
+# EXAMPLES
+    trap 'rm -f /tmp/work.$$' EXIT
+    trap '' INT
+
+# SEE ALSO
+exit(1), kill(1)

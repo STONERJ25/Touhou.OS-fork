@@ -1,0 +1,17 @@
+.page group 5 the group database
+
+# DESCRIPTION
+`/Hakurei/etc/group` lists the groups, one per line, in four fields separated by colons:
+
+    name:password:gid:member,member,...
+
+The members are the users who belong to the group in addition to their primary group, which is given by the fourth field of passwd(5). The shipped file has a group for each of the three residents and the shared group `shrine`:
+
+    root:x:0:root
+    reimu:x:1000:reimu
+    marisa:x:1001:marisa
+    sakuya:x:1002:sakuya
+    shrine:x:100:reimu,marisa,sakuya
+
+# SEE ALSO
+passwd(5), id(1), groups(1)

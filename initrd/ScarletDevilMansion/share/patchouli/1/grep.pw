@@ -1,0 +1,96 @@
+.page grep 1 print lines that match a pattern
+
+# SYNOPSIS
+*grep* [_OPTION_...] _PATTERN_ [_FILE_...]
+*grep* [_OPTION_...] *-e* _PATTERN_ ... [*-f* _PATFILE_] [_FILE_...]
+
+# DESCRIPTION
+`grep` reads each _FILE_ (standard input if there is none, or for the name `-`) and prints the lines that match _PATTERN_. By default the pattern is a basic regular expression (see regex(7)). With more than one file, or with `-r`, each line is preceded by the file name.
+
+A file whose first 512 bytes contain a NUL byte is binary: instead of printing matching lines `grep` prints `Binary file NAME matches`, unless `-a` is given. A pipe is checked line by line.
+
+# PATTERN OPTIONS
+@ *-E*, *--extended-regexp*
+    The pattern is an extended regular expression (`|`, `+`, `?`, `{}` and `()` are operators). `-P` is treated the same way.
+@ *-F*, *--fixed-strings*
+    The pattern is a plain string, or several plain strings, one to a line.
+@ *-G*
+    Basic regular expressions: the default.
+@ *-e* _PATTERN_, *--regexp*=_PATTERN_
+    Use _PATTERN_; may be repeated, and a line matching any one of them is selected. Useful when the pattern starts with a dash.
+@ *-f* _FILE_, *--file*=_FILE_
+    Read patterns from _FILE_, one per line.
+@ *-i*, *-y*, *--ignore-case*
+    Ignore case.
+@ *-v*, *--invert-match*
+    Select the lines that do not match.
+@ *-w*, *--word-regexp*
+    The match must be a whole word: not preceded or followed by a letter, digit or underscore.
+@ *-x*, *--line-regexp*
+    The match must be the whole line.
+
+# OUTPUT OPTIONS
+@ *-c*, *--count*
+    Print only the number of selected lines for each file.
+@ *-l*, *--files-with-matches*
+    Print only the names of files that have a match.
+@ *-L*, *--files-without-match*
+    Print only the names of files that have none.
+@ *-o*, *--only-matching*
+    Print only the matched parts, one per line.
+@ *-q*, *--quiet*, *--silent*
+    Print nothing; exit 0 as soon as a line is selected.
+@ *-s*, *--no-messages*
+    Do not complain about files that cannot be read.
+@ *-m* _NUM_, *--max-count*=_NUM_
+    Stop reading a file after _NUM_ selected lines.
+@ *-n*, *--line-number*
+    Put the line number in front of each line.
+@ *-b*, *--byte-offset*
+    Put the byte offset of each line (or, with `-o`, of each match) in front of it.
+@ *-H*, *--with-filename*
+    Always print the file name.
+@ *-h*, *--no-filename*
+    Never print the file name.
+@ *-Z*, *--null*
+    Follow a file name by a NUL byte instead of the usual colon or newline.
+@ *--color*[=_WHEN_]
+    Mark the matches in colour (bold red; file names magenta, line numbers green). _WHEN_ is `always`, `auto` (only on a terminal) or `never`. Without a value it means `always`. The profile of every login shell defines `alias grep='grep --color=auto'`.
+
+# CONTEXT
+@ *-A* _N_, *--after-context*=_N_
+    Print _N_ lines after each match.
+@ *-B* _N_, *--before-context*=_N_
+    Print _N_ lines before each match.
+@ *-C* _N_, *--context*=_N_, *-*_N_
+    Print _N_ lines on both sides. Groups that are not adjacent are separated by a line of `--`. Context lines are marked with `-` instead of `:` after the file name and line number.
+
+# FILE SELECTION
+@ *-r*, *--recursive*
+    Read all files under each directory (the current directory if none is named). Symbolic links met while descending are not followed.
+@ *-R*, *--dereference-recursive*
+    The same, following symbolic links.
+@ *--include*=_GLOB_
+    Search only files whose base name matches _GLOB_ (`*` and `?` only).
+@ *--exclude*=_GLOB_
+    Skip files whose base name matches _GLOB_.
+@ *--exclude-dir*=_GLOB_
+    Skip directories whose base name matches _GLOB_.
+@ *-a*, *--text*
+    Treat binary files as text.
+@ *-I*
+    Accepted for compatibility.
+
+# EXIT STATUS
+0 when a line was selected, 1 when none was, 2 when there was an error (unless `-q` found a match).
+
+# EXAMPLES
+    grep reimu /Hakurei/etc/passwd
+    grep -rn "TODO" /HumanVillage/reimu
+    ps | grep -v grep | grep gapsh
+    grep -c . notes.txt
+    grep -E 'cat|dog' pets.txt
+    dmesg | grep -i -A2 usb
+
+# SEE ALSO
+egrep(1), fgrep(1), sed(1), find(1), regex(7)

@@ -1,0 +1,91 @@
+.page find 1 search for files in a directory tree
+
+# SYNOPSIS
+*find* [*-L*] [_PATH_...] [_EXPRESSION_]
+
+# DESCRIPTION
+`find` walks each _PATH_ (the current directory if none is given) and evaluates _EXPRESSION_ for every file it meets. The expression is made of tests, actions and operators. If it contains no action, `-print` is added, so `find /Hakurei` simply lists everything below `/Hakurei`.
+
+Arguments that start with `-`, `(` or `!` begin the expression; everything before them is a starting path. The leading options `-L`, `-H` and `-P` are accepted; `-L` makes `find` follow symbolic links.
+
+# OPERATORS
+Listed from the highest precedence to the lowest.
+
+    ( EXPR )            grouping (quote the parentheses from the shell)
+    ! EXPR   -not       true if EXPR is false
+    EXPR EXPR   -a   -and
+                        true if both are; juxtaposition means -a
+    EXPR -o EXPR   -or  true if either is
+    EXPR , EXPR         evaluate both, the value is the second
+
+# TESTS
+A number _N_ written `+`_N_ means more than _N_, `-`_N_ less than _N_, and _N_ exactly _N_.
+
+@ *-name* _GLOB_, *-iname* _GLOB_
+    The base name matches the shell pattern (`iname` ignores case).
+@ *-path* _GLOB_, *-ipath* _GLOB_
+    The whole path matches the pattern. `-wholename` is a synonym of `-path`.
+@ *-regex* _RE_
+    The whole path matches the basic regular expression somewhere.
+@ *-type* _C_
+    The file type: `f` regular file, `d` directory, `l` symbolic link, `c` or `b` device, `p` named pipe. Several letters are alternatives.
+@ *-size* _N_[*ckMGw*]
+    Size, rounded up to units of 512 bytes, or `c` bytes, `k` KiB, `M` MiB, `G` GiB, `w` two-byte words.
+@ *-mtime* _N_, *-atime* _N_, *-ctime* _N_
+    Modified / accessed / changed _N_ days ago (whole days).
+@ *-mmin* _N_
+    Modified _N_ minutes ago.
+@ *-newer* _FILE_
+    Modified more recently than _FILE_.
+@ *-user* _NAME_, *-group* _NAME_, *-uid* _N_, *-gid* _N_
+    Owned by a user or group.
+@ *-perm* _MODE_, *-perm* *-*_MODE_, *-perm* */*_MODE_
+    The permission bits are exactly the octal _MODE_ / include all of its bits / include any of its bits.
+@ *-links* _N_, *-inum* _N_
+    Number of links; inode number.
+@ *-empty*
+    An empty regular file or directory.
+@ *-readable*, *-writable*, *-executable*
+    The calling user may read, write or execute the file.
+@ *-true*, *-false*
+    Always true / always false.
+
+# ACTIONS AND OPTIONS
+@ *-print*, *-print0*
+    Print the path followed by a newline / by a NUL byte.
+@ *-printf* _FORMAT_
+    Print _FORMAT_. Escapes: `\n`, `\t`, `\0`, `\\`. Directives: `%p` path, `%f` base name, `%h` directory part, `%s` size in bytes, `%m` permissions in octal, `%u` user, `%g` group, `%d` depth, `%i` inode, `%t` and `%T` modification time in seconds, `%y` type letter, `%%`.
+@ *-ls*
+    List the file in a long format.
+@ *-delete*
+    Delete the file (and implies `-depth`). Directories must be empty.
+@ *-prune*
+    Do not descend into this directory.
+@ *-quit*
+    Stop at once.
+@ *-exec* _COMMAND_ *{}* *;*
+    Run _COMMAND_ with `{}` replaced by the path; true if it exits 0. The `;` must be quoted from the shell.
+@ *-exec* _COMMAND_ *{}* *+*
+    Collect the paths and run _COMMAND_ once with many of them at the end of the arguments.
+@ *-ok* _COMMAND_ *{}* *;*
+    Like `-exec`, but ask for confirmation on standard error first. `-execdir` is accepted as a synonym of `-exec`.
+@ *-maxdepth* _N_, *-mindepth* _N_
+    Do not go deeper than, or act above, level _N_ (0 is a starting path).
+@ *-depth*
+    Process a directory's contents before the directory.
+@ *-xdev*, *-mount*, *-noleaf*
+    Accepted and ignored.
+
+# EXIT STATUS
+0, or 1 if a path could not be read or a command failed.
+
+# EXAMPLES
+    find /Hakurei -name '*.conf'
+    find . -type f -size +100k
+    find /BambooForest -mmin -10 -type f
+    find . -name '*.o' -delete
+    find . -type f -exec grep -l reimu {} +
+    find . -path ./build -prune -o -name '*.c' -print
+
+# SEE ALSO
+xargs(1), ls(1), grep(1), stat(1)

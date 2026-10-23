@@ -1,0 +1,14 @@
+.page rev 1 reverse the characters of each line
+
+# SYNOPSIS
+*rev* [_FILE_...]
+
+# DESCRIPTION
+`rev` writes each line of its input backwards. It understands UTF-8: a multibyte character is kept whole. Standard input is read when no file is given.
+
+# EXAMPLES
+    echo abc | rev
+    echo "reimu" | rev
+
+# SEE ALSO
+tac(1), tr(1)

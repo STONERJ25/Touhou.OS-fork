@@ -1,0 +1,10 @@
+.page sync 1 flush filesystem buffers
+
+# SYNOPSIS
+*sync*
+
+# DESCRIPTION
+`sync` asks the kernel to write pending changes to the storage devices.
+
+# SEE ALSO
+dd(1), mount(8)

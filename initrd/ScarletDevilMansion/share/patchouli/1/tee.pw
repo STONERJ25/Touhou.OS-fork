@@ -1,0 +1,22 @@
+.page tee 1 copy input to files and to output
+
+# SYNOPSIS
+*tee* [*-ai*] [_FILE_...]
+
+# DESCRIPTION
+`tee` copies standard input to standard output and also to each _FILE_, which is created or truncated. It is the plumber's T-joint: use it to look at a pipeline while saving what flows through it.
+
+# OPTIONS
+@ *-a*
+    Append to the files instead of truncating them.
+@ *-i*
+    Accepted for compatibility; it changes nothing.
+
+If a file cannot be opened a message is printed and the exit status will be 1, but the copying goes on to the remaining outputs.
+
+# EXAMPLES
+    dmesg | tee /tmp/boot.log | grep -i usb
+    echo "new line" | tee -a notes.txt
+
+# SEE ALSO
+cat(1), gapsh-language(7)

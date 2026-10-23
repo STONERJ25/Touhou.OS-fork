@@ -1,0 +1,16 @@
+.page fortune 1 draw a random shrine fortune slip
+
+# SYNOPSIS
+*fortune* [*-ak*]
+
+# DESCRIPTION
+`fortune` is omikuji(1) with `-r`: every call draws a fresh slip at random, where `omikuji` gives the same slip all day. Output is boxed and coloured on a terminal and plain text in a pipe.
+
+# OPTIONS
+@ *-a*
+    Plain ASCII, no box drawing.
+@ *-k*
+    Add the kanji for the rank and for the headings (for terminals whose font has them).
+
+# SEE ALSO
+omikuji(1)

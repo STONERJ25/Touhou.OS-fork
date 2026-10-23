@@ -1,0 +1,27 @@
+.page gapsh-builtins 7 the builtin commands of gapsh
+
+# DESCRIPTION
+Builtins run inside the shell itself. A few of them (`echo`, `true`, `false`, `kill`) also exist as separate programs in `/bin`; the builtin is used when a name is typed. `type NAME` tells which is which. A function or alias of the same name hides a builtin; `command NAME` runs the builtin or program regardless.
+
+# THE BUILTINS
+    :  true  false            do nothing; succeed; fail
+    echo  printf              write text
+    cd  pwd  pushd  popd  dirs
+                              directories
+    exit  return  break  continue
+                              leave things
+    export  readonly  unset  local  set  shift
+                              variables and arguments
+    alias  unalias  type  command
+                              names and how they resolve
+    source  .  eval  exec     run code
+    read                      read a line
+    test  [                   conditions
+    jobs  fg  bg  wait  kill  processes
+    trap                      run something at exit; ignore signals
+    history  umask  ulimit  getopts  help
+
+Each has a page of its own, for example `patchouli cd`.
+
+# SEE ALSO
+gapsh(1), gapsh-language(7)

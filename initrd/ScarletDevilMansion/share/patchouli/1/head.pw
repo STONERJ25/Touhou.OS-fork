@@ -1,0 +1,33 @@
+.page head 1 write the first part of files
+
+# SYNOPSIS
+*head* [*-qv*] [*-n* _N_ | *-c* _N_ | *-*_N_] [_FILE_...]
+
+# DESCRIPTION
+`head` writes the first ten lines of each _FILE_ to standard output. Without a file, or for the file name `-`, it reads standard input. When several files are given each one is introduced by a line `==> NAME <==`.
+
+# OPTIONS
+@ *-n* _N_
+    Write the first _N_ lines. If _N_ is negative, write everything except the last _N_ lines.
+@ *-c* _N_
+    Write the first _N_ bytes instead of lines.
+@ *-*_N_
+    A shorthand for `-n` _N_ (`head -5`).
+@ *-q*
+    Never write the `==> NAME <==` headers.
+@ *-v*
+    Always write them, even for a single file.
+
+A count may end in `k` or `K` (times 1024), `m` or `M` (times 1048576) or `b` (times 512).
+
+# EXAMPLES
+    head -3 /Hakurei/etc/passwd
+    ls -l /bin | head -n 20
+    head -c 16 /dev/random | xxd
+    head -n -1 notes.txt
+
+# EXIT STATUS
+0, or 1 for a bad option or count. A file that cannot be opened is reported and the exit status is 1.
+
+# SEE ALSO
+tail(1), cat(1), sed(1)

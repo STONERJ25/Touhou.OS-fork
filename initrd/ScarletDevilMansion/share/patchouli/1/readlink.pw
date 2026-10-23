@@ -1,0 +1,14 @@
+.page readlink 1 print where a symbolic link points
+
+# SYNOPSIS
+*readlink* _LINK_...
+
+# DESCRIPTION
+`readlink` prints the target of each symbolic link. Something that is not a link produces no output and makes the exit status 1. Words that start with a dash are ignored.
+
+# EXAMPLES
+    readlink /usr
+    readlink /etc
+
+# SEE ALSO
+ln(1), realpath(1), ls(1)

@@ -1,0 +1,34 @@
+.page wc 1 count lines, words, characters and bytes
+
+# SYNOPSIS
+*wc* [*-lwcmL*] [_FILE_...]
+
+# DESCRIPTION
+`wc` counts what is in each _FILE_ (standard input if there is none) and prints one line per file. With more than one file a `total` line follows. Without options it prints lines, words and bytes. The numbers always come in the order lines, words, characters, bytes, longest line.
+
+A word is a run of characters that are not white space.
+
+# OPTIONS
+@ *-l*
+    The number of lines (newline characters).
+@ *-w*
+    The number of words.
+@ *-c*
+    The number of bytes.
+@ *-m*
+    The number of characters. A UTF-8 character that takes several bytes counts once.
+@ *-L*
+    The length of the longest line; a tab counts as moving to the next multiple of eight.
+
+When exactly one count is requested for one file only the bare number is printed.
+
+# EXAMPLES
+    wc -l /Hakurei/etc/passwd
+    ls /bin | wc -l
+    echo "naïve" | wc -m -c
+
+# EXIT STATUS
+0, or 1 if a file could not be read.
+
+# SEE ALSO
+cat(1), head(1), grep(1)

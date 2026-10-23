@@ -1,0 +1,10 @@
+.page reboot 8 restart the machine
+
+# SYNOPSIS
+*reboot*
+
+# DESCRIPTION
+`reboot` flushes the filesystems, says `The Hakurei barrier is resetting...` and asks the kernel to restart the machine. Arguments are ignored.
+
+# SEE ALSO
+poweroff(8), shutdown(8), sync(1)

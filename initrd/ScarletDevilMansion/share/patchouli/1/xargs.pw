@@ -1,0 +1,31 @@
+.page xargs 1 build and run commands from standard input
+
+# SYNOPSIS
+*xargs* [*-0rt*] [*-n* _N_] [*-I* _STR_] [_COMMAND_ [_ARGUMENT_...]]
+
+# DESCRIPTION
+`xargs` reads words from standard input and runs _COMMAND_ (`echo` if none is given) with those words added to its arguments. Words are separated by white space; single quotes, double quotes and backslashes can protect white space inside a word. If there are more words than fit in one run, or `-n` limits them, the command is run several times.
+
+# OPTIONS
+@ *-n* _N_
+    Use at most _N_ words per command.
+@ *-I* _STR_
+    Run the command once per input line, replacing _STR_ in the arguments by that whole line (spaces included). Implies `-n 1`.
+@ *-0*
+    Words are separated by NUL bytes, as written by `find -print0`; nothing else is special.
+@ *-t*
+    Print each command line on standard error before running it.
+@ *-r*
+    Do not run the command at all when the input is empty.
+
+# EXIT STATUS
+0 when every run succeeded, 123 when some run exited with a nonzero status, 127 when the command was not found, 126 when it could not be started.
+
+# EXAMPLES
+    ls /bin | xargs echo
+    echo a b c | xargs -n1 echo
+    printf 'x\ny\n' | xargs -I{} echo got-{}
+    find . -name '*.tmp' -print0 | xargs -0 rm
+
+# SEE ALSO
+find(1), echo(1)
