@@ -66,7 +66,7 @@ machines (the kernel log tag is `[Yukari]`). Everything is IPv4, plain HTTP, and
   discovery.
 * **IP**: header checksums, TTL, longest-prefix routing (connected routes, default gateway, anything added by hand), output
   fragmentation, reassembly of up to four 16 KiB datagrams at a time with a 30 s timeout (overlap-safe), limited and directed
-  broadcast. A host, not a router: packets for other addresses are dropped. ICMP: echo reply, destination unreachable, errors
+  broadcast. ARP keeps up to two packets per unresolved neighbour and asks three times, a second apart; when nobody answers, the TCP connect or connected UDP socket that was waiting fails with `EHOSTUNREACH` ("No route to host") instead of timing out after a minute. A host, not a router: packets for other addresses are dropped. ICMP: echo reply, destination unreachable, errors
   delivered to the sockets they belong to, everything rate limited (200 messages per second).
 * **Addresses and ports are host byte order inside the kernel**, network order only in headers and in `sockaddr_in`.
 * **Checksums** are summed as little-endian words and folded; the inverted sum is stored with a native 16-bit write (the
@@ -125,16 +125,17 @@ The "internet" of the QEMU tests is a set of Python servers on the host's loopba
 
 | Test | What it proves |
 |------|----------------|
-| `net_loopback` | in-guest `nettest`, no NIC: UDP incl. a 6000-byte fragmented datagram and ICMP port-unreachable refusal, TCP echo, a 5 MiB transfer with checksum between two processes, refused connections, non-blocking connect/accept with `poll`, orderly and abortive close (EPIPE, ECONNRESET), half-close, 24 simultaneous connections, socket options and timeouts, ping through an ICMP socket |
+| `net_loopback` | in-guest `nettest`, no NIC: UDP incl. a 6000-byte fragmented datagram and ICMP port-unreachable refusal, TCP echo, a 5 MiB transfer with checksum between two processes, refused connections, non-blocking connect/accept with `poll`, orderly and abortive close (EPIPE, ECONNRESET), half-close, 24 simultaneous connections, socket options and timeouts, ping through an ICMP socket, a listen backlog of 2 holding back 5 connects, UDP broadcast with `SO_BROADCAST`, a 700 KB transfer to a reader that sleeps (the window closes and reopens); afterwards no packet buffer may be left over |
 | `net_robust` | 3000 malformed frames through `/proc/net/inject` (truncated headers, bad checksums, absurd lengths, odd fragments, bogus TCP options and flags): the counters show they were rejected and the stack still works |
 | `net_loss` | a 400 KB TCP transfer over a loopback that drops 5%, duplicates 3% and reorders 5% of the frames arrives intact |
-| `net_names_local` | no NIC: `/etc/hosts` through `getaddrinfo`, `ifconfig`/`ip`/`route`/`netstat` on `lo` |
+| `net_names_local` | no NIC: `/etc/hosts` through `getaddrinfo`, `ifconfig`/`ip`/`route`/`netstat` on `lo`, the `/proc/net` listing, `nc` listening and connecting over TCP and UDP |
 | `net_nic_virtio`, `_virtio_modern`, `_e1000`, `_e1000e`, `_rtl8139`, `_e1000e_pch` | each card: found, DHCP lease with gateway and DNS, the gateway answers ping, ARP and `/proc/net/dev` fill in |
-| `net_tcp_host` | `nc` to a Python echo server on the host through 10.0.2.2, half-close included |
+| `net_tcp_host` | `nc` to a Python echo server on the host through 10.0.2.2, half-close included; a refused port; an unanswered ARP (10.0.2.77) ends in "No route to host" after about three seconds |
 | `net_fetch_host` | `fetch`/`wget` against a Python HTTP server: redirects, chunked body, 200 KB with an md5 check, a 404 |
 | `net_httpd_hostfwd` | the guest's `httpd` answers requests that enter through QEMU's `hostfwd` |
 | `net_dns_host` | `nslookup`/`host` (A, CNAME, MX, TXT, NS, PTR, NXDOMAIN), the search list, and getaddrinfo through a CNAME for `ping` and `fetch`, against a Python DNS responder |
 | `net_sntp_host` | `sntp`/`ntpdate` against a Python NTP responder two hours ahead: offset measured, clock stepped by root, refused for others |
+| `net_link_e1000`, `_virtio`, `_rtl8139` | QEMU's `set_link` pulls and re-plugs the cable: the link goes down without hanging anything, plugging in again brings a new DHCP lease and a working network |
 | `net_ifconfig_set` | root changes address, mask, MTU, routes and neighbours with `ifconfig`, `ip` and `route` |
 
 The guest clock can run several times slower than wall time, so no test sleeps and then expects an effect: they wait for

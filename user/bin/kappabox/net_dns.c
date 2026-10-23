@@ -115,10 +115,8 @@ static int lookup(int host_style, const char *name, int qtype, const char *serve
         printf("Server:\t\t%s\nAddress:\t%s#%u\n\n", nu_ip(ntohl(servers[used].sin_addr.s_addr)), nu_ip(ntohl(servers[used].sin_addr.s_addr)), ntohs(servers[used].sin_port));
     }
     Printer p = { host_style, 0 };
-    int fail_lines = 0;
     if (!host_style) printf("Non-authoritative answer:\n");
     int rcode = gap_dns_walk(ans, n, rr_print, &p);
-    (void)fail_lines;
     if (rcode < 0) { printf("%s: malformed answer from the name server\n", host_style ? "Host" : "** server"); return 1; }
     if (rcode == 3) {
         if (host_style) printf("Host %s not found: 3(NXDOMAIN)\n", name); else printf("** server can't find %s: NXDOMAIN\n", name);
@@ -173,10 +171,5 @@ APPLET(host) {
     const char *server = i + 1 < argc ? argv[i + 1] : NULL;
     uint32_t lit;
     if (type < 0) type = (nu_parse_cidr(name, &lit, NULL) && strchr(name, '.')) ? DNS_PTR : DNS_A;
-    int rc = lookup(1, name, type, server, 0);
-    if (rc == 0 && type == DNS_A) {                          /* host also shows MX records for a plain lookup */
-        Printer none = { 1, 0 };
-        (void)none;
-    }
-    return rc;
+    return lookup(1, name, type, server, 0);
 }

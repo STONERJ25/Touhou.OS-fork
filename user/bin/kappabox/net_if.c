@@ -98,6 +98,7 @@ APPLET(ifconfig) {
             if (prefix >= 0) mask = nu_prefix_mask(prefix);
         }
     }
+    if (!have_addr && mask && cur->addr) { addr = cur->addr; have_addr = 1; }                  /* "ifconfig eth0 netmask M" keeps the address */
     if (have_addr && !mask) mask = (addr >> 24) < 128 ? 0xFF000000u : (addr >> 24) < 192 ? 0xFFFF0000u : 0xFFFFFF00u;
     if (want_dhcp) {
         struct gnet_if r;

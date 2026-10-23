@@ -30,7 +30,8 @@ are what is left, roughly in the order they matter.
 - [x] accounts, passwords, sudo, seats, sticky directories
 - [x] real-hardware preparation: boot-from-stick image, read-only-disks switch, USB boot path tested in QEMU
 - [ ] USB mass storage, so `/HumanVillage` can live on the stick the OS booted from (docs/NEXT.md has the full brief)
-- [ ] networking: NICs (virtio, e1000/e1000e, rtl8139/8168), ARP/IP/UDP/TCP, DHCP/DNS, tools (in progress on a branch)
+- [x] networking: NICs (virtio, e1000/e1000e, rtl8139 tested in QEMU; I217-I219 and rtl8168 written but never run on hardware), ARP/IP/UDP/TCP, DHCP/DNS, tools (docs/NETWORK.md)
+- [ ] networking, next: try the I219 / RTL8168 drivers on the real PC; IPv6, TLS, SACK, a Kappa network panel
 - [ ] audio: Intel HDA / AC97, mixer, jukebox (in progress on a branch)
 - [ ] threads (clone, futex, pthreads) (in progress on a branch)
 - [ ] gzip/tar/zip, PNG/JPEG/GIF decoders, image viewer (in progress on a branch)

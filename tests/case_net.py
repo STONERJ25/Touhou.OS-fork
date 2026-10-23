@@ -77,10 +77,21 @@ def nettest(name="", timeout=240, root=False, setup=()):
 @test
 def net_loopback():
     """loopback with no NIC: UDP (fragments, refusals), TCP echo, 5 MB bulk transfer, refused, non-blocking, close, half-close, many sockets, options, ping"""
-    out = nettest()
-    for check in ("udp", "tcp", "bulk", "refused", "nonblock", "close", "half", "many", "opts", "ping"):
-        assert re.search(rf"ok\s+{check}\b", out), f"{check} did not pass:\n{out[-1500:]}"
-    assert re.search(r"bulk: 5242880 bytes, checksum [0-9a-f]{8} ok", out), out[-800:]
+    with Guest("t-net-all") as g:
+        out, rc = g.run("nettest", timeout=360)
+        assert "NETTEST PASS" in out and rc == 0, f"nettest failed (exit {rc}):\n{out[-1800:]}"
+        for check in ("udp", "tcp", "bulk", "refused", "nonblock", "close", "half", "many", "opts", "ping", "backlog", "bcast", "stall"):
+            assert re.search(rf"ok\s+{check}\b", out), f"{check} did not pass:\n{out[-1500:]}"
+        assert re.search(r"bulk: 5242880 bytes, checksum [0-9a-f]{8} ok", out), out[-800:]
+        # no packet buffer may stay behind once the traffic is over (they would show here as a count that never goes down)
+        buffers = None
+        for _ in range(20):
+            tune = g.out("cat /proc/net/tune")
+            buffers = int(re.search(r"buffers (\d+)", tune).group(1))
+            if buffers <= 4:
+                break
+            time.sleep(1)
+        assert buffers <= 4, f"{buffers} packet buffers are still in use after the tests:\n{tune}"
 
 
 @test
@@ -123,6 +134,14 @@ def net_names_local():
         assert "no name server is configured" in out, out                  # no DHCP without a NIC: nothing to ask
         out, rc = g.run("ping -c 1 no.such.host.invalid")
         assert rc != 0, out
+        out, rc = g.run("ls /proc/net")
+        assert all(name in out.split() for name in ("dev", "route", "arp", "tcp", "udp", "tune", "inject")), out
+        # nc on both ends over the loopback: a listener writes what it receives into a file (the client retries until it is up)
+        g.run("nc -l -w 3 -p 9100 < /dev/null > /tmp/nc.out &")             # stdin must not be the console: a background job would steal the keys
+        out, rc = g.run("for i in 1 2 3 4 5 6 7 8 9 10; do echo hello-through-nc | nc -w 5 127.0.0.1 9100 && break; sleep 1; done; wait; cat /tmp/nc.out", timeout=180)
+        assert "hello-through-nc" in out, out
+        out, rc = g.run("nc -u -l -w 3 -p 9101 < /dev/null > /tmp/ncu.out & sleep 1; echo udp-through-nc | nc -u -w 2 127.0.0.1 9101; wait; cat /tmp/ncu.out", timeout=180)
+        assert "udp-through-nc" in out, out
 
 
 # ------------------------------------------------------------------------------------------------------------ the cards
@@ -151,6 +170,7 @@ def nic_case(model, label, driver, cmdline=""):
 nic_case("virtio-net-pci", "virtio", r"virtio-net\(l\)")
 nic_case("virtio-net-pci,disable-legacy=on", "virtio_modern", "virtio-net")
 nic_case("e1000", "e1000", "e1000")
+nic_case("e1000-82545em", "e1000_82545em", "e1000")
 nic_case("e1000e", "e1000e", "e1000e")
 nic_case("rtl8139", "rtl8139", "rtl8139")
 nic_case("e1000e", "e1000e_pch", r"e1000e\(pch\)", cmdline="e1000.pch")      # QEMU's 82574L driven down the PCH code path (ME, PHY semaphore, errata)
@@ -234,6 +254,8 @@ def net_tcp_host():
             assert "succeeded" in out and "rc=0" in out, out
             out, rc = g.run("nc -z -v -w 3 10.0.2.2 1; echo rc=$?", timeout=180)
             assert "rc=1" in out, out                                  # the host refuses
+            out, rc = g.run("nc -z -v -w 60 10.0.2.77 80; echo rc=$?", timeout=240)
+            assert "No route to host" in out and "rc=1" in out, out    # nobody answers ARP for 10.0.2.77: EHOSTUNREACH after about three seconds
     finally:
         srv.shutdown()
 
@@ -463,3 +485,34 @@ def net_ifconfig_set():
     with Guest("t-net-ifset-user", net="e1000") as g:
         out, rc = g.run("ifconfig eth0 10.1.1.1; echo rc=$?")
         assert "rc=1" in out and "Operation not permitted" in out, out
+
+
+def link_case(model, label):
+    def run():
+        with Guest("t-net-link-" + label, net=model) as g:
+            vm = g.vm
+            out, rc = g.run("ifconfig eth0")
+            assert "RUNNING" in out, out
+            vm.qmp("set_link", name="net0", up=False)                   # the cable is pulled
+            deadline = time.time() + 120
+            while "link down" not in vm.text() and time.time() < deadline:
+                time.sleep(0.5)
+            assert "link down" in vm.text(), vm.text()[-800:]
+            out, rc = g.run("ifconfig eth0; ping -c 1 -W 2 10.0.2.2; echo rc=$?", timeout=120)     # nothing hangs, the ping simply fails
+            assert "RUNNING" not in out.split("PING")[0] and "rc=1" in out, out
+            lease_lines = len(re.findall(LEASE, vm.text()))
+            vm.qmp("set_link", name="net0", up=True)                    # and plugged in again: DHCP starts over by itself
+            deadline = time.time() + 180
+            while len(re.findall(LEASE, vm.text())) <= lease_lines and time.time() < deadline:
+                time.sleep(0.5)
+            assert len(re.findall(LEASE, vm.text())) > lease_lines, vm.text()[-1200:]
+            out, rc = g.run("ping -c 2 10.0.2.2", timeout=180)
+            assert rc == 0 and "2 received" in out, out
+    run.__name__ = f"net_link_{label}"
+    run.__doc__ = f"{model}: pulling the cable closes the gap without hanging anything; plugging it in again brings a new DHCP lease and a working network"
+    TESTS.append(run)
+
+
+link_case("e1000", "e1000")
+link_case("virtio-net-pci", "virtio")
+link_case("rtl8139", "rtl8139")

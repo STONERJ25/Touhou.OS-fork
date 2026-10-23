@@ -137,9 +137,9 @@ static int do_fetch(const char *start_url, const char *outname, int to_file_defa
         if (fd < 0) return 4;
         if (!o->quiet) fprintf(stderr, "connected.\n");
         char req[2048];
-        int rl = snprintf(req, sizeof req, "GET %s HTTP/1.1\r\nHost: %s%s\r\nUser-Agent: %s\r\nAccept: */*\r\nConnection: close\r\n", u.path, u.host,
-                          u.port == 80 ? "" : "", o->agent);
-        if (u.port != 80) rl = snprintf(req, sizeof req, "GET %s HTTP/1.1\r\nHost: %s:%u\r\nUser-Agent: %s\r\nAccept: */*\r\nConnection: close\r\n", u.path, u.host, u.port, o->agent);
+        char hostport[300];
+        if (u.port == 80) snprintf(hostport, sizeof hostport, "%s", u.host); else snprintf(hostport, sizeof hostport, "%s:%u", u.host, u.port);
+        int rl = snprintf(req, sizeof req, "GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\nAccept: */*\r\nConnection: close\r\n", u.path, hostport, o->agent);
         if (o->extra_header) rl += snprintf(req + rl, sizeof req - (size_t)rl, "%s\r\n", o->extra_header);
         rl += snprintf(req + rl, sizeof req - (size_t)rl, "\r\n");
         if (send_all(fd, req, (size_t)rl) < 0) { kb_error("sending the request failed: %s", strerror(errno)); close(fd); return 4; }
