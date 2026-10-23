@@ -107,8 +107,13 @@ framebuffer, serial output is available through `vm.text()`). A program's stdout
 ## Sound
 
 Programs make sound through libaudio (`#include <audio.h>`, linked automatically): `audio_open()` returns NULL when the machine
-has no sound device, and every program must cope with that. `audio_event(AUDIO_EV_DIALOG)` (also `AUDIO_EV_LOGIN`,
-`AUDIO_EV_ERROR`, `AUDIO_EV_SHUTDOWN`) plays one of the short system sounds and returns at once; it does nothing when the user
-has switched the system sounds off (`/etc/hakurei/sounds` or `$HAKUREI_SOUNDS`). Status: the functions work, but the shell,
-the greeter, the lock screen and the Kappa dialogs do not call them yet, and Reimu's Jukebox is not written. See
-[AUDIO.md](AUDIO.md) for the design and for what is done.
+has no sound device, and every program must cope with that (the Jukebox opens its window anyway and says so). The desktop's
+own sounds are one call each: `audio_event(AUDIO_EV_DIALOG)` (also `AUDIO_EV_LOGIN`, `AUDIO_EV_ERROR`, `AUDIO_EV_SHUTDOWN`)
+plays a short original sound and returns at once, `audio_event_wait()` returns when it has been heard (use it just before
+powering off); both do nothing when the user has switched the system sounds off (`/etc/hakurei/sounds`, `$HAKUREI_SOUNDS`,
+`nosounds` on the kernel command line). `hakurei-shell` plays the login bell when it opens, the Kappa dialogs ring (an error
+icon buzzes), the login screen and the lock screen buzz at a wrong password, and *Shut down* / *Restart* play the shutdown
+tune before the machine goes. The panel has a speaker in the tray (click: volume slider and Mute; wheel: volume; middle click:
+mute). Music is a Kappa application too: `jukebox` (*Reimu's Jukebox* in the menu), which feeds `/dev/audio` from the
+window's tick with a non-blocking stream; `user/bin/jukebox/` is a worked example of an immediate-mode window that draws its
+own widgets (stage, seek bar, playlist) next to the stock ones. See [AUDIO.md](AUDIO.md).
