@@ -435,6 +435,21 @@ def sketchbook_zoom_grid():
                 break
             s.move_to(*pic(320, 240))
         assert zoomed, "Ctrl+wheel should zoom to 200% around the pointer (a 2x2 pixel block stays under it)"
+        # dragging a tool past the edge of the view scrolls it: a pencil stroke dragged out to the right at 800% keeps growing
+        s.fg(S_BLACK, BLACK)
+        s.key("8")
+        s.key("p")
+        s.move_to(473, 400)
+        s.g.press()
+        s.move_to(810, 400)
+        s.move_to(830, 400)                             # outside the window
+        time.sleep(3.0)
+        s.g.release()
+        s.key("1")
+        time.sleep(0.5)
+        shot = s.screen()
+        reach = max((x - OX for y in range(OY + 238, OY + 252) for x in range(OX + 300, OX + 600) if s.is_near(shot, x, y, BLACK, 20)), default=0)
+        assert reach >= 420, f"the stroke should have grown far past the edge of the view while the pointer waited outside (reaches x = {reach}; without autoscroll it would stop near 365)"
 
 
 @test

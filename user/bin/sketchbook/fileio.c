@@ -352,7 +352,8 @@ const char *file_save(const char *path, const Doc *d) {
     int fmt = file_format_for(path);
     if (fmt == FMT_UNKNOWN) return fail("Sketchbook saves .bmp and .ppm pictures; please give the file one of those names");
     if (!d->px || d->w < 1 || d->h < 1) return fail("there is nothing to save");
-    char tmp[600];
+    char tmp[1130];
+    if (strlen(path) > 1100) return fail("the file name is too long");
     snprintf(tmp, sizeof tmp, "%s.sketch~", path);
     int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) return fail("cannot create the file: %s", strerror(errno));
