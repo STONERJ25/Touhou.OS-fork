@@ -40,6 +40,7 @@ void blk_selftest(const char *driver);          /* blk_selftest.c: optional in-k
 #define CAP_SSS    0x08000000u
 #define CAP_SCLO   0x01000000u
 #define CAP2_BOH   0x00000001u
+#define CAP2_SDS   0x00000008u
 
 #define GHC_HR     0x00000001u
 #define GHC_IE     0x00000002u
@@ -72,7 +73,11 @@ void blk_selftest(const char *driver);          /* blk_selftest.c: optional in-k
 #define CMD_FR     0x00004000u
 #define CMD_CR     0x00008000u
 #define CMD_CPD    0x00100000u
+#define CMD_ALPE   0x04000000u      /* aggressive link power management enable */
+#define CMD_ASP    0x08000000u      /* ... and its slumber/partial choice */
 #define CMD_ICC_MASK 0xF0000000u
+#define PX_DEVSLP  0x44
+#define DEVSLP_ADSE 0x00000001u     /* aggressive device sleep enable */
 
 #define IS_TFES    0x40000000u      /* task file error */
 #define IS_HBFS    0x20000000u      /* host bus fatal */
@@ -165,6 +170,9 @@ static u32  g_prd_len = AHCI_PRD_MAX_BYTES;     /* ahci.prdlen=N    bytes per PR
 static u32  g_prd_max = AHCI_MAX_PRD;           /* ahci.prdmax=N    PRDT entries per command */
 static bool g_force_bounce;                     /* ahci.bounce      copy every transfer through the bounce buffer */
 static bool g_force_hba_reset;                  /* ahci.hbareset    reset the HBA even though nothing is wrong */
+static u32  g_io_timeout = T_IO_MS;             /* ahci.iotimeout=N ms to wait for a read/write */
+static u32  g_drop_after;                       /* ahci.dropcmd=N   never issue the N-th read/write, so it times out for real */
+static u32  g_rw_count;
 
 #define PR(p, off)      mmio_r32((p)->regs, (off))
 #define PW(p, off, v)   mmio_w32((p)->regs, (off), (v))
@@ -207,6 +215,72 @@ static void ata_parse_identify(const u16 *id, AtaInfo *out) {
     if (cmdset_valid) out->flush_cmd = (id[83] & BIT(13)) ? ATA_FLUSH_EXT : (id[83] & BIT(12)) ? ATA_FLUSH : 0;
     out->ssd = id[217] == 1;
     out->locked = (id[128] & BIT(1)) && (id[128] & BIT(2));
+}
+
+/*
+ * "ahci.selftest" on the kernel command line feeds hand-made identify blocks through the parser. QEMU cannot present a
+ * 4Kn (4096-byte logical sector) SATA disk, and the real machine might, so this is where those words get checked.
+ */
+static void put_ata_string(u16 *id, int first, int nwords, const char *s) {
+    size_t len = strlen(s);
+    for (int i = 0; i < nwords; i++) {
+        char hi = (size_t)(2 * i) < len ? s[2 * i] : ' ';
+        char lo = (size_t)(2 * i + 1) < len ? s[2 * i + 1] : ' ';
+        id[first + i] = (u16)((u8)hi << 8 | (u8)lo);
+    }
+}
+
+static void ahci_identify_selftest(void) {
+    int bad = 0;
+    u16 id[256];
+    AtaInfo a;
+#define EXPECT(cond) do { if (!(cond)) { bad++; klog("Kappa", "ahci: identify selftest: %s failed (line %d)", #cond, __LINE__); } } while (0)
+
+    /* A 4Kn SSD with more than 2^32 sectors, ATA strings padded and in word order. */
+    memset(id, 0, sizeof id);
+    put_ata_string(id, 27, 20, "  TOUHOU 4KN TEST DISK");
+    put_ata_string(id, 10, 10, "SN-4KN-0001");
+    put_ata_string(id, 23, 4, "FW9.9");
+    id[49] = BIT(9);
+    id[83] = 0x4000 | BIT(10) | BIT(13);
+    id[86] = BIT(10);
+    id[100] = 0x5678; id[101] = 0x1234; id[102] = 0x0003;
+    id[106] = 0x4000 | BIT(12);
+    id[117] = 2048; id[118] = 0;                                        /* 2048 words = 4096 bytes */
+    id[217] = 1;
+    ata_parse_identify(id, &a);
+    EXPECT(!strcmp(a.model, "TOUHOU 4KN TEST DISK"));
+    EXPECT(!strcmp(a.serial, "SN-4KN-0001"));
+    EXPECT(!strcmp(a.firmware, "FW9.9"));
+    EXPECT(a.lba48 && a.sectors == 0x0000000312345678ull);
+    EXPECT(a.sector_size == 4096 && a.phys_shift == 0);
+    EXPECT(a.flush_cmd == ATA_FLUSH_EXT && a.ssd && !a.locked && !a.atapi);
+
+    /* 512e: 512-byte logical sectors on 4096-byte physical sectors (8 per physical). */
+    id[106] = 0x4000 | BIT(13) | 3;
+    id[117] = id[118] = 0;
+    id[83] = 0x4000 | BIT(10) | BIT(12);                                /* only the older FLUSH CACHE */
+    id[217] = 7200;
+    id[128] = BIT(1) | BIT(2);                                          /* security supported and locked */
+    ata_parse_identify(id, &a);
+    EXPECT(a.sector_size == 512 && a.phys_shift == 3);
+    EXPECT(a.flush_cmd == ATA_FLUSH && !a.ssd && a.locked);
+
+    /* A pre-LBA48 disk, and word 106 invalid (bit 14 clear) must be ignored. */
+    id[83] = 0x4000;
+    id[60] = 0xAAAA; id[61] = 0x0001;
+    id[106] = BIT(12);
+    id[117] = 4096;
+    ata_parse_identify(id, &a);
+    EXPECT(!a.lba48 && a.sectors == 0x1AAAA);
+    EXPECT(a.sector_size == 512 && a.flush_cmd == 0);
+
+    /* ATAPI. */
+    id[0] = 0x8500;
+    ata_parse_identify(id, &a);
+    EXPECT(a.atapi);
+#undef EXPECT
+    klog("Kappa", "ahci: identify selftest: %s", bad ? "FAIL" : "PASS");
 }
 
 /* ---------------------------------------------------------------- port engine control */
@@ -330,11 +404,13 @@ static int ahci_issue(AhciPort *p, const AtaCmd *c, u32 nprd, u32 timeout_ms) {
 
     PW(p, PX_IS, PR(p, PX_IS));                                    /* drop stale status so only this command's errors count */
     barrier();
-    PW(p, PX_CI, 1);
+    bool is_rw = c->cmd == ATA_READ_DMA_EXT || c->cmd == ATA_WRITE_DMA_EXT;
+    bool lost = is_rw && g_drop_after && ++g_rw_count == g_drop_after;         /* test knob: pretend this command vanished */
+    if (!lost) PW(p, PX_CI, 1);
     p->n_cmds++;
 
     u32 is = 0;
-    bool done = BLK_POLL(({ is = PR(p, PX_IS); (is & IS_ERRORS) || !(PR(p, PX_CI) & 1); }), timeout_ms);
+    bool done = BLK_POLL(({ is = PR(p, PX_IS); (is & IS_ERRORS) || (!lost && !(PR(p, PX_CI) & 1)); }), timeout_ms);
     u32 tfd = PR(p, PX_TFD);
 
     const char *why = NULL;
@@ -438,7 +514,7 @@ static int ahci_rw(AhciPort *p, u64 lba, u32 count, void *buf, bool write) {
             if (write) memcpy(p->bounce, cur, (size_t)n * ss);
         }
         AtaCmd c = { .cmd = write ? ATA_WRITE_DMA_EXT : ATA_READ_DMA_EXT, .device = 0x40, .lba = lba, .count = (u16)n, .write = write };
-        rc = ahci_issue(p, &c, nprd, T_IO_MS);
+        rc = ahci_issue(p, &c, nprd, g_io_timeout);
         if (rc) break;
         if (bounce && !write) memcpy(cur, p->bounce, (size_t)n * ss);
         cur += (size_t)n * ss;
@@ -495,12 +571,16 @@ static PortProbe port_detect(AhciPort *p) {
     PW(p, PX_IS, 0xFFFFFFFFu);
     PW(p, PX_IE, 0);
 
+    /* No aggressive link power management or device sleep: a link that never leaves "active" has no wake-up latency to get wrong. */
     u32 cmd = PR(p, PX_CMD);
     bool powered_before = (cmd & CMD_SUD) != 0;
-    if (!powered_before) {
-        if (cmd & CMD_CPD) cmd |= CMD_POD;
-        PW(p, PX_CMD, cmd | CMD_SUD);                                          /* spin the device up / power the PHY */
+    u32 want = cmd & ~(CMD_ALPE | CMD_ASP);
+    if (!powered_before) {                                                     /* spin the device up / power the PHY */
+        if (cmd & CMD_CPD) want |= CMD_POD;
+        want |= CMD_SUD;
     }
+    if (want != cmd) PW(p, PX_CMD, want);
+    if (p->hba->cap2 & CAP2_SDS) PW(p, PX_DEVSLP, PR(p, PX_DEVSLP) & ~DEVSLP_ADSE);
     u32 det = PR(p, PX_SSTS) & 0xF;
     if (det == 0 && !powered_before) {
         BLK_POLL((PR(p, PX_SSTS) & 0xF) != 0, 1000);                           /* give a device we just powered time to answer */
@@ -794,10 +874,13 @@ static void read_knobs(void) {
     if ((v = cmdline_int("ahci.prdmax", 0)) > 0) g_prd_max = (u32)MIN(v, (long)AHCI_MAX_PRD);
     g_force_bounce = cmdline_flag("ahci.bounce");
     g_force_hba_reset = cmdline_flag("ahci.hbareset");
+    if ((v = cmdline_int("ahci.iotimeout", 0)) > 0) g_io_timeout = (u32)v;
+    if ((v = cmdline_int("ahci.dropcmd", 0)) > 0) g_drop_after = (u32)v;
 }
 
 void ahci_init(void) {
     read_knobs();
+    if (cmdline_flag("ahci.selftest")) ahci_identify_selftest();
     for (PciDev *d = pci_find_class(0x01, 0x06, 0x01, NULL); d; d = pci_find_class(0x01, 0x06, 0x01, d))
         hba_probe(d);
     if (g_nhba) procfs_register("ahci", gen_proc_ahci);
