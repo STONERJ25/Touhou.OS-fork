@@ -688,6 +688,7 @@ typedef struct {
     bool ro, rw, force, userdirs, sync;
     bool have_umask;
     u32 uid, gid, fmask, dmask;
+    s32 tz_min;                                                 /* tzoffset=MINUTES: minutes east of UTC that the volume's local clock is ahead */
 } Opts;
 
 static u32 parse_num(const char *s, const char **end, int base) {
@@ -733,6 +734,15 @@ static int parse_opts(FatVol *v, const char *s, Opts *o) {
         else if (KEY("fmask") && eq) { o->fmask = parse_num(val, &end, 8) & 0777; if (*end) return -EINVAL; }
         else if (KEY("dmask") && eq) { o->dmask = parse_num(val, &end, 8) & 0777; if (*end) return -EINVAL; }
         else if (KEY("umask") && eq) { o->fmask = o->dmask = parse_num(val, &end, 8) & 0777; if (*end) return -EINVAL; }
+        else if (KEY("tzoffset") && eq) {                       /* FAT keeps local time: minutes east of UTC, e.g. -300 for EST, 540 for JST */
+            const char *q = val;
+            bool neg = false;
+            if (*q == '-') { neg = true; q++; }
+            else if (*q == '+') q++;
+            u32 minutes = parse_num(q, &end, 10);
+            if (end == q || *end || minutes > 24 * 60) return -EINVAL;
+            o->tz_min = neg ? -(s32)minutes : (s32)minutes;
+        }
         else if (KEY("usermap") && eq) {                         /* name:uid:gid/name:uid:gid */
             v->nusers = 0;
             const char *p = val;
@@ -892,6 +902,7 @@ static int fat_mount(const char *source, u32 flags, Mount *m) {
     v->uid = o.uid; v->gid = o.gid; v->fmask = o.fmask; v->dmask = o.dmask;
     v->userdirs = o.userdirs;
     v->sync_mode = o.sync;
+    v->tz_sec = o.tz_min * 60;
 
     u8 *bs = kmalloc(MAX(v->ds, 512u));
     const char *why = NULL;
@@ -991,9 +1002,11 @@ static int fat_mount(const char *source, u32 flags, Mount *m) {
     mutex_unlock(&g_vols_lock);
     start_flusher();
 
-    klog("Keine", "%s: %s mounted on %s, %lu MiB, %u-byte clusters, label '%s'%s%s%s", v->fstype, dev->name, m->target,
+    char tznote[40] = "";
+    if (v->tz_sec) snprintf(tznote, sizeof tznote, ", times are local (UTC%+d:%02d)", v->tz_sec / 3600, (v->tz_sec < 0 ? -v->tz_sec : v->tz_sec) % 3600 / 60);
+    klog("Keine", "%s: %s mounted on %s, %lu MiB, %u-byte clusters, label '%s'%s%s%s%s", v->fstype, dev->name, m->target,
          (unsigned long)(v->vol_bytes >> 20), v->cbytes, v->label[0] ? v->label : "", v->userdirs ? ", home directories per user" : "",
-         v->ro ? ", read-only" : "", note);
+         v->ro ? ", read-only" : "", tznote, note);
     return 0;
 }
 
@@ -1007,8 +1020,10 @@ static void fat_unmount(Mount *m) {
     mutex_lock(&v->lock);
     if (v->orphans) vol_reap(v);                                 /* free the clusters of files unlinked while open */
     v->dying = true;
-    int rc = vol_sync(v, true);
-    if (rc) klog("Keine", "%s: %s: could not write everything back to the device (%d) -- run a file system check", v->fstype, v->dev->name, rc);
+    bool gone = v->dev->removed;
+    int rc = gone ? 0 : vol_sync(v, true);
+    if (gone) klog("Keine", "%s: %s was dropped without a write-back: its device is gone (the volume stays dirty; run a file system check when it is back)", v->fstype, v->dev->name);
+    else if (rc) klog("Keine", "%s: %s: could not write everything back to the device (%d) -- run a file system check", v->fstype, v->dev->name, rc);
     else if (!v->ro) klog("Keine", "%s: %s unmounted cleanly", v->fstype, v->dev->name);
     if (v->label_set) v->dev->label[0] = 0;
     if (m->root) m->root->priv = NULL;                          /* the mount's own reference is dropped by the VFS afterwards */
@@ -1032,7 +1047,7 @@ static int fat_busy(Mount *m) {
     FatVol *v = m->priv;
     if (!v) return 0;
     if (v->nlive > 1) return 1;
-    if (v->ro) return 0;
+    if (v->ro || v->dev->removed) return 0;                      /* nothing can be written back to a device that is gone: let the unmount through */
     mutex_lock(&v->lock);
     int rc = vol_sync(v, true);
     mutex_unlock(&v->lock);
@@ -1076,7 +1091,7 @@ static void flusher_main(void *arg) {
         mutex_lock(&g_vols_lock);
         for (int i = 0; i < FAT_MAX_VOLS; i++) {
             FatVol *v = g_vols[i];
-            if (!v || v->ro) continue;
+            if (!v || v->ro || v->dev->removed) continue;        /* a vanished stick cannot be flushed to: no error line every 30 s */
             u64 now = uptime_ms();
             bool quiet = now - v->last_op_ms >= FLUSH_AGE_MS;           /* nobody has written for a while */
             bool aged = v->ndirty && now - v->dirty_since_ms >= FLUSH_AGE_MS;

@@ -59,12 +59,12 @@ size_t blk_describe(char *buf, size_t cap);                      /* text for /pr
 /* Mount policy (kernel/fs/mountpolicy.c). storage_mount_boot_volumes() runs once at boot for the disks that exist by then. A driver whose
  * disks appear later (USB sticks) calls storage_disk_added() for each one: the policy then looks at it on a worker thread of its own
  * (a mount reads the disk through the very thread that announces it, so it must not run there) and mounts its HUMANVILLAGE volume if
- * nothing is mounted on /HumanVillage yet. storage_disk_removed() is called just before blk_unregister(): it says in the log what the
- * vanished disk takes with it. storage_automount_busy() is true while a worker is still at work (usb_wait_settled() waits for it). */
+ * nothing is mounted on /HumanVillage yet. storage_automount_busy() is true while a worker is still at work (usb_wait_settled() waits
+ * for it). A volume that is mounted when its disk disappears keeps failing with -ENODEV (the FAT driver says so once in the log). */
 void storage_mount_boot_volumes(void);
 void storage_disk_added(BlockDev *disk);
-void storage_disk_removed(BlockDev *disk);
 bool storage_automount_busy(void);
+int  storage_tz_offset_minutes(const char *tz);         /* POSIX TZ string -> minutes east of UTC (standard time only); 0 if unusable */
 
 /* GPT type GUID helpers (on-disk byte order). */
 extern const u8 GPT_GUID_EFI_SYSTEM[16], GPT_GUID_MS_BASIC_DATA[16], GPT_GUID_LINUX_FS[16];

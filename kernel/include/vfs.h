@@ -89,7 +89,7 @@ struct Mount {
     VNode *covered;         /* directory this is mounted on (referenced) */
     void *priv;
     char source[64];
-    char opts[96];          /* comma-separated mount options, handed to the filesystem's mount() */
+    char opts[160];         /* comma-separated mount options, handed to the filesystem's mount() */
     u32 flags;              /* MNT_* (abi.h) */
     u32 id;
 };

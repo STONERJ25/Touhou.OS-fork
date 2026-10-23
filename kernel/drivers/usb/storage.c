@@ -34,6 +34,7 @@
 #include "cmdline.h"
 #include "mm.h"
 #include "task.h"
+#include "cpu.h"
 #include "irq.h"
 #include "abi.h"
 

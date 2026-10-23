@@ -8,6 +8,7 @@
 #include "tty.h"
 #include "irq.h"
 #include "cpuinfo.h"
+#include "bootlog.h"
 #include "fb.h"
 
 extern void syscall_entry(void);
@@ -702,6 +703,7 @@ static long sys_reboot(TrapFrame *tf) {
     /* root, or anyone sitting at the machine: members of the shrine group may close it up (the desktop's Shut down button) */
     if (me()->cred.uid != 0 && !cred_in_group(&me()->cred, GID_SHRINE)) return -EPERM;
     if (A0(tf) == REBOOT_CHECK) return 0;
+    bootlog_shutdown();                                                     /* the kernel log on the stick gets its last lines first */
     vfs_sync_all();                                                         /* never leave the shrine with unwritten records */
     if ((A0(tf) & 0xFF00) == 0x100) qemu_exit((int)(A0(tf) & 0xFF));      /* test harness: leave QEMU with a status */
     klog("Gensokyo", "%s requested by '%s'", A0(tf) == REBOOT_POWEROFF ? "poweroff" : "restart", me()->name);
@@ -711,7 +713,7 @@ static long sys_reboot(TrapFrame *tf) {
 
 static long sys_mount(TrapFrame *tf) {
     if (me()->cred.uid != 0) return -EPERM;
-    char src[64], dst[PATH_MAX / 4], type[16], opts[96] = "";
+    char src[64], dst[PATH_MAX / 4], type[16], opts[160] = "";
     int n = strncpy_from_user(src, (const char *)A0(tf), sizeof src);
     if (n < 0) return n;
     n = strncpy_from_user(dst, (const char *)A1(tf), sizeof dst);

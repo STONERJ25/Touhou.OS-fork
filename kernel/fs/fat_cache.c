@@ -116,7 +116,14 @@ static void pg_dirty(FatVol *v, FatPage *p, int cls) {
 static int dev_io(FatVol *v, bool write, u64 off, void *buf, size_t n) {
     if (off % v->ds || n % v->ds || !n) return -EINVAL;
     int rc = write ? blk_write(v->dev, off / v->ds, (u32)(n / v->ds), buf) : blk_read(v->dev, off / v->ds, (u32)(n / v->ds), buf);
-    if (rc) v->io_error = rc;
+    if (rc) {
+        v->io_error = rc;
+        if (rc == -ENODEV && v->dev->removed && !v->vanished) {
+            v->vanished = true;
+            klog("Keine", "%s: %s vanished while it was mounted on %s (a stick pulled out?) -- whatever was not written yet is lost; umount it, and plug the stick in again (or reboot)",
+                 v->fstype, v->dev->name, v->mount ? v->mount->target : "?");
+        }
+    }
     return rc;
 }
 

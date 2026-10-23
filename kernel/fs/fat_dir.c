@@ -184,10 +184,18 @@ typedef struct {
     u16 units[20 * 13 + 1];
 } LfnState;
 
+/* On-disk times are local time (tz_sec east of UTC); the nodes keep UTC. A date of 0 means "not set" and stays 0. */
+static u64 utc_from_disk(const FatVol *v, u64 local) {
+    if (!local) return 0;
+    s64 t = (s64)local - v->tz_sec;
+    return t < 0 ? 0 : (u64)t;
+}
+
 static void fill_times(FatNode *n, const u8 *e) {
-    n->mtime = fat_time_from_dos(rd16(e + 24), rd16(e + 22), 0);
-    n->ctime = fat_time_from_dos(rd16(e + 16), rd16(e + 14), e[13]);
-    n->atime = fat_time_from_dos(rd16(e + 18), 0, 0);
+    const FatVol *v = n->vol;
+    n->mtime = utc_from_disk(v, fat_time_from_dos(rd16(e + 24), rd16(e + 22), 0));
+    n->ctime = utc_from_disk(v, fat_time_from_dos(rd16(e + 16), rd16(e + 14), e[13]));
+    n->atime = utc_from_disk(v, fat_time_from_dos(rd16(e + 18), 0, 0));
     if (!n->ctime) n->ctime = n->mtime;
     if (!n->atime) n->atime = n->mtime;
 }
@@ -458,12 +466,18 @@ static int dir_reserve(FatNode *d, u32 n, u32 *slot_out) {
 
 typedef struct { u8 sfn[11], ntres; u32 slot; u8 nslots; } Placed;
 
-static void build_short_entry(u8 *e, const u8 sfn[11], u8 attr, u8 ntres, u32 first, u32 size, u64 ct, u64 mt, u64 at, int bits) {
+static u64 disk_from_utc(const FatVol *v, u64 utc) {
+    s64 t = (s64)utc + v->tz_sec;
+    return t < 0 ? 0 : (u64)t;                                   /* fat_time_to_dos clamps to 1980 */
+}
+
+static void build_short_entry(u8 *e, const u8 sfn[11], u8 attr, u8 ntres, u32 first, u32 size, u64 ct, u64 mt, u64 at, const FatVol *v) {
+    int bits = v->bits;
     u16 cd, ctm, md, mtm, ad, atm;
     u8 ctenth, dummy;
-    fat_time_to_dos(ct, &cd, &ctm, &ctenth);
-    fat_time_to_dos(mt, &md, &mtm, &dummy);
-    fat_time_to_dos(at, &ad, &atm, &dummy);
+    fat_time_to_dos(disk_from_utc(v, ct), &cd, &ctm, &ctenth);
+    fat_time_to_dos(disk_from_utc(v, mt), &md, &mtm, &dummy);
+    fat_time_to_dos(disk_from_utc(v, at), &ad, &atm, &dummy);
     memset(e, 0, FAT_SLOT);
     memcpy(e, sfn, 11);
     e[11] = attr;
@@ -495,7 +509,7 @@ static int dir_place(FatNode *d, const char *name, u8 attr, u32 first, u32 size,
     u32 nslots = need_lfn ? 1 + (u32)(n16 + 12) / 13 : 1;
     u8 raw[21 * FAT_SLOT];
     if (need_lfn) fatn_pack_lfn(name16, n16, fatn_checksum(out->sfn), raw);
-    build_short_entry(raw + (nslots - 1) * FAT_SLOT, out->sfn, attr, out->ntres, first, size, ct, mt, at, v->bits);
+    build_short_entry(raw + (nslots - 1) * FAT_SLOT, out->sfn, attr, out->ntres, first, size, ct, mt, at, v);
     u32 slot;
     rc = dir_reserve(d, nslots, &slot);
     if (rc) return rc;
@@ -557,7 +571,7 @@ int fatd_commit(FatNode *n) {
     FatNode *p = n->parent;
     if (!p || (n->flags & (FN_ROOT | FN_UNLINKED))) return 0;
     u8 e[FAT_SLOT];
-    build_short_entry(e, n->sfn, n->attr, n->ntres, n->first, (n->flags & FN_DIR) ? 0 : n->size, n->ctime, n->mtime, n->atime, n->vol->bits);
+    build_short_entry(e, n->sfn, n->attr, n->ntres, n->first, (n->flags & FN_DIR) ? 0 : n->size, n->ctime, n->mtime, n->atime, n->vol);
     return dir_write(p, (u64)(n->slot + n->nslots - 1) * FAT_SLOT, e, FAT_SLOT);
 }
 
@@ -590,8 +604,8 @@ int fatd_attach_renamed(FatNode *nd, FatNode *c, const char *newname, const FatN
 /* "." and ".." for a fresh directory cluster (already zeroed). */
 int fatd_write_dots(FatVol *v, u32 cluster, u32 parent_cluster, u64 now) {
     u8 raw[2 * FAT_SLOT];
-    build_short_entry(raw, (const u8 *)".          ", FAT_ATTR_DIR, 0, cluster, 0, now, now, now, v->bits);
-    build_short_entry(raw + FAT_SLOT, (const u8 *)"..         ", FAT_ATTR_DIR, 0, parent_cluster, 0, now, now, now, v->bits);
+    build_short_entry(raw, (const u8 *)".          ", FAT_ATTR_DIR, 0, cluster, 0, now, now, now, v);
+    build_short_entry(raw + FAT_SLOT, (const u8 *)"..         ", FAT_ATTR_DIR, 0, parent_cluster, 0, now, now, now, v);
     return fc_write(v, fat_cluster_off(v, cluster), raw, sizeof raw, FPC_META);
 }
 

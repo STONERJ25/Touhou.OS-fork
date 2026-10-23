@@ -14,12 +14,22 @@
  *
  * The three resident homes (reimu, marisa, sakuya) are created on the volume when they are missing. With the "userdirs"
  * mount option the FAT driver gives each of them to its user with mode 0700, files 0600.
+ *
+ * Disks that appear after boot (USB sticks: the bus is enumerated by a thread of its own, seconds after the boot-time call) reach
+ * the policy through storage_disk_added(). Which volume wins when several carry the label: the first one found. The boot-time call
+ * sees the internal disks (virtio, SATA, NVMe), so a HUMANVILLAGE volume on one of them is mounted before any stick is looked at,
+ * and a stick's volume is then left alone with a line in the log; with no internal one, the first stick's volume wins and later
+ * sticks are ignored the same way.
+ *
+ * FAT stores local time. The boot-time mount passes the offset of the standard time of the `tz=` command line word as
+ * `tzoffset=MINUTES` (the kernel has no time zone of its own); without tz= the volume is mounted with UTC, as before.
  */
 #include "vfs.h"
 #include "blk.h"
 #include "kernel.h"
 #include "mm.h"
 #include "cmdline.h"
+#include "bootlog.h"
 
 extern const FsType g_vfat_type, g_fat16_type;
 
@@ -101,16 +111,24 @@ static bool has_children(const BlockDev *disk) {
     return false;
 }
 
-/* Finds the volume that is meant to be the Human Village; NULL if there is none. */
-static BlockDev *find_humanvillage(const char **how) {
+static const BlockDev *whole_disk(const BlockDev *d) {
+    while (d->parent) d = d->parent;
+    return d;
+}
+
+/* Finds the volume that is meant to be the Human Village; NULL if there is none. With `only`, just that disk (and its partitions) is
+ * searched: used to say that a stick also holds one when /HumanVillage is taken already. */
+static BlockDev *find_humanvillage(const BlockDev *only, const char **how) {
     BlockDev *found = NULL;
     for (BlockDev *d = blk_first(); d; d = blk_next(d)) {          /* 1. GPT partition name: no I/O needed */
+        if (only && whole_disk(d) != only) continue;
         if (!d->label[0] || !label_is_humanvillage(d->label)) continue;
         if (!found) { found = d; *how = "partition label"; }
         else klog("Keine", "ignoring a second HUMANVILLAGE volume on %s", d->name);
     }
     if (found) return found;
     for (BlockDev *d = blk_first(); d; d = blk_next(d)) {          /* 2. FAT volume label: reads one boot sector per candidate */
+        if (only && whole_disk(d) != only) continue;
         bool candidate = d->parent ? fat_typed(d) : !has_children(d);
         if (!candidate) continue;
         char label[16];
@@ -134,34 +152,131 @@ static void ensure_homes(void) {
     }
 }
 
-/* Called by kmain once the block devices exist. A driver that finds disks later (USB, hot-plug) may call it again: it does
- * nothing when /HumanVillage is already a mount point. */
-void storage_mount_boot_volumes(void) {
-    static bool registered;
-    if (!registered) {
-        registered = true;
-        vfs_register_fs(&g_vfat_type);
-        vfs_register_fs(&g_fat16_type);
+/* The standard-time offset of a POSIX TZ string in minutes EAST of UTC, which is what FAT's local-time fields need:
+ * "EST5EDT,M3.2.0,M11.1.0" -> -300, "JST-9" -> 540, "<+0530>-5:30" -> 330. Zero when there is no usable offset (the libc does the same:
+ * a zone it cannot parse is UTC). Only the standard offset is looked at, not the summer rules. */
+int storage_tz_offset_minutes(const char *tz) {
+    const char *s = tz;
+    if (*s == '<') {
+        while (*s && *s != '>') s++;
+        if (*s == '>') s++;
+    } else {
+        while ((*s >= 'A' && *s <= 'Z') || (*s >= 'a' && *s <= 'z')) s++;
     }
+    if (s == tz) return 0;
+    int sign = 1;
+    if (*s == '+') s++;
+    else if (*s == '-') { sign = -1; s++; }
+    if (*s < '0' || *s > '9') return 0;
+    int h = 0, m = 0;
+    while (*s >= '0' && *s <= '9') { h = h * 10 + (*s - '0'); if (h > 99) return 0; s++; }
+    if (*s == ':') {
+        s++;
+        while (*s >= '0' && *s <= '9') { m = m * 10 + (*s - '0'); if (m > 99) return 0; s++; }
+    }
+    if (h > 24 || m > 59) return 0;
+    return -sign * (h * 60 + m);                                   /* POSIX counts the hours WEST of Greenwich */
+}
+
+/* Option string for the HUMANVILLAGE mount: userdirs, plus tzoffset= when tz= names a zone that is not UTC. */
+static void mount_options(char *out, size_t cap) {
+    strlcpy(out, "userdirs", cap);
+    char tz[64];
+    if (!cmdline_value("tz", tz, sizeof tz)) return;
+    int minutes = storage_tz_offset_minutes(tz);
+    if (minutes) {
+        char more[24];
+        snprintf(more, sizeof more, ",tzoffset=%d", minutes);
+        strlcat(out, more, cap);
+    }
+}
+
+static Mutex g_policy_lock;                                        /* the policy runs one pass at a time (boot call, hot-plug workers) */
+static bool g_policy_ready;
+static volatile int g_workers;                                     /* automount worker threads that exist (queued or running) */
+
+static void policy_init_once(void) {
+    if (!g_policy_ready) { mutex_init(&g_policy_lock); g_policy_ready = true; }
+}
+
+static bool humanvillage_mounted(char *source, size_t cap) {
     char t[64], y[16], s[64];
-    for (int i = 0; vfs_mount_list(i, t, sizeof t, y, sizeof y, s, sizeof s); i++)
-        if (!strcmp(t, "/HumanVillage")) return;
+    for (int i = 0; vfs_mount_list(i, t, sizeof t, y, sizeof y, s, sizeof s); i++) {
+        if (strcmp(t, "/HumanVillage")) continue;
+        strlcpy(source, s, cap);
+        return true;
+    }
+    return false;
+}
+
+/* One pass of the policy. `added` is the disk that triggered it (a stick that appeared after boot), NULL for the boot-time call. */
+static void run_policy(BlockDev *added) {
+    char holder[64];
+    if (humanvillage_mounted(holder, sizeof holder)) {
+        const char *how = "";
+        BlockDev *other = added ? find_humanvillage(added, &how) : NULL;
+        if (other) klog("Keine", "%s holds a HUMANVILLAGE volume too (%s), but /HumanVillage already lives on %s: the first one found wins, this one is left alone",
+                        other->name, how, holder);
+        return;
+    }
     if (cmdline_flag("nohumanvillage")) {
         klog("Keine", "nohumanvillage: persistent storage is left alone, homes stay in RAM");
         return;
     }
     const char *how = "";
-    BlockDev *hv = find_humanvillage(&how);
+    BlockDev *hv = find_humanvillage(NULL, &how);
     if (!hv) {
-        klog("Keine", "no HUMANVILLAGE volume found: homes stay in RAM (tmpfs)");
+        if (!added) klog("Keine", "no HUMANVILLAGE volume found: homes stay in RAM (tmpfs)");
+        else klog("Keine", "%s has no HUMANVILLAGE volume: nothing to mount from it (the policy never mounts anything else)", added->name);
         return;
     }
-    char source[32];
+    char source[32], opts[64];
     snprintf(source, sizeof source, "/dev/%s", hv->name);
-    int rc = vfs_mount_opts("fat32", source, "/HumanVillage", 0, "userdirs");
+    mount_options(opts, sizeof opts);
+    int rc = vfs_mount_opts("fat32", source, "/HumanVillage", 0, opts);
     if (rc) {
         klog("Keine", "HUMANVILLAGE on %s (%s) cannot be mounted (%d): homes stay in RAM (tmpfs)", hv->name, how, rc);
         return;
     }
+    bool stick = hv->driver && !strcmp(hv->driver, "usb-storage");
+    if (stick) klog("Keine", "the Human Village keeps its records on the stick now (%s, found by %s): the homes persist from here on", hv->name, how);
     ensure_homes();
+    bool rw = true;
+    char t[64], y[16], s[64];
+    for (int i = 0; vfs_mount_list(i, t, sizeof t, y, sizeof y, s, sizeof s); i++)
+        if (!strcmp(t, "/HumanVillage")) rw = !(vfs_mount_flags(i) & MNT_RDONLY);
+    bootlog_volume_mounted("/HumanVillage", rw);
 }
+
+/* Called by kmain once the block devices exist. A driver that finds disks later (USB, hot-plug) goes through storage_disk_added(). */
+void storage_mount_boot_volumes(void) {
+    static bool registered;
+    policy_init_once();
+    if (!registered) {
+        registered = true;
+        vfs_register_fs(&g_vfat_type);
+        vfs_register_fs(&g_fat16_type);
+    }
+    mutex_lock(&g_policy_lock);
+    run_policy(NULL);
+    mutex_unlock(&g_policy_lock);
+}
+
+static void automount_main(void *arg) {
+    BlockDev *disk = arg;
+    mutex_lock(&g_policy_lock);
+    if (!disk->removed) run_policy(disk);
+    mutex_unlock(&g_policy_lock);
+    __atomic_fetch_sub(&g_workers, 1, __ATOMIC_SEQ_CST);
+}
+
+void storage_disk_added(BlockDev *disk) {
+    policy_init_once();
+    __atomic_fetch_add(&g_workers, 1, __ATOMIC_SEQ_CST);
+    if (!task_create_detached("hv-automount", automount_main, disk)) {
+        __atomic_fetch_sub(&g_workers, 1, __ATOMIC_SEQ_CST);
+        klog("Keine", "cannot start the automount thread for %s: mount the HUMANVILLAGE volume by hand if it has one", disk->name);
+    }
+}
+
+bool storage_automount_busy(void) { return g_workers > 0; }
