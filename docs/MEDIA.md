@@ -12,12 +12,61 @@ this branch; update it when you change something.
 | `utimes()` system call, `<utime.h>` | **done** (`SYS_utimes` = 82, `kernel/fs/utimes.c`); `gunzip` and `gzip` restore file times with it |
 | `tar` (create, extract, list, `-z`, `-C`, `-v`, `-f`, `--strip-components`, `--exclude`) | **written**, manual page written; round trip (long paths, symlinks, modes, `-z`, pipes, truncated archive) checked by hand in the guest. Archives made by Python's `tarfile` (pax and GNU formats, long paths, unicode names, symlinks, modes, times) unpack correctly in the guest, and a `tar -czf` archive made in the guest is read correctly by Python |
 | `zip`, `unzip` (store and deflate, directories, symlinks, modes, times) | **written**, manual pages written; a zip made by Python's `zipfile` unpacks and tests correctly in the guest, and a zip made in the guest passes Python's `testzip()`. `zip` cannot add to an existing archive yet (it refuses) and has no zip64 |
-| `libimg` (PNG, JPEG, GIF, BMP, PNM, TGA decoders; PNG/BMP/PPM encoders; scaling and rotation) | not written yet |
+| `libimg` (PNG, JPEG, GIF, BMP, PNM, TGA decoders; PNG/BMP/PPM encoders; scaling and rotation) | **only a skeleton**: `img.h` (the API), format detection, loading, size limits, scale / rotate / flip / composite are written but **never run**; no decoder and no encoder exists yet, and nothing links libimg. See "State when paused" |
 | Gensokyo Gallery (image viewer) | not written yet |
 | User wallpaper (`~/.config/hakurei/wallpaper`, `wallpaper` command) | not written yet |
 | Screenshots as PNG in `~/Pictures`, `screenshot` command | not written yet (Ctrl+F12 still writes `/tmp/screenshot.ppm`) |
 | `k_image_thumbnail()` for file browsers | not written yet |
 | `tests/case_media.py` | not written yet; the checks that were run so far were ad hoc |
+
+## State when paused
+
+The work was stopped early (the machine had to be closed), so most of the image half of the task has not been started.
+
+**Done and working** (committed, builds, exercised): `libz`; `gzip` / `gunzip` / `zcat`; `tar`; `zip` / `unzip`; the
+`SYS_utimes` system call with `utime()` / `utimes()` / `lutimes()` in libgap; manual pages for all of those applets
+(`gzip` with its alias `gunzip`, `zcat`, `tar`, `zip`, `unzip`). "Exercised" means: the libz host differential run
+described below (0 failures), and by hand in the guest: gzip round trips and damaged / truncated input, tar and zip round
+trips, archives made by Python's `tarfile` / `zipfile` unpacked in the guest, archives made in the guest read by Python.
+
+**Half done:** `user/lib/img` holds `include/img.h` (the intended API, complete), `src/imgint.h` and `src/image.c`
+(`img_sniff`, `img_probe`/`img_decode` dispatch, `img_load`, `img_alloc`/`img_free`, `img_scale` with nearest / bilinear /
+area modes, `img_rotate90`, `img_flip`, `img_fit`, `img_composite_over`). It compiles (no warnings) and goes into
+`libimg.a`, but **none of it has ever been executed**, and `img_scale(..., IMG_AREA)` in particular is a first draft whose
+loop bookkeeping should be re-read and tested before it is trusted. `image.c` refers to `png_probe`, `png_decode`,
+`bmp_probe`, `bmp_decode`, which do not exist yet, so a program that uses libimg will not link until they are written.
+`img.h` also declares `img_write_png`, `img_write_bmp`, `img_write_ppm`, `img_save_*`, which are not implemented.
+
+**Not started:** the PNG / JPEG / GIF / BMP / PNM / TGA decoders, the PNG / BMP / PPM encoders, EXIF orientation, the
+Gensokyo Gallery application and its entry in `hakurei-shell/launch.c`, the user wallpaper (`~/.config/hakurei/wallpaper`,
+the `wallpaper` command, reload on change in `hakurei-shell`, `hakurei-lock`, `hakurei-greeter`), PNG screenshots in
+`~/Pictures` and the `screenshot` command (fairyd still writes only `/tmp/screenshot.ppm`), `k_image_thumbnail()`,
+`tests/case_media.py`, the manual pages for `screenshot` / `wallpaper` (they must exist before those applets do, because the
+`manual` test fails for an applet without a page), and the mention in `docs/DESKTOP.md`.
+
+**Known problems**
+* The `manual` test (`python tests/run_all.py manual`) was run once on this branch and **failed with a boot timeout**: the guest
+  printed the kernel log up to "scheduler running" and never produced the `reimu@gensokyo` prompt within 90 seconds. Boots
+  with `cmdline="text"` (used for every other check here) were fine, and the test never got as far as checking the manual
+  pages. Whether the cause is the host being busy with other agents' QEMU runs or one of this branch's changes is **not
+  known**; re-run it first. A shorter check of the new pages (`patchouli --check-all`, `patchouli -l`) was started afterwards,
+  see the final report for its result.
+* `zip` cannot add to an existing archive (it refuses), no zip64; `tar` cannot extract hard links except as copies and
+  does not extract devices; `gzip -l` reads only the last member's trailer.
+* The libz host-test driver (a small C program plus a Python script comparing with `zlib`) is in my scratch directory, not in the
+  repository. It should be added as `tests/host/` or folded into `tests/case_media.py`.
+* No test file `tests/case_media.py` exists; nothing in the automated suite covers the new tools yet.
+
+**How to resume**
+1. `git merge main` if main has moved, then `python tools/build.py`.
+2. Re-run `python tests/run_all.py manual` (and the `shell` test) to see whether the boot timeout was load.
+3. Write `user/lib/img/src/png.c` first (inflate rows straight from IDAT chunks with `z_inflate`, unfilter, expand to ARGB;
+   interlaced and tRNS; header CRCs with `z_crc32`), then `write.c` with the PNG / BMP / PPM encoders (`z_deflate` is streaming), then
+   `bmp.c`, `pnm.c`, `gif.c`, `tga.c`, and `jpeg.c` last (baseline first, then progressive; the integer "islow" IDCT and
+   libjpeg's fancy upsampling make the output match Pillow almost exactly). Develop each decoder on the host first: the
+   libraries only need `<stdint.h>`, `<string.h>`, `<stdlib.h>` and POSIX file calls, WSL has gcc with the sanitizers and
+   Python with Pillow, which is how libz was checked.
+4. Then the Gallery, wallpaper and screenshot pieces from the task list, `tests/case_media.py`, and the rest of this page.
 
 ## libz (`user/lib/z`, header `<z.h>`)
 
