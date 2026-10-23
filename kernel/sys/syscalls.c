@@ -250,16 +250,15 @@ static long sys_open(TrapFrame *tf) {
 static long sys_close(TrapFrame *tf) { return fd_close(me(), (int)A0(tf)); }
 
 static long sys_read(TrapFrame *tf) {
-    File *f = fd_get(me(), (int)A0(tf));
+    File *f = fd_get_ref(me(), (int)A0(tf));          /* a reference, taken under the table lock: another thread may close the fd */
     if (!f) return -EBADF;
     size_t n = A2(tf), total = 0;
     u8 *ubuf = (u8 *)A1(tf);
-    if (!user_range_ok(ubuf, n)) return -EFAULT;
+    if (!user_range_ok(ubuf, n)) { file_put(f); return -EFAULT; }
     size_t chunk = MIN(n, (size_t)IO_CHUNK);
     u8 *kbuf = kmalloc(chunk ? chunk : 1);
-    if (!kbuf) return -ENOMEM;
+    if (!kbuf) { file_put(f); return -ENOMEM; }
     long rc = 0;
-    file_get(f);
     while (total < n) {
         size_t want = MIN(n - total, chunk);
         ssize_t r = vfs_read(f, kbuf, want);
@@ -276,16 +275,15 @@ static long sys_read(TrapFrame *tf) {
 }
 
 static long sys_write(TrapFrame *tf) {
-    File *f = fd_get(me(), (int)A0(tf));
+    File *f = fd_get_ref(me(), (int)A0(tf));
     if (!f) return -EBADF;
     size_t n = A2(tf), total = 0;
     const u8 *ubuf = (const u8 *)A1(tf);
-    if (!user_range_ok(ubuf, n)) return -EFAULT;
+    if (!user_range_ok(ubuf, n)) { file_put(f); return -EFAULT; }
     size_t chunk = MIN(n, (size_t)IO_CHUNK);
     u8 *kbuf = kmalloc(chunk ? chunk : 1);
-    if (!kbuf) return -ENOMEM;
+    if (!kbuf) { file_put(f); return -ENOMEM; }
     long rc = 0;
-    file_get(f);
     while (total < n) {
         size_t want = MIN(n - total, chunk);
         if (copy_from_user(kbuf, ubuf + total, want)) { rc = total ? (long)total : -EFAULT; break; }
@@ -733,14 +731,13 @@ static long sys_sigaction(TrapFrame *tf) {
     return 0;
 }
 
-static long sys_sigprocmask(TrapFrame *tf) {
-    Process *p = me();
-    u32 old = p->sig_blocked;
+static long sys_sigprocmask(TrapFrame *tf) {            /* the mask belongs to the calling thread */
+    u32 old = current->sig_blocked;
     u32 set = (u32)A1(tf) & ~((1U << SIGKILL) | (1U << SIGSTOP));
     switch (A0(tf)) {
-    case SIG_BLOCK: p->sig_blocked |= set; break;
-    case SIG_UNBLOCK: p->sig_blocked &= ~set; break;
-    case SIG_SETMASK: p->sig_blocked = set; break;
+    case SIG_BLOCK: current->sig_blocked |= set; break;
+    case SIG_UNBLOCK: current->sig_blocked &= ~set; break;
+    case SIG_SETMASK: current->sig_blocked = set; break;
     default: return -EINVAL;
     }
     if (A2(tf) && copy_to_user((void *)A2(tf), &old, sizeof old)) return -EFAULT;

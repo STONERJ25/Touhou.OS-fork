@@ -24,6 +24,7 @@ static Process *process_alloc(void) {
     Process *p = kzalloc(sizeof *p);
     if (!p) return NULL;
     wq_init(&p->wait_wq);
+    wq_init(&p->thread_wq);
     p->umask = 022;
     p->start_ms = uptime_ms();
     u64 f = irq_save();
@@ -45,6 +46,14 @@ static void process_free(Process *p) {
     kfree(p);
 }
 
+/* Process ids and thread ids come from one counter, so a thread id never equals the pid of another process. */
+int process_alloc_id(void) {
+    u64 f = irq_save();
+    int id = g_next_pid++;
+    irq_restore(f);
+    return id;
+}
+
 Process *process_by_pid(int pid) {
     Process *found = NULL;
     u64 f = irq_save();
@@ -64,14 +73,18 @@ int process_count(void) { return g_nprocs; }
 
 /* ------------------------------------------------------------------ descriptors */
 
+/* The descriptor table is shared by every thread: scans and updates run with interrupts disabled (its lock). */
 int fd_install(Process *p, File *f, int minfd, int flags) {
-    for (int i = minfd; i < MAX_FD; i++) {
+    u64 fl = irq_save();
+    for (int i = minfd < 0 ? 0 : minfd; i < MAX_FD; i++) {
         if (!p->fds[i]) {
             p->fds[i] = f;
             p->fd_flags[i] = (u8)flags;
+            irq_restore(fl);
             return i;
         }
     }
+    irq_restore(fl);
     return -EMFILE;
 }
 
@@ -80,11 +93,24 @@ File *fd_get(Process *p, int fd) {
     return p->fds[fd];
 }
 
+/* Like fd_get, but takes a reference under the table lock: safe against another thread closing the descriptor. */
+File *fd_get_ref(Process *p, int fd) {
+    if (fd < 0 || fd >= MAX_FD) return NULL;
+    u64 fl = irq_save();
+    File *f = p->fds[fd];
+    if (f) file_get(f);
+    irq_restore(fl);
+    return f;
+}
+
 int fd_close(Process *p, int fd) {
-    if (fd < 0 || fd >= MAX_FD || !p->fds[fd]) return -EBADF;
+    if (fd < 0 || fd >= MAX_FD) return -EBADF;
+    u64 fl = irq_save();
     File *f = p->fds[fd];
     p->fds[fd] = NULL;
     p->fd_flags[fd] = 0;
+    irq_restore(fl);
+    if (!f) return -EBADF;
     file_put(f);
     return 0;
 }
@@ -137,7 +163,7 @@ int process_fork(TrapFrame *tf) {
     c->cwd = par->cwd;
     if (c->cwd) vnode_get(c->cwd);
     memcpy(c->sigact, par->sigact, sizeof c->sigact);
-    c->sig_blocked = par->sig_blocked;
+    u64 fl = irq_save();                            /* the table is shared with the parent's other threads */
     for (int i = 0; i < MAX_FD; i++) {
         if (par->fds[i]) {
             file_get(par->fds[i]);
@@ -145,6 +171,7 @@ int process_fork(TrapFrame *tf) {
             c->fd_flags[i] = par->fd_flags[i];
         }
     }
+    irq_restore(fl);
 
     int rc = uvm_new(&c->as);
     if (!rc) rc = uvm_clone(&c->as, &par->as);
@@ -162,7 +189,9 @@ int process_fork(TrapFrame *tf) {
     par->children = c;
     irq_restore(f);
 
-    c->task = task_create_fork(c->name, tf, c);
+    /* Only the calling thread survives in the child: it keeps its TLS base and signal mask, and becomes the child's first thread. */
+    ThreadInit ti = { .utid = c->pid, .fs_base = current->fs_base, .clear_tid = 0, .sig_blocked = current->sig_blocked };
+    c->task = task_create_thread(c->name, tf, c, &ti);
     if (!c->task) {                                 /* unwind: the child never ran */
         u64 g = irq_save();
         par->children = c->sibling;
@@ -176,13 +205,13 @@ int process_fork(TrapFrame *tf) {
     return c->pid;
 }
 
-NORETURN void process_exit(int status) {
-    Process *p = current->proc;
-    if (!p) task_exit(status);
+/* The last thread out: releases everything the process owned and turns it into a zombie for the parent. */
+static NORETURN void process_finalize(Process *p, int status) {
     if (p == g_init_proc) panic("init (pid 1) exited with status %#x: the shrine has no maiden", status);
 
     for (int i = 0; i < MAX_FD; i++) if (p->fds[i]) fd_close(p, i);
     if (p->cwd) { vnode_put(p->cwd); p->cwd = NULL; }
+    for (unsigned i = 0; i < ARRAY_SIZE(p->old_cwd); i++) if (p->old_cwd[i]) { vnode_put(p->old_cwd[i]); p->old_cwd[i] = NULL; }
 
     /* Leave the dying address space before freeing it. */
     vmm_switch(vmm_kernel_pml4());
@@ -213,6 +242,44 @@ NORETURN void process_exit(int status) {
         wq_wake_all(&parent->wait_wq);
     }
     task_exit(status);
+}
+
+/* One thread leaves. Its tid word is zeroed and woken (that is how pthread_join learns it is gone), it unlinks itself, and
+ * the last thread out finishes the process: with the status exit_group chose, or 0 when the last thread simply ran out. */
+NORETURN void thread_leave(void) {
+    Task *t = current;
+    Process *p = t->proc;
+    if (!p) task_exit(0);
+    if (t->clear_tid) {
+        u64 addr = t->clear_tid;
+        t->clear_tid = 0;
+        clear_user((void *)addr, sizeof(u32));
+        futex_wake_all_at(addr);
+    }
+    u64 f = irq_save();
+    thread_unlink(p, t);
+    bool last = p->nthreads == 0;
+    int status = p->exiting ? p->exit_status : 0;
+    irq_restore(f);
+    wq_wake_all(&p->thread_wq);                     /* an execve may be waiting for the others to go */
+    if (last) process_finalize(p, status);
+    task_exit(0);
+}
+
+/* exit_group: the status is a wait() word. Every other thread is woken and leaves at its next trip toward user mode. */
+NORETURN void process_exit(int status) {
+    Task *self = current;
+    Process *p = self->proc;
+    if (!p) task_exit(status);
+    u64 f = irq_save();
+    if (!p->exiting) {
+        p->exiting = true;
+        p->exit_status = status;
+        for (Task *t = p->threads; t; t = t->thread_next)
+            if (t != self) task_interrupt(t);
+    }
+    irq_restore(f);
+    thread_leave();
 }
 
 long process_wait(int pid, int *status, int options) {
@@ -332,9 +399,24 @@ static bool process_sigpending_hook(void) {
 
 static void tty_signal(int pgid, int sig) { signal_pgrp(pgid, sig); }
 
-static void signal_self(int sig) {
-    Process *p = current->proc;
-    if (p) signal_send(p, sig);
+static void signal_self(int sig) {                  /* SIGPIPE and friends: aimed at the thread that caused them */
+    if (current->proc) signal_send_thread(current, sig);
+}
+
+/* execve: ask every other thread to leave and wait until none is left. False if the process is already being torn down
+ * (exit_group, or another thread's execve got there first): the caller must then leave too. */
+bool thread_kill_others(Process *p) {
+    u64 f = irq_save();
+    if (p->exiting || (p->execing && p->execing != current)) { irq_restore(f); return false; }
+    if (p->nthreads > 1) {
+        p->execing = current;
+        for (Task *t = p->threads; t; t = t->thread_next)
+            if (t != current) task_interrupt(t);
+        while (p->nthreads > 1) wq_block(&p->thread_wq);
+        p->execing = NULL;
+    }
+    irq_restore(f);
+    return true;
 }
 
 extern void (*g_signal_self_hook)(int sig);

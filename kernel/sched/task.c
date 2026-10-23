@@ -17,6 +17,8 @@ static Task *g_list;
 static int g_next_tid = 1;
 static volatile bool g_need_resched;
 static Task *g_reap;
+static u64 g_fs_loaded;                 /* what IA32_FS_BASE holds right now: user threads load their own TLS base when they run */
+static int g_nuser_threads;             /* Tasks that belong to a Process (all user threads, in every process) */
 static u8 g_fpu_default[512] ALIGNED(16);
 
 static inline void fpu_save(u8 *area) { __asm__ volatile ("fxsave (%0)" : : "r"(area) : "memory"); }
@@ -44,6 +46,33 @@ static void list_remove(Task *t) {
 }
 
 static Task *task_create_common(const char *name, void (*entry)(void *), void *arg, bool detached, Process *proc);
+
+/* Threads of a process hang off Process.threads. Both helpers run with interrupts disabled (the lock of this data). */
+static void thread_link(Process *p, Task *t) {
+    t->thread_next = p->threads;
+    p->threads = t;
+    p->nthreads++;
+    if (!p->task) p->task = t;
+    g_nuser_threads++;
+}
+
+void thread_unlink(Process *p, Task *t) {
+    for (Task **pp = &p->threads; *pp; pp = &(*pp)->thread_next)
+        if (*pp == t) { *pp = t->thread_next; break; }
+    t->thread_next = NULL;
+    p->nthreads--;
+    g_nuser_threads--;
+    if (p->task == t) p->task = p->threads;
+}
+
+int thread_count(void) { return g_nuser_threads; }
+
+void task_set_fs_base(Task *t, u64 base) {
+    u64 f = irq_save();
+    t->fs_base = base;
+    if (t == g_current && t->proc && base != g_fs_loaded) { wrmsr(MSR_FS_BASE, base); g_fs_loaded = base; }
+    irq_restore(f);
+}
 
 static void idle_loop(void *arg) {
     (void)arg;
@@ -111,6 +140,7 @@ void schedule(void) {
         g_current = next;
         tss_set_rsp0(next->kstack_top);
         if (next->pml4 != prev->pml4) vmm_switch(next->pml4);
+        if (next->proc && next->fs_base != g_fs_loaded) { wrmsr(MSR_FS_BASE, next->fs_base); g_fs_loaded = next->fs_base; }
         if (prev->fpu) fpu_save(prev->fpu);
         if (next->fpu) fpu_restore(next->fpu);
         context_switch(&prev->rsp, next->rsp);
@@ -204,6 +234,7 @@ static Task *task_create_common(const char *name, void (*entry)(void *), void *a
 
     u64 f = irq_save();
     t->tid = g_next_tid++;
+    if (proc) { t->utid = proc->pid; thread_link(proc, t); }
     t->state = TASK_READY;
     list_add(t);
     irq_restore(f);
@@ -223,8 +254,9 @@ Task *task_create_user(const char *name, void (*entry)(void *), void *arg, Proce
     return task_create_common(name, entry, arg, true, proc);
 }
 
-/* A forked child: resumes from the parent's syscall frame with rax = 0 (see fork_child_start in syscall.asm). */
-Task *task_create_fork(const char *name, const TrapFrame *tf, Process *proc) {
+/* A forked child or a new thread: resumes from the given syscall frame with rax = 0 (see fork_child_start in syscall.asm).
+ * `ti` (may be NULL) is applied before the Task is visible to the scheduler, and the Task is linked into proc->threads. */
+Task *task_create_thread(const char *name, const TrapFrame *tf, Process *proc, const ThreadInit *ti) {
     Task *t = kzalloc(sizeof(Task));
     if (!t) return NULL;
     t->kstack = kstack_alloc(KSTACK_SIZE);
@@ -240,6 +272,13 @@ Task *task_create_fork(const char *name, const TrapFrame *tf, Process *proc) {
     t->detached = true;
     t->proc = proc;
     t->pml4 = proc->as.pml4;
+    t->utid = proc->pid;
+    if (ti) {
+        t->utid = ti->utid;
+        t->fs_base = ti->fs_base;
+        t->clear_tid = ti->clear_tid;
+        t->sig_blocked = ti->sig_blocked;
+    }
     fpu_save(t->fpu);                           /* the child inherits the parent's live FPU/SSE state */
 
     TrapFrame *ctf = (TrapFrame *)(t->kstack_top - sizeof(TrapFrame));
@@ -253,10 +292,15 @@ Task *task_create_fork(const char *name, const TrapFrame *tf, Process *proc) {
 
     u64 f = irq_save();
     t->tid = g_next_tid++;
+    thread_link(proc, t);
     t->state = TASK_READY;
     list_add(t);
     irq_restore(f);
     return t;
+}
+
+Task *task_create_fork(const char *name, const TrapFrame *tf, Process *proc) {
+    return task_create_thread(name, tf, proc, NULL);
 }
 
 NORETURN void task_exit(int code) {

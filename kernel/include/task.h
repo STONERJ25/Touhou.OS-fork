@@ -43,7 +43,22 @@ typedef struct Task {
     u8  *fpu;                   /* 512-byte FXSAVE area for tasks that run user code */
     void (*entry)(void *);
     void *arg;
+    /* user threads (see docs/THREADS.md): one Task per thread, all threads of a process share its Process */
+    struct Task *thread_next;   /* next thread of the same process (list head: Process.threads) */
+    int  utid;                  /* thread id seen by user space (gettid); the first thread's id is the pid */
+    u64  fs_base;               /* TLS base, loaded into IA32_FS_BASE when this thread runs */
+    u64  clear_tid;             /* user address that is zeroed and futex-woken when the thread exits (0 = none) */
+    u32  sig_blocked;           /* per-thread signal mask */
+    u32  sig_pending;           /* signals aimed at this thread (tgkill, synchronous faults) */
 } Task;
+
+/* Start-up state of a user thread, set before the Task can first run. */
+typedef struct ThreadInit {
+    int  utid;
+    u64  fs_base;
+    u64  clear_tid;
+    u32  sig_blocked;
+} ThreadInit;
 
 typedef struct WaitQueue {
     Task *head;
@@ -67,6 +82,7 @@ void  task_yield(void);
 void  task_sleep_ms(u64 ms);
 void  task_for_each(void (*fn)(Task *t, void *ctx), void *ctx);
 void  task_interrupt(Task *t);                      /* wake a task blocked in an interruptible wait */
+void  task_set_fs_base(Task *t, u64 base);          /* TLS base; takes effect at once when t is the running task */
 
 /* Set by the process layer: true if the current task has a deliverable signal. */
 extern bool (*g_signal_pending_hook)(void);

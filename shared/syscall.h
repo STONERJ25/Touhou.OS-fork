@@ -87,7 +87,22 @@
 #define SYS_gettime_ms    65      /* wall clock, milliseconds since the epoch */
 #define SYS_tcsetpgrp     66
 /* Number ranges for subsystems that register their own calls: networking 90-99, audio 100-105, threads 106-115, free 116-127. */
+/* Threads (kernel/sys/thread.c, kernel/sys/futex.c); see docs/THREADS.md */
+#define SYS_thread_create 106     /* (flags, stack_top, tls_base, tid_addr, entry, arg) -> new tid; the thread starts in entry(arg) on stack_top */
+#define SYS_thread_exit   107     /* (status): ends the calling thread only; zeroes *tid_addr and wakes it; the last thread out ends the process */
+#define SYS_gettid        108
+#define SYS_futex         109     /* (uaddr, op, val, timeout, uaddr2, val3) */
+#define SYS_tgkill        110     /* (pid, tid, sig): signal one thread */
+#define SYS_exit_group    111     /* (status): ends every thread (SYS_exit does the same) */
+#define SYS_set_tls       112     /* (base): sets the calling thread's FS base */
+/* 113-115 are kept for sigsuspend, sigtimedwait and sigpending (not implemented yet) */
 #define SYS_nsyscalls     128
+
+#define FUTEX_WAIT        0       /* sleep while *uaddr == val; timeout is a struct gtimespec* (relative) or NULL */
+#define FUTEX_WAKE        1       /* wake up to val waiters */
+#define FUTEX_CMP_REQUEUE 4       /* if *uaddr == val3: wake val waiters, move up to (long)timeout waiters to uaddr2 */
+#define THREADS_PER_PROC_MAX 256
+#define THREADS_TOTAL_MAX    1024
 
 struct gpollfd {
     int   fd;
