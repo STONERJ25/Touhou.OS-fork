@@ -164,14 +164,21 @@ static bool pgrp_alive(int pgid) {
 int tty_job_check(Tty *t, int kind) {
     for (;;) {
         Process *p = current ? current->proc : NULL;
+        if (p && p != g_init_proc && p->stopped && kind == JC_READ) {      /* a stopped process must not eat input, whoever the terminal belongs to */
+            job_park(p);
+            if (signal_pending_now(p)) return -EINTR;
+            continue;
+        }
         if (!p || p == g_init_proc || !t->fg_pgid || !t->session || p->sid != t->session || p->pgid == t->fg_pgid) return 0;
         if (kind == JC_WRITE && !(t->termios.c_lflag & TOSTOP)) return 0;
         if (!pgrp_alive(t->fg_pgid)) return 0;              /* nobody holds the terminal any more: no one is a background process */
         int sig = kind == JC_READ ? SIGTTIN : SIGTTOU;
         if (p->sigact[sig].handler == SIG_IGN || (current->sig_blocked & (1U << sig))) return kind == JC_READ ? -EIO : 0;
         if (pgrp_orphaned(p->pgid)) return -EIO;
-        signal_pgrp(p->pgid, sig);
-        if (!p->stopped) return -EINTR;                     /* a handler will run; the call fails with EINTR */
+        if (!p->stopped) {                                  /* (already stopped: this is a thread waking up inside the call) */
+            signal_pgrp(p->pgid, sig);
+            if (!p->stopped) return -EINTR;                 /* a handler will run; the call fails with EINTR */
+        }
         job_park(p);                                        /* asleep until SIGCONT, then look again */
         if (signal_pending_now(p)) return -EINTR;
     }

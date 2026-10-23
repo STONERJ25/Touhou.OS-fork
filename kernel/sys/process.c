@@ -262,14 +262,15 @@ static NORETURN void process_finalize(Process *p, int status) {
     task_exit(status);
 }
 
-/* A process group is orphaned when no member has a parent that is in another group of the same session. */
+/* A process group is orphaned when no member has a parent that is in another group of the same session. init does not count as
+ * such a parent: it only collects the pieces, it never does job control (and in a text login it shares the shell's session). */
 bool pgrp_orphaned(int pgid) {
     bool orphan = true;
     u64 f = irq_save();
     for (Process *q = g_procs; q && orphan; q = q->all_next) {
         if (q->pgid != pgid || q->state == PROC_ZOMBIE) continue;
         Process *par = q->parent;
-        if (par && par->state != PROC_ZOMBIE && par->pgid != pgid && par->sid == q->sid) orphan = false;
+        if (par && par != g_init_proc && par->state != PROC_ZOMBIE && par->pgid != pgid && par->sid == q->sid) orphan = false;
     }
     irq_restore(f);
     return orphan;
