@@ -367,6 +367,12 @@ static bool textfield_impl(KUI *ui, KRect r, char *buf, size_t cap, bool pw) {
     return enter;
 }
 
+void k_focus_textfield(KUI *ui, const char *buf) {
+    ui->focus = (uint32_t)(uintptr_t)buf * 2654435761u | 1;
+    ui->caret = ui->sel_anchor = (int)strlen(buf);
+    ui->caret_ms = ui->now_ms;
+}
+
 bool k_textfield(KUI *ui, KRect r, char *buf, size_t cap) { return textfield_impl(ui, r, buf, cap, false); }
 bool k_textfield_pw(KUI *ui, KRect r, char *buf, size_t cap) { return textfield_impl(ui, r, buf, cap, true); }
 

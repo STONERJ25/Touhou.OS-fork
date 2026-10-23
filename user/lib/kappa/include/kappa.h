@@ -280,6 +280,17 @@ void  kapp_clipboard_copy(KApp *app, const char *text, size_t len);
 const char *kapp_clipboard(KApp *app, size_t *len);
 void  kapp_clipboard_fetch(KApp *app);
 
+/* Non-blocking dialogs: they open a window in `app`, call back once the user decides, and close themselves.
+ * The callbacks receive NULL / false when the dialog was cancelled. */
+typedef void (*KTextCb)(const char *text, void *user);
+typedef void (*KFileCb)(const char *path, void *user);
+typedef void (*KConfirmCb)(bool yes, void *user);
+void k_input_dialog(KApp *app, const char *title, const char *prompt, const char *initial, KTextCb cb, void *user);
+void k_confirm_dialog(KApp *app, const char *title, const char *message, KIcon icon, const char *yes, const char *no, KConfirmCb cb, void *user);
+/* mode: 0 open an existing file, 1 save (asks for a name), 2 choose a folder */
+void k_file_dialog(KApp *app, int mode, const char *title, const char *start_dir, const char *default_name, KFileCb cb, void *user);
+void k_focus_textfield(KUI *ui, const char *buf);                 /* give the field editing `buf` the keyboard focus */
+
 /* Modal message box (blocking, own small window): returns the button index chosen (0-based) or -1 if closed. */
 int   k_messagebox(FairyDisplay *d, const char *title, const char *message, KIcon icon, const char *const *buttons, int nbuttons);
 

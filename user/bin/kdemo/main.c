@@ -17,12 +17,16 @@ typedef struct {
 static const char *const g_items[] = { "Hakurei Shrine", "Scarlet Devil Mansion", "Youkai Mountain", "Bamboo Forest", "Human Village", "Netherworld", "Misty Lake", "Eientei", "Moriya Shrine", "Former Hell" };
 static const KIcon g_icons[] = { KI_TORII, KI_HOME, KI_MONITOR, KI_BAMBOO, KI_FOLDER, KI_MOON, KI_DRIVE, KI_STAR, KI_TORII, KI_GEAR };
 
+static char g_result[300] = "(nothing yet)";
+static void on_text(const char *text, void *user) { (void)user; snprintf(g_result, sizeof g_result, "text: %s", text ? text : "(cancelled)"); }
+static void on_file(const char *path, void *user) { (void)user; snprintf(g_result, sizeof g_result, "file: %s", path ? path : "(cancelled)"); }
+static void on_yes(bool yes, void *user) { (void)user; snprintf(g_result, sizeof g_result, "confirm: %s", yes ? "yes" : "no"); }
+
 static void draw(KApp *app, KUI *ui, void *user) {
     Demo *d = user;
-    (void)app;
     k_clear(ui);
-    static const char *const tabs[] = { "Widgets", "Notes", "Icons" };
-    k_tabs(ui, kr(8, 8, ui->cv.w - 16, 26), tabs, 3, &d->tab);
+    static const char *const tabs[] = { "Widgets", "Notes", "Icons", "Dialogs" };
+    k_tabs(ui, kr(8, 8, ui->cv.w - 16, 26), tabs, 4, &d->tab);
     KRect body = kr(8, 34, ui->cv.w - 16, ui->cv.h - 42);
     kc_panel(&ui->cv, body, KB_FLAT, ui->theme->window_bg);
     if (d->tab == 0) {
@@ -47,6 +51,14 @@ static void draw(KApp *app, KUI *ui, void *user) {
         if (d->list.selected >= 0) k_label(ui, 290, 310, g_items[d->list.selected]);
     } else if (d->tab == 1) {
         k_textarea(ui, kr(16, 44, body.w - 16, body.h - 20), &d->notes);
+    } else if (d->tab == 3) {
+        k_heading(ui, 20, 50, "Dialogs");
+        if (k_button(ui, kr(20, 80, 160, 28), "Ask for text...")) k_input_dialog(app, "Rename", "New name for the spell card:", "Master Spark", on_text, NULL);
+        if (k_button(ui, kr(20, 116, 160, 28), "Open a file...")) k_file_dialog(app, 0, "Open file", "/", "", on_file, NULL);
+        if (k_button(ui, kr(20, 152, 160, 28), "Save a file...")) k_file_dialog(app, 1, "Save file", NULL, "untitled.txt", on_file, NULL);
+        if (k_button(ui, kr(20, 188, 160, 28), "Choose a folder...")) k_file_dialog(app, 2, "Choose a folder", "/", "", on_file, NULL);
+        if (k_button(ui, kr(20, 224, 160, 28), "Are you sure?")) k_confirm_dialog(app, "Confirm", "Move 3 files to the Netherworld? Yuyuko will keep them for a while.", KI_QUESTION, "Move", "Cancel", on_yes, NULL);
+        kc_text_in(&ui->cv, kr(20, 270, ui->cv.w - 40, 20), g_result, ui->theme->accent_dark, KA_LEFT);
     } else {
         for (int i = 0; i < KI_COUNT; i++) {
             int x = 24 + (i % 11) * 48, y = 50 + (i / 11) * 64;
