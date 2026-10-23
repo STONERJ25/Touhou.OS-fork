@@ -86,7 +86,8 @@
 #define SYS_ptyopen       64      /* open a pseudo-terminal pair: returns master fd, slave path in buf */
 #define SYS_gettime_ms    65      /* wall clock, milliseconds since the epoch */
 #define SYS_tcsetpgrp     66
-#define SYS_nsyscalls     96
+/* Number ranges for subsystems that register their own calls: networking 90-99, audio 100-105, threads 106-115, free 116-127. */
+#define SYS_nsyscalls     128
 
 struct gpollfd {
     int   fd;
