@@ -5,6 +5,7 @@
   python tools/mkimage.py --size 4G --out E:/touhou-os.img  bigger image, other place
   python tools/mkimage.py --cmdline "video=max login blk.ro tz=EST5EDT,M3.2.0,M11.1.0"
   python tools/mkimage.py --no-build                        use what build/ already holds
+  python tools/mkimage.py --zip                             also write build/touhou-os.img.zip (flashable as it is)
 
 The image is a GPT disk with a 64 MiB FAT32 EFI System Partition (EFI/BOOT/BOOTX64.EFI, kernel.elf, initrd.img,
 cmdline.txt) and a FAT32 partition labelled HUMANVILLAGE for the rest, which is the only volume TouhouOS mounts by
@@ -20,6 +21,7 @@ import hashlib
 import shutil
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -48,6 +50,7 @@ def main():
     ap.add_argument("--cmdline", default=DEFAULT_CMDLINE, help=f"kernel command line, written to cmdline.txt (default '{DEFAULT_CMDLINE}')")
     ap.add_argument("--no-build", action="store_true", help="do not run tools/build.py first")
     ap.add_argument("--no-check", action="store_true", help="skip the fsck of the finished image")
+    ap.add_argument("--zip", action="store_true", help="also write OUT.zip (a few MB: the image is mostly empty); Rufus and balenaEtcher flash a zipped image directly")
     args = ap.parse_args()
 
     if not args.no_build:
@@ -88,6 +91,12 @@ def main():
         print("[check]")
         run([sys.executable, ROOT / "tools" / "mkdisk.py", "--check", out])
 
+    if args.zip:
+        print("[zip]")
+        zpath = out.with_name(out.name + ".zip")
+        with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as z:
+            z.write(out, out.name)
+        print(f"  {zpath}  ({zpath.stat().st_size >> 10} KiB)")
     sha = hashlib.sha256()
     with open(out, "rb") as f:
         while chunk := f.read(1 << 22):
