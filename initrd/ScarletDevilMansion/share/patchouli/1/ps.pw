@@ -1,10 +1,10 @@
 .page ps 1 list processes
 
 # SYNOPSIS
-*ps* [*-fuwaxeA*]
+*ps* [*-fluTwaxeA*]
 
 # DESCRIPTION
-`ps` reads `/proc` and prints a table of the processes, sorted by process id. All processes are always listed, whichever options are given. The state column is `R` (running or ready), `S` (sleeping or waiting) or `Z` (finished, waiting to be collected). TIME is the CPU time used, as minutes and seconds.
+`ps` reads `/proc` and prints a table of the processes, sorted by process id. All processes are always listed, whichever options are given. The state column is `R` (running or ready), `S` (sleeping or waiting), `T` (stopped by a signal such as Ctrl-Z or `kill -STOP`, until it is continued) or `Z` (finished, waiting to be collected). TIME is the CPU time used, as minutes and seconds.
 
 The default columns are PID, USER, state, TIME and the command name.
 
@@ -13,6 +13,10 @@ The default columns are PID, USER, state, TIME and the command name.
     Full format: UID, PID, PPID, state, TIME and the whole command line.
 @ *u*, *-u*
     User format: adds VSZ and RSS (virtual and resident size in KiB).
+@ *l*, *-l*
+    Long format: state, user, PID, PPID, NI (the nice value, see nice(1)), TIME and the command name.
+@ *T*, *-T*
+    One row per thread: PID, TID (the first thread's TID is the PID), user, state, TIME and the thread name.
 @ *w*, *-w*
     Wide: do not shorten the command to fit the terminal.
 @ *a*, *x*, *e*, *A*

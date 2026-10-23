@@ -58,6 +58,7 @@ int     pause(void);
 void   *sbrk(long inc);
 int     brk(void *addr);
 int     sync(void);
+int     nice(int incr);                 /* add incr to the nice value; returns the new one (-1 with errno set on failure) */
 int     gethostname(char *buf, size_t n);
 long    sysconf(int name);
 char   *ttyname(int fd);

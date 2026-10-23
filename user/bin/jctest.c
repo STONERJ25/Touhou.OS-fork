@@ -15,6 +15,7 @@
 #include <sys/wait.h>
 #include <sys/mman.h>
 #include <termios.h>
+#include <sys/resource.h>
 #include <pty.h>
 #include <gensokyo.h>
 
@@ -645,6 +646,113 @@ static void test_orphaned_group(void) {
     close(pfd[1]);
 }
 
+/* ---------------------------------------------------------------- priorities */
+
+static int proc_nice(pid_t pid) {                           /* the Nice: line of /proc/<pid>/status, or 99 */
+    char path[64], buf[512];
+    snprintf(path, sizeof path, "/proc/%d/status", (int)pid);
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return 99;
+    ssize_t n = read(fd, buf, sizeof buf - 1);
+    close(fd);
+    if (n <= 0) return 99;
+    buf[n] = 0;
+    char *s = strstr(buf, "Nice:\t");
+    return s ? atoi(s + 6) : 99;
+}
+
+static unsigned long proc_ticks(pid_t pid) {                /* CPU time in ticks (ms) from /proc/<pid>/stat */
+    char path[64], buf[256], state[8], name[64];
+    int p, pp, pg;
+    unsigned u, g;
+    unsigned long vsz, rss, ticks, start;
+    snprintf(path, sizeof path, "/proc/%d/stat", (int)pid);
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return 0;
+    ssize_t n = read(fd, buf, sizeof buf - 1);
+    close(fd);
+    if (n <= 0) return 0;
+    buf[n] = 0;
+    if (sscanf(buf, "%d %d %d %u %u %7s %lu %lu %lu %lu %63s", &p, &pp, &pg, &u, &g, state, &vsz, &rss, &ticks, &start, name) < 10) return 0;
+    return ticks;
+}
+
+static void test_nice(void) {
+    SECTION("priorities: setpriority, getpriority, nice, renice, inheritance, and a polite process gets less CPU");
+    char line[128], cmd[128];
+    int st;
+
+    /* the scheduler first, while we are still at nice 0: two busy processes, one of them polite */
+    pid_t hi = fork();
+    if (hi == 0) for (;;) { }
+    pid_t lo = fork();
+    if (lo == 0) { setpriority(PRIO_PROCESS, 0, 19); for (;;) { } }
+    long end = now_ms() + 90000;
+    while (proc_ticks(hi) < 500 && now_ms() < end) nap(100);
+    unsigned long t_hi = proc_ticks(hi), t_lo = proc_ticks(lo);
+    printf("  cpu ticks: nice 0 got %lu, nice 19 got %lu\n", t_hi, t_lo);
+    CHECK(t_hi >= 500 && t_hi > 3 * t_lo && t_lo > 0);       /* about ten to one: slices of 10 and 1 ticks */
+    kill_and_reap(hi);
+    kill_and_reap(lo);
+
+    errno = 0;
+    CHECK(getpriority(PRIO_PROCESS, 0) == 0 && errno == 0);
+    CHECK(setpriority(PRIO_PROCESS, 0, 4) == 0 && getpriority(PRIO_PROCESS, 0) == 4);
+    CHECK(nice(3) == 7 && getpriority(PRIO_PROCESS, 0) == 7);
+    CHECK(proc_nice(getpid()) == 7);
+    CHECK(setpriority(PRIO_PROCESS, 0, 99) == 0 && getpriority(PRIO_PROCESS, 0) == 19);     /* clamped to 19 */
+    if (getuid() != 0) {                                    /* lowering a nice value needs root */
+        CHECK(setpriority(PRIO_PROCESS, 0, 7) < 0 && errno == EACCES);
+        CHECK(nice(-1) == -1 && errno == EPERM);
+    }
+    if (getuid() == 0) setpriority(PRIO_PROCESS, 0, 19);
+    errno = 0;
+    CHECK(getpriority(PRIO_PROCESS, 987654) == -1 && errno == ESRCH);
+
+    /* children and exec'd programs inherit it; the nice and renice applets */
+    int base = getpriority(PRIO_PROCESS, 0);
+    CHECK(base == 19);
+    pid_t kid = fork();
+    if (kid == 0) _exit(getpriority(PRIO_PROCESS, 0) == base ? 0 : 1);
+    CHECK(wait_for(kid, &st, 0, 5000) == kid && WIFEXITED(st) && WEXITSTATUS(st) == 0);
+    FILE *f = popen("nice", "r");
+    line[0] = 0;
+    if (f) { fgets(line, sizeof line, f); pclose(f); }
+    CHECK(atoi(line) == base);
+
+    g_shared[0] = 0;
+    pid_t sleeper = fork();
+    if (sleeper == 0) for (;;) { g_shared[0]++; nap(5); }
+    CHECK(wait_counter(&g_shared[0], 1, 5000));
+    CHECK(proc_nice(sleeper) == base);
+    snprintf(cmd, sizeof cmd, "renice 19 -p %d", (int)sleeper);
+    f = popen(cmd, "r");
+    line[0] = 0;
+    if (f) { fgets(line, sizeof line, f); pclose(f); }
+    char want[96];
+    snprintf(want, sizeof want, "%d (process ID) old priority %d, new priority 19", (int)sleeper, base);
+    CHECK(strstr(line, want) != NULL);
+    CHECK(proc_nice(sleeper) == 19 && getpriority(PRIO_PROCESS, sleeper) == 19);
+    f = popen("ps -l", "r");                                /* the NI column */
+    int seen = 0;
+    while (f && fgets(line, sizeof line, f)) {
+        char s[8], u[32];
+        int pid = 0, ppid = 0, ni = -99;
+        if (sscanf(line, "%7s %31s %d %d %d", s, u, &pid, &ppid, &ni) == 5 && pid == (int)sleeper && ni == 19) seen = 1;
+    }
+    if (f) pclose(f);
+    CHECK(seen);
+    if (getuid() != 0) CHECK(system("renice 5 -p 1 > /dev/null 2>&1") != 0);              /* init is not ours */
+    kill_and_reap(sleeper);
+
+    /* PRIO_PGRP reaches every process of the group (all at 19 already: check a fresh one) */
+    pid_t mate = fork();
+    if (mate == 0) for (;;) pause();
+    CHECK(setpriority(PRIO_PGRP, 0, 19) == 0 && proc_nice(mate) == 19 && getpriority(PRIO_PROCESS, 0) == 19);
+    kill_and_reap(mate);
+    (void)cmd;
+}
+
 int main(void) {
     printf("jctest: the shrine's job control test begins\n");
     setup_shared();
@@ -654,6 +762,7 @@ int main(void) {
     test_ctrl_z();
     test_background_io();
     test_orphaned_group();
+    test_nice();
     if (g_fail) printf("JCTEST FAIL (%d failures)\n", g_fail);
     else printf("JCTEST PASS\n");
     return g_fail ? 1 : 0;
