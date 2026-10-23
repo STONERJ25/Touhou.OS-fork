@@ -29,6 +29,7 @@
 #define EWOULDBLOCK     EAGAIN
 
 /* ---- address families, socket types, protocols ---- */
+#define AF_UNSPEC       0
 #define AF_INET         2
 #define PF_INET         AF_INET
 #define SOCK_DGRAM      2
@@ -90,6 +91,8 @@ struct gsockaddr_in {
 
 #define GIFF_UP         0x1
 #define GIFF_BROADCAST  0x2
+#define GIFF_DOWN       0x100       /* NETCTL_IF_CONFIG only: take the interface down */
+#define GIFF_CLEARADDR  0x200       /* NETCTL_IF_CONFIG only: remove the address (and its routes) */
 #define GIFF_LOOPBACK   0x8
 #define GIFF_RUNNING    0x40        /* link detected */
 #define GIFF_NOARP      0x80

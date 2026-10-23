@@ -1039,8 +1039,13 @@ long net_ctl(unsigned long cmd, void *arg) {
             if (r->mtu < 68 || r->mtu > 1500) { rc = -EINVAL; break; }
             d->mtu = r->mtu;
         }
-        if (r->flags & GIFF_UP) d->flags |= NDF_UP; else if (r->flags & 0x100) { d->flags &= ~(u32)NDF_UP; route_flush_dev(d); }
-        if (r->mask || r->addr) {
+        if (r->flags & GIFF_UP) d->flags |= NDF_UP;
+        else if (r->flags & GIFF_DOWN) { d->flags &= ~(u32)NDF_UP; route_flush_dev(d); }
+        if (r->flags & GIFF_CLEARADDR) {
+            route_flush_dev(d);
+            d->flags &= ~(u32)NDF_DHCP;
+            netdev_set_addr(d, 0, 0);
+        } else if (r->mask || r->addr) {
             if (!r->mask) r->mask = 0xFFFFFF00u;
             route_flush_dev(d);
             d->flags &= ~(u32)NDF_DHCP;
