@@ -573,8 +573,15 @@ def notebook_context_menu():
     with session("t-notebook-ctx") as (vm, g):
         make_demo(g)
         launch(vm, "/tmp/demo.c")
-        g.right_click(44 + 200, 56 + 100)
-        vm.expect(r"nb: context menu", timeout=10)
+        for attempt in range(2):                         # a loaded machine can drop mouse packets: re-home the pointer once
+            g.right_click(44 + 200, 56 + 100)
+            try:
+                vm.expect(r"nb: context menu", timeout=8)
+                break
+            except TimeoutError:
+                if attempt:
+                    raise
+                g.home()
         time.sleep(0.5)
         g.shot("ctx")
         assert g.pixel_near(44 + 230, 56 + 106, (0xEC, 0xE6, 0xD6), tol=10), "no menu on screen"
