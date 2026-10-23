@@ -25,6 +25,7 @@ int     execvp(const char *file, char *const argv[]);
 int     execl(const char *path, const char *arg, ...);
 int     execlp(const char *file, const char *arg, ...);
 pid_t   getpid(void);
+pid_t   gettid(void);               /* thread id; the first thread's id equals the pid */
 pid_t   getppid(void);
 pid_t   getpgid(pid_t pid);
 pid_t   getpgrp(void);

@@ -9,8 +9,12 @@
 #include <ctype.h>
 #include <math.h>
 #include <limits.h>
+#include "pthread_impl.h"
 
 int signbit_d(double x);
+
+/* One recursive lock serialises all of stdio: threads share the streams, and a printf is never torn by another thread's output. */
+RLock __stdio_lock;
 
 #define F_READ  1
 #define F_WRITE 2
@@ -54,7 +58,7 @@ static int flush_write(FILE *f) {
     return 0;
 }
 
-int fflush(FILE *f) {
+static int fflush_nl(FILE *f) {
     if (!f) {
         int r = 0;
         if (flush_write(&g_stdout)) r = EOF;
@@ -83,7 +87,7 @@ static int fill(FILE *f) {
     return 0;
 }
 
-int fgetc(FILE *f) {
+static int fgetc_nl(FILE *f) {
     if (f->ungot >= 0) { int c = f->ungot; f->ungot = -1; return c; }
     if (f->wlen) flush_write(f);
     if (f->rpos >= f->rlen && fill(f)) return EOF;
@@ -92,14 +96,14 @@ int fgetc(FILE *f) {
 int getc(FILE *f) { return fgetc(f); }
 int getchar(void) { return fgetc(stdin); }
 
-int ungetc(int c, FILE *f) {
+static int ungetc_nl(int c, FILE *f) {
     if (c == EOF) return EOF;
     f->ungot = c;
     f->flags &= ~F_EOF;
     return c;
 }
 
-int fputc(int c, FILE *f) {
+static int fputc_nl(int c, FILE *f) {
     unsigned char ch = (unsigned char)c;
     if (f->bufmode == _IONBF || !f->buf) {
         if (!f->buf && f->bufmode != _IONBF) {
@@ -120,7 +124,7 @@ int fputc(int c, FILE *f) {
 int putc(int c, FILE *f) { return fputc(c, f); }
 int putchar(int c) { return fputc(c, stdout); }
 
-size_t fwrite(const void *buf, size_t size, size_t n, FILE *f) {
+static size_t fwrite_nl(const void *buf, size_t size, size_t n, FILE *f) {
     size_t total = size * n;
     const unsigned char *p = buf;
     if (!total) return 0;
@@ -145,7 +149,7 @@ size_t fwrite(const void *buf, size_t size, size_t n, FILE *f) {
     return n;
 }
 
-size_t fread(void *buf, size_t size, size_t n, FILE *f) {
+static size_t fread_nl(void *buf, size_t size, size_t n, FILE *f) {
     size_t total = size * n, got = 0;
     unsigned char *p = buf;
     while (got < total) {
@@ -164,7 +168,7 @@ size_t fread(void *buf, size_t size, size_t n, FILE *f) {
     return size ? got / size : 0;
 }
 
-char *fgets(char *buf, int n, FILE *f) {
+static char *fgets_nl(char *buf, int n, FILE *f) {
     int i = 0;
     while (i < n - 1) {
         int c = fgetc(f);
@@ -187,7 +191,7 @@ int puts(const char *s) {
     return fputc('\n', stdout) == EOF ? EOF : 0;
 }
 
-ssize_t getdelim(char **line, size_t *cap, int delim, FILE *f) {
+static ssize_t getdelim_nl(char **line, size_t *cap, int delim, FILE *f) {
     size_t n = 0;
     if (!*line || !*cap) { *cap = 128; *line = malloc(*cap); if (!*line) return -1; }
     for (;;) {
@@ -209,7 +213,7 @@ ssize_t getdelim(char **line, size_t *cap, int delim, FILE *f) {
 
 ssize_t getline(char **line, size_t *cap, FILE *f) { return getdelim(line, cap, '\n', f); }
 
-FILE *fdopen(int fd, const char *mode) {
+static FILE *fdopen_nl(int fd, const char *mode) {
     FILE *f = calloc(1, sizeof *f);
     if (!f) return NULL;
     f->fd = fd;
@@ -245,7 +249,7 @@ FILE *freopen(const char *path, const char *mode, FILE *f) {
     return fopen(path, mode);
 }
 
-int fclose(FILE *f) {
+static int fclose_nl(FILE *f) {
     int r = fflush(f);
     if (f->fd > 2 || (f != &g_stdin && f != &g_stdout && f != &g_stderr)) {
         if (close(f->fd) < 0) r = EOF;
@@ -257,7 +261,7 @@ int fclose(FILE *f) {
     return r;
 }
 
-int fseek(FILE *f, long off, int whence) {
+static int fseek_nl(FILE *f, long off, int whence) {
     fflush(f);
     if (whence == SEEK_CUR) off -= (long)(f->rlen - f->rpos) + (f->ungot >= 0 ? 1 : 0);
     f->rpos = f->rlen = 0;
@@ -266,7 +270,7 @@ int fseek(FILE *f, long off, int whence) {
     return lseek(f->fd, off, whence) < 0 ? -1 : 0;
 }
 
-long ftell(FILE *f) {
+static long ftell_nl(FILE *f) {
     long pos = (long)lseek(f->fd, 0, SEEK_CUR);
     if (pos < 0) return -1;
     return pos - (long)(f->rlen - f->rpos) - (f->ungot >= 0 ? 1 : 0) + (long)f->wlen;
@@ -556,7 +560,7 @@ static void put_str(void *ctx, const char *p, size_t n) {
     }
 }
 
-int vfprintf(FILE *f, const char *fmt, va_list ap) {
+static int vfprintf_nl(FILE *f, const char *fmt, va_list ap) {
     Sink s = { put_file, f, 0 };
     return vformat(&s, fmt, ap);
 }
@@ -782,7 +786,9 @@ int fscanf(FILE *f, const char *fmt, ...) {
     Src src = { file_get, file_unget, f };
     va_list ap;
     va_start(ap, fmt);
+    __rlock(&__stdio_lock);
     int r = scan_core(&src, fmt, ap);
+    __runlock(&__stdio_lock);
     va_end(ap);
     return r;
 }
@@ -791,7 +797,33 @@ int scanf(const char *fmt, ...) {
     Src src = { file_get, file_unget, stdin };
     va_list ap;
     va_start(ap, fmt);
+    __rlock(&__stdio_lock);
     int r = scan_core(&src, fmt, ap);
+    __runlock(&__stdio_lock);
     va_end(ap);
     return r;
 }
+
+/* ---------------------------------------------------------------- thread-safe entry points */
+
+#define STDIO_LOCKED(rettype, name, params, args)      \
+    rettype name params {                              \
+        __rlock(&__stdio_lock);                        \
+        rettype r = name##_nl args;                    \
+        __runlock(&__stdio_lock);                      \
+        return r;                                      \
+    }
+
+STDIO_LOCKED(int, fflush, (FILE *f), (f))
+STDIO_LOCKED(int, fgetc, (FILE *f), (f))
+STDIO_LOCKED(int, ungetc, (int c, FILE *f), (c, f))
+STDIO_LOCKED(int, fputc, (int c, FILE *f), (c, f))
+STDIO_LOCKED(size_t, fwrite, (const void *buf, size_t size, size_t n, FILE *f), (buf, size, n, f))
+STDIO_LOCKED(size_t, fread, (void *buf, size_t size, size_t n, FILE *f), (buf, size, n, f))
+STDIO_LOCKED(char *, fgets, (char *buf, int n, FILE *f), (buf, n, f))
+STDIO_LOCKED(ssize_t, getdelim, (char **line, size_t *cap, int delim, FILE *f), (line, cap, delim, f))
+STDIO_LOCKED(FILE *, fdopen, (int fd, const char *mode), (fd, mode))
+STDIO_LOCKED(int, fclose, (FILE *f), (f))
+STDIO_LOCKED(int, fseek, (FILE *f, long off, int whence), (f, off, whence))
+STDIO_LOCKED(long, ftell, (FILE *f), (f))
+STDIO_LOCKED(int, vfprintf, (FILE *f, const char *fmt, va_list ap), (f, fmt, ap))

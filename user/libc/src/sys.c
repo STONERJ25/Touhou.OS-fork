@@ -1,5 +1,6 @@
 /* System call wrappers, process startup, environment, signals, and other thin POSIX glue. */
 #include "syscall_priv.h"
+#include "pthread_impl.h"
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,7 +20,7 @@
 #include <gensokyo.h>
 #include <limits.h>
 
-int errno;
+
 char **environ;
 
 extern int main(int argc, char **argv, char **envp);
@@ -55,6 +56,7 @@ void abort(void) {
 }
 
 void __libc_start(long *sp) {
+    __pthread_init_main();                      /* before anything can touch errno */
     int argc = (int)sp[0];
     char **argv = (char **)(sp + 1);
     environ = argv + argc + 1;
@@ -159,7 +161,23 @@ char *ttyname(int fd) {
 
 /* ---------------------------------------------------------------- processes */
 
-pid_t fork(void) { return (pid_t)__ret(__sc0(SYS_fork)); }
+extern volatile int __malloc_lock;
+extern RLock __stdio_lock;
+
+/* The child of a multi-threaded process has one thread, so the locks that other threads might have held at the moment of the
+ * fork would never be released: fork() takes the allocator and stdio locks itself and lets go of them on both sides. */
+pid_t fork(void) {
+    __fork_run_prepare();
+    __lock(&__malloc_lock);
+    __rlock(&__stdio_lock);
+    long r = __sc0(SYS_fork);
+    if (r == 0) __pthread_self()->tid = (int)__sc0(SYS_gettid);    /* the copy of the control block still has the parent's tid */
+    __runlock(&__stdio_lock);
+    __unlock(&__malloc_lock);
+    if (r == 0) __fork_run_child();
+    else if (r > 0) __fork_run_parent();
+    return (pid_t)__ret(r);
+}
 pid_t getpid(void) { return (pid_t)__sc0(SYS_getpid); }
 pid_t getppid(void) { return (pid_t)__sc0(SYS_getppid); }
 pid_t getpgid(pid_t p) { return (pid_t)__ret(__sc1(SYS_getpgid, p)); }
@@ -374,7 +392,7 @@ int sigfillset(sigset_t *s) { *s = ~0U; return 0; }
 int sigaddset(sigset_t *s, int sig) { *s |= 1U << sig; return 0; }
 int sigdelset(sigset_t *s, int sig) { *s &= ~(1U << sig); return 0; }
 int kill(pid_t pid, int sig) { return (int)__ret(__sc2(SYS_kill, pid, sig)); }
-int raise(int sig) { return kill(getpid(), sig); }
+int raise(int sig) { return (int)__ret(__sc3(SYS_tgkill, getpid(), gettid(), sig)); }     /* aimed at the calling thread */
 
 /* ---------------------------------------------------------------- environment */
 
