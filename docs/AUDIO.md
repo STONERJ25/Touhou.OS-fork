@@ -21,7 +21,7 @@ The sound system belongs to the Kappa/Nitori hardware crowd (kernel log tag `Nit
 | AC'97 driver | not written yet |
 | libaudio: device, WAV reader/writer, tone and noise generators, system sounds | done |
 | libaudio: chiptune synthesizer / sequencer and the procedural tracks | not written yet |
-| `beep`, `play`, `volume` | done |
+| `beep`, `play` (`-g MS` keeps the stream open between files), `volume` | done |
 | Reimu's Jukebox (GUI) | not written yet |
 | System sounds hooked into the shell, greeter, lock screen and dialogs | not hooked in yet (`beep -e login` plays them) |
 | Recording (capture) | not planned for the first round |
@@ -56,8 +56,11 @@ One kernel thread (`audio`, wakes every 5 ms while sound is playing, sleeps othe
 about 100 ms ahead of the play position:
 
 ```
-ring (16384 frames = 341 ms):  [ played: zeroed ][ hw reads here ... mixed audio ... produced ][ zeros ]
+ring (65536 frames = 1.4 s):  [ played: zeroed ][ hw reads here ... mixed audio ... produced ][ zeros ]
 ```
+
+The ring is long on purpose: the hardware keeps playing at wall-clock speed even when the (emulated) CPU is starved for a
+second, and the only stale sound it could ever repeat is what is still in the ring when it laps it.
 
 * For every stream it converts to 48 kHz stereo (linear interpolation, 16.16 fixed point), applies the stream volume and
   the master volume, and adds into a 32-bit accumulator. Everything is integer (the kernel has no SSE).
@@ -88,7 +91,7 @@ ring (16384 frames = 341 ms):  [ played: zeroed ][ hw reads here ... mixed audio
 5. Along every path: widgets that have power control go to D0, selectors and multi-input pins are pointed at the path,
    mixer inputs other than the path's are muted, output amplifiers are unmuted at their 0 dB step, the pin is enabled
    (`OUT_EN`, plus `HP_EN` on headphone drive capable pins) and its EAPD is switched on.
-6. One output stream, tag 1, 48 kHz 16-bit stereo, over a 64 KiB ring described by 16 buffer descriptors. All DACs used
+6. One output stream, tag 1, 48 kHz 16-bit stereo, over a 256 KiB ring described by 16 buffer descriptors. All DACs used
    by any enabled path listen to the same stream.
 7. Jack sensing (`GET_PIN_SENSE`, polled four times a second while playing): headphones plugged in silence the speaker
    and the rear line out; a plugged line out silences the speaker. Pins without presence detect count as plugged.
@@ -112,4 +115,18 @@ word, whether a jack is sensed, the path chosen, and `dmesg | grep Nitori` shows
 than wall time, so tests never depend on durations: they find the loud stretches and measure those. System sounds are
 switched off in the harness (`nosounds` is added to the command line) unless a test passes `sounds=True`.
 
-Covered so far: the HDA path end to end (a 440 Hz `beep` has the right pitch, level and purity).
+Covered so far (all on QEMU's `hda-output`; `python tests/run_all.py audio_`):
+
+* `audio_hda_tone` -- a 440 Hz `beep` has the right pitch, level (0.5 at volume 100) and purity; `/proc/audio` names the card.
+* `audio_mix_two_clients` -- two programs at once: both frequencies are present at the right level; two full-scale tones
+  that beat against each other are limited below full scale and never wrap around.
+* `audio_volume_and_mute` -- `volume` reads back, the quadratic curve (50 gives a quarter of the amplitude), mute, relative
+  changes, clamping, usage errors.
+* `audio_format_conversion` -- mono 22050 Hz 8-bit, stereo 44100 Hz 16-bit and mono 11025 Hz 24-bit streams come out at the
+  right pitch and level.
+* `audio_underrun_is_silence` -- `play -g 2000 a.wav b.wav` keeps the stream open and starved for two seconds: the gap in the
+  capture is exact silence, the underrun is counted in `/proc/audio`, both tones are intact.
+* `audio_no_device` -- no sound card: no `/dev/audio`, no `/proc/audio`, no `[Nitori]` log line, and `beep`, `play`
+  and `volume` say "no sound device" with status 1; `beep -o file.wav` still works.
+
+Not covered yet: AC'97, `hda-duplex`, the Jukebox, the system sounds in the desktop, the real Dell.

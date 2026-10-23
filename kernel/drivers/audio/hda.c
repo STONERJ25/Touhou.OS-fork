@@ -62,7 +62,7 @@
 #define MAX_PATH  8
 #define MAX_PINS  8
 #define STREAM_TAG 1
-#define RING_FRAMES 16384
+#define RING_FRAMES 65536                   /* 1.4 s: the host can stall the guest for a long time and the hardware keeps going */
 #define BDL_ENTRIES 16
 #define STREAM_FORMAT 0x0011                /* 48 kHz, 16 bits, 2 channels */
 
