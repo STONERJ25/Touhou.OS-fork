@@ -19,6 +19,7 @@ extern CpuInfo g_cpu;
 void cpu_init(void);
 void cpu_describe(char *buf, size_t cap);   /* "family 6 model 0x9e stepping 9, sse2 pat apic ..." for the boot log */
 u64  pte_wc_flags(void);                    /* page-table bits for write-combining memory (uncached when the CPU has no PAT) */
+const char *cpu_mtrr_type_name(paddr_t start, u64 len);   /* "UC", "WC", "WB", ... the firmware's MTRRs give this physical range */
 
 #define CPU_HAS_SSE2    (g_cpu.feat_edx & (1U << 26))
 #define CPU_HAS_PAT     (g_cpu.feat_edx & (1U << 16))

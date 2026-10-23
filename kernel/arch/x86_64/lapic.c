@@ -74,8 +74,37 @@ static void park_other_processors(void) {
         for (int i = 0; i < 1000 && (g_lapic[LAPIC_ICR_LO / 4] & (1u << 12)); i++) udelay(1);      /* delivery status: pending */
     }
     udelay(200);
-    klog("Gensokyo", "local APIC: %d other processor%s sent to wait-for-SIPI (only the boot processor is used)", acpi_cpu_count() - 1,
-         acpi_cpu_count() == 2 ? "" : "s");
+    klog("Alice", "local APIC: %d other processor%s sent to wait-for-SIPI (only the boot processor is used; the spare puppets stay in their box)",
+         acpi_cpu_count() - 1, acpi_cpu_count() == 2 ? "" : "s");
+}
+
+/*
+ * Interrupts reach this kernel through the 8259 PIC. The firmware may also have left I/O APIC inputs unmasked, aimed at vectors this
+ * kernel never asked for (a device could then interrupt twice, once through each controller, or at a vector with no handler).
+ * Every I/O APIC the MADT lists gets all its inputs masked, as Linux does before it takes the I/O APIC over.
+ */
+#define IOAPIC_REGSEL 0x00
+#define IOAPIC_WIN    0x10
+
+static void mask_ioapics(void) {
+    u32 addr[8];
+    int n = acpi_ioapics(addr, 8);
+    for (int i = 0; i < n; i++) {
+        volatile u32 *io = ioremap(addr[i], 0x1000, PTE_PCD);
+        if (!io) continue;
+        io[IOAPIC_REGSEL / 4] = 1;                                  /* version register: bits 23:16 = highest input */
+        u32 ver = io[IOAPIC_WIN / 4];
+        if (ver == 0xFFFFFFFFu || ver == 0) continue;               /* nothing answers at this address */
+        int inputs = (int)((ver >> 16) & 0xFF) + 1, unmasked = 0;
+        for (int e = 0; e < inputs; e++) {
+            io[IOAPIC_REGSEL / 4] = 0x10 + 2 * (u32)e;               /* redirection entry, low dword */
+            u32 lo = io[IOAPIC_WIN / 4];
+            if (lo & LVT_MASKED) continue;
+            unmasked++;
+            io[IOAPIC_WIN / 4] = lo | LVT_MASKED;
+        }
+        klog("Gensokyo", "I/O APIC at %#x: %d inputs, %d had been left unmasked by the firmware%s", addr[i], inputs, unmasked, unmasked ? " (masked now)" : "");
+    }
 }
 
 void lapic_virtual_wire(void) {
@@ -115,6 +144,7 @@ void lapic_virtual_wire(void) {
     klog("Gensokyo", "local APIC: %s mode, LINT0 was %#x, now ExtINT (the PIC reaches the boot processor)%s", g_x2apic ? "x2APIC" : "xAPIC", lint0,
          stuck ? " (the firmware had left interrupts in service; they were acknowledged)" : "");
     park_other_processors();
+    mask_ioapics();
 }
 
 /*

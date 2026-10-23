@@ -108,8 +108,9 @@ NORETURN void kmain(BootInfo *bi) {
     boot_mmap_report();
     vmm_init();
     fb_remap();                         /* the loader's direct-map alias of the framebuffer is gone now */
-    klog("Kappa", "framebuffer %ux%u at %#lx, pitch %u bytes, %s", g_boot.fb.width, g_boot.fb.height, (unsigned long)g_boot.fb.base,
-         g_boot.fb.pitch, g_fb.ready ? fb_cache_name() : "none (no graphics output was found)");
+    klog("Kappa", "framebuffer %ux%u at %#lx, pitch %u bytes, %s; the firmware's MTRR for it: %s", g_boot.fb.width, g_boot.fb.height,
+         (unsigned long)g_boot.fb.base, g_boot.fb.pitch, g_fb.ready ? fb_cache_name() : "none (no graphics output was found)",
+         g_fb.ready ? cpu_mtrr_type_name(g_boot.fb.base, (u64)g_boot.fb.pitch * g_boot.fb.height) : "-");
     klog("Boundary", "paging online: %lu MiB RAM, %lu MiB free", (unsigned long)(pmm_total_pages() >> 8),
          (unsigned long)(pmm_free_pages_count() >> 8));
     acpi_init();
@@ -138,10 +139,12 @@ NORETURN void kmain(BootInfo *bi) {
     /* Buses and device drivers. Each *_init is a weak no-op until a driver supplies it (see drivers/driver_stubs.c). */
     pci_init();
     pmm_reclaim_boot_memory();          /* only now: pci_init has switched off any DMA the firmware left running into that memory */
+    u64 t_storage = uptime_ms();
     virtio_blk_init();
     ahci_init();
     nvme_init();
     storage_mount_boot_volumes();
+    klog("Marisa", "storage probing took %lu ms", (unsigned long)(uptime_ms() - t_storage));      /* a spun-down disk can make this long: it is the usual reason for a slow boot */
     usb_init();
     run_initcalls();                    /* device nodes, sockets, ptys: everything registered with INITCALL() */
 
@@ -151,7 +154,7 @@ NORETURN void kmain(BootInfo *bi) {
     }
 
     process_init();
-    klog("Gensokyo", "boot complete");
+    klog("Gensokyo", "boot complete after %lu ms", (unsigned long)uptime_ms());
     printk("\n\x1b[1;35m Welcome to Gensokyo. \x1b[0m\n");
 
     char initpath[64] = "/sbin/init";

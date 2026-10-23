@@ -14,6 +14,7 @@
 #include "fb.h"
 #include "kernel.h"
 #include "mm.h"
+#include "cpu.h"
 #include "font8x16.h"
 
 #define MAX_COLS 256
@@ -366,10 +367,13 @@ void fbcon_clear(void) {
 }
 
 void fbcon_set_enabled(bool on) {
-    if (on == g_enabled) return;
-    g_enabled = on;
-    g_cursor_on = false;
-    if (on) fbcon_redraw();
+    u64 f = irq_save();                 /* callers (the window server's ioctls) run with interrupts on; a log line must not interleave */
+    if (on != g_enabled) {
+        g_enabled = on;
+        g_cursor_on = false;
+        if (on) fbcon_redraw();
+    }
+    irq_restore(f);
 }
 
 bool fbcon_enabled(void) { return g_enabled; }
@@ -377,6 +381,7 @@ bool fbcon_enabled(void) { return g_enabled; }
 /* The whole screen again, from the grid: after the window server gave the screen back, and for a kernel panic that must be seen. */
 void fbcon_redraw(void) {
     if (!g_enabled || !g_fb.ready) return;
+    u64 f = irq_save();
     int right = g_cols * FONT_W, bottom = g_rows * FONT_H;                  /* the strips the grid does not cover */
     if (right < (int)g_fb.width) fb_fill_rect(right, 0, (int)g_fb.width - right, (int)g_fb.height, DEFAULT_BG);
     if (bottom < (int)g_fb.height) fb_fill_rect(0, bottom, right, (int)g_fb.height - bottom, DEFAULT_BG);
@@ -384,6 +389,7 @@ void fbcon_redraw(void) {
     forget_screen();
     cursor_show();
     flush();
+    irq_restore(f);
 }
 
 /* A kernel panic has to show up on the screen even if the window server owns it: no serial port to read it from on a PC. */

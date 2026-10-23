@@ -125,7 +125,8 @@ void timer_verify(void) {
     u64 t0 = g_ticks;
     for (int i = 0; i < 400 && g_ticks == t0; i++) udelay(500);         /* 200 ms: a tick every millisecond is expected */
     if (g_ticks != t0) return;
-    klog("Sakuya", "no timer interrupt arrived in 200 ms: the PIT's IRQ0 is not reaching the CPU (no 8254, or the firmware's interrupt routing)");
+    klog("Sakuya", "no timer interrupt arrived in 200 ms: the PIT's IRQ0 is not reaching the CPU (no 8254, or the firmware's interrupt routing); "
+                   "the pocket watch has stopped");
     irq_mask(0);
     if (!lapic_timer_start(LAPIC_TIMER_VECTOR, TIMER_HZ)) {
         klog("Sakuya", "and there is no usable local APIC timer either: nothing can ever wake a sleeping task, the boot will stop here");
@@ -138,7 +139,7 @@ void timer_verify(void) {
         return;
     }
     g_tick_lapic = true;
-    klog("Sakuya", "the local APIC timer is the system tick now");
+    klog("Sakuya", "the local APIC timer is the system tick now (Sakuya winds a spare pocket watch)");
 }
 
 bool timer_is_lapic(void) { return g_tick_lapic; }

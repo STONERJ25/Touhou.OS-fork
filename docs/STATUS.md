@@ -16,7 +16,8 @@ $env:TOUHOU_CPU = "Skylake-Client-noTSX-IBRS"   # optional: run QEMU as a Skylak
 
 Needs (all installed on this machine): LLVM/Clang 22 (clang, ld.lld, lld-link, llvm-objcopy, llvm-ar), NASM, QEMU 11
 (bundles OVMF), Python 3.13 with Pillow/numpy. `tools/dev-shell.ps1` adds them to PATH for manual use.
-Running on a real PC: [REAL_HARDWARE.md](REAL_HARDWARE.md).
+Running on a real PC: [REAL_HARDWARE.md](REAL_HARDWARE.md); what was reviewed for it, what was fixed and what can only be checked on the
+machine: [HARDWARE_AUDIT.md](HARDWARE_AUDIT.md).
 
 ## What exists
 

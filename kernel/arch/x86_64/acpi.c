@@ -52,6 +52,8 @@ static struct {
     Gas reset_reg;
     u8 reset_value;
     int cpus;
+    u32 ioapic[8];                      /* MADT: register window addresses of the I/O APICs */
+    int nioapic;
     u16 pm_tmr;                         /* PM timer I/O port (3.579545 MHz), 0 = none */
     bool tmr_wide;                      /* the timer counts 32 bits instead of 24 */
     int bad_checksums, tables;          /* tables seen / tables whose checksum did not add up (used anyway, like Linux does) */
@@ -157,11 +159,19 @@ static void parse_fadt(const SdtHeader *t) {
 
 static void parse_madt(const SdtHeader *t) {
     const u8 *p = (const u8 *)t + 44, *end = (const u8 *)t + t->length;
-    while (p + 2 <= end && p[1] >= 2) {
+    while (p + 2 <= end && p[1] >= 2 && p + p[1] <= end) {
         if (p[0] == 0 && p[1] >= 8 && (*(const u32 *)(p + 4) & 3)) A.cpus++;               /* processor local APIC: enabled / online-capable */
         else if (p[0] == 9 && p[1] >= 16 && (*(const u32 *)(p + 8) & 3)) A.cpus++;         /* x2APIC */
+        else if (p[0] == 1 && p[1] >= 12 && A.nioapic < 8) A.ioapic[A.nioapic++] = *(const u32 *)(p + 4);     /* I/O APIC: its register window */
         p += p[1];
     }
+}
+
+/* The I/O APICs the firmware describes (physical addresses of their register windows); returns how many, at most `max`. */
+int acpi_ioapics(u32 *addrs, int max) {
+    int n = A.nioapic < max ? A.nioapic : max;
+    for (int i = 0; i < n; i++) addrs[i] = A.ioapic[i];
+    return n;
 }
 
 void acpi_init(void) {

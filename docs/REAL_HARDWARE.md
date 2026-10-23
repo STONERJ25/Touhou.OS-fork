@@ -55,7 +55,10 @@ cat /proc/acpi         what ACPI told us          cat /proc/usb        the USB d
 cat /proc/partitions   disks the kernel sees      cat /proc/ahci /proc/nvme   storage controller state
 ```
 
-Photograph the screen if the machine dies before a shell exists; the last lines of the log say where.
+Photograph the screen if the machine dies before a shell exists; the last lines of the log say where. The log has one-line answers to
+"what machine is this": the CPU features, the memory map summary, the framebuffer mapping and its measured write speed, the ACPI tables
+read, how the TSC was calibrated, what the PS/2 controller and the USB ports hold. [HARDWARE_AUDIT.md](HARDWARE_AUDIT.md) lists them,
+what each should look like, and everything that was reviewed for this machine (and what could not be checked without it).
 
 ## 4. The command line (`cmdline.txt` on the ESP)
 
@@ -76,6 +79,12 @@ clock is hours off on the first boot, the PC's clock chip holds local time (Wind
 | `rtc=local` | the clock chip keeps local time (a PC that also runs Windows does that) |
 | `nohumanvillage` | do not mount the HUMANVILLAGE volume |
 | `init=kshell` | skip userland, start the kernel's own tiny shell |
+| `fb.cache=uc` | map the framebuffer uncached instead of write-combining: only for comparing the `framebuffer speed` log line when the screen feels slow |
+| `fairyd.copy=rep`, `fairyd.damage=bbox` | the window server's old drawing paths (byte-string copy, one damage rectangle): for comparing `/tmp/fairyd.stat` |
+| `usb=debug` | log every USB enumeration step; `usb=off` leaves USB alone |
+
+The loader cleans the file up (a UTF-8 byte order mark, UTF-16, CRLF line ends, several lines and tabs all become single spaces), so
+any editor will do. If there is no `cmdline.txt` at all the loader uses `video=native blk.ro`.
 
 ## 5. What touches your disks
 
@@ -91,6 +100,10 @@ clock is hours off on the first boot, the PC's clock chip holds local time (Wind
 ## 6. Known gaps and things to try if it does not work
 
 - **No picture after the loader**: add `video=1024x768` (a mode every GOP offers), or `text`.
+- **The text console or the desktop is slow**: the `framebuffer speed` log line says how fast the screen memory takes writes (hundreds of
+  MB/s or more is healthy). Boot once with `fb.cache=uc` and compare; on the desktop `cat /tmp/fairyd.stat` shows what a frame costs
+  (compose = painting in RAM, flush = writing the screen).
+- **Frozen right after the picture appears, or a reset a few seconds later**: see the checklist at the end of [HARDWARE_AUDIT.md](HARDWARE_AUDIT.md).
 - **Keyboard or mouse dead**: try another USB port without a hub; `cat /proc/usb` (from a USB device you do have, or
   read the log lines `[Kappa] xhci ...` on screen) shows whether the controller started and what it saw.
 - **Wrong time**: `rtc=local` and `tz=`; fix the chip with `sudo hwclock -w` (see [POWER_AND_TIME.md](POWER_AND_TIME.md)).
