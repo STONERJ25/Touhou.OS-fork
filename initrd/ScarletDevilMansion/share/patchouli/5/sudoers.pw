@@ -1,0 +1,15 @@
+.page sudoers 5 who may borrow root's power
+
+# DESCRIPTION
+`/Hakurei/etc/sudoers` is read by sudo(1) (also called `eiki`). Each line names one rule; `#` starts a comment:
+
+    name                a user
+    name NOPASSWD       the same, without asking for a password
+    %group              everyone in a group
+    %group NOPASSWD
+    ALL                 everybody
+
+A caller who matches no line is refused. One who matches is asked for their own password if they have one, unless the rule says `NOPASSWD`; root is never asked. The shipped file lets `root` and `marisa` in (she borrows everything anyway).
+
+# SEE ALSO
+sudo(1), su(1), accounts(7)

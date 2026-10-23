@@ -1,0 +1,20 @@
+.page clock 7 time, time zones and the clock chip
+
+# DESCRIPTION
+The kernel reads the battery-backed clock chip (the CMOS clock) once at boot and keeps time itself from then on, in UTC, as seconds since 1970. Programs show that time in a **time zone** (see timezone(5)): `localtime`, `mktime`, `strftime`, date(1) and `ls -l` all follow `TZ`, `/Hakurei/etc/timezone` or the `tz=` word on the kernel command line.
+
+# THE CHIP
+The chip normally holds UTC. A PC that also runs Windows keeps *local* time in it instead, which makes the clock wrong by the zone's offset; boot with `rtc=local` (and `tz=`) and `init`(8) corrects the system clock, or fix the chip itself:
+
+    sudo date -s '2026-10-23 14:05:09'     set the system clock (in the current zone)
+    sudo hwclock -w                        write the system clock to the chip, as UTC
+    sudo hwclock -w --localtime            ... or as local time
+    sudo hwclock -s --localtime            set the system clock from a local-time chip
+
+`/proc/rtc` shows what the chip holds right now, read as if it were UTC.
+
+# NOTES
+There is no network time yet; the clock is as good as the chip. Under QEMU the chip starts at the host's UTC time.
+
+# SEE ALSO
+date(1), hwclock(8), timezone(5), init(8), power(7)

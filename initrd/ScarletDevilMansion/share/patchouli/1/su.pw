@@ -1,0 +1,20 @@
+.page su 1 become another user
+
+# SYNOPSIS
+*su* [*-*] [*-c* _COMMAND_] [_USER_]
+
+# DESCRIPTION
+`su` starts a shell as _USER_, or as `root` when no name is given. It is installed setuid root. Root may become anyone without a password; everyone else needs the password of the account they want, unless that account has none (an empty password field in shadow(5)), and gets three tries. A locked account (`!`) cannot be entered this way. The account's groups, home directory and shell are used, and `HOME`, `USER`, `LOGNAME` and `SHELL` are set.
+
+# OPTIONS
+@ *-c* _COMMAND_
+    Run the shell with `-c COMMAND` and exit with its status.
+@ *-*, *-l*
+    Accepted for compatibility; the shell is always started as a login shell (`-l`) unless *-c* is used.
+
+# EXAMPLES
+    su marisa -c id
+    su -
+
+# SEE ALSO
+sudo(1), login(1), passwd(1), shadow(5), accounts(7)

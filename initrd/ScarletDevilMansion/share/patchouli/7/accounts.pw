@@ -1,0 +1,43 @@
+.page accounts 7 who lives here, how they get in, and what keeps them apart
+
+# DESCRIPTION
+Every process has an owner, every file has an owner and permission bits, and a few programs (`su`, `sudo`, `passwd`, the lock's helper) run with root's authority through the setuid bit. This page is the overview; the details are in the pages it names.
+
+# WHO LIVES HERE
+@ root (0)
+    Yukari Yakumo, the boundary itself. The account is locked; use sudo(1).
+@ reimu (1000)
+    Reimu Hakurei, the default resident. No password until she sets one.
+@ marisa (1001)
+    Marisa Kirisame. In sudoers(5): she borrows everything anyway.
+@ sakuya (1002)
+    Sakuya Izayoi.
+@ sumireko (1003)
+    Sumireko Usami, an outsider: no seat at the shrine, so no desktop and no power button.
+
+The files are passwd(5), group(5), shadow(5) and sudoers(5). `adduser` and `deluser` (adduser(8)) add and remove residents.
+
+# THE SEAT
+The group `shrine` (gid 100) decides who sits at the machine: its members may use the display and input devices, so they can run the desktop, and may restart or power off the machine. Everyone else is refused with *Operation not permitted* and the machine keeps running.
+
+# GETTING IN
+`init`(8) runs the door: reimu's desktop by default, or the login screen (`login` on the kernel command line), or the text prompt login(1) on a machine without a display. Logging out of the desktop returns to the door, and whatever the previous resident left running is sent home.
+
+The login screen lists the residents who have a seat. A wrong password makes the card shake its head and shuts the gate for a moment; the attempt is written to the log.
+
+# LOCKING THE SCREEN
+*Start -> Lock screen*, the desktop menu or Super+L runs hakurei-lock(1): a full-screen window nothing can get in front of, with every shortcut switched off, until the right password is typed. The password is checked by pwcheck(8), a small setuid helper that only answers for the user who runs it.
+
+# BORROWING POWER
+@ su(1)
+    Become another user.
+@ sudo(1) (eiki)
+    Run one command as root, if sudoers(5) allows it. The refusal is *"reimu is not in the sudoers file. This incident will be reported to Eiki."*
+@ passwd(1)
+    Change a password.
+
+# FOR THE CURIOUS
+Passwords are salted SHA-256 hashes: good enough to keep the residents out of each other's accounts, not a defence against someone holding a copy of shadow(5). Nothing is persistent yet: `/Hakurei/etc` lives in memory and is rebuilt from the boot image at each start. Directories with the sticky bit (`/BambooForest` and `/Netherworld`) let everyone create entries but only the owner (or root) remove them.
+
+# SEE ALSO
+login(1), su(1), sudo(1), passwd(1), hakurei-lock(1), init(8), adduser(8), pwcheck(8), passwd(5), group(5), shadow(5), sudoers(5)

@@ -1,0 +1,17 @@
+.page power 7 switching off, restarting and the power button
+
+# DESCRIPTION
+The kernel reads the machine's ACPI tables at boot (`cat /proc/acpi` shows what it found) to learn how to close the shrine properly: the power-management registers and the sleep type that means "soft off", the register that resets the machine, how many processors there are, and whether the power button is a fixed hardware button. There is no AML interpreter; every PC firmware describes these the same way.
+
+@ poweroff(8), halt(8), shutdown(8)
+    Flush the filesystems and enter soft-off. Under QEMU the same call stops the virtual machine.
+@ reboot(8)
+    Reset through the firmware's reset register, then the PCI reset control, then the keyboard controller; as a last resort the processor is made to triple-fault.
+@ the power button
+    A kernel thread watches the button. On the desktop one press opens the *Leave the shrine?* dialog, and a second press powers off. On the login screen one press powers off. With no window server running the machine powers off at once.
+
+# WHO MAY
+Root and the members of the group `shrine` (the people who have a seat at the machine, see accounts(7)). Anyone else gets *Operation not permitted* and the machine keeps running.
+
+# SEE ALSO
+poweroff(8), reboot(8), accounts(7), clock(7)

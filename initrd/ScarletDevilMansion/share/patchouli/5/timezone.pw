@@ -1,0 +1,21 @@
+.page timezone 5 the time zone
+
+# DESCRIPTION
+The system clock counts seconds since 1970 in UTC; what a program shows is that time moved into a **time zone**. The zone is taken from the environment variable `TZ`, else the first line of `/Hakurei/etc/timezone`, else it is UTC. The kernel command line word `tz=ZONE` makes `init` set `TZ` for every session.
+
+The syntax is the POSIX one:
+
+    NAME OFFSET [DSTNAME [OFFSET] [,START[/TIME],END[/TIME]]]
+
+NAME is three or more letters (or anything in angle brackets); OFFSET is hours, with optional `:minutes`, **west** of Greenwich (so Japan is `-9`). Rules look like `Mm.w.d`: month m, week w (5 means the last), weekday d (0 is Sunday); the time defaults to 02:00 local. With a DST name and no rules the United States ones are used.
+
+    UTC
+    JST-9
+    EST5EDT,M3.2.0,M11.1.0
+    CET-1CEST,M3.5.0,M10.5.0/3
+    AEST-10AEDT,M10.1.0,M4.1.0/3
+
+A zone that cannot be understood means UTC. `localtime`, `mktime`, `strftime` (`%Z`, `%z`), date(1), `ls -l` and the clocks on the panel and the lock screen all follow it. To choose a zone for good, put it in `initrd/Hakurei/etc/timezone` before building the image, or in `cmdline.txt` as `tz=...`.
+
+# SEE ALSO
+date(1), hwclock(8), clock(7), init(8)
