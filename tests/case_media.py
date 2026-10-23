@@ -74,6 +74,15 @@ def media_esp(files, name):
     return esp
 
 
+_WATCHED = {}
+
+
+def watch(g):
+    """Remembers the Gui of the running test so that wait_for can save a screenshot when it gives up."""
+    _WATCHED["g"] = g
+    return g
+
+
 def wait_for(fn, timeout=60, interval=0.5, what="the condition"):
     end = time.time() + timeout
     while True:
@@ -81,6 +90,12 @@ def wait_for(fn, timeout=60, interval=0.5, what="the condition"):
         if v:
             return v
         if time.time() > end:
+            g = _WATCHED.get("g")
+            if g:
+                try:
+                    g.shot("timeout")
+                except Exception:  # noqa: BLE001
+                    pass
             raise AssertionError(f"timed out waiting for {what}")
         time.sleep(interval)
 
@@ -603,11 +618,55 @@ def solid(w, h, color, mark=None):
 
 
 RED, GREEN, BLUE, YELLOW = (230, 20, 30), (20, 200, 40), (30, 40, 230), (240, 220, 20)
-VIEW_CENTER = (444, 372)          # the middle of the picture area of a Gallery window opened first on a 1024x768 screen
+VIEW_BG = (0x14, 0x18, 0x2C)       # the Gallery's picture area
+DESK = (30, 520)                   # a spot of bare desktop: left of every window (they open at x >= 40), below the icons, above the panel
 
 
-def centre_is(g, rgb, tol=12):
-    return near(g.pixel(*VIEW_CENTER), rgb, tol)
+class View:
+    """Finds the Gallery's picture area on the screen (a new window opens a little further down and right than the last one,
+    so its position is looked up from the pixels, not assumed) and reads pixels relative to its middle."""
+
+    def __init__(self, g):
+        self.g = g
+        self.cx = self.cy = None
+
+    def locate(self, timeout=120):
+        def look():
+            w, h, rgb = self.g.screen()
+            minx = miny = 10 ** 6
+            maxx = maxy = -1
+            for y in range(0, h, 4):
+                row = y * w * 3
+                for x in range(0, w, 4):
+                    i = row + x * 3
+                    if abs(rgb[i] - VIEW_BG[0]) <= 2 and abs(rgb[i + 1] - VIEW_BG[1]) <= 2 and abs(rgb[i + 2] - VIEW_BG[2]) <= 2:
+                        minx, maxx, miny, maxy = min(minx, x), max(maxx, x), min(miny, y), max(maxy, y)
+            if maxx - minx >= 500 and maxy - miny >= 300:
+                self.cx, self.cy = (minx + maxx) // 2, (miny + maxy) // 2
+                return True
+            return False
+        wait_for(look, timeout, what="the Gallery window")
+
+    def shot(self):
+        return self.g.screen()
+
+    def has(self, shot, dx, dy, rgb, tol=12):
+        return near(self.g.pixel(self.cx + dx, self.cy + dy, shot), rgb, tol)
+
+    def centre_is(self, rgb, tol=12):
+        return self.has(self.g.screen(), 0, 0, rgb, tol)
+
+    def wait_centre(self, rgb, what, timeout=90):
+        wait_for(lambda: self.centre_is(rgb), timeout, what=what)
+
+
+def launch(g, args):
+    g.sh("pkill gallery; true")
+    time.sleep(0.5)
+    g.vm.send(f"gallery {args} &\n")
+    v = View(g)
+    v.locate()
+    return v
 
 
 @gui_test
@@ -628,59 +687,62 @@ def media_gallery():
     files["media/bad.png"] = solid(50, 50, RED)[:90]
     esp = media_esp(files, "esp-media-gal")
     with Qemu(cmdline="text", name="t-media-gal", esp=esp, mem="768M") as vm:
-        g = Gui(vm)
+        g = watch(Gui(vm))
         g.start_desktop()
-        vm.send("gallery --trace /media/pics/01-red.png > /tmp/gallery.log 2>&1 &\n")
-        wait_for(lambda: centre_is(g, RED), 120, what="the first picture on the screen")
-        shot = g.screen()
+        v = launch(g, "--trace /media/pics/01-red.png > /tmp/gallery.log 2>&1")
+        v.wait_centre(RED, "the first picture on the screen")
+        shot = v.shot()
         # the picture is 300 x 200 at 100% in the middle of the view: its corners are red, the margin dark
-        assert near(g.pixel(444 - 140, 372 - 90, shot), RED, 12) and not near(g.pixel(444 - 200, 372, shot), RED, 40), "the picture should sit in the middle at 100%"
+        assert v.has(shot, -140, -90, RED) and v.has(shot, 140, 90, RED) and not v.has(shot, -200, 0, RED, 40), "the picture should sit in the middle at 100%"
         g.shot("gallery-red")
         # --- folder navigation: the folder holds three pictures; numbers sort as numbers (10 after 02), the text file is ignored
         g.key("right")
-        wait_for(lambda: centre_is(g, GREEN), 60, what="the second picture")
+        v.wait_centre(GREEN, "the second picture")
         g.key("right")
-        wait_for(lambda: centre_is(g, BLUE), 60, what="the third picture")
+        v.wait_centre(BLUE, "the third picture")
         g.key("right")
-        wait_for(lambda: centre_is(g, RED), 60, what="wrapping around to the first picture")
+        v.wait_centre(RED, "wrapping around to the first picture")
         g.key("left")
-        wait_for(lambda: centre_is(g, BLUE), 60, what="the previous picture (wrapping)")
+        v.wait_centre(BLUE, "the previous picture (wrapping)")
         g.key("home")
-        wait_for(lambda: centre_is(g, RED), 60, what="Home")
+        v.wait_centre(RED, "Home")
         g.key("end")
-        wait_for(lambda: centre_is(g, BLUE), 60, what="End")
+        v.wait_centre(BLUE, "End")
         log = g.sh("cat /tmp/gallery.log")
         assert "open /media/pics/01-red.png PNG 300x200" in log and "open /media/pics/02-green.png" in log and "open /media/pics/10-blue.png" in log, log
         # --- zoom: 100% shows the 300 wide picture; "2" shows it at 200%, so the span doubles; 0 fits again
         g.key("home")
-        wait_for(lambda: centre_is(g, RED), 60, what="back to red")
+        v.wait_centre(RED, "back to red")
 
-        def span_edge(x):
-            return near(g.pixel(x, VIEW_CENTER[1]), RED, 20)
+        def red_at(dx):
+            return v.has(v.shot(), dx, 0, RED, 20)
 
-        assert span_edge(444 + 140) and not span_edge(444 + 190), "at 100% the picture ends 150 pixels from the middle"
+        assert red_at(140) and not red_at(190), "at 100% the picture ends 150 pixels from the middle"
         g.key("2")
-        wait_for(lambda: span_edge(444 + 190), 30, what="200% zoom")
-        assert not span_edge(444 + 310)
+        wait_for(lambda: red_at(190), 30, what="200% zoom")
+        assert not red_at(310)
         g.key("0")
-        wait_for(lambda: not span_edge(444 + 190), 30, what="fit")
+        wait_for(lambda: not red_at(190), 30, what="fit")
         # --- rotate and flip on an asymmetric picture
-        g.sh("pkill gallery; true")
-        vm.send("gallery --trace /media/wide.png > /tmp/gallery2.log 2>&1 &\n")
-        left, right = (444 - 100, 372), (444 + 100, 372)
-        wait_for(lambda: near(g.pixel(*left), RED, 12) and near(g.pixel(*right), BLUE, 12), 120, what="the wide picture (red left, blue right)")
+        v = launch(g, "--trace /media/wide.png > /tmp/gallery2.log 2>&1")
+        L, R, T, B = (-100, 0), (100, 0), (0, -100), (0, 100)
+
+        def colours(*spec):
+            sh = v.shot()
+            return all(v.has(sh, dx, dy, c) for (dx, dy), c in spec)
+
+        wait_for(lambda: colours((L, RED), (R, BLUE)), 120, what="the wide picture (red left, blue right)")
         g.key("h")                                                    # flip horizontally: blue left, red right
-        wait_for(lambda: near(g.pixel(*left), BLUE, 12) and near(g.pixel(*right), RED, 12), 30, what="horizontal flip")
+        wait_for(lambda: colours((L, BLUE), (R, RED)), 30, what="horizontal flip")
         g.key("h")
-        wait_for(lambda: near(g.pixel(*left), RED, 12), 30, what="flipped back")
+        wait_for(lambda: colours((L, RED), (R, BLUE)), 30, what="flipped back")
         g.key("r")                                                    # rotate right: red ends up on top
-        top, bottom = (444, 372 - 100), (444, 372 + 100)
-        wait_for(lambda: near(g.pixel(*top), RED, 12) and near(g.pixel(*bottom), BLUE, 12), 30, what="rotation to the right")
+        wait_for(lambda: colours((T, RED), (B, BLUE)), 30, what="rotation to the right")
         g.key("l")
         g.key("l")                                                    # two left turns from "right" = left: red at the bottom
-        wait_for(lambda: near(g.pixel(*bottom), RED, 12) and near(g.pixel(*top), BLUE, 12), 30, what="rotation to the left")
+        wait_for(lambda: colours((B, RED), (T, BLUE)), 30, what="rotation to the left")
         g.key("v")                                                    # a vertical flip on the screen: red goes to the top again
-        wait_for(lambda: near(g.pixel(*top), RED, 12), 30, what="vertical flip")
+        wait_for(lambda: colours((T, RED), (B, BLUE)), 30, what="vertical flip")
         g.shot("gallery-rotated")
         # --- a broken file is explained, not fatal
         g.sh("pkill gallery; true")
@@ -688,43 +750,42 @@ def media_gallery():
         wait_for(lambda: "error /media/bad.png" in g.sh("cat /tmp/gallery3.log"), 120, what="the error for a truncated picture")
         assert "truncated" in g.sh("cat /tmp/gallery3.log"), g.sh("cat /tmp/gallery3.log")
         # --- animated GIF: the centre cycles through the three colours
-        g.sh("pkill gallery; true")
-        vm.send("gallery /media/anim.gif &\n")
+        v = launch(g, "/media/anim.gif")
         seen = set()
 
         def cycles():
+            sh = v.shot()
             for name, col in (("r", RED), ("g", GREEN), ("b", BLUE)):
-                if near(g.pixel(*VIEW_CENTER), col, 12):
+                if v.has(sh, 0, 0, col):
                     seen.add(name)
             return len(seen) == 3
 
-        wait_for(cycles, 120, interval=0.15, what="all three frames of the animated GIF")
-        # --- slideshow: starts moving without a key
-        g.sh("pkill gallery; true")
-        vm.send("gallery --slideshow 1 /media/pics/01-red.png &\n")
+        wait_for(cycles, 120, interval=0.1, what="all three frames of the animated GIF")
+        # --- slideshow: moves on without a key
+        v = launch(g, "--slideshow 1 /media/pics/01-red.png")
         seen.clear()
 
         def slides():
+            sh = v.shot()
             for name, col in (("r", RED), ("g", GREEN), ("b", BLUE)):
-                if near(g.pixel(*VIEW_CENTER), col, 12):
+                if v.has(sh, 0, 0, col):
                     seen.add(name)
             return len(seen) >= 2
 
         wait_for(slides, 180, interval=0.3, what="the slideshow to move on by itself")
         # --- set as wallpaper
         g.key("esc")                                                  # stops the slideshow
-        g.sh("pkill gallery; true")
-        vm.send("gallery /media/wall.png &\n")
-        wait_for(lambda: near(g.pixel(*VIEW_CENTER), (10, 90, 200), 12), 120, what="the wallpaper picture in the Gallery")
-        before = g.pixel(980, 300)
+        v = launch(g, "/media/wall.png")
+        v.wait_centre((10, 90, 200), "the wallpaper picture in the Gallery", 120)
+        before = g.pixel(*DESK)
         g.key("w")
         conf = wait_for(lambda: (lambda t: t if "/media/wall.png" in t else "")(g.sh("cat ~/.config/hakurei/wallpaper 2>&1")), 60, what="the wallpaper setting file")
         assert "cover" in conf, conf
-        wait_for(lambda: near(g.pixel(980, 300), (10, 90, 200), 12), 120, what="the desktop to show the new wallpaper")
+        wait_for(lambda: near(g.pixel(*DESK), (10, 90, 200), 12), 120, what="the desktop to show the new wallpaper")
         assert not near(before, (10, 90, 200), 30), "the wallpaper pixel should have changed"
         out = g.sh("wallpaper -c; wallpaper")
         assert "night scene" in out, out
-        wait_for(lambda: not near(g.pixel(980, 300), (10, 90, 200), 30), 120, what="the desktop to go back to the built-in scene")
+        wait_for(lambda: not near(g.pixel(*DESK), (10, 90, 200), 30), 120, what="the desktop to go back to the built-in scene")
         g.shot("gallery-done")
 
 
@@ -732,7 +793,7 @@ def media_gallery():
 def media_screenshot():
     """Ctrl+F12 and the screenshot command write PNG files into ~/Pictures (named by date and time); the PNG holds the same pixels as /tmp/screenshot.ppm; wallpaper modes work."""
     with Qemu(cmdline="text", name="t-media-shot", mem="768M") as vm:
-        g = Gui(vm)
+        g = watch(Gui(vm))
         g.start_desktop()
         g.sh("rm -f /tmp/screenshot.ppm; ls ~/Pictures 2>&1 | head -2")
         g.key("f12", ctrl=True)
