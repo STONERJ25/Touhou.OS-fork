@@ -178,7 +178,7 @@ static const Row k_right[] = {
     { "Double click", "Select a word" }, { "Triple click", "Select a line" }, { "Click a number", "Select a line" },
     { "Wheel", "Scroll, Shift: sideways" },
     { "WINDOW", NULL },
-    { "Alt+F E V H", "Open a menu" }, { "F1", "This list" }, { "Esc", "Close the find bar" },
+    { "Alt+F E V H, F10", "Open a menu" }, { "Arrows, Enter", "Move in a menu" }, { "F1", "This list" }, { "Esc", "Close a menu, the find bar" },
 };
 
 static KWin *g_help;

@@ -412,13 +412,13 @@ void ed_select_all(Editor *e) {
 
 void ed_insert_text(Editor *e, const char *s, size_t n) {
     char *tmp = NULL;
-    if (memchr(s, '\r', n)) {                                   /* pasted CRLF / CR text becomes LF */
+    if (memchr(s, '\r', n) || memchr(s, 0, n)) {                /* pasted CRLF / CR text becomes LF; zero bytes would make the file "binary" */
         tmp = malloc(n + 1);
         if (!tmp) { msg_set("Out of memory: Yuyuko is hungry."); return; }
         size_t m = 0;
         for (size_t i = 0; i < n; i++) {
             if (s[i] == '\r') { tmp[m++] = '\n'; if (i + 1 < n && s[i + 1] == '\n') i++; }
-            else tmp[m++] = s[i];
+            else if (s[i] != 0) tmp[m++] = s[i];
         }
         s = tmp;
         n = m;

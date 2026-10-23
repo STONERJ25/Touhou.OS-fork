@@ -142,10 +142,12 @@ static bool load_path(const char *path_in, bool must_exist) {
     }
     long nul = nb_find_nul(data, len);
     if (nul >= 0) {
+        bool utf16 = len >= 2 && (((unsigned char)data[0] == 0xFF && (unsigned char)data[1] == 0xFE) || ((unsigned char)data[0] == 0xFE && (unsigned char)data[1] == 0xFF));
         free(data);
         nb_trace("refused binary %s", path);
         char msg[NB_PATH_MAX + 260];
-        snprintf(msg, sizeof msg, "%s\n\nThis looks like a binary file (it has a zero byte at position %ld). Notebook only edits text, so it was not opened.", path, nul);
+        if (utf16) snprintf(msg, sizeof msg, "%s\n\nThis file is UTF-16 text. Notebook only edits UTF-8 text, so it was not opened.", path);
+        else snprintf(msg, sizeof msg, "%s\n\nThis looks like a binary file (it has a zero byte at position %ld). Notebook only edits text, so it was not opened.", path, nul);
         dlg_message(A.app, "Not a text file", msg, KI_WARNING);
         return false;
     }
@@ -597,6 +599,8 @@ static void do_action(int a) {
 
 /* ---------------------------------------------------------------- shortcuts */
 
+static void mb_open(KUI *ui, int m);
+
 static bool app_shortcut(KUI *ui, KKey *k) {
     bool ctrl = (k->mods & MOD_CTRL) != 0, shift = (k->mods & MOD_SHIFT) != 0, alt = (k->mods & MOD_ALT) != 0;
     if (ctrl && !alt) {
@@ -618,11 +622,12 @@ static bool app_shortcut(KUI *ui, KKey *k) {
             return true;
         }
         if (k->code == KEY_F1) { dlg_help(A.app); return true; }
+        if (k->code == KEY_F10) { mb_open(ui, ui->menu_open ? 0 : 1); return true; }
         if (k->code == KEY_ESC && A.find_open && !ui->menu_open) { find_close(); return true; }
     }
     if (alt && !ctrl && !shift) {
         int m = k->code == KEY_F ? 1 : k->code == KEY_E ? 2 : k->code == KEY_V ? 3 : k->code == KEY_H ? 4 : 0;
-        if (m) { ui->menu_open = ui->menu_open == m ? 0 : m; return true; }
+        if (m) { mb_open(ui, ui->menu_open == m ? 0 : m); return true; }
     }
     return false;
 }
@@ -658,6 +663,7 @@ static void draw_status(KUI *ui, KRect r) {
     int px = r.x + 8;
     kc_text(cv, px, ty, pos, th->text);
     int left_end = px + kc_text_width(pos) + 16;
+    if (k_hover(ui, kr(r.x, r.y, left_end, r.h))) k_tooltip_text(ui, A.has_path ? A.path : "This page has no file yet");
 
     char sz[40], lines[32], eol[24];
     fmt_size(sz, sizeof sz, saved_size());
@@ -714,6 +720,129 @@ static void draw_status(KUI *ui, KRect r) {
         KRect mr = kr(left_end, ty - 2, right_start - left_end - 6, 20);
         if (mr.w > 16) kc_text_in(cv, mr, "Read-only", th->accent_dark, KA_LEFT);
     }
+}
+
+/* ---------------------------------------------------------------- menu bar (mouse and keyboard) */
+
+/* The stock k_menubar only knows the mouse. This one draws the same bar and drop-downs but also takes Alt+letter, the arrow
+ * keys, Home/End, Enter and Esc. ui->menu_open is the open menu (1-based), ui->menu_item_hover the highlighted item (-1: none). */
+
+static const char *const g_mb_titles[4] = { "File", "Edit", "View", "Help" };
+static int g_mb_act, g_mb_lastx = -1, g_mb_lasty = -1;
+
+static void mb_step(KUI *ui, int dir) {
+    int open = ui->menu_open;
+    if (!open) return;
+    int n = g_count[open - 1], i = ui->menu_item_hover;
+    for (int tries = 0; tries < n; tries++) {
+        i = i < 0 || i >= n ? (dir > 0 ? 0 : n - 1) : (i + dir + n) % n;
+        if (!g_items[open - 1][i].separator && !g_items[open - 1][i].disabled) { ui->menu_item_hover = i; return; }
+    }
+}
+
+static void mb_open(KUI *ui, int m) {
+    ui->menu_open = m;
+    ui->menu_item_hover = -1;
+}
+
+/* Returns true when the key belongs to the open menu (plain keys are swallowed while a menu is open). */
+static bool mb_key(KUI *ui, const KKey *k) {
+    int open = ui->menu_open;
+    if (!open || (k->mods & (MOD_CTRL | MOD_ALT))) return false;
+    int n = g_count[open - 1];
+    switch (k->code) {
+    case KEY_ESC: mb_open(ui, 0); break;
+    case KEY_LEFT: mb_open(ui, open == 1 ? 4 : open - 1); break;
+    case KEY_RIGHT: mb_open(ui, open == 4 ? 1 : open + 1); break;
+    case KEY_DOWN: mb_step(ui, 1); break;
+    case KEY_UP: mb_step(ui, -1); break;
+    case KEY_HOME: ui->menu_item_hover = -1; mb_step(ui, 1); break;
+    case KEY_END: ui->menu_item_hover = -1; mb_step(ui, -1); break;
+    case KEY_ENTER: case KEY_KPENTER: case KEY_SPACE:
+        if (ui->menu_item_hover >= 0 && ui->menu_item_hover < n) { g_mb_act = g_acts[open - 1][ui->menu_item_hover]; mb_open(ui, 0); }
+        break;
+    default: break;
+    }
+    return true;
+}
+
+/* Handles the pointer, draws the bar and the open drop-down; returns the chosen action (0: none). live: accept the pointer. */
+static int mb_run(KUI *ui, KRect bar, bool live) {
+    KCanvas *cv = &ui->cv;
+    const KTheme *th = ui->theme;
+    int act = g_mb_act;
+    g_mb_act = 0;
+    KRect tr[4];
+    int x = bar.x + 2;
+    for (int m = 0; m < 4; m++) {
+        int w = kc_text_width(g_mb_titles[m]) + 16;
+        tr[m] = kr(x, bar.y + 1, w, bar.h - 2);
+        x += w;
+    }
+    bool mouse = live && ui->mouse_inside;
+    bool moved = ui->mx != g_mb_lastx || ui->my != g_mb_lasty;
+    g_mb_lastx = ui->mx;
+    g_mb_lasty = ui->my;
+    int open = ui->menu_open;
+    bool over_bar = false;
+    for (int m = 0; m < 4; m++) {
+        bool hv = mouse && kr_contains(tr[m], ui->mx, ui->my);
+        if (hv) over_bar = true;
+        if (hv && ui->pressed[0]) { open = open == m + 1 ? 0 : m + 1; ui->menu_item_hover = -1; }
+        else if (hv && open && open != m + 1 && moved) { open = m + 1; ui->menu_item_hover = -1; }
+    }
+    ui->menu_open = open;
+    KRect box = kr(0, 0, 0, 0);
+    KRect irs[MAXI];
+    if (open) {
+        const KMenuItem *items = g_items[open - 1];
+        int n = g_count[open - 1], w = 0, h = 4;
+        for (int i = 0; i < n; i++) {
+            int iw = kc_text_width(items[i].label) + 36 + (items[i].shortcut ? kc_text_width(items[i].shortcut) + 24 : 0);
+            if (iw > w) w = iw;
+            h += items[i].separator ? 7 : 22;
+        }
+        box = kr(tr[open - 1].x, bar.y + bar.h + 1, w + 4, h);
+        int y = box.y + 2, over = -1;
+        for (int i = 0; i < n; i++) {
+            irs[i] = kr(box.x + 2, y, box.w - 4, items[i].separator ? 5 : 22);
+            y += items[i].separator ? 7 : 22;
+            if (mouse && !items[i].separator && !items[i].disabled && kr_contains(irs[i], ui->mx, ui->my)) over = i;
+        }
+        if (over >= 0 && moved) ui->menu_item_hover = over;
+        if (live && ui->released[0] && over >= 0) { act = g_acts[open - 1][over]; ui->menu_open = 0; }
+        else if (live && ui->pressed[0] && !kr_contains(box, ui->mx, ui->my) && !over_bar) { ui->menu_open = 0; ui->menu_item_hover = -1; }
+        if (act) ui->menu_open = 0;
+    }
+    /* the bar */
+    kc_fill(cv, bar, th->window_bg);
+    kc_hline(cv, bar.x, bar.y + bar.h - 1, bar.w, kc_shade(th->window_bg, 72));
+    kc_hline(cv, bar.x, bar.y + bar.h, bar.w, 0xFFFFFF);
+    bool underline = (ui->mods & MOD_ALT) != 0 || ui->menu_open;
+    for (int m = 0; m < 4; m++) {
+        bool hv = mouse && kr_contains(tr[m], ui->mx, ui->my);
+        if (ui->menu_open == m + 1) kc_panel(cv, tr[m], KB_SUNKEN, kc_shade(th->window_bg, 94));
+        else if (hv) kc_bevel(cv, tr[m], KB_RAISED);
+        kc_text_in(cv, tr[m], g_mb_titles[m], th->text, KA_CENTER);
+        if (underline) kc_hline(cv, tr[m].x + (tr[m].w - kc_text_width(g_mb_titles[m])) / 2, tr[m].y + 17, 8, th->text);
+    }
+    /* the drop-down, only if it is still open after the pointer was handled (otherwise it would linger on screen) */
+    if (ui->menu_open && ui->menu_open == open) {
+        const KMenuItem *items = g_items[open - 1];
+        int n = g_count[open - 1];
+        kc_fill(cv, kr(box.x + 3, box.y + 3, box.w, box.h), kc_shade(th->window_bg, 55));
+        kc_panel(cv, box, KB_RAISED, th->window_bg);
+        for (int i = 0; i < n; i++) {
+            if (items[i].separator) { k_separator(ui, kr(box.x + 6, irs[i].y + 2, box.w - 12, 2)); continue; }
+            bool hot = !items[i].disabled && ui->menu_item_hover == i;
+            if (hot) kc_fill(cv, irs[i], th->select_bg);
+            uint32_t fg = items[i].disabled ? th->text_dim : hot ? th->select_text : th->text;
+            if (items[i].icon) k_icon(cv, items[i].icon, irs[i].x + 4, irs[i].y + 3, 16);
+            kc_text(cv, irs[i].x + 26, irs[i].y + 3, items[i].label, fg);
+            if (items[i].shortcut) kc_text(cv, irs[i].x + irs[i].w - 8 - kc_text_width(items[i].shortcut), irs[i].y + 3, items[i].shortcut, fg);
+        }
+    }
+    return act;
 }
 
 /* ---------------------------------------------------------------- context menu (right click in the text) */
@@ -837,7 +966,7 @@ static void draw(KApp *app, KUI *ui, void *user) {
     KCanvas *cv = &ui->cv;
     int W = cv->w, H = cv->h;
     k_clear(ui);
-    if (!A.focus_init) { ui->focus = ED_ID; A.focus_init = true; }
+    if (!A.focus_init) { ui->focus = ED_ID; ui->menu_item_hover = -1; A.focus_init = true; }
     if (A.want_editor_focus) { ui->focus = ED_ID; A.want_editor_focus = false; }
     find_apply_focus(ui);
     reap_children();
@@ -861,6 +990,7 @@ static void draw(KApp *app, KUI *ui, void *user) {
         if (!k->down || !k->code) continue;
         if (modal) { k->down = 0; k->code = 0; continue; }
         if (g_cx.open) { cx_key(k); k->down = 0; k->code = 0; continue; }
+        if (ui->menu_open && mb_key(ui, k)) { k->down = 0; k->code = 0; continue; }
         if (app_shortcut(ui, k)) { k->down = 0; k->code = 0; continue; }
         if (ui->focus == ED_ID && !ui->menu_open && ed_key(&A.ed, ui, k)) { k->down = 0; k->code = 0; }
     }
@@ -885,16 +1015,19 @@ static void draw(KApp *app, KUI *ui, void *user) {
 
     /* menu bar last: its drop-down paints over everything */
     build_menus();
-    static const char *const titles[] = { "File", "Edit", "View", "Help" };
-    const KMenuItem *menus[4] = { g_items[0], g_items[1], g_items[2], g_items[3] };
     int menu_before = ui->menu_open;
-    if (modal || g_cx.open) ui->mouse_inside = false;
-    int pick = k_menubar(ui, kr(0, 0, W, mb_h), titles, menus, g_count, 4);
-    ui->mouse_inside = inside;
-    if (menu_before && !ui->menu_open) kapp_redraw(A.app);        /* the closing frame still shows the drop-down: paint again */
+    int pick = mb_run(ui, kr(0, 0, W, mb_h), !modal && !g_cx.open);
+    if (A.trace) {
+        static int last_menu = 0, last_item = -2;
+        if (ui->menu_open != last_menu || (ui->menu_open && ui->menu_item_hover != last_item)) {
+            last_menu = ui->menu_open;
+            last_item = ui->menu_item_hover;
+            nb_trace("menu %d item %d", ui->menu_open, ui->menu_open ? ui->menu_item_hover : -1);
+        }
+    }
+    if (menu_before && !ui->menu_open) kapp_redraw(A.app);        /* make sure the closed state is painted */
     if (pick) {
-        int m = (pick >> 8) - 1, it = (pick & 255) - 1;
-        if (m >= 0 && m < 4 && it >= 0 && it < g_count[m]) do_action(g_acts[m][it]);
+        do_action(pick);
         if (A.want_editor_focus) { ui->focus = ED_ID; A.want_editor_focus = false; }
         if (!A.find_open) ui->focus = ED_ID;
     }

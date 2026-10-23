@@ -63,7 +63,7 @@ argument). Start menu: **Patchouli's Notebook**. Window title: `Notebook - repor
 | Ctrl+Backspace / Ctrl+Delete | delete word before / after the caret |
 | Home / End | start (first non-blank, then column 1) / end of the line; with word wrap: of the row |
 | Ctrl+Home / Ctrl+End, PageUp / PageDown | start / end of the page, one screen |
-| Alt+F, Alt+E, Alt+V, Alt+H | open the File, Edit, View or Help menu |
+| Alt+F, Alt+E, Alt+V, Alt+H, F10 | open the File, Edit, View or Help menu (arrows, Home/End, Enter and Esc work inside; Left/Right switch menus) |
 | F1 | list of shortcuts |
 | Esc | close the find bar (and dialogs) |
 
@@ -94,6 +94,6 @@ applied on the way out.
   find and replace, CRLF / BOM / invalid UTF-8, the unsaved-changes dialog, overwrite questions, a 100,000 line file,
   binary / folder / read-only / empty / 1 MB single line files, word wrap and mouse selection, menus and recent files,
   preferences and syntax colours (pixel checks), context menu, paths and New Window.
-* Known limits: no multiple documents per window (use New Window), no regular expressions in Find, the menus cannot be
-  driven with the arrow keys (Alt+letter opens them, the mouse picks), no drag and drop of text, characters are one cell wide
-  (the 8x16 font has no wide glyphs and no combining marks).
+* Known limits: no multiple documents per window (use New Window), no regular expressions in Find, no drag and drop of
+  text, characters are one cell wide (the 8x16 font has no wide glyphs and no combining marks), a drop-down menu that does not
+  fit into a very small window is cut off at the window edge.

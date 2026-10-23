@@ -524,6 +524,39 @@ def notebook_context_menu():
 
 
 @test
+def notebook_menu_keys():
+    """Menus work from the keyboard: Alt+letter opens, arrows move, Enter picks, Esc closes, Right switches menus."""
+    with session("t-notebook-menukeys") as (vm, g):
+        make_demo(g)
+        launch(vm, "/tmp/demo.c")
+        g.key("e", alt=True)
+        vm.expect(r"nb: menu 2 item -1", timeout=10)
+        g.key("down")                                    # Undo, Redo, Cut and Copy are disabled: the first stop is Paste
+        vm.expect(r"nb: menu 2 item 5", timeout=10)
+        g.key("down")
+        vm.expect(r"nb: menu 2 item 6", timeout=10)      # Select All
+        g.key("ret")
+        vm.expect(r"nb: pos 13 1 mod=0 lines=13 sel=280", timeout=10)
+        g.key("f", alt=True)
+        vm.expect(r"nb: menu 1 item -1", timeout=10)
+        g.key("right")
+        vm.expect(r"nb: menu 2 item -1", timeout=10)
+        g.key("left")
+        g.key("left")
+        vm.expect(r"nb: menu 4 item -1", timeout=10)     # wraps around to Help
+        g.key("up")
+        vm.expect(r"nb: menu 4 item 1", timeout=10)      # About (the last entry)
+        g.key("esc")
+        vm.expect(r"nb: menu 0 item -1", timeout=10)
+        g.key("v", alt=True)                             # View: Line Numbers is first; pick Word Wrap
+        g.key("down")
+        g.key("down")
+        g.key("ret")
+        time.sleep(0.8)
+        assert "word_wrap=1" in g.sh("cat ~/.config/notebook.conf")
+
+
+@test
 def notebook_wrap_and_mouse():
     """Word wrap moves the caret by visual rows; double click selects a word, triple click a line, the gutter a whole line."""
     with session("t-notebook-wrap") as (vm, g):
@@ -553,8 +586,9 @@ def notebook_wrap_and_mouse():
 @test
 def notebook_gui_fuzz():
     """A hundred and twenty random keys, clicks, drags, wheel turns and View/Edit menu picks: the editor survives and still saves."""
+    import os
     import random
-    rng = random.Random(1990)
+    rng = random.Random(int(os.environ.get("NB_FUZZ_SEED", "1990")))
     with session("t-notebook-fuzz") as (vm, g):
         make_demo(g)
         g.sh("echo 'a very long line to give the horizontal scroll bar something to do, and word wrap too: " + "word " * 40 + "' >> /tmp/demo.c")
