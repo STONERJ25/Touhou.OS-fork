@@ -32,6 +32,8 @@ void color_swap(void) {
     S.bg = t;
 }
 
+static bool slider(KUI *ui, KRect r, int *v, int lo, int hi, uint32_t c0, uint32_t c1, const char *name);
+
 static const char *hex_tip(uint32_t c) {
     static char buf[16];
     snprintf(buf, sizeof buf, "#%06X", (unsigned)(c & 0xFFFFFF));
@@ -74,7 +76,7 @@ static void tool_options(KUI *ui, KRect r) {
     if (sized) {
         snprintf(buf, sizeof buf, t == T_SPRAY ? "Radius %d" : t == T_RECT || t == T_ELLIPSE || t == T_LINE ? "Width %d" : "Size %d", S.size[t]);
         k_label(ui, x, y, buf);
-        k_slider(ui, kr(x, y + 18, w, 18), &S.size[t], 1, 32);
+        slider(ui, kr(x + 3, y + 20, w - 6, 14), &S.size[t], 1, 32, 0, 0, "size");
         y += 42;
     }
     if (t == T_BRUSH || t == T_ERASER || t == T_SPRAY || t == T_LINE) {
@@ -133,25 +135,37 @@ void panels_toolbox(KUI *ui, KRect r) {
     tool_options(ui, r);
 }
 
+/* ---------------------------------------------------------------- sliders */
+
+/* A horizontal slider from lo to hi. Unlike a click that is only noticed while the button is still down, a press sets
+ * the value at once, so even a very quick click is not lost. Draws a plain track, or a colour gradient when c0 != c1. */
+static bool slider(KUI *ui, KRect r, int *v, int lo, int hi, uint32_t c0, uint32_t c1, const char *name) {
+    KCanvas *cv = &ui->cv;
+    uint32_t id = k_id(name, r);
+    KRect in = kr_inset(r, 2);
+    bool gradient = c0 != c1, changed = false;
+    if (gradient) {
+        kc_panel(cv, r, KB_SUNKEN, 0);
+        kc_gradient_h(cv, in, c0, c1);
+    } else kc_panel(cv, kr(r.x, r.y + r.h / 2 - 2, r.w, 4), KB_SUNKEN, ui->theme->field_bg);
+    int span = in.w > 1 ? in.w - 1 : 1;
+    if (k_hover(ui, kr_grow(r, 2)) && ui->pressed[0]) ui->active = id;
+    if (ui->active == id) {
+        if (ui->pressed[0] || (ui->buttons & 1)) {
+            int nv = lo + sk_clamp(ui->mx - in.x, 0, span) * (hi - lo) / span;
+            if (nv != *v) { *v = nv; changed = true; }
+        }
+        if (!(ui->buttons & 1)) ui->active = 0;
+    }
+    int tx = in.x + (*v - lo) * span / (hi > lo ? hi - lo : 1);
+    kc_panel(cv, gradient ? kr(tx - 3, r.y - 2, 7, r.h + 4) : kr(tx - 3, r.y, 7, r.h), KB_RAISED, ui->theme->button_bg);
+    return changed;
+}
+
 /* ---------------------------------------------------------------- palette and mixer */
 
 static bool color_slider(KUI *ui, KRect r, int *v, uint32_t c0, uint32_t c1, const char *name) {
-    KCanvas *cv = &ui->cv;
-    uint32_t id = k_id(name, r);
-    kc_panel(cv, r, KB_SUNKEN, 0);
-    KRect in = kr_inset(r, 2);
-    kc_gradient_h(cv, in, c0, c1);
-    bool changed = false;
-    if (k_hover(ui, kr_grow(r, 2)) && ui->pressed[0]) ui->active = id;
-    if (ui->active == id) {
-        if (ui->buttons & 1) {
-            int nv = sk_clamp((ui->mx - in.x) * 255 / (in.w > 1 ? in.w - 1 : 1), 0, 255);
-            if (nv != *v) { *v = nv; changed = true; }
-        } else ui->active = 0;
-    }
-    int tx = in.x + *v * (in.w - 1) / 255;
-    kc_panel(cv, kr(tx - 3, r.y - 2, 7, r.h + 4), KB_RAISED, ui->theme->button_bg);
-    return changed;
+    return slider(ui, r, v, 0, 255, c0, c1, name);
 }
 
 static bool parse_hex(const char *s, uint32_t *out) {

@@ -321,8 +321,12 @@ static void run_menubar(KUI *ui, int W) {
     const KMenuItem *menus[] = { file, edit, image, view, help };
     int counts[] = { (int)(sizeof file / sizeof file[0]), (int)(sizeof edit / sizeof edit[0]), (int)(sizeof image / sizeof image[0]),
                      (int)(sizeof view / sizeof view[0]), (int)(sizeof help / sizeof help[0]) };
+    static int was_open;
     int r = k_menubar(ui, kr(0, 0, W, MENU_H), titles, menus, counts, 5);
+    if (was_open && !ui->menu_open) kapp_redraw(S.app);          /* the bar closes its menu after drawing it: show that */
+    was_open = ui->menu_open;
     if (!r) return;
+    kapp_redraw(S.app);
     int m = (r >> 8) - 1, it = (r & 255) - 1;
     switch (m) {
     case M_FILE:

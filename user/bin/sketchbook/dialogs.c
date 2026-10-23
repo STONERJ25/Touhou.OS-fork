@@ -275,8 +275,9 @@ static void shortcuts_draw(KApp *app, KUI *ui, void *user) {
         if (left[i][0]) { if (i == 0) kc_text_bold(cv, 20, 14, left[i], ui->theme->accent_dark); else kc_text(cv, 20, 14 + i * 18, left[i], ui->theme->text); }
         if (right[i][0]) { if (i == 0) kc_text_bold(cv, 270, 14, right[i], ui->theme->accent_dark); else kc_text(cv, 270, 14 + i * 18, right[i], ui->theme->text); }
     }
-    kc_text(cv, 20, 14 + 16 * 18, "Shift while dragging: straight and square shapes.  Mouse wheel scrolls,", ui->theme->text_dim);
-    kc_text(cv, 20, 14 + 17 * 18, "Ctrl+wheel zooms, the middle button pans.  Ctrl+F12 takes a screenshot.", ui->theme->text_dim);
+    kc_text(cv, 20, 14 + 16 * 18, "Shift while dragging: straight lines, squares, circles.", ui->theme->text_dim);
+    kc_text(cv, 20, 14 + 17 * 18, "Mouse wheel scrolls, Ctrl+wheel zooms, middle button pans.", ui->theme->text_dim);
+    kc_text(cv, 20, 14 + 18 * 18, "Ctrl+F12 takes a screenshot; File > Open Screenshot loads it.", ui->theme->text_dim);
     if (k_button(ui, kr(cv->w - 100, cv->h - 40, 84, 26), "OK") || k_key_pressed(ui, KEY_ENTER) || k_key_pressed(ui, KEY_ESC)) dlg_close(d);
 }
 

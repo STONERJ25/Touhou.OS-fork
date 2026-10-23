@@ -41,7 +41,7 @@ typedef struct {
     bool active;                                 /* a selection rectangle exists */
     int x, y, w, h;
     bool floating;                               /* its pixels are lifted into fpx */
-    bool from_paste;
+    bool from_paste, copy_on_lift;
     uint32_t *fpx;
     int ox, oy;                                  /* where it was lifted from */
     bool dragging_new, moving;
@@ -210,7 +210,7 @@ static void select_press(int ix, int iy, int mods) {
         Z.moving = true;
         Z.gdx = ix - Z.x;
         Z.gdy = iy - Z.y;
-        if (!Z.floating) lift((mods & MOD_CTRL) != 0);
+        Z.copy_on_lift = (mods & MOD_CTRL) != 0;              /* the pixels are lifted as soon as the pointer really moves */
         return;
     }
     commit_float();
@@ -231,8 +231,12 @@ static void select_move(int ix, int iy) {
         Z.h = abs(cy - Z.ay) + 1;
         Z.active = true;
     } else if (Z.moving) {
-        Z.x = ix - Z.gdx;
-        Z.y = iy - Z.gdy;
+        int nx = ix - Z.gdx, ny = iy - Z.gdy;
+        if (nx == Z.x && ny == Z.y) return;
+        if (!Z.floating) lift(Z.copy_on_lift);
+        if (!Z.floating) return;
+        Z.x = nx;
+        Z.y = ny;
     }
 }
 
@@ -448,6 +452,7 @@ void tools_cancel_drag(void) {
 
 void tools_frame(KUI *ui) {
     if (D.active) D.mods = ui->mods;
+    if (T.active) { T.scale = S.text_scale; T.opaque = S.text_opaque; }      /* the options apply to the text being typed */
     tools_text_keys(ui);
     if (D.active && S.tool == T_SPRAY && (ui->buttons & (D.button == 1 ? 1 : 2))) {
         int r = S.size[T_SPRAY];
