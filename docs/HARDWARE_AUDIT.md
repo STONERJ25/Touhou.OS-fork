@@ -182,8 +182,8 @@ Read against AHCI 1.3.1 and NVMe 1.4 and Linux's `libahci`/`nvme-pci`. **No defe
   guest reaching `init`'s `reboot()` (see `-d int` log tails). The harness reads the guest's serial port over TCP, QEMU leaves through `exit()`,
   and on a loaded Windows host the connection is reset before the reader thread has fetched the last bytes. It happens at the same rate on
   `main` (2 of 120 runs each in a side-by-side loop, `utest` boots with other test runs going on) and on this branch (2 of 120), so it is not
-  caused by the changes here. `qemu_exit()` now waits 300 ms before leaving so that the reader can catch up (0 failures in 139 runs afterwards,
-  under lighter load). Not a hardware matter, noted so nobody chases it.
+  caused by the changes here. `qemu_exit()` now waits 300 ms before leaving so that the reader can catch up (0 failures in 150 runs afterwards,
+  under lighter load: not a clean comparison). Not a hardware matter, noted so nobody chases it.
 
 ### Network and audio drivers on main (noted, not changed; their owners review the details)
 
