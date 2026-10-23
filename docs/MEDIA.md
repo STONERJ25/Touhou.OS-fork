@@ -54,8 +54,8 @@ the `wallpaper` command, reload on change in `hakurei-shell`, `hakurei-lock`, `h
   the file (it belongs to the Patchouli work) and I did not run it on `main` itself, so "already failing there" is inferred.
 * `zip` cannot add to an existing archive (it refuses), no zip64; `tar` cannot extract hard links except as copies and
   does not extract devices; `gzip -l` reads only the last member's trailer.
-* The libz host-test driver (a small C program plus a Python script comparing with `zlib`) is in my scratch directory, not in the
-  repository. It should be added as `tests/host/` or folded into `tests/case_media.py`.
+* The libz host-test driver is in `tests/host/` (see above) but is not wired into `run_all.py`; the other checks (gzip / tar / zip in the guest,
+  archives exchanged with Python) were done with throw-away scripts that are not in the repository.
 * No test file `tests/case_media.py` exists; nothing in the automated suite covers the new tools yet.
 
 **How to resume**
@@ -98,7 +98,8 @@ inflate read all of it back through small pieces; our inflate also read Python-m
 0, 1, 6, 9; input pieces of 1, 7, 4096 and 1 048 576 bytes). 450 damaged streams (bit flips, truncation, random tails)
 were fed to the inflater: no sanitizer report, no hang, only clean error codes. Result: 0 failures. Compressed sizes are
 within about 1 percent of zlib's at level 6 (sometimes smaller, sometimes larger; the zero-run case is 158 bytes against
-zlib's 120). The driver for this lives in my scratch directory, not in the repository yet.
+zlib's 120). The driver is `tests/host/ztool.c` + `tests/host/ztest.py` (run from Linux/WSL, not part of `run_all.py`); it was
+copied there and given repository-relative paths after the run above, and has **not been re-run from its new location**.
 
 ## Tools
 
