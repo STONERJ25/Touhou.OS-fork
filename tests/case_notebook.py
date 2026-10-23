@@ -203,6 +203,25 @@ def notebook_line_endings():
         g.key("s", ctrl=True)
         vm.expect(r"nb: saved /tmp/bad.txt", timeout=10)
         expect_file(g, "/tmp/bad.txt", b"Xcaf\xe9 ok\n", "invalid UTF-8 byte kept")
+        g.key("q", ctrl=True)
+        vm.expect(r"nb: quit", timeout=10)
+
+        g.sh("printf 'a\\r\\nb\\nc\\r\\n' > /tmp/mixed.txt")           # mostly CRLF: the odd line ending is normalised
+        launch(vm, "/tmp/mixed.txt", ready=r"nb: open /tmp/mixed.txt lines=4 bytes=6 eol=CRLF")
+        g.type("X")
+        g.key("s", ctrl=True)
+        vm.expect(r"nb: saved /tmp/mixed.txt", timeout=10)
+        expect_file(g, "/tmp/mixed.txt", b"Xa\r\nb\r\nc\r\n", "mixed line endings become the majority style")
+        g.key("q", ctrl=True)
+        vm.expect(r"nb: quit", timeout=10)
+
+        g.sh("printf 'one\\rtwo\\r' > /tmp/mac.txt")                   # classic Mac line endings
+        launch(vm, "/tmp/mac.txt", ready=r"nb: open /tmp/mac.txt lines=3 bytes=8 eol=CR")
+        g.key("end", ctrl=True)
+        g.type("end")
+        g.key("s", ctrl=True)
+        vm.expect(r"nb: saved /tmp/mac.txt", timeout=10)
+        expect_file(g, "/tmp/mac.txt", b"one\rtwo\rend", "CR line endings preserved")
 
 
 @test
@@ -629,6 +648,8 @@ def notebook_wrap_and_mouse():
         g.click(44 + 300, 56 + 36, count=3)              # triple click: the whole first line (one line = 255 chars + newline)
         vm.expect(r"nb: pos \d+ \d+ mod=0 lines=3 sel=\d{3}", timeout=10)
         g.shot("wrap")
+        g.click(44 + 25, 56 + 28 + 16 * 4 + 8)           # the number of line 2 in the gutter (line 1 takes four rows)
+        vm.expect(r"nb: pos 3 1 mod=0 lines=3 sel=12", timeout=10)      # "second line" and its line break
 
 
 @test
