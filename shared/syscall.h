@@ -22,6 +22,9 @@
 #define SYS_geteuid       79
 #define SYS_getegid       80      /* getuid/getgid return the real ids, these the effective ones */
 #define SYS_settime       81      /* (ms since the epoch, rtc epoch or 0): set the wall clock, and the clock chip if the second is not 0; root only */
+#define SYS_utimes        82      /* (path, struct gtimespec times[2] or NULL, flags): access and modification time; flags & 1 = do not follow a final symlink */
+#define UTIME_NOW         0x3fffffff     /* tv_nsec values with a meaning, as in utimensat() */
+#define UTIME_OMIT        0x3ffffffe
 
 #define SYS_exit          0
 #define SYS_read          1
