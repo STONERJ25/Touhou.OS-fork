@@ -564,7 +564,7 @@ void ex_open_path_with(const char *path, int how) {
     int kind = how;
     if (kind == 0) {
         int ft = classify(path_base(path), st.st_mode, S_ISREG(st.st_mode) ? EK_FILE : EK_OTHER);
-        if (ft == FT_IMAGE) kind = 2;
+        if (ft == FT_IMAGE) kind = 4;                                    /* a viewer; "Open with Sketchbook" edits it */
         else if (ft == FT_PROGRAM) kind = 3;
         else if (ft == FT_TEXT) kind = 1;
         else if (S_ISREG(st.st_mode) && sniff_text(path)) kind = 1;
@@ -585,9 +585,12 @@ void ex_open_path_with(const char *path, int how) {
         run_in_terminal(path);
         return;
     }
-    char *argv[3] = { kind == 2 ? "sketchbook" : "notebook", (char *)path, NULL };
+    const char *prog = kind == 4 ? "gallery" : kind == 2 ? "sketchbook" : "notebook";
+    char *argv[3] = { (char *)prog, (char *)path, NULL };
+    char bin[32];
+    snprintf(bin, sizeof bin, "/bin/%s", prog);
     ex_trace("open %s with %s", path, argv[0]);
-    spawn(kind == 2 ? "/bin/sketchbook" : "/bin/notebook", argv);
+    spawn(bin, argv);
 }
 
 void ex_open_entry(const Entry *e) {
@@ -602,8 +605,13 @@ static void open_selection(void) {
     if (n == 0 && X.cursor >= 0 && X.cursor < X.m.nshown) { ex_open_entry(X.m.shown[X.cursor]); return; }
     if (n == 1) { ex_open_entry(X.m.shown[first_selected()]); return; }
     int opened = 0;
+    bool viewer = false;                                                 /* one Gallery walks the whole folder: no window per picture */
     for (int i = 0; i < X.m.nshown && opened < 8; i++)
-        if (X.m.shown[i]->sel && !X.m.shown[i]->is_dir) { ex_open_entry(X.m.shown[i]); opened++; }
+        if (X.m.shown[i]->sel && !X.m.shown[i]->is_dir) {
+            if (X.m.shown[i]->ftype == FT_IMAGE) { if (viewer) continue; viewer = true; }
+            ex_open_entry(X.m.shown[i]);
+            opened++;
+        }
     if (!opened && n > 0) ex_open_entry(X.m.shown[first_selected()]);
 }
 

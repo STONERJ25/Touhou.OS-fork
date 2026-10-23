@@ -312,7 +312,7 @@ static const char *const k_text_ext[] = {
     "js", "c", "h", "cc", "cpp", "hpp", "py", "sh", "bash", "gap", "lua", "rb", "pl", "tex", "diff", "patch", "asm", "s", "mk", "inc",
     "ld", "pw", "rc", "list", "text", "me", "nfo", "desktop", "service", NULL,
 };
-static const char *const k_image_ext[] = { "ppm", "bmp", "pgm", "pbm", NULL };
+static const char *const k_image_ext[] = { "ppm", "bmp", "pgm", "pbm", "pnm", "png", "jpg", "jpeg", "jpe", "gif", "tga", NULL };    /* what libimg reads (the Gallery opens them) */
 static const char *const k_archive_ext[] = { "tar", "gz", "tgz", "zip", "bz2", "xz", "7z", "rar", "z", "zst", NULL };
 static const char *const k_text_names[] = {
     "makefile", "readme", "license", "licence", "copying", "authors", "news", "todo", "changelog", "profile", "motd", "passwd", "group",
@@ -360,6 +360,10 @@ const char *type_name(const Entry *e, char *buf, size_t cap) {
     case FT_IMAGE:
         if (!strcasecmp(ext, "ppm")) return "PPM image";
         if (!strcasecmp(ext, "bmp")) return "Bitmap image";
+        if (!strcasecmp(ext, "png")) return "PNG image";
+        if (!strcasecmp(ext, "jpg") || !strcasecmp(ext, "jpeg") || !strcasecmp(ext, "jpe")) return "JPEG image";
+        if (!strcasecmp(ext, "gif")) return "GIF image";
+        if (!strcasecmp(ext, "tga")) return "TGA image";
         return "Image";
     case FT_PROGRAM: return "Program";
     case FT_ARCHIVE: return "Archive";

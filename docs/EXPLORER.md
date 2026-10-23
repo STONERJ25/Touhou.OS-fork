@@ -14,7 +14,7 @@ after.
   send to the Netherworld, delete for good, restore, empty, measure) with a progress window, name conflict questions and one error
   list at the end, the Netherworld with restore notes, new folder / new file / rename in place, a context menu and a menu bar,
   Properties (chmod; chown for the superuser), drag and drop between folders and places, hidden files, a file clipboard that works
-  between windows, opening text in the Notebook, pictures in the Sketchbook and programs in a terminal, preferences, the manual
+  between windows, opening text in the Notebook, pictures in the Gallery (or, by "Open with", the Sketchbook) and programs in a terminal, preferences, the manual
   page, `docs/APPS.md`, and `tests/case_explorer.py` (a self test of the engine plus nine GUI sessions).
 * **Not done**: drag and drop *between two Explorer windows* (see below), column resizing, a popup-window context menu, "Open
   with..." beyond the three fixed entries, searching, per-folder view settings, thumbnails.

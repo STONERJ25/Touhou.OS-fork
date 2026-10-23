@@ -92,8 +92,9 @@ its node and the directory entry, at FAT's resolution of two seconds for the mod
 
 Start menu: "Gensokyo Gallery" (Programs). `gallery [FILE | FOLDER]`: opens the picture (and walks the pictures of its folder, sorted by name with numbers
 compared as numbers) or the first picture of the folder; with nothing it opens the newest picture in `~/Pictures` if there is one (screenshots are named by
-date, so that is the latest one), and Ctrl+O opens any other. The Explorer
-(not merged yet) should start it with `execv("/bin/gallery", {"gallery", path, NULL})`; there is no file-type association table in the system yet.
+date, so that is the latest one), and Ctrl+O opens any other. The Explorer opens every picture it recognises by extension with
+`execv("/bin/gallery", {"gallery", path, NULL})` (and a selection of several pictures starts one Gallery, which walks the folder); there is no
+general file-type association table in the system yet.
 
 * Navigation: Left/Right, PageUp/PageDown, Backspace/Space, Home/End (wraps around). Zoom: `+`/`-`, the wheel around the pointer, `0`/`F` fit
   (shrinks, never enlarges), `1` 100%, `2`..`4` 200% to 400%; double-click toggles fit and 100%; dragging pans. `R`/`L` rotate, `H`/`V` flip (the file is never

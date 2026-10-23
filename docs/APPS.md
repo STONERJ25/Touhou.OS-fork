@@ -143,8 +143,8 @@ along the way are in [EXPLORER.md](EXPLORER.md); the manual page is `man explore
 * **Rename** in place (F2; New Folder and New File start it too), **Properties** (Alt+Enter: type, location, size measured in the
   background for folders, times, volume, permission check boxes with chmod, owner and group with chown for the superuser), a
   **context menu** drawn inside the window (the server cannot say where a moved window is, so there are no popup windows).
-* **Open**: folders are entered, text (by extension or by looking at the first bytes) goes to `notebook`, `.ppm .pgm .pbm .bmp` to
-  `sketchbook`, programs run in `gapterm -e` (waits for Enter at the end), anything else asks to open it as text.
+* **Open**: folders are entered, text (by extension or by looking at the first bytes) goes to `notebook`, pictures (`.png .jpg .gif .bmp .ppm .pgm .pbm .pnm .tga`) to
+  `gallery` (the context menu's "Open with Sketchbook" edits them instead), programs run in `gapterm -e` (waits for Enter at the end), anything else asks to open it as text.
 
 | Keys | Action |
 |------|--------|

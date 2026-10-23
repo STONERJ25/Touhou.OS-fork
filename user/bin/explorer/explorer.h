@@ -252,7 +252,7 @@ void ex_action(int act);
 void ex_navigate(const char *path, const char *select_name);
 void ex_refresh(const char *select_name);
 void ex_open_entry(const Entry *e);
-void ex_open_path_with(const char *path, int how);        /* how: 0 default, 1 notebook, 2 sketchbook, 3 terminal */
+void ex_open_path_with(const char *path, int how);        /* how: 0 default (pictures: the gallery), 1 notebook, 2 sketchbook, 3 terminal, 4 gallery */
 void ex_selected_paths(char ***paths, int *n);            /* malloc'd; free each and the array */
 void ex_rename_commit(const char *from_name, const char *to_name);
 void ex_spawn_explorer(const char *path);

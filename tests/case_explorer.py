@@ -711,7 +711,7 @@ def explorer_big_folder():
 
 @test
 def explorer_open_apps():
-    """Enter opens text in the Notebook, pictures in the Sketchbook and programs in a terminal window."""
+    """Enter opens text in the Notebook, pictures in the Gallery and programs in a terminal window."""
     def body(vm, g):
         g.sh("printf '#!/bin/sh\\necho ran > /tmp/x/ran.flag\\n' > /tmp/x/run.sh; chmod 755 /tmp/x/run.sh")
         launch(vm, g)
@@ -740,11 +740,11 @@ def explorer_open_apps():
         g.key("q", ctrl=True)
         wait_after(vm, m, r"nb: quit")
         time.sleep(1.0)
-        # a picture goes to the Sketchbook
+        # a picture goes to the Gallery
         click_wait(vm, g, row(5), r"ex: sel 1 first=pic.ppm")
         m = mark(vm)
         g.key("ret")
-        wait_after(vm, m, r"ex: open /tmp/x/pic.ppm with sketchbook")
+        wait_after(vm, m, r"ex: open /tmp/x/pic.ppm with gallery")
         time.sleep(4.0)
-        assert "sketchbook" in g.sh("ps"), "the Sketchbook is not running"
+        assert "gallery" in g.sh("ps"), "the Gallery is not running"
     gui_test("t-explorer-open", body)

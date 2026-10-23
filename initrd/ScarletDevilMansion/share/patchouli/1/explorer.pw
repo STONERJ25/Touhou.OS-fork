@@ -102,8 +102,9 @@ give it back.
 
 # OPENING FILES
 Enter or a double click opens the item. A folder is entered. Text files (by
-extension or by looking inside) open in the Notebook, `.ppm`, `.pgm`, `.pbm`
-and `.bmp` pictures in the Sketchbook, and a program (a file with an execute
+extension or by looking inside) open in the Notebook, pictures (`.png`,
+`.jpg`, `.gif`, `.bmp`, `.ppm`, `.pgm`, `.pbm`, `.pnm`, `.tga`) in the Gallery
+(use "Open with Sketchbook" to draw on one), and a program (a file with an execute
 bit) is run in a terminal window that waits for Enter when it has finished.
 The context menu offers each of these by hand. Anything else asks whether to
 open it as text.

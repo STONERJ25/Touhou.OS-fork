@@ -37,7 +37,7 @@ are what is left, roughly in the order they matter.
 - [ ] audio rest: chiptune engine, Jukebox, songs, system sounds wired in (in progress)
 - [x] threads (clone, futex, pthreads)
 - [x] gzip/tar/zip
-- [ ] PNG/JPEG/GIF decoders, image viewer, wallpaper, PNG screenshots (in progress)
+- [x] PNG/JPEG/GIF/BMP/PNM/TGA decoders, PNG/BMP/PPM encoders, the Gallery viewer, wallpaper from a picture, PNG screenshots, thumbnails for file browsers (docs/MEDIA.md)
 - [x] awk, diff, patch, bc, dc, a first vi
 - [x] kernel job control (stopped state, Ctrl-Z), nice/renice, hard links on tmpfs, `/proc/<pid>/fd`
 - [ ] vi hardening, a more POSIX gapsh with `jobs`/`fg`/`bg`, the remaining small tools (in progress)
