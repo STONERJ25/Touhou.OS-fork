@@ -152,7 +152,7 @@ class Qemu:
 
     def _args(self, vars_copy, serial_port, qmp_port):
         a = [str(QEMU),
-             "-machine", "q35", "-cpu", "max", "-m", self.mem, "-smp", "1",
+             "-machine", "q35", "-cpu", os.environ.get("TOUHOU_CPU", "max"), "-m", self.mem, "-smp", "1",    # TOUHOU_CPU=Skylake-Client-noTSX-IBRS: closer to an i5-7500
              "-drive", f"if=pflash,format=raw,unit=0,readonly=on,file={OVMF_CODE}",
              "-drive", f"if=pflash,format=raw,unit=1,file={vars_copy}",
              *self._boot_drive_args(),

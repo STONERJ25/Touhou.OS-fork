@@ -421,7 +421,7 @@ def sketchbook_zoom_grid():
         s.click(*pic(320, 240))
         s.move_to(*pic(320, 240))
         zoomed = False
-        for button in ("wheel-up", "wheel-down"):            # (the PS/2 wheel sign differs between QEMU and the kernel: try both ways)
+        for button in ("wheel-up", "wheel-down"):            # wheel-up zooms in; the second pass stays as a fallback should the first notch be lost under load
             hold(vm, "ctrl")
             time.sleep(0.15)
             vm.mouse_button(button, True)

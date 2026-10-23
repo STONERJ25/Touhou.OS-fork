@@ -16,6 +16,7 @@ struct sigaction {
     sigset_t sa_mask;
 };
 #define SA_RESTART 0x10000000
+/* SA_NOCLDSTOP (from abi.h): no SIGCHLD when a child stops or continues */
 sighandler_t signal(int sig, sighandler_t h);
 int sigaction(int sig, const struct sigaction *act, struct sigaction *old);
 int sigprocmask(int how, const sigset_t *set, sigset_t *old);       /* the mask belongs to the calling thread */
