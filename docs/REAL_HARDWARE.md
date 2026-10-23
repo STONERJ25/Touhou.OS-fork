@@ -96,5 +96,7 @@ clock is hours off on the first boot, the PC's clock chip holds local time (Wind
 - **Wrong time**: `rtc=local` and `tz=`; fix the chip with `sudo hwclock -w` (see [POWER_AND_TIME.md](POWER_AND_TIME.md)).
 - **Boots, then reboots**: the log's last lines name the subsystem; every driver polls and has timeouts, so a stall is
   normally one device being skipped after a few seconds, not a hang.
-- Not implemented: sound, network, USB mass storage, suspend, multi-core, GPU acceleration (software drawing at the
+- **Sound** (Intel HD Audio, AC'97 as a fallback; never run on a real codec yet): `volume`, then `beep`; if the jack stays
+  silent, `cat /proc/audio` and `dmesg | grep Nitori` say what the driver found; see [AUDIO.md](AUDIO.md).
+- Not implemented: network, USB mass storage, suspend, multi-core, GPU acceleration (software drawing at the
   firmware's resolution is plenty for a desktop of this size).

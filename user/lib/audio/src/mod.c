@@ -47,7 +47,7 @@ static unsigned be16(const uint8_t *p) { return (unsigned)(p[0] << 8 | p[1]); }
 static int channels_for(const uint8_t *sig) {
     if (!memcmp(sig, "M.K.", 4) || !memcmp(sig, "M!K!", 4) || !memcmp(sig, "FLT4", 4) || !memcmp(sig, "4CHN", 4)) return 4;
     if (!memcmp(sig, "6CHN", 4)) return 6;
-    if (!memcmp(sig, "8CHN", 4) || !memcmp(sig, "FLT8", 4) || !memcmp(sig, "OCTA", 4) || !memcmp(sig, "CD81", 4)) return 8;
+    if (!memcmp(sig, "8CHN", 4) || !memcmp(sig, "OCTA", 4) || !memcmp(sig, "CD81", 4)) return 8;      /* not FLT8: its patterns are stored in pairs */
     if (sig[0] >= '1' && sig[0] <= '3' && sig[1] >= '0' && sig[1] <= '9' && !memcmp(sig + 2, "CH", 2)) {
         int n = (sig[0] - '0') * 10 + (sig[1] - '0');
         return n <= MAX_CH ? n : 0;
@@ -337,14 +337,14 @@ static void tick_effects(ModPlayer *p) {
             ch->out_period = ch->period;
             if (eff == 5) goto volslide;
             break;
-        case 0x4: case 0x6:
-            ch->vib_pos += ch->vib_speed;
+        case 0x4: case 0x6:                                     /* the position moves on after it is used, as in ProTracker */
             ch->out_period = ch->period + vib_value(ch->vib_wave, ch->vib_pos, ch->vib_depth);
+            ch->vib_pos += ch->vib_speed;
             if (eff == 6) goto volslide;
             break;
         case 0x7:
-            ch->trem_pos += ch->trem_speed;
             ch->out_vol = ch->vol + vib_value(ch->trem_wave, ch->trem_pos, ch->trem_depth) * 2;    /* the table times depth over 64 */
+            ch->trem_pos += ch->trem_speed;
             if (ch->out_vol < 0) ch->out_vol = 0;
             if (ch->out_vol > 64) ch->out_vol = 64;
             break;
@@ -356,7 +356,7 @@ static void tick_effects(ModPlayer *p) {
             ch->out_vol = ch->vol;
             break;
         case 0xE:
-            if ((par >> 4) == 0x9 && ch->retrig && p->tick % ch->retrig == 0) ch->pos = 0;
+            if ((par >> 4) == 0x9 && ch->retrig && p->tick % ch->retrig == 0) { ch->pos = 0; ch->active = ch->sample != 0; }     /* the sample starts again, even if it had ended */
             if ((par >> 4) == 0xC && p->tick == (par & 15)) { ch->vol = 0; ch->out_vol = 0; }
             break;
         default: break;

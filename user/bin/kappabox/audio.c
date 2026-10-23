@@ -335,10 +335,17 @@ static int play_song(Audio **ap, const char *path, const PlayOpts *o, int volume
         int f = audio_set_format(*ap, rate, 2, AUDIO_FMT_S16);
         if (f) { kb_error("%s: %s", path, audio_strerror(f)); rc = 1; goto out; }
         uint64_t done = 0;
+        bool sounded = true;                                                   /* did the last start from the top give any sound? */
         while (!g_stop && done < total) {
             size_t want = sizeof buf / 4 < total - done ? sizeof buf / 4 : (size_t)(total - done);
             size_t n = music_render(mus, buf, want);
-            if (!n) break;
+            if (!n) {
+                if (!o->loop_forever || !sounded) break;                       /* -L: from the top again (unless that gives nothing either) */
+                music_seek(mus, 0);
+                sounded = false;
+                continue;
+            }
+            sounded = true;
             ssize_t w = audio_write(*ap, buf, n * 4);
             if (w < 0) { kb_error("%s: %s", path, audio_strerror((int)w)); rc = 1; break; }
             done += n;

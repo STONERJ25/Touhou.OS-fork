@@ -3,6 +3,7 @@
 #include <modplay.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <sys/stat.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -25,12 +26,14 @@ typedef enum { K_NONE, K_SONG, K_MOD } Kind;
 static Kind sniff(const char *path) {
     if (has_suffix(path, ".tms")) return K_SONG;
     if (has_suffix(path, ".mod")) return K_MOD;
-    if (!strcmp(path, "-")) return K_NONE;
+    struct stat st;
+    if (!strcmp(path, "-") || stat(path, &st) != 0 || !S_ISREG(st.st_mode)) return K_NONE;      /* never read from a pipe or a device just to look */
     int fd = open(path, O_RDONLY);
     if (fd < 0) return K_NONE;
     char head[1084];
     ssize_t r = read(fd, head, sizeof head);
     close(fd);
+    if (r >= 4 && !memcmp(head, "RIFF", 4)) return K_NONE;                       /* a WAV file is never taken for a module */
     if (r >= 4 && !memcmp(head, "tms", 3) && (head[3] == ' ' || head[3] == '\n' || head[3] == '\r')) return K_SONG;
     if (r >= 1084 && mod_signature_ok(head + 1080)) return K_MOD;
     return K_NONE;

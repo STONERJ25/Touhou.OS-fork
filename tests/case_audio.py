@@ -6,7 +6,10 @@ shell to come back, stop the VM, and look at the loud stretches of the recording
 import re
 import time
 
+import numpy as np
+
 import audiotools as at
+import modtools as mt
 import test_shell
 from harness import test, Qemu, BUILD
 
@@ -270,55 +273,18 @@ def audio_song_timing_and_pitch():
     assert abs(f - 659.3) < 8, f"the FM note should sound at E5 (659 Hz), heard {f:.1f}"
 
 
-def make_module():
-    """A four-channel ProTracker module built from scratch, so the test knows exactly what it must sound like.
-
-    Its one instrument is a 64-byte sine wave that loops; period 214 plays it at 259 Hz. At speed 6 and tempo 125 a row
-    lasts 120 ms. Pattern 0: rows 0-3 a note on channel 1 (left), rows 4-7 the same note an octave up, rows 8-11 the
-    first note on channel 2 (right), row 12 jumps on. Pattern 1: rows 0-7 the note with an arpeggio of 0, 3 and 7
-    semitones; row 8 ends the song and, with a pattern delay, lasts two rows: 23 rows, 2.76 s in all."""
-    import math
-    import struct
-    sine = bytes(round(100 * math.sin(2 * math.pi * i / 64)) & 0xFF for i in range(64))
-    data = b"Test Module".ljust(20, b"\0")
-    data += b"sine".ljust(22, b"\0") + struct.pack(">HBBHH", 32, 0, 64, 0, 32)          # length, finetune, volume, loop start and length (words)
-    data += (bytes(22) + struct.pack(">HBBHH", 0, 0, 0, 0, 1)) * 30
-    data += bytes([2, 127]) + bytes([0, 1]) + bytes(126) + b"M.K."                        # two orders: pattern 0, pattern 1
-    assert len(data) == 1084
-    pats = [[[(0, 0, 0, 0)] * 4 for _ in range(64)] for _ in range(2)]
-
-    def put(pat, row, ch, sample=0, period=0, effect=0, param=0):
-        pats[pat][row][ch] = (sample, period, effect, param)
-
-    put(0, 0, 0, 1, 214)
-    put(0, 4, 0, 1, 107)
-    put(0, 8, 0, effect=0xC)                                                              # set volume 0
-    put(0, 8, 1, 1, 214)
-    put(0, 12, 1, effect=0xC)
-    put(0, 12, 3, effect=0xD)                                                             # pattern break: on to pattern 1
-    put(1, 0, 0, 1, 214, 0, 0x37)                                                         # arpeggio 0, 3, 7
-    for row in range(1, 8):
-        put(1, row, 0, effect=0, param=0x37)
-    put(1, 8, 0, effect=0xC)
-    put(1, 8, 1, effect=0xE, param=0xE1)                                                  # pattern delay: this row twice
-    put(1, 8, 3, effect=0xD)                                                              # and then the end of the song
-    for pat in pats:
-        for row in pat:
-            for sample, period, effect, param in row:
-                data += bytes([(sample & 0xF0) | (period >> 8), period & 0xFF, ((sample & 0x0F) << 4) | effect, param])
-    return data + sine
-
-
 def put_file(vm, path, data, chunk=200):
-    """Writes a file into the guest through the shell: base64 text in short lines, decoded there, checked with md5sum."""
+    """Writes a file into the guest through the shell: gzipped, as base64 text in short lines, decoded there and checked
+    with md5sum (the guest's line editor echoes a whole line again for every key, so lines are kept short)."""
     import base64
+    import gzip
     import hashlib
-    text = base64.b64encode(data).decode()
-    sh(vm, f"rm -f {path}.b64")
+    text = base64.b64encode(gzip.compress(data, 9, mtime=0)).decode()
+    sh(vm, f"rm -f {path}.b64 {path}.gz")
     for i in range(0, len(text), chunk):
         out, rc = sh(vm, f"echo {text[i:i + chunk]} >> {path}.b64")
         assert rc == 0, out
-    out, rc = sh(vm, f"base64 -d {path}.b64 > {path}; md5sum {path}")
+    out, rc = sh(vm, f"base64 -d {path}.b64 > {path}.gz && zcat {path}.gz > {path} && md5sum {path}")
     assert hashlib.md5(data).hexdigest() in out, f"the file did not arrive intact: {out}"
 
 
@@ -329,7 +295,7 @@ def rms(x):
 @test
 def audio_mod_module():
     """A ProTracker module plays at the right pitch, speed and side; arpeggio, pattern delay and seeking work; junk is refused."""
-    mod = make_module()
+    mod = mt.make_module()
     with Qemu(cmdline="text", name="t-audio-mod", audio="hda") as vm:
         vm.expect(test_shell.PROMPT, timeout=90)
         put_file(vm, "/tmp/test.mod", mod)
@@ -382,6 +348,141 @@ def audio_mod_module():
 
 
 @test
+def audio_mod_effects():
+    """Module effects follow a tick by tick model: slides, portamento, vibrato, tremolo, volume, speed, tempo, cut, delay, retrigger, offset, loop, finetune, jump."""
+    mod = mt.make_effects_module()
+    with Qemu(cmdline="text", name="t-audio-fx", audio="hda") as vm:
+        vm.expect(test_shell.PROMPT, timeout=90)
+        put_file(vm, "/tmp/fx.mod", mod)
+        out, rc = sh(vm, "play -i /tmp/fx.mod", timeout=240)
+        assert rc == 0 and re.search(r"measured \d+\.\d s", out), f"a song that jumps back to a row it played is over: {out}"
+        out, rc = sh(vm, "play -q -w /tmp/fx.wav /tmp/fx.mod", timeout=240)             # rendered first: the guest's speed cannot starve the playing
+        assert rc == 0, out
+        sh(vm, "volume 100")
+        out, rc = sh(vm, "play -q /tmp/fx.wav", timeout=300)
+        assert rc == 0, out
+        vm.stop()
+        rate, x = at.load(vm.audio_path)
+    left, mono = x[:, 0], at.mono(x)
+    segs = at.segments(x, rate, threshold=0.01, merge_ms=200, min_ms=20)
+    names = mt.FX_SECTIONS
+    assert len(segs) == len(names), f"expected one stretch of sound for each of the {len(names)} sections, found {len(segs)}: {segs}"
+    PEAK = 0.2404                                                                         # one voice at full volume, as measured by audio_mod_module
+
+    def start(i):
+        """Where section i really starts: its first 5 ms window of sound is found, now the first loud sample in it."""
+        a = segs[i][0]
+        return a + int(np.argmax(np.abs(mono[a:a + rate // 100]) > 0.01))
+
+    def f_in(i, t0, t1):
+        a = start(i)
+        return mt.mean_freq(left[a + int(t0 * rate):a + int(t1 * rate)], rate)
+
+    def peak_in(i, t0, t1):
+        a = start(i)
+        return at.peak(left[a + int(t0 * rate):a + int(t1 * rate)])
+
+    def runs(i):
+        """The stretches of sound inside section i as (start, end) in milliseconds, from its first sound."""
+        a, b = start(i), segs[i][1]
+        return [(s * 1000 / rate, e * 1000 / rate) for s, e in at.segments(mono[a:b], rate, threshold=0.01, merge_ms=3, min_ms=2)]
+
+    def row(r):                                                                           # inside row r, away from its edges (s)
+        return r * 0.12 + 0.012, r * 0.12 + 0.108
+
+    def near(i, what, value, want, tol):
+        assert abs(value - want) <= tol * want, f"{names[i]}, {what}: expected {want:.1f}, found {value:.1f}"
+
+    def about(i, what, value, want, ms):
+        assert abs(value - want) <= ms, f"{names[i]}, {what}: expected {want:.0f} ms, found {value:.0f} ms (runs {runs(i)})"
+
+    S = {n: i for i, n in enumerate(names)}
+
+    i = S["slide up"]                                                                     # 1xx: 4 per tick on ticks 1-5 of each row
+    t = mt.slide_ticks(428, -4, 4)
+    for r in (0, 3):
+        near(i, f"row {r}", f_in(i, *row(r)), mt.tick_hz(t[6 * r:6 * r + 6]), 0.03)
+    i = S["slide down"]                                                                   # 2xx
+    t = mt.slide_ticks(214, 4, 4)
+    for r in (0, 3):
+        near(i, f"row {r}", f_in(i, *row(r)), mt.tick_hz(t[6 * r:6 * r + 6]), 0.03)
+
+    i = S["tone portamento"]                                                              # 3xx: 428 to 214 by 16 per tick, 300 remembers the speed
+    t = [428] * 6 + mt.porta_ticks(428, 214, 16, 4)
+    for r in range(5):
+        near(i, f"row {r}", f_in(i, *row(r)), mt.tick_hz(t[6 * r:6 * r + 6]), 0.03)
+
+    i = S["vibrato"]                                                                      # 4xy: windows of four ticks against the model
+    t = mt.vibrato_ticks(214, 4, 8, 8)
+    got = [f_in(i, w * 0.08 + 0.005, (w + 1) * 0.08 - 0.005) for w in range(12)]
+    for w in range(12):
+        near(i, f"window {w}", got[w], mt.tick_hz(t[4 * w:4 * w + 4]), 0.05)
+    assert max(got) / min(got) > 1.06, f"{names[i]}: the pitch hardly moves: {[round(g) for g in got]}"
+
+    i = S["tremolo"]                                                                      # 7xy: the peak of every tick against the model
+    vols = mt.tremolo_vols(32, 4, 8, 8)
+    for k, v in enumerate(vols):
+        got = peak_in(i, k * 0.02 + 0.004, k * 0.02 + 0.016)
+        assert abs(got - PEAK * v / 64) < 0.02, f"{names[i]}, tick {k}: volume {v} should peak near {PEAK * v / 64:.3f}, found {got:.3f}"
+
+    i = S["volume slide"]                                                                 # Axy: 4 down per tick on ticks 1-5: 64, 44, 24, 4 at the starts of the rows
+    for r, v in enumerate((64, 44, 24, 4)):
+        got = peak_in(i, r * 0.12 + 0.004, r * 0.12 + 0.016)
+        assert abs(got - PEAK * v / 64) < 0.012, f"{names[i]}, row {r}: volume {v} should peak near {PEAK * v / 64:.3f}, found {got:.3f}"
+
+    for name in ("speed", "tempo"):                                                       # rows of 60 ms: sound, silence, sound, silence, sound
+        i = S[name]
+        r = runs(i)
+        assert len(r) == 3, f"{name}: expected three notes, found {r}"
+        for n, (s, e) in enumerate(r):
+            about(i, f"note {n} starts", s, n * 120, 10)
+            about(i, f"note {n} lasts", e - s, 60, 10)
+
+    i = S["note cut"]                                                                     # EC2: two ticks of sound
+    r = runs(i)
+    assert len(r) == 1, r
+    about(i, "length", r[0][1] - r[0][0], 40, 10)
+
+    i = S["note delay"]                                                                   # ED3: after the time mark, the note starts at tick 3
+    r = runs(i)
+    assert len(r) == 2 and r[0][1] - r[0][0] < 25, f"{names[i]}: expected a time mark and a note, found {r}"
+    about(i, "start", r[1][0], 60, 10)
+    about(i, "length", r[1][1] - r[1][0], 60, 12)
+
+    i = S["retrigger"]                                                                    # E92: the burst plays again at ticks 2 and 4
+    r = runs(i)
+    assert len(r) == 3, f"{names[i]}: expected three bursts, found {r}"
+    for n, (s, e) in enumerate(r):
+        about(i, f"burst {n}", s, n * 40, 10)
+
+    i = S["sample offset"]                                                                # 908 skips the 124 ms of silence at the start of the sample
+    r = runs(i)
+    assert len(r) == 3, f"{names[i]}: expected the offset note, a time mark and the late note, found {r}"
+    assert r[0][0] < 10 and r[0][1] - r[0][0] > 100, f"{names[i]}: the note with an offset should sound at once: {r}"
+    assert r[1][1] - r[1][0] < 30, f"{names[i]}: the time mark is a short burst: {r}"
+    about(i, "the note without the offset starts after the mark", r[2][0] - r[1][0], 124, 12)
+
+    i = S["pattern loop"]                                                                  # E60 / E62: rows 0 and 1, three times in all
+    for r_ in range(6):
+        near(i, f"row {r_}", f_in(i, *row(r_)), mt.PAL / (214 if r_ % 2 == 0 else 107), 0.02)
+
+    i = S["finetune"]                                                                     # E54 (+4) and E5C (-4): periods 208 and 220 on the table
+    near(i, "row 0", f_in(i, *row(0)), mt.PAL / 208, 0.012)
+    near(i, "row 1", f_in(i, *row(1)), mt.PAL / 220, 0.012)
+
+    i = S["fine slides"]                                                                  # E14: 214 - 4; E28: + 8
+    near(i, "row 0", f_in(i, *row(0)), mt.PAL / 210, 0.012)
+    near(i, "row 1", f_in(i, *row(1)), mt.PAL / 218, 0.012)
+
+    i = S["position jump"]                                                                # B11 skips the pattern that would play 518 Hz for a long time
+    near(i, "note", f_in(i, *row(0)), mt.PAL / 214, 0.015)
+    about(i, "length", runs(i)[-1][1], 120, 15)
+    i = S["the end"]                                                                      # ... and lands on the last one, which ends the song
+    near(i, "note", f_in(i, *row(0)), mt.PAL / 160, 0.015)
+    about(i, "length", runs(i)[-1][1], 120, 15)
+
+
+@test
 def audio_jukebox():
     """Reimu's Jukebox: plays the first song through the sound card, shows its title, pauses, skips, seeks and sets the volume."""
     from guitools import Gui
@@ -390,6 +491,9 @@ def audio_jukebox():
     region = (290, 285, 380, 40)
 
     with Qemu(cmdline="text", name="t-audio-jukebox", mem="768M", audio="hda") as vm:
+        vm.expect(test_shell.PROMPT, timeout=90)
+        put_file(vm, "/tmp/test.mod", mt.make_module())      # for the end of the test
+        vm.send("\n")                                         # a fresh prompt: start_desktop() waits for one
         g = Gui(vm)
         g.start_desktop()
 
@@ -428,6 +532,13 @@ def audio_jukebox():
         vm.expect(r"jukebox: muted", timeout=60)
         vm.key("q", ctrl=True)
         time.sleep(1)
+
+        vm.send("volume unmute; volume 100; jukebox --trace -p /tmp/test.mod &\n")      # a ProTracker module in the same window
+        vm.expect(r"jukebox: ready with 6 tracks", timeout=180)
+        vm.expect(r"jukebox: playing Test Module", timeout=60)
+        vm.expect(r"jukebox: playing Bamboo Lantern Walk", timeout=120)                 # the module is over: the list goes on
+        vm.key("q", ctrl=True)
+        time.sleep(1)
         rate, x = capture(vm)
     assert at.peak(x) > 0.02, "nothing was played"
     segs = at.segments(x, rate, threshold=0.004, merge_ms=400)
@@ -437,6 +548,11 @@ def audio_jukebox():
     seg = x[longest[0]:longest[1]]
     jumps = float(abs(seg[1:] - seg[:-1]).max())
     assert jumps < 0.6, f"a click of {jumps:.2f} in the music"
+    a = segs[-1][0]                                                                       # the module, then the song that follows it
+    f = at.dominant_freq(x[a + int(0.06 * rate):a + int(0.42 * rate)], rate)
+    assert abs(f - 258.97) < 4, f"the module's first notes are 259 Hz, heard {f:.1f}"
+    f = at.dominant_freq(x[a + int(0.54 * rate):a + int(0.90 * rate)], rate)
+    assert abs(f - 517.9) < 8, f"the module's next notes are 518 Hz, heard {f:.1f}"
 
 
 @test
@@ -510,13 +626,17 @@ def audio_panel_volume():
         g = Gui(vm)
         g.start_desktop()
         out = g.sh("volume 60")
-        g.click(919, 750)                                     # the speaker in the tray
-        time.sleep(1.5)
-        vm.screenshot(BUILD / "t-audio-panel.png")
-        g.click(869, 692)                                     # a quarter of the way along the slider in the popup
-        time.sleep(1.5)
-        out = g.sh("volume")
-        m = re.search(r"Master volume: (\d+)%", out)
+        for attempt in range(3):                              # on a busy host the pointer can lag behind: try again from a clean start
+            g.click(500, 300)                                 # closes a popup that an earlier attempt left open
+            g.click(919, 750)                                 # the speaker in the tray
+            time.sleep(1.5)
+            vm.screenshot(BUILD / "t-audio-panel.png")
+            g.click(869, 692)                                 # a quarter of the way along the slider in the popup
+            time.sleep(1.5)
+            out = g.sh("volume")
+            m = re.search(r"Master volume: (\d+)%", out)
+            if m and 15 <= int(m.group(1)) <= 35:
+                break
         assert m and 15 <= int(m.group(1)) <= 35, f"the slider should have set about 25%, volume says: {out!r}"
         g.click(862, 715)                                     # Mute
         time.sleep(1.5)

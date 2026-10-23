@@ -7,7 +7,7 @@
  *     int16_t pcm[2 * 1024];
  *     size_t n = mod_render(p, pcm, 1024);               // interleaved stereo frames; 0 when the song has ended
  *
- * Reads the common 4 to 32 channel signatures (M.K., M!K!, FLT4, FLT8, 4CHN, 6CHN, 8CHN, xxCH). Plays the usual effects:
+ * Reads the common 4 to 32 channel signatures (M.K., M!K!, FLT4, 4CHN, 6CHN, 8CHN, xxCH; not FLT8, which stores its patterns in pairs). Plays the usual effects:
  * arpeggio, slides, tone portamento, vibrato, tremolo, sample offset, volume slides, position jump, pattern break, set
  * volume, speed and tempo, and from the extended set fine slides, finetune, pattern loop, retrigger, note cut, note delay and pattern delay.
  * Channels are panned Amiga style (left right right left) with a little crosstalk. Not read: S3M, XM, IT, 15-sample modules.
