@@ -175,14 +175,13 @@ static void test_stop_continue(void) {
     sigaction(SIGCHLD, &sa, NULL);
 }
 
-static volatile unsigned long *g_flag;                      /* g_shared[8..] are flags set by handlers in the children */
+/* g_shared[8..10] are flags the handlers set in the children and the test sets for them */
 static void on_flag_tstp(int sig) { (void)sig; g_shared[8]++; }
 static void on_flag_cont(int sig) { (void)sig; g_shared[9]++; }
 
 static void test_stop_semantics(void) {
     SECTION("stop signals: ignored, caught, blocked, pending discarded by SIGCONT, handler for SIGCONT");
     int st;
-    (void)g_flag;
 
     /* SIGTSTP ignored: nothing happens; SIGSTOP cannot be ignored */
     g_shared[0] = 0;
