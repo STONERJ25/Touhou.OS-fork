@@ -1,6 +1,10 @@
 /*
  * System call numbers. Calling convention (x86-64 `syscall`): number in rax, arguments in rdi, rsi, rdx, r10, r8, r9;
  * result in rax (negative errno on failure); rcx and r11 are clobbered.
+ *
+ * Storage-related calls: mount(source, target, fstype, flags[, options]) - when flags has MNT_OPTS (abi.h) the fifth
+ * argument (r8) is a pointer to an option string; sync() flushes every writable filesystem to its device;
+ * statfs(path, struct gstatfs *) is number 67.
  */
 #ifndef SHARED_SYSCALL_H
 #define SHARED_SYSCALL_H
@@ -86,6 +90,7 @@
 #define SYS_ptyopen       64      /* open a pseudo-terminal pair: returns master fd, slave path in buf */
 #define SYS_gettime_ms    65      /* wall clock, milliseconds since the epoch */
 #define SYS_tcsetpgrp     66
+#define SYS_statfs        67      /* statfs(path, struct gstatfs *buf): size and free space of the filesystem holding path (abi.h) */
 /* Number ranges for subsystems that register their own calls: networking 90-99, audio 100-105, threads 106-115, free 116-127. */
 #define SYS_nsyscalls     128
 

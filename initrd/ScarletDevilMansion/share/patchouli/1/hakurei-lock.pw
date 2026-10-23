@@ -1,0 +1,13 @@
+.page hakurei-lock 1 lock the screen
+.alias lock
+
+# SYNOPSIS
+*hakurei-lock*
+
+# DESCRIPTION
+Locks the desktop. It opens one full-screen window of a kind the window server treats as the only thing on the machine: nothing can get in front of it, no other window can take the keyboard, and every shortcut (Alt+Tab, Ctrl+Alt+T, the launcher) is switched off. It shows the clock, the user's avatar and a password field. The password is checked by pwcheck(8); a wrong one shakes the card and shuts the gate for a moment, and is written to the log. An account with no password only needs Enter.
+
+Start it from *Start -> Lock screen*, the desktop menu, or with Super+L. Only one lock can exist at a time. The kernel's emergency exit, Ctrl+Alt+Backspace, kills the window server; `init`(8) answers that by opening the text login prompt rather than giving out a shell.
+
+# SEE ALSO
+pwcheck(8), accounts(7), init(8)

@@ -439,4 +439,15 @@ static void tmpfs_unmount(Mount *m) { kfree(m->priv); }
 
 void tmpfs_stats(u64 *pages_used) { *pages_used = g_pages_used; }
 
-const FsType g_tmpfs_type = { "tmpfs", tmpfs_mount, tmpfs_unmount };
+/* All tmpfs instances draw from one pool (half of RAM, see tmp_write), so every mount reports the shared figures. */
+static int tmpfs_statfs(Mount *m, struct gstatfs *out) {
+    (void)m;
+    u64 total = pmm_total_pages() / 2;
+    out->f_type = 0x01021994;
+    out->f_bsize = PAGE_SIZE;
+    out->f_blocks = total;
+    out->f_bfree = out->f_bavail = g_pages_used < total ? total - g_pages_used : 0;
+    return 0;
+}
+
+const FsType g_tmpfs_type = { "tmpfs", tmpfs_mount, tmpfs_unmount, tmpfs_statfs };

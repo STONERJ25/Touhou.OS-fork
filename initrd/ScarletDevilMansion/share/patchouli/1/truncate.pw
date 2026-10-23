@@ -1,0 +1,23 @@
+.page truncate 1 shrink or extend a file to a given size
+
+# SYNOPSIS
+*truncate* *-s* [*+*|*-*]_SIZE_[*K*|*M*|*G*] [*-c*] _FILE_ ...
+
+# DESCRIPTION
+`truncate` sets the size of each _FILE_. A file that is made shorter loses its tail; one that is made longer is padded with zero bytes. A file that does not exist is created, unless *-c* is given. _SIZE_ is a number of bytes, optionally followed by `K`, `M` or `G` (powers of 1024). With a leading `+` or `-` the size is relative to the current size of the file; a result below zero becomes zero.
+
+# OPTIONS
+@ *-s* _SIZE_
+    The size to set (required).
+@ *-c*
+    Do not create files that do not exist.
+
+# EXIT STATUS
+0 on success; 1 if a file could not be opened or truncated, or the size is not valid.
+
+# EXAMPLES
+    truncate -s 10M disk.img
+    truncate -s -1K log.txt
+
+# SEE ALSO
+dd(1), ls(1)

@@ -446,20 +446,58 @@ APPLET(mount) {
         free(data);
         return 0;
     }
-    const char *type = NULL;
+    const char *type = NULL, *opts = NULL;
+    unsigned long flags = 0;
     int i = 1;
     for (; i < argc && argv[i][0] == '-'; i++) {
         if (!strcmp(argv[i], "-t") && i + 1 < argc) type = argv[++i];
+        else if (!strcmp(argv[i], "-o") && i + 1 < argc) opts = argv[++i];
+        else if (!strcmp(argv[i], "-r")) flags |= MNT_RDONLY;
+        else if (!strcmp(argv[i], "-w")) flags &= ~MNT_RDONLY;
+        else { kb_error("usage: mount [-t type] [-o options] [-r] source target\n"
+                        "  fat32 options: ro,rw,force,sync,uid=N,gid=N,fmask=OCT,dmask=OCT,umask=OCT,userdirs,usermap=name:uid:gid/..."); return 1; }
     }
-    if (argc - i < 2) { kb_error("usage: mount [-t type] source target"); return 1; }
-    if (!type) type = "auto";
-    if (gap_mount(argv[i], argv[i + 1], type, 0) < 0) { kb_error("mounting %s on %s failed: %s", argv[i], argv[i + 1], strerror(errno)); return 1; }
+    if (argc - i < 2) { kb_error("usage: mount [-t type] [-o options] [-r] source target"); return 1; }
+    const char *src = argv[i], *target = argv[i + 1];
+    if (!type || !strcmp(type, "auto")) type = strncmp(src, "/dev/", 5) ? NULL : "fat32";
+    if (!type) { kb_error("cannot guess the file system type of '%s': use -t type", src); return 1; }
+    char optbuf[128];
+    optbuf[0] = 0;
+    if (opts) strlcpy(optbuf, opts, sizeof optbuf);
+    for (const char *p = optbuf; *p;) {                         /* "ro" in the option list is also the read-only flag */
+        if (!strncmp(p, "ro", 2) && (p[2] == ',' || !p[2])) flags |= MNT_RDONLY;
+        p = strchr(p, ',');
+        if (!p) break;
+        p++;
+    }
+    if (strstr(optbuf, "userdirs") && !strstr(optbuf, "usermap=")) {   /* hand the kernel the users of /etc/passwd */
+        FILE *pw = fopen("/etc/passwd", "r");
+        char line[160], map[96] = "";
+        while (pw && fgets(line, sizeof line, pw)) {
+            char name[32];
+            unsigned uid, gid;
+            if (sscanf(line, "%31[^:]:%*[^:]:%u:%u:", name, &uid, &gid) != 3 || uid < 1000) continue;
+            char one[48];
+            snprintf(one, sizeof one, "%s%s:%u:%u", map[0] ? "/" : "", name, uid, gid);
+            if (strlen(map) + strlen(one) + strlen(optbuf) + 10 > sizeof optbuf) break;
+            strcat(map, one);
+        }
+        if (pw) fclose(pw);
+        if (map[0]) { strlcat(optbuf, ",usermap=", sizeof optbuf); strlcat(optbuf, map, sizeof optbuf); }
+    }
+    if (gap_mount_opts(src, target, type, flags, optbuf[0] ? optbuf : NULL) < 0) {
+        kb_error("mounting %s on %s failed: %s", src, target, strerror(errno));
+        return 1;
+    }
     return 0;
 }
 
 APPLET(umount) {
     if (argc < 2) { kb_error("usage: umount target"); return 1; }
-    if (gap_umount(argv[1]) < 0) { kb_error("%s: %s", argv[1], strerror(errno)); return 1; }
+    if (gap_umount(argv[1]) < 0) {
+        kb_error("%s: %s", argv[1], errno == EBUSY ? "target is busy (an open file or a shell is still inside)" : strerror(errno));
+        return 1;
+    }
     return 0;
 }
 

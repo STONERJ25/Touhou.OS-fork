@@ -8,6 +8,7 @@
 int  gap_sysinfo(struct gsysinfo *si);
 int  gap_reboot(int how);                 /* REBOOT_RESTART or REBOOT_POWEROFF */
 int  gap_mount(const char *src, const char *target, const char *fstype, unsigned long flags);
+int  gap_mount_opts(const char *src, const char *target, const char *fstype, unsigned long flags, const char *opts);
 int  gap_umount(const char *target);
 void gap_setname(const char *name);
 void gap_log(const char *msg);

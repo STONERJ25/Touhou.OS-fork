@@ -1,22 +1,22 @@
-.page date 1 print the date and time
+.page date 1 print or set the date and time
 
 # SYNOPSIS
-*date* [*-u*] [*-d* _WHEN_] [*-R* | *-I*] [*+*_FORMAT_]
+*date* [*-u*] [*-d* _WHEN_] [*-s* _WHEN_] [*-R* | *-I*] [*+*_FORMAT_]
 
 # DESCRIPTION
-`date` prints the current date and time, always in UTC: Gensokyo keeps its own time zone, and the system does not know the rest. The clock cannot be set from here.
-
-The default format looks like `Fri Oct 23 14:05:09 UTC 2026`.
+`date` prints the current date and time in the time zone of the system (see timezone(5)), or in UTC with *-u*. The default format looks like `Fri Oct 23 14:05:09 EDT 2026`. Root can set the system clock with *-s*; the battery-backed chip is handled by hwclock(8).
 
 # OPTIONS
 @ *-d* _WHEN_
-    Show _WHEN_ instead of the current time: `@`_SECONDS_ for seconds since 1970, or a date like `2026-10-23` or `2026-10-23 14:05:09`.
+    Show _WHEN_ instead of the current time: `@`_SECONDS_ for seconds since 1970, or a date like `2026-10-23` or `2026-10-23 14:05:09`, taken in the system's zone (in UTC with *-u*).
+@ *-s* _WHEN_
+    Set the system clock to _WHEN_ (same forms) and print it. Needs root.
 @ *-u*
-    Accepted; the time is UTC anyway.
+    Work in UTC.
 @ *-R*
     RFC 2822 format.
 @ *-I*
-    Just the date, as `2026-10-23`. `--iso-8601=seconds` gives the date and time with a zone.
+    Just the date, as `2026-10-23`. `--iso-8601=seconds` gives the date and time with the offset.
 @ *+*_FORMAT_
     Print using _FORMAT_. These conversions are understood:
 
@@ -30,14 +30,15 @@ The default format looks like `Fri Oct 23 14:05:09 UTC 2026`.
         %B  month name              %F  the same as %Y-%m-%d
         %T  the same as %H:%M:%S    %R  the same as %H:%M
         %D  the same as %m/%d/%y    %c  date and time
-        %s  seconds since 1970      %Z  zone name (UTC)
-        %z  offset (+0000)          %%  a percent sign
+        %s  seconds since 1970      %Z  zone name (EDT, JST, UTC)
+        %z  offset (-0400)          %%  a percent sign
 
 # EXAMPLES
     date
     date +%Y-%m-%d
+    TZ=JST-9 date '+%H:%M %Z'
     date -d @86400
-    date -d '2024-02-29' +%A
+    sudo date -s '2026-10-23 14:05:09'
 
 # SEE ALSO
-cal(1), uptime(1), sleep(1)
+cal(1), hwclock(8), timezone(5), clock(7), uptime(1), sleep(1)

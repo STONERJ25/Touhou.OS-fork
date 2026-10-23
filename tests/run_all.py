@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Scripted regression tests: boots the kernel in QEMU and checks serial output / guest behaviour.
 
-  python tests/run_all.py            run everything
-  python tests/run_all.py usb        run tests whose name contains the argument
+  python tests/run_all.py                    run everything
+  python tests/run_all.py usb                run the tests whose name starts with "usb"
+  python tests/run_all.py usb,blk_,~clock    comma-separated filters; a leading ~ means "contains" instead of "starts with"
 
 Tests live in tests/case_*.py and register themselves with the @test decorator from harness.py.
 """
@@ -25,10 +26,10 @@ def main():
             stream.reconfigure(encoding="utf-8", errors="replace")
         except AttributeError:
             pass
-    want = sys.argv[1] if len(sys.argv) > 1 else ""
+    wants = [w for w in (sys.argv[1] if len(sys.argv) > 1 else "").split(",") if w] or [""]
     failed, ran = [], 0
     for fn in harness.TESTS:
-        if want not in fn.__name__:
+        if not any((w[1:] in fn.__name__) if w.startswith("~") else fn.__name__.startswith(w) for w in wants):
             continue
         ran += 1
         t0 = time.time()

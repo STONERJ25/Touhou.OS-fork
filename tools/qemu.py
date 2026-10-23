@@ -72,7 +72,7 @@ def char_to_key(ch):
 class Qemu:
     def __init__(self, cmdline="", mem="512M", display="none", disk=None, net=False, no_reboot=True,
                  trace_int=False, extra=(), esp=None, name="vm", video=None, headless_serial=True,
-                 audio=None, audio_path=None, sounds=False):
+                 boot_image=None, boot_bus="usb", audio=None, audio_path=None, sounds=False):
         # audio: None (no sound hardware), "hda" / "hda-output" (Intel HDA + output-only codec), "hda-duplex", "ac97".
         # The sound card plays into a WAV file (audio_path, default build/<name>-audio.wav) that is complete once stop() ran.
         # sounds: system sounds (login chime...) are switched off with "nosounds" on the command line unless a test wants them.
@@ -84,6 +84,7 @@ class Qemu:
         self.esp = Path(esp) if esp else BUILD / "esp"
         self.name = name
         self.video = video
+        self.boot_image, self.boot_bus = boot_image, boot_bus    # boot from a disk image (as a PC would) instead of the fat: ESP directory
         self.input_device = None        # QMP id of the keyboard to inject keys into (e.g. a usb-kbd); None = QEMU's default
         self.mouse_device = None        # same for the mouse
         self.proc = None
@@ -112,12 +113,28 @@ class Qemu:
         (self.esp / "cmdline.txt").write_text(cmdline + "\n")
         return vars_copy
 
+    def _boot_drive_args(self):
+        """The firmware's boot disk: the ESP directory as a FAT drive, or a whole disk image on a USB stick, SATA, NVMe or virtio bus."""
+        if not self.boot_image:
+            return ["-drive", f"format=raw,file=fat:rw:{self.esp}"]
+        img = f"if=none,id=bootdisk,format=raw,file={self.boot_image}"
+        bus = self.boot_bus
+        if bus == "usb":
+            return ["-drive", img, "-device", "qemu-xhci,id=bootxhci", "-device", "usb-storage,bus=bootxhci.0,drive=bootdisk,bootindex=0"]
+        if bus == "sata":
+            return ["-drive", img, "-device", "ide-hd,drive=bootdisk,bootindex=0"]
+        if bus == "nvme":
+            return ["-drive", img, "-device", "nvme,drive=bootdisk,serial=bootnvme,bootindex=0"]
+        if bus == "virtio":
+            return ["-drive", img, "-device", "virtio-blk-pci,drive=bootdisk,bootindex=0"]
+        raise ValueError(f"unknown boot bus {bus!r}")
+
     def _args(self, vars_copy, serial_port, qmp_port):
         a = [str(QEMU),
              "-machine", "q35", "-cpu", "max", "-m", self.mem, "-smp", "1",
              "-drive", f"if=pflash,format=raw,unit=0,readonly=on,file={OVMF_CODE}",
              "-drive", f"if=pflash,format=raw,unit=1,file={vars_copy}",
-             "-drive", f"format=raw,file=fat:rw:{self.esp}",
+             *self._boot_drive_args(),
              "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
              "-d", "guest_errors,cpu_reset" + (",int" if self.trace_int else ""), "-D", str(self.log_path)]
         if self.disk:
@@ -306,11 +323,20 @@ class Qemu:
         return {"type": "key", "data": {"down": down, "key": {"type": "qcode", "data": qcode}}}
 
     def _input(self, events, device=None):
-        """input-send-event; `device` is the id of a -device usb-kbd/usb-mouse to target (None: QEMU's default routing)."""
-        if device:
-            self.qmp("input-send-event", device=device, events=events)
-        else:
-            self.qmp("input-send-event", events=events)
+        """input-send-event. `device` is accepted for compatibility but NOT forwarded: QEMU's `device` argument names a *display*
+        device (a console), not an input device, and QEMU 11 aborts on any id that is not a display ("Property
+        'qemu-fixed-text-console.device' not found"). Default routing already does the right thing for USB input: a usb-kbd becomes
+        the default keyboard when it is plugged in, and a usb-mouse the default mouse once the guest starts polling it (check
+        with select_mouse() / query-mice)."""
+        self.qmp("input-send-event", events=events)
+
+    def select_mouse(self, name):
+        """Makes the mouse whose QEMU name contains `name` ("HID", "PS/2") the one that receives injected motion and buttons."""
+        for m in self.qmp("query-mice"):
+            if name.lower() in m["name"].lower():
+                self.qmp("human-monitor-command", **{"command-line": f"mouse_set {m['index']}"})
+                return m["index"]
+        raise RuntimeError(f"no mouse matching {name!r}")
 
     def key(self, qcode, shift=False, ctrl=False, alt=False, hold=0.03):
         mods = (["shift"] if shift else []) + (["ctrl"] if ctrl else []) + (["alt"] if alt else [])

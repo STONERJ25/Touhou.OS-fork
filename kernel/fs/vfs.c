@@ -16,6 +16,11 @@ static u32 g_next_mount_id = 1;
 
 /* ------------------------------------------------------------------ vnodes */
 
+/* Filesystems such as FAT derive ownership from the mount; the creator's uid/gid must not be stamped on new nodes. */
+static bool fs_owns_ids(const VNode *v) {
+    return v->mount && v->mount->type && (v->mount->type->flags & FS_FIXED_OWNER);
+}
+
 VNode *vnode_alloc(const VNodeOps *ops, Mount *m, u32 mode) {
     VNode *v = kzalloc(sizeof *v);
     if (!v) return NULL;
@@ -90,6 +95,10 @@ static int resolve(const char *path, VNode *cwd, const Cred *c, int flags, bool 
                    VNode **node_out, VNode **parent_out, char *name_out);
 
 int vfs_mount(const char *fstype, const char *source, const char *target, u32 flags) {
+    return vfs_mount_opts(fstype, source, target, flags, NULL);
+}
+
+int vfs_mount_opts(const char *fstype, const char *source, const char *target, u32 flags, const char *opts) {
     const FsType *t = NULL;
     for (int i = 0; i < g_nfstypes; i++)
         if (!strcmp(g_fstypes[i]->name, fstype)) t = g_fstypes[i];
@@ -111,6 +120,7 @@ int vfs_mount(const char *fstype, const char *source, const char *target, u32 fl
     if (!m) { if (covered) vnode_put(covered); mutex_unlock(&g_ns); return -ENOMEM; }
     strlcpy(m->target, target, sizeof m->target);
     strlcpy(m->source, source ? source : "", sizeof m->source);
+    strlcpy(m->opts, opts ? opts : "", sizeof m->opts);
     m->type = t;
     m->flags = flags;
     m->id = g_next_mount_id++;
@@ -133,7 +143,7 @@ int vfs_umount(const char *target) {
     for (int i = 0; i < g_nmounts; i++) {
         Mount *m = g_mounts[i];
         if (strcmp(m->target, target) || !m->covered) continue;
-        if (m->root->refs > 1) { mutex_unlock(&g_ns); return -EBUSY; }
+        if (m->root->refs > 1 || (m->type->busy && m->type->busy(m))) { mutex_unlock(&g_ns); return -EBUSY; }
         m->covered->mounted = NULL;
         vnode_put(m->covered);
         if (m->type->unmount) m->type->unmount(m);
@@ -153,6 +163,42 @@ int vfs_mount_list(int idx, char *target, size_t tn, char *type, size_t yn, char
     strlcpy(type, g_mounts[idx]->type->name, yn);
     strlcpy(source, g_mounts[idx]->source, sn);
     return 1;
+}
+
+u32 vfs_mount_flags(int idx) { return idx >= 0 && idx < g_nmounts ? g_mounts[idx]->flags : 0; }
+
+/* Writes back every filesystem that has something to flush. Returns the first error, if any. */
+int vfs_sync_all(void) {
+    int worst = 0;
+    mutex_lock(&g_ns);
+    for (int i = 0; i < g_nmounts; i++) {
+        Mount *m = g_mounts[i];
+        if (!m->type->sync) continue;
+        int rc = m->type->sync(m);
+        if (rc && !worst) worst = rc;
+    }
+    mutex_unlock(&g_ns);
+    return worst;
+}
+
+int vfs_statfs(const char *path, VNode *cwd, const Cred *c, struct gstatfs *out) {
+    VNode *v;
+    int rc = vfs_lookup(path, cwd, c, 0, &v);
+    if (rc) return rc;
+    memset(out, 0, sizeof *out);
+    out->f_bsize = 4096;
+    out->f_namelen = GNAME_MAX;
+    Mount *m = v->mount;
+    if (m) {
+        strlcpy(out->f_fstypename, m->type->name, sizeof out->f_fstypename);
+        strlcpy(out->f_mntfromname, m->source, sizeof out->f_mntfromname);
+        strlcpy(out->f_mntonname, m->target, sizeof out->f_mntonname);
+        out->f_fsid = m->id;
+        out->f_flags = m->flags & MNT_RDONLY;
+        if (m->type->statfs) rc = m->type->statfs(m, out);
+    }
+    vnode_put(v);
+    return rc;
 }
 
 /* ------------------------------------------------------------------ path resolution */
@@ -318,7 +364,7 @@ int vfs_open(const char *path, int flags, u32 mode, const Cred *c, VNode *cwd, F
             rc = dir->ops->create(dir, name, S_IFREG | (mode & 07777), &v);
             mutex_unlock(&g_ns);
         }
-        if (rc == 0 && c) { v->uid = c->uid; v->gid = c->gid; }
+        if (rc == 0 && c && !fs_owns_ids(v)) { v->uid = c->uid; v->gid = c->gid; }
         vnode_put(dir);
     } else if (rc == 0 && (flags & O_CREAT) && (flags & O_EXCL)) {
         vnode_put(v);
@@ -477,7 +523,7 @@ int vfs_mkdir(const char *path, u32 mode, const Cred *c, VNode *cwd) {
     rc = dir->ops->mkdir(dir, name, S_IFDIR | (mode & 07777), &nv);
     mutex_unlock(&g_ns);
     if (rc == 0) {
-        if (c) { nv->uid = c->uid; nv->gid = c->gid; }
+        if (c && !fs_owns_ids(nv)) { nv->uid = c->uid; nv->gid = c->gid; }
         vnode_put(nv);
     }
     vnode_put(dir);
@@ -573,9 +619,12 @@ int vfs_chmod(const char *path, u32 mode, const Cred *c, VNode *cwd) {
     if (rc) return rc;
     if (c && c->uid != 0 && c->uid != v->uid) rc = -EPERM;
     else {
-        v->mode = (v->mode & S_IFMT) | (mode & 07777);
-        v->ctime = time_now_sec();
-        if (v->ops->chmod) v->ops->chmod(v, v->mode);
+        u32 nm = (v->mode & S_IFMT) | (mode & 07777);
+        rc = v->ops->chmod ? v->ops->chmod(v, nm) : 0;      /* a filesystem may refuse (FAT cannot store most modes) */
+        if (rc == 0) {
+            v->mode = nm;
+            v->ctime = time_now_sec();
+        }
     }
     vnode_put(v);
     return rc;
@@ -587,10 +636,13 @@ int vfs_chown(const char *path, u32 uid, u32 gid, const Cred *c, VNode *cwd) {
     if (rc) return rc;
     if (c && c->uid != 0) rc = -EPERM;
     else {
-        if (uid != (u32)-1) v->uid = uid;
-        if (gid != (u32)-1) v->gid = gid;
-        v->ctime = time_now_sec();
-        if (v->ops->chown) v->ops->chown(v, v->uid, v->gid);
+        u32 nu = uid != (u32)-1 ? uid : v->uid, ng = gid != (u32)-1 ? gid : v->gid;
+        rc = v->ops->chown ? v->ops->chown(v, nu, ng) : 0;
+        if (rc == 0) {
+            v->uid = nu;
+            v->gid = ng;
+            v->ctime = time_now_sec();
+        }
     }
     vnode_put(v);
     return rc;

@@ -1,0 +1,29 @@
+.page df 1 report free space on mounted filesystems
+
+# SYNOPSIS
+*df* [*-hkTaP*] [_PATH_ ...]
+
+# DESCRIPTION
+`df` shows how much room each mounted filesystem has left: its size, what is used, what is available, the percentage used and where it is mounted. With no _PATH_ it lists every filesystem in `/proc/mounts` that holds anything (the in-memory root and `/BambooForest`, a mounted HUMANVILLAGE disk, ...); with paths it reports the filesystem each path lives on. A filesystem mounted read-only is marked `(ro)`. On a terminal a short banner from Keine, who keeps the ledger, is printed first.
+
+# OPTIONS
+@ *-h*
+    Sizes in a human-readable form (`1.4M`) instead of 1 KiB blocks.
+@ *-k*
+    1 KiB blocks (the default).
+@ *-T*
+    Add a column with the filesystem type (`tmpfs`, `fat32`, ...).
+@ *-a*
+    Also list filesystems with no blocks (`/proc`, `/dev`).
+@ *-P*
+    POSIX output: no banner.
+
+# EXIT STATUS
+0, or 1 if a path could not be examined.
+
+# EXAMPLES
+    df -h
+    df -T /HumanVillage
+
+# SEE ALSO
+mount(8), umount(8)

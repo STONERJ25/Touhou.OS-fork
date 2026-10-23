@@ -4,11 +4,32 @@
 *init*
 
 # DESCRIPTION
-`init` is process 1. When the kernel has mounted the filesystem and unpacked the initrd it starts `/sbin/init`, which opens the shrine for the day: it prints a greeting, starts a login shell (`gapsh -l`) for the resident of the Human Village and respawns it whenever it exits. It also adopts and collects every orphaned process.
+`init` is process 1. When the kernel has mounted the filesystem and unpacked the initrd it starts `/sbin/init`, which opens the shrine for the day: it works out who is at the door, starts that resident's session, and when the session ends sees who comes next. It also adopts and collects every orphaned process.
 
-The shell runs as `reimu` (user 1000, home `/HumanVillage/reimu`). With `user=root` on the kernel command line it runs as root with `/root` as home. The environment it hands over has `HOME`, `USER`, `LOGNAME`, `SHELL`, `PATH=/bin:/sbin:/usr/bin`, `HOSTNAME` and `TERM=xterm`; the login profile adds the rest (see profile(5)).
+# THE DOOR
+By default the door is open for `reimu`: her desktop starts at once (or her login shell, on a machine without a display or with `text` on the command line). Logging out of a desktop always returns to the door, so switching user is *Shut down... -> Log out*. When a resident leaves, every process they left behind is sent home.
 
-If the word `utest` is on the kernel command line `init` does not start a shell: it runs utest(1) and powers the machine off.
+With `login` on the command line (or `autologin=none`) the door asks who is there: on a machine with a display the login screen (`hakurei-greeter`, running as root in its own window server), otherwise the `login` prompt on the console. The login screen has a **Text console** button that opens the `login` prompt once and returns to the login screen when that shell ends. A login screen that keeps dying (three times in a row) gives way to the text prompt for good. A desktop that dies, or is shot down with Ctrl+Alt+Backspace, does not hand out a shell for free either: it opens the text prompt, then the login screen again.
+
+The environment `init` hands to a session has `HOME`, `USER`, `LOGNAME`, `SHELL`, `PATH=/bin:/sbin:/usr/bin`, `HOSTNAME`, `TERM=xterm` and `TZ` when one is set; the login profile adds the rest (see profile(5)).
+
+# KERNEL COMMAND LINE
+The words `init` looks at (they are set in `cmdline.txt` on the boot volume):
+
+@ text, nogui
+    No desktop: a text session on the console.
+@ login
+    Ask who is at the door instead of letting `reimu` in.
+@ autologin=NAME
+    Open NAME's session (default `reimu`); `none` asks at the door. `user=root` is the old spelling for `autologin=root`.
+@ tz=ZONE
+    The time zone, in the POSIX form (see timezone(5)).
+@ rtc=local
+    The clock chip keeps local time (a PC that also runs Windows does that): correct the system clock by the zone's offset.
+@ utest
+    Do not start a session: run utest(1) and power the machine off.
+
+If a program started by `init` dies within a second it is not started again at once, so a broken installation cannot spin the machine.
 
 # SEE ALSO
-gapsh(1), profile(5), gensokyo(7), utest(1)
+login(1), gapsh(1), profile(5), timezone(5), sudoers(5), gensokyo(7), accounts(7), utest(1)

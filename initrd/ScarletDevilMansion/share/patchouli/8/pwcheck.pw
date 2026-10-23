@@ -1,0 +1,10 @@
+.page pwcheck 8 check the caller's own password
+
+# SYNOPSIS
+*pwcheck*
+
+# DESCRIPTION
+`pwcheck` reads one line from its standard input and exits with status 0 if that line is the password of the user who ran it, 1 if it is not (2 if the user is unknown). It is installed setuid root so that a program started by an ordinary user, in practice the screen lock hakurei-lock(1), can ask the question without being able to read shadow(5) itself. It only ever answers for the caller's own account, so it is no help for guessing anyone else's password. An account with no password accepts an empty line.
+
+# SEE ALSO
+hakurei-lock(1), shadow(5), accounts(7)
