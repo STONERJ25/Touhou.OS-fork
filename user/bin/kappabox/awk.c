@@ -187,13 +187,15 @@ static size_t num_str(double n, const char *fmt, char *buf, size_t cap) {
     return (size_t)r;
 }
 
+static __attribute__((noinline)) Val num_to_strval(double d) {
+    char b[512];
+    size_t n = num_str(d, g_convfmt, b, sizeof b);
+    return vcopy(b, n);
+}
+
 /* The string value of v (numbers are converted with CONVFMT into the arena). */
 static Val tostr(Val v) {
-    if (v.t == T_NUM) {
-        char b[512];
-        size_t n = num_str(v.n, g_convfmt, b, sizeof b);
-        return vcopy(b, n);
-    }
+    if (v.t == T_NUM) return num_to_strval(v.n);
     if (v.t == T_UNINIT) return vstr("", 0);
     return v;
 }
@@ -1532,13 +1534,14 @@ static Cell *g_cells;
 typedef struct { Cell *loc; int n; } Frame;
 static Frame *g_frame;
 static int g_depth;
+static char *g_stack_base;
 static double g_nr, g_fnr;
 static int g_nf;
 
 typedef struct { char *s; size_t len; } Str;
 static Str g_fs, g_ofs, g_ors, g_rs, g_subsep;
 static Regex *g_fs_re, *g_rs_re;
-static int g_exit_status, g_exit_set, g_errstatus, g_exiting;
+static int g_exit_status, g_exit_set, g_errstatus;
 static jmp_buf g_jmp;
 static int g_pending;
 static Cell g_retcell;
@@ -2261,7 +2264,7 @@ static Val eval_builtin(Node *n);
 static Val call_func(Node *n);
 static Val do_getline(Node *n);
 
-static Val eval(Node *n) {
+static __attribute__((noinline)) Val eval_slow(Node *n) {
     switch (n->type) {
     case N_NUM: return vnum(n->num);
     case N_STR: return vstr(n->str, n->slen);
@@ -2352,11 +2355,29 @@ static Val eval(Node *n) {
     return V_UNINIT;
 }
 
+static Val eval(Node *n) {
+    switch (n->type) {
+    case N_NUM: return vnum(n->num);
+    case N_STR: return vstr(n->str, n->slen);
+    case N_VAR: return var_get(n->scope, n->idx);
+    case N_GROUP: return eval(n->a);
+    case N_COND: return truth(eval(n->a)) ? eval(n->b) : eval(n->c);
+    case N_BINOP: {
+        double x = num_of(eval(n->a));
+        double y = num_of(eval(n->b));
+        return vnum(arith(n->idx, x, y));
+    }
+    case N_CALL: return call_func(n);
+    default: return eval_slow(n);
+    }
+}
+
 static Val call_func(Node *n) {
     Func *f = &g_funcs[n->idx];
     int np = f->np;
     if (n->nargs > np) fatal("function %s called with %d args, accepts only %d", f->name, n->nargs, np);
-    if (++g_depth > 12000) fatal("function call nesting too deep in %s", f->name);
+    char probe;
+    if (++g_depth > 100000 || (size_t)(g_stack_base - &probe) > (size_t)6 << 20) fatal("function call nesting too deep in %s", f->name);
     Cell *loc = xcalloc((size_t)(np ? np : 1), sizeof(Cell));
     Cell **wb = xcalloc((size_t)(np ? np : 1), sizeof(Cell *));
     int i = 0;
@@ -2403,7 +2424,7 @@ static Out *redirect_target(Node *n) {
     return out_open(t.s, t.len, n->idx);
 }
 
-static void print_val(Out *o, Val v) {
+static __attribute__((noinline)) void print_val(Out *o, Val v) {
     if (v.t == T_NUM) {
         char b[512];
         size_t k = num_str(v.n, g_ofmt, b, sizeof b);
@@ -2415,22 +2436,7 @@ static void print_val(Out *o, Val v) {
 
 static void awk_sprintf(Buf *out, const char *f, size_t fl, Val *av, int na);
 
-static int exec(Node *n) {
-    for (;;) {
-        switch (n->type) {
-        case N_BLOCK:
-            for (Node *s = n->a; s; s = s->next) {
-                int f = exec(s);
-                if (f) return f;
-            }
-            return F_NORMAL;
-        case N_EXPR: {
-            Mark m = amark();
-            eval(n->a);
-            areset(m);
-            return F_NORMAL;
-        }
-        case N_PRINT: {
+static __attribute__((noinline)) int exec_print(Node *n) {
             Mark m = amark();
             Out *o = n->idx ? redirect_target(n) : &g_out_stdout;
             if (!n->a) {
@@ -2447,7 +2453,8 @@ static int exec(Node *n) {
             areset(m);
             return F_NORMAL;
         }
-        case N_PRINTF: {
+
+static __attribute__((noinline)) int exec_printf(Node *n) {
             Mark m = amark();
             Out *o = n->idx ? redirect_target(n) : &g_out_stdout;
             Val fmt = tostr(eval(n->a));
@@ -2462,6 +2469,47 @@ static int exec(Node *n) {
             areset(m);
             return F_NORMAL;
         }
+
+static __attribute__((noinline)) int exec_forin(Node *n) {
+            Array *arr = get_array(n->b);
+            size_t cnt = arr->n, i = 0;
+            char **keys = xmalloc((cnt + 1) * sizeof(char *));
+            size_t *lens = xmalloc((cnt + 1) * sizeof(size_t));
+            for (Elem *e = arr->head; e; e = e->next, i++) { keys[i] = xstrndup(e->key, e->klen); lens[i] = e->klen; }
+            int rc = F_NORMAL;
+            for (i = 0; i < cnt; i++) {
+                Mark m = amark();
+                LRef r;
+                lv_resolve(n->a, &r);
+                lv_set(&r, vstr(keys[i], lens[i]));
+                areset(m);
+                int f = exec(n->c);
+                if (f == F_BREAK) break;
+                if (f && f != F_CONTINUE) { rc = f; break; }
+            }
+            for (i = 0; i < cnt; i++) free(keys[i]);
+            free(keys);
+            free(lens);
+            return rc;
+        }
+
+static int exec(Node *n) {
+    for (;;) {
+        switch (n->type) {
+        case N_BLOCK:
+            for (Node *s = n->a; s; s = s->next) {
+                int f = exec(s);
+                if (f) return f;
+            }
+            return F_NORMAL;
+        case N_EXPR: {
+            Mark m = amark();
+            eval(n->a);
+            areset(m);
+            return F_NORMAL;
+        }
+        case N_PRINT: return exec_print(n);
+        case N_PRINTF: return exec_printf(n);
         case N_IF: {
             Mark m = amark();
             int c = truth(eval(n->a));
@@ -2508,28 +2556,7 @@ static int exec(Node *n) {
                 if (n->c) exec(n->c);
             }
             return F_NORMAL;
-        case N_FORIN: {
-            Array *arr = get_array(n->b);
-            size_t cnt = arr->n, i = 0;
-            char **keys = xmalloc((cnt + 1) * sizeof(char *));
-            size_t *lens = xmalloc((cnt + 1) * sizeof(size_t));
-            for (Elem *e = arr->head; e; e = e->next, i++) { keys[i] = xstrndup(e->key, e->klen); lens[i] = e->klen; }
-            int rc = F_NORMAL;
-            for (i = 0; i < cnt; i++) {
-                Mark m = amark();
-                LRef r;
-                lv_resolve(n->a, &r);
-                lv_set(&r, vstr(keys[i], lens[i]));
-                areset(m);
-                int f = exec(n->c);
-                if (f == F_BREAK) break;
-                if (f && f != F_CONTINUE) { rc = f; break; }
-            }
-            for (i = 0; i < cnt; i++) free(keys[i]);
-            free(keys);
-            free(lens);
-            return rc;
-        }
+        case N_FORIN: return exec_forin(n);
         case N_NEXT: return F_NEXT;
         case N_NEXTFILE: return F_NEXTFILE;
         case N_BREAK: return F_BREAK;
@@ -2574,7 +2601,7 @@ static int exec(Node *n) {
 }
 
 /* getline in all its forms; idx: 0 plain, 1 from a file, 2 from a command */
-static Val do_getline(Node *n) {
+static __attribute__((noinline)) Val do_getline(Node *n) {
     const char *rec;
     size_t rlen;
     int r;
@@ -2633,7 +2660,7 @@ static size_t u8encode(unsigned long c, char *out) {
 
 static void pad_out(Buf *o, int n) { while (n-- > 0) buf_addc(o, ' '); }
 
-static void awk_sprintf(Buf *o, const char *f, size_t fl, Val *av, int na) {
+static __attribute__((noinline)) void awk_sprintf(Buf *o, const char *f, size_t fl, Val *av, int na) {
     int ai = 0;
     size_t i = 0;
     while (i < fl) {
@@ -2785,7 +2812,7 @@ static void add_replacement(Buf *b, const char *r, size_t rl, const char *m, siz
 
 static Buf g_subbuf;
 
-static Val do_sub(Node *n, int global) {
+static __attribute__((noinline)) Val do_sub(Node *n, int global) {
     Node *a1 = n->a, *a2 = a1->next, *a3 = a2->next;
     Regex *re = regex_of(a1);
     Val repl = tostr(eval(a2));
@@ -2841,7 +2868,7 @@ static Val lower_upper(Node *n, int up) {
     return vstr(p, s.len);
 }
 
-static Val eval_builtin(Node *n) {
+static __attribute__((noinline)) Val eval_builtin(Node *n) {
     Node *a1 = n->a, *a2 = a1 ? a1->next : NULL, *a3 = a2 ? a2->next : NULL;
     switch (n->idx) {
     case B_LENGTH: {
@@ -3053,6 +3080,8 @@ static void init_cells(void) {
 }
 
 APPLET(awk) {
+    char stack_mark;
+    g_stack_base = &stack_mark;
     const char *fs_opt = NULL;
     char **assigns = NULL;
     int nassign = 0;
