@@ -538,6 +538,7 @@ static bool hda_probe(PciDev *d) {
     if (h->oss == 0) { klog("Nitori", "hda %02x:%02x.%x: the controller has no output streams", d->bus, d->dev, d->fn); return false; }
     h->sd = R_SD0 + h->iss * 0x20;
 
+    if (cmdline_flag("hda.imm")) { h->use_imm = true; h->tried_imm = true; }     /* debugging aids: exercise the fallbacks on a machine where they are not needed */
     u16 present = controller_up(h);
     if (!present) { klog("Nitori", "hda %02x:%02x.%x: no codec answered", d->bus, d->dev, d->fn); return false; }
     if (!cmd_rings_init(h)) { klog("Nitori", "hda: no memory for the command rings"); return false; }
@@ -575,6 +576,7 @@ static bool hda_probe(PciDev *d) {
         wr32(h, R_DPUBASE, h->ok64 ? (u32)(h->posbuf_phys >> 32) : 0);
         wr32(h, R_DPLBASE, (u32)h->posbuf_phys | 1);
         h->posbuf_on = (rd32(h, R_DPLBASE) & 1) != 0;
+        if (h->posbuf_on && cmdline_flag("hda.posbuf")) h->use_posbuf = true;
     }
 
     program_paths(h);

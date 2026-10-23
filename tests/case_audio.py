@@ -21,6 +21,14 @@ def capture(vm):
     return rate, at.mono(x)
 
 
+def loudest(x, rate, **kw):
+    """The longest loud stretch of a capture."""
+    segs = at.segments(x, rate, **kw)
+    assert segs, "nothing was played"
+    a, b = max(segs, key=lambda s: s[1] - s[0])
+    return x[a:b]
+
+
 @test
 def audio_hda_tone():
     """Intel HDA: beep plays a 440 Hz tone; the sound card output has that pitch and the expected level."""
@@ -170,6 +178,23 @@ def audio_hda_graph():
         assert rc == 0 and re.search(r"\d+ checks, 0 failed", out), out
         for fixture in ("qemu hda-output", "alc662-like desktop", "alc255-like desktop", "alc255-like, internal speaker"):
             assert fixture in out, f"{fixture!r} missing from:\n{out}"
+
+
+@test
+def audio_hda_fallbacks():
+    """The duplex codec works, and so do the fallbacks: immediate commands instead of CORB/RIRB, the position buffer instead of LPIB."""
+    with Qemu(cmdline="text hda.imm hda.posbuf", name="t-audio-fallback", audio="hda-duplex") as vm:
+        vm.expect(test_shell.PROMPT, timeout=90)
+        out, rc = sh(vm, "cat /proc/audio")
+        assert "commands by the immediate registers" in out and "position from the position buffer" in out, out
+        assert "line out" in out and "output:   pin" in out, out
+        out, rc = sh(vm, "volume 100 && beep -f 660 -l 1500 -a 50")
+        assert rc == 0, out
+        rate, x = capture(vm)
+    tone = at.trimmed(loudest(x, rate), rate)
+    assert abs(at.dominant_freq(tone, rate) - 660) < 7, at.dominant_freq(tone, rate)
+    assert 0.42 < at.peak(tone) < 0.55, at.peak(tone)
+    assert float(abs(tone[1:] - tone[:-1]).max()) < 0.2, "the output has a jump in it"
 
 
 @test
