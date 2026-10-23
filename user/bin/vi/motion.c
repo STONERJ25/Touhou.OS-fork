@@ -10,36 +10,36 @@ static char last_search_off[32];
 /* ------------------------------------------------------------------ characters and columns */
 
 uint32_t cp_at(long l, int c) {
-    if (c >= (int)L[l].len) return 0;
+    if (c >= (int)LN(l).len) return 0;
     uint32_t cp;
-    pt_u8_decode((const unsigned char *)ls(l) + c, L[l].len - (size_t)c, &cp);
+    pt_u8_decode((const unsigned char *)ls(l) + c, LN(l).len - (size_t)c, &cp);
     return cp;
 }
 
 int next_c(long l, int c) {
-    int len = (int)L[l].len;
+    int len = (int)LN(l).len;
     if (c >= len) return len;
     return c + pt_u8_next(ls(l), (size_t)len, (size_t)c);
 }
 
 int prev_c(long l, int c) {
     if (c <= 0) return 0;
-    if (c > (int)L[l].len) c = (int)L[l].len;
+    if (c > (int)LN(l).len) c = (int)LN(l).len;
     return (int)pt_u8_prev(ls(l), (size_t)c);
 }
 
-int last_c(long l) { return L[l].len ? prev_c(l, (int)L[l].len) : 0; }
+int last_c(long l) { return LN(l).len ? prev_c(l, (int)LN(l).len) : 0; }
 
 int first_nonblank(long l) {
     const char *s = ls(l);
-    int len = (int)L[l].len, i = 0;
+    int len = (int)LN(l).len, i = 0;
     while (i < len && (s[i] == ' ' || s[i] == '\t')) i++;
     if (i >= len) return len ? last_c(l) : 0;
     return i;
 }
 
 int clamp_col(long l, int c, int allow_end) {
-    int len = (int)L[l].len;
+    int len = (int)LN(l).len;
     if (c < 0) c = 0;
     if (c >= len) return allow_end ? len : (len ? last_c(l) : 0);
     const char *s = ls(l);
@@ -61,7 +61,44 @@ int cls(uint32_t cp, int big) {
     return pt_is_word_cp(cp) ? 2 : 1;
 }
 
-void push_jump(void) { mark_ctx = cur; }
+/* The jump list: a jump (G, /, %, ' ...) puts the position it started from at the end; Ctrl-O goes back through it and
+ * Ctrl-I forward. An older entry on the same line is dropped. */
+static void jumplist_add(Pos p) {
+    for (int i = 0; i < njumps; i++) {
+        if (jumps[i].l == p.l || jumps[i].l < 0) { memmove(&jumps[i], &jumps[i + 1], (size_t)(njumps - i - 1) * sizeof(Pos)); njumps--; i--; }
+    }
+    if (njumps == MAXJUMPS) { memmove(&jumps[0], &jumps[1], (size_t)(MAXJUMPS - 1) * sizeof(Pos)); njumps--; }
+    jumps[njumps++] = p;
+    jumpidx = njumps;
+}
+
+void push_jump(void) {
+    mark_ctx = cur;
+    jumplist_add(cur);
+}
+
+/* count < 0: Ctrl-O (older), count > 0: Ctrl-I (newer). Returns 0 if there is nowhere to go. */
+int jump_move(int count, Pos *out) {
+    for (int i = 0; i < njumps; i++) {                   /* forget entries whose line is gone */
+        if (jumps[i].l < 0 || jumps[i].l >= nl) {
+            memmove(&jumps[i], &jumps[i + 1], (size_t)(njumps - i - 1) * sizeof(Pos));
+            njumps--;
+            if (jumpidx > i) jumpidx--;
+            i--;
+        }
+    }
+    if (njumps == 0) return 0;
+    if (jumpidx + count < 0 || jumpidx + count >= njumps) return 0;
+    if (jumpidx == njumps) {                             /* the first Ctrl-O after a jump remembers where we are */
+        mark_ctx = cur;
+        jumplist_add(cur);
+        jumpidx--;
+        if (jumpidx + count < 0) return 0;
+    }
+    jumpidx += count;
+    *out = jumps[jumpidx];
+    return 1;
+}
 
 /* ------------------------------------------------------------------ word motions (after Vim's search.c) */
 
@@ -72,7 +109,7 @@ static int wcls(void) { return cls(cp_at(w.l, w.c), wbig); }
 
 /* Moves one character forward. 0: moved, 2: moved onto the end of the line, 1: moved to the next line, -1: at the end. */
 static int winc(void) {
-    int len = (int)L[w.l].len;
+    int len = (int)LN(w.l).len;
     if (w.c < len) {
         w.c = next_c(w.l, w.c);
         return w.c < len ? 0 : 2;
@@ -83,7 +120,7 @@ static int winc(void) {
 
 static int wdec(void) {
     if (w.c > 0) { w.c = prev_c(w.l, w.c); return 0; }
-    if (w.l > 0) { w.l--; w.c = (int)L[w.l].len; return 1; }
+    if (w.l > 0) { w.l--; w.c = (int)LN(w.l).len; return 1; }
     return -1;
 }
 
@@ -106,7 +143,7 @@ static int fwd_word(int count, int eol) {
             }
         }
         while (wcls() == 0) {
-            if (w.c == 0 && L[w.l].len == 0) break;
+            if (w.c == 0 && LN(w.l).len == 0) break;
             i = winc();
             if (i == -1 || (i >= 1 && eol && count == 0)) return 1;
         }
@@ -122,7 +159,7 @@ static int bck_word(int count, int stop) {
         if (!stop || sclass == wcls() || sclass == 0) {
             int finished = 0;
             while (wcls() == 0) {
-                if (w.c == 0 && L[w.l].len == 0) { finished = 1; break; }
+                if (w.c == 0 && LN(w.l).len == 0) { finished = 1; break; }
                 if (wdec() == -1) return 1;
             }
             if (!finished) {
@@ -144,7 +181,7 @@ static int end_word(int count, int stop, int empty) {
             if (skip_chars(sclass, 1)) return 0;
         } else if (!stop || sclass == 0) {
             while (wcls() == 0) {
-                if (empty && w.c == 0 && L[w.l].len == 0) { finished = 1; break; }
+                if (empty && w.c == 0 && LN(w.l).len == 0) { finished = 1; break; }
                 if (winc() == -1) return 0;
             }
             if (!finished && skip_chars(wcls(), 1)) return 0;
@@ -165,7 +202,7 @@ static int bckend_word(int count, int eol) {
             while (wcls() == sclass) if ((i = wdec()) == -1 || (eol && i == 1)) return 1;
         }
         while (wcls() == 0) {
-            if (w.c == 0 && L[w.l].len == 0) break;
+            if (w.c == 0 && LN(w.l).len == 0) break;
             if ((i = wdec()) == -1 || (eol && i == 1)) return 1;
         }
     }
@@ -187,6 +224,8 @@ int re_ic(const char *pat) {
     if (o.scs && has_upper(pat)) return 0;
     return 1;
 }
+
+int re_multiline;                                        /* compile for a text of several lines joined with \n (:s with \n) */
 
 /* Vim's magic patterns are close to POSIX BREs (the regex engine has \( \) \| \+ \? \< \> \w \s \d); what differs is
  * \{n,m} without the backslash on the closing brace, \= and \c. */
@@ -224,7 +263,7 @@ int re_compile(regex_t *re, const char *pat, int ic_override) {
             else pb_adds(&b, "\\[");
         } else pb_addc(&b, *p);
     }
-    int rc = regcomp(re, b.p ? b.p : "", ic ? REG_ICASE : 0);
+    int rc = regcomp(re, b.p ? b.p : "", (ic ? REG_ICASE : 0) | (re_multiline ? REG_NEWLINE : 0));
     pb_free(&b);
     return rc;
 }
@@ -241,7 +280,7 @@ int re_exec_at(regex_t *re, const char *s, size_t len, size_t start, regmatch_t 
 /* The first match in line l that starts at or after byte `from`; fills so/eo. */
 static int line_match_from(regex_t *re, long l, int from, int *so, int *eo) {
     regmatch_t m[1];
-    if (re_exec_at(re, ls(l), L[l].len, (size_t)from, m, 1) != 0) return 0;
+    if (re_exec_at(re, ls(l), LN(l).len, (size_t)from, m, 1) != 0) return 0;
     *so = (int)m[0].rm_so;
     *eo = (int)m[0].rm_eo;
     return 1;
@@ -250,13 +289,13 @@ static int line_match_from(regex_t *re, long l, int from, int *so, int *eo) {
 /* The last match in line l that starts before byte `before`. */
 static int line_match_last(regex_t *re, long l, int before, int *so, int *eo) {
     int pos = 0, s, e, found = 0;
-    while (pos <= (int)L[l].len && line_match_from(re, l, pos, &s, &e)) {
+    while (pos <= (int)LN(l).len && line_match_from(re, l, pos, &s, &e)) {
         if (s >= before) break;
         *so = s;
         *eo = e;
         found = 1;
-        pos = s + 1 > e ? next_c(l, s) + (s >= (int)L[l].len ? 1 : 0) : (e > s ? next_c(l, s) : e);
-        if (s >= (int)L[l].len) break;
+        pos = s + 1 > e ? next_c(l, s) + (s >= (int)LN(l).len ? 1 : 0) : (e > s ? next_c(l, s) : e);
+        if (s >= (int)LN(l).len) break;
     }
     return found;
 }
@@ -271,15 +310,15 @@ int search_find(const char *pat, int dir, Pos from, Pos *out, int wrap, int acce
     for (long step = 0; step <= nl; step++) {
         if (dir > 0) {
             int start = 0;
-            if (step == 0) start = accept_at ? from.c : (from.c >= (int)L[l].len ? (int)L[l].len + 1 : next_c(l, from.c));
+            if (step == 0) start = accept_at ? from.c : (from.c >= (int)LN(l).len ? (int)LN(l).len + 1 : next_c(l, from.c));
             else if (step == nl) { /* back at the first line: only matches before the start */ }
-            if (start <= (int)L[l].len && line_match_from(&re, l, start, &so, &eo)) {
+            if (start <= (int)LN(l).len && line_match_from(&re, l, start, &so, &eo)) {
                 if (step < nl || so <= from.c) { found = 1; break; }
             }
         } else {
-            int before = (int)L[l].len + 1;
+            int before = (int)LN(l).len + 1;
             if (step == 0) before = from.c;
-            else if (step == nl) before = (int)L[l].len + 1;
+            else if (step == nl) before = (int)LN(l).len + 1;
             if ((step > 0 || before > 0) && line_match_last(&re, l, before, &so, &eo)) {
                 if (step < nl || so >= from.c) { found = 1; break; }
             }
@@ -338,6 +377,7 @@ static int do_search(const char *text, int dir, int cnt, Pos from, Motion *m, in
     }
     m->to = pos;
     m->jump = 1;
+    if (!msg[0]) set_msg("%c%s%s%s", delim, pat, *off ? (delim == '/' ? "/" : "?") : "", off);   /* the search stays on the command line */
     /* offsets: e[+-N], s/b[+-N], [+-]N lines */
     const char *q = off;
     if (*q == 'e' || *q == 's' || *q == 'b') {
@@ -379,12 +419,12 @@ static int match_pair(Pos p, Pos *out) {
     for (;;) {
         if (fwd) {
             q.c++;
-            while (q.c >= (int)L[q.l].len) { if (q.l + 1 >= nl) return 0; q.l++; q.c = 0; if (L[q.l].len) break; }
+            while (q.c >= (int)LN(q.l).len) { if (q.l + 1 >= nl) return 0; q.l++; q.c = 0; if (LN(q.l).len) break; }
         } else {
             q.c--;
-            while (q.c < 0) { if (q.l == 0) return 0; q.l--; q.c = (int)L[q.l].len - 1; }
+            while (q.c < 0) { if (q.l == 0) return 0; q.l--; q.c = (int)LN(q.l).len - 1; }
         }
-        if (q.c < 0 || q.c >= (int)L[q.l].len) continue;
+        if (q.c < 0 || q.c >= (int)LN(q.l).len) continue;
         int x = (unsigned char)ls(q.l)[q.c];
         if (x == ch) depth++;
         else if (x == want) { if (depth == 0) { *out = q; return 1; } depth--; }
@@ -395,12 +435,11 @@ static int match_pair(Pos p, Pos *out) {
 static int find_enclosing(Pos p, int open, int close, int cnt, Pos *out, Pos *outc) {
     Pos q = p;
     int depth = 0;
-    int ch = q.c < (int)L[q.l].len ? (unsigned char)ls(q.l)[q.c] : 0;
+    int ch = q.c < (int)LN(q.l).len ? (unsigned char)ls(q.l)[q.c] : 0;
     if (ch == open) { depth = 0; if (--cnt == 0) { *out = q; goto found; } }
-    else if (ch == close) { depth = 1; }
     for (;;) {
         q.c--;
-        while (q.c < 0) { if (q.l == 0) return 0; q.l--; q.c = (int)L[q.l].len - 1; }
+        while (q.c < 0) { if (q.l == 0) return 0; q.l--; q.c = (int)LN(q.l).len - 1; }
         int x = (unsigned char)ls(q.l)[q.c];
         if (x == close) depth++;
         else if (x == open) { if (depth == 0) { if (--cnt == 0) { *out = q; break; } } else depth--; }
@@ -412,7 +451,7 @@ found:;
     e = start;
     for (;;) {
         e.c++;
-        while (e.c >= (int)L[e.l].len) { if (e.l + 1 >= nl) return 0; e.l++; e.c = 0; if (L[e.l].len) break; }
+        while (e.c >= (int)LN(e.l).len) { if (e.l + 1 >= nl) return 0; e.l++; e.c = 0; if (LN(e.l).len) break; }
         int x = (unsigned char)ls(e.l)[e.c];
         if (x == open) d++;
         else if (x == close) { if (d == 0) { *outc = e; return 1; } d--; }
@@ -421,7 +460,7 @@ found:;
 
 static int blank_line(long l) {
     const char *s = ls(l);
-    for (unsigned i = 0; i < L[l].len; i++) if (s[i] != ' ' && s[i] != '\t') return 0;
+    for (unsigned i = 0; i < LN(l).len; i++) if (s[i] != ' ' && s[i] != '\t') return 0;
     return 1;
 }
 
@@ -429,7 +468,7 @@ static int blank_line(long l) {
  * follow the dot) or after an empty line; an empty line is a sentence of its own. */
 static int sentence_start_at(long l, int c) {
     const char *s = ls(l);
-    int len = (int)L[l].len;
+    int len = (int)LN(l).len;
     if (len == 0) return 1;
     if (c >= len || s[c] == ' ' || s[c] == '\t') return 0;
     int i = c;
@@ -438,7 +477,7 @@ static int sentence_start_at(long l, int c) {
         if (l == 0) return 1;
         if (blank_line(l - 1)) return 1;
         const char *p = ls(l - 1);
-        int pl = (int)L[l - 1].len;
+        int pl = (int)LN(l - 1).len;
         int j = pl;
         while (j > 0 && (p[j - 1] == ' ' || p[j - 1] == '\t')) j--;
         while (j > 0 && strchr(")]\"'", p[j - 1])) j--;
@@ -455,12 +494,12 @@ static int sentence_fwd(Pos *p, int cnt) {
     while (cnt-- > 0) {
         for (;;) {
             q.c = next_c(q.l, q.c);
-            if (q.c >= (int)L[q.l].len) {
+            if (q.c >= (int)LN(q.l).len) {
                 if (q.l + 1 >= nl) { q.c = last_c(q.l); *p = q; return 1; }
                 q.l++; q.c = 0;
             }
             if (sentence_start_at(q.l, q.c)) break;
-            if (L[q.l].len == 0 && q.l > 0 && !blank_line(q.l - 1)) break;
+            if (LN(q.l).len == 0 && q.l > 0 && !blank_line(q.l - 1)) break;
         }
     }
     *p = q;
@@ -483,23 +522,15 @@ static int sentence_bck(Pos *p, int cnt) {
 
 /* ------------------------------------------------------------------ the motion table */
 
-static int visible_last(void) {
-    int th = text_rows(), rows = 0;
-    long l = topline;
-    while (l < nl) {
-        int rc = 1;
-        if (o.wrap) { int wd = line_vwidth(l) + (o.list ? 1 : 0), a = text_cols(); rc = wd <= a ? 1 : (wd + a - 1) / a; }
-        if (rows + rc > th && l > topline) break;
-        rows += rc;
-        l++;
-    }
-    return (int)(l - 1);
+static long visible_last(void) {                         /* the last line shown completely (at least the top line) */
+    long b = win_botline() - 1;
+    return b < topline ? topline : b;
 }
 
 static int find_char(Pos *p, int cmd, const char *ch, int chlen, int cnt, int repeat) {
     int fwd = cmd == 'f' || cmd == 't';
     int till = cmd == 't' || cmd == 'T';
-    int c = p->c, len = (int)L[p->l].len;
+    int c = p->c, len = (int)LN(p->l).len;
     const char *s = ls(p->l);
     for (int i = 0; i < cnt; i++) {
         int pos = c;
@@ -525,7 +556,7 @@ static int find_char(Pos *p, int cmd, const char *ch, int chlen, int cnt, int re
 /* The keyword under or after the cursor (else the non-blank string); *start is its first byte. */
 static void word_under_cursor(char *buf, size_t cap, int *is_word, int *start) {
     const char *s = ls(cur.l);
-    int len = (int)L[cur.l].len, c = cur.c;
+    int len = (int)LN(cur.l).len, c = cur.c;
     *is_word = 1;
     *start = c;
     int i = c;
@@ -553,6 +584,13 @@ static void word_under_cursor(char *buf, size_t cap, int *is_word, int *start) {
     *start = st;
 }
 
+static int pushed_key = -1;
+void motion_pushback(int k) { pushed_key = k; }
+static int mkey(void) {                                  /* the second key of a two-key motion (a key the caller read too far is given back) */
+    if (pushed_key >= 0) { int k = pushed_key; pushed_key = -1; return k; }
+    return getkey();
+}
+
 int motion(int c, int cnt, int hascnt, int op, Motion *m) {
     memset(m, 0, sizeof *m);
     m->to = cur;
@@ -574,7 +612,7 @@ int motion(int c, int cnt, int hascnt, int op, Motion *m) {
         m->to = p;
         return 1;
     case PT_K_RIGHT: case 'l': {
-        int len = (int)L[p.l].len;
+        int len = (int)LN(p.l).len;
         int limit = op ? len : (len ? last_c(p.l) : 0);
         if (p.c >= limit) { m->fail = 1; return 1; }
         for (int i = 0; i < n1 && p.c < limit; i++) p.c = next_c(p.l, p.c);
@@ -583,9 +621,9 @@ int motion(int c, int cnt, int hascnt, int op, Motion *m) {
     }
     case ' ': {
         for (int i = 0; i < n1; i++) {
-            if (p.c < (int)L[p.l].len - 1 + (op ? 1 : 0) && next_c(p.l, p.c) < (int)L[p.l].len + (op ? 1 : 0)) { if (next_c(p.l, p.c) >= (int)L[p.l].len && !op) { if (p.l + 1 < nl) { p.l++; p.c = 0; } else { if (i == 0) m->fail = 1; break; } } else p.c = next_c(p.l, p.c); }
+            if (p.c < (int)LN(p.l).len - 1 + (op ? 1 : 0) && next_c(p.l, p.c) < (int)LN(p.l).len + (op ? 1 : 0)) { if (next_c(p.l, p.c) >= (int)LN(p.l).len && !op) { if (p.l + 1 < nl) { p.l++; p.c = 0; } else { if (i == 0) m->fail = 1; break; } } else p.c = next_c(p.l, p.c); }
             else if (p.l + 1 < nl) { p.l++; p.c = 0; }
-            else { if (i == 0 && !op) m->fail = 1; if (op) p.c = (int)L[p.l].len; break; }
+            else { if (i == 0 && !op) m->fail = 1; if (op) p.c = (int)LN(p.l).len; break; }
         }
         m->to = p;
         return 1;
@@ -613,7 +651,7 @@ int motion(int c, int cnt, int hascnt, int op, Motion *m) {
     case '$': case PT_K_END:
         if (p.l + n1 - 1 >= nl) { m->fail = 1; return 1; }
         p.l += n1 - 1;
-        p.c = L[p.l].len ? (op ? last_c(p.l) : last_c(p.l)) : 0;
+        p.c = LN(p.l).len ? (op ? last_c(p.l) : last_c(p.l)) : 0;
         m->incl = 1;
         m->vcol = -2;
         m->to = p;
@@ -639,11 +677,15 @@ int motion(int c, int cnt, int hascnt, int op, Motion *m) {
         m->to = p;
         return 1;
     case 'H': case 'M': case 'L': {
-        int last = visible_last();
-        long t;
+        long last = visible_last(), t;
         if (c == 'H') t = imin(topline + n1 - 1, last);
         else if (c == 'L') t = imax(topline, last - (n1 - 1));
-        else t = topline + (last - topline) / 2;
+        else {                                           /* the line that has half of the text rows above it */
+            long total = 0;
+            for (long i = topline; i <= last; i++) total += rows_of(i);
+            long half = (total + 1) / 2, used = 0;
+            for (t = topline; t < last; t++) { used += rows_of(t); if (used >= half) break; }
+        }
         p.l = t; p.c = first_nonblank(t);
         m->linewise = m->jump = 1;
         m->to = p;
@@ -659,7 +701,7 @@ int motion(int c, int cnt, int hascnt, int op, Motion *m) {
         }
         int ok = fwd_word(n1, op != 0);
         if (!ok && w.l == p.l && w.c == p.c) { m->fail = 1; }
-        if (!ok && op) { w.c = (int)L[w.l].len; }
+        if (!ok && op) { w.c = (int)LN(w.l).len; }
         else if (!ok) { w.c = last_c(w.l); }
         m->to = w;
         return 1;
@@ -668,7 +710,7 @@ int motion(int c, int cnt, int hascnt, int op, Motion *m) {
         w = p; wbig = c == 'B';
         if (!bck_word(n1, 0)) m->fail = 1;
         m->to = w;
-        if (w.c > (int)L[w.l].len) m->to.c = (int)L[w.l].len;
+        if (w.c > (int)LN(w.l).len) m->to.c = (int)LN(w.l).len;
         return 1;
     }
     case 'e': case 'E': {
@@ -676,7 +718,7 @@ int motion(int c, int cnt, int hascnt, int op, Motion *m) {
         if (!end_word(n1, 0, 0)) { if (w.l == p.l && w.c == p.c) m->fail = 1; else w.c = last_c(w.l); }
         m->incl = 1;
         m->to = w;
-        if (m->to.c >= (int)L[m->to.l].len) m->to.c = last_c(m->to.l);
+        if (m->to.c >= (int)LN(m->to.l).len) m->to.c = last_c(m->to.l);
         return 1;
     }
     case 'f': case 'F': case 't': case 'T': {
@@ -703,12 +745,12 @@ int motion(int c, int cnt, int hascnt, int op, Motion *m) {
         int dir = c == '}' ? 1 : -1;
         long l = p.l;
         for (int i = 0; i < n1; i++) {
-            while (l >= 0 && l < nl && L[l].len == 0) l += dir;                 /* skip blank lines first */
-            while (l >= 0 && l < nl && L[l].len != 0) l += dir;
+            while (l >= 0 && l < nl && LN(l).len == 0) l += dir;                 /* skip blank lines first */
+            while (l >= 0 && l < nl && LN(l).len != 0) l += dir;
             if (l < 0 || l >= nl) break;
         }
         if (l < 0) { p.l = 0; p.c = 0; }
-        else if (l >= nl) { p.l = nl - 1; p.c = (int)L[p.l].len; if (!op) p.c = last_c(p.l); else if (L[p.l].len) m->incl = 0; }
+        else if (l >= nl) { p.l = nl - 1; p.c = (int)LN(p.l).len; if (!op) p.c = last_c(p.l); else if (LN(p.l).len) m->incl = 0; }
         else { p.l = l; p.c = 0; }
         if (p.l == cur.l && p.c == cur.c) { m->fail = 1; return 1; }
         m->jump = 1;
@@ -722,13 +764,13 @@ int motion(int c, int cnt, int hascnt, int op, Motion *m) {
         return 1;
     }
     case '[': case ']': {
-        int k = getkey();
+        int k = mkey();
         if (k == c) {                                    /* [[ and ]]: lines that start with { */
             long l = p.l;
             int dir = c == ']' ? 1 : -1;
             for (int i = 0; i < n1; i++) {
                 l += dir;
-                while (l >= 0 && l < nl && !(L[l].len && ls(l)[0] == '{')) l += dir;
+                while (l >= 0 && l < nl && !(LN(l).len && ls(l)[0] == '{')) l += dir;
                 if (l < 0 || l >= nl) break;
             }
             if (l < 0) { p.l = 0; p.c = 0; } else if (l >= nl) { p.l = nl - 1; p.c = last_c(p.l); } else { p.l = l; p.c = 0; }
@@ -741,7 +783,7 @@ int motion(int c, int cnt, int hascnt, int op, Motion *m) {
             int dir = c == ']' ? 1 : -1;
             for (int i = 0; i < n1; i++) {
                 l += dir;
-                while (l >= 0 && l < nl && !(L[l].len && ls(l)[0] == '}')) l += dir;
+                while (l >= 0 && l < nl && !(LN(l).len && ls(l)[0] == '}')) l += dir;
                 if (l < 0 || l >= nl) break;
             }
             if (l < 0) { p.l = 0; p.c = 0; } else if (l >= nl) { p.l = nl - 1; p.c = last_c(p.l); } else { p.l = l; p.c = 0; }
@@ -770,7 +812,7 @@ int motion(int c, int cnt, int hascnt, int op, Motion *m) {
             return 1;
         }
         const char *s = ls(p.l);
-        int len = (int)L[p.l].len, i = p.c;
+        int len = (int)LN(p.l).len, i = p.c;
         while (i < len && !is_open(s[i]) && !is_close(s[i])) i++;
         if (i >= len) { m->fail = 1; return 1; }
         p.c = i;
@@ -851,10 +893,11 @@ int motion(int c, int cnt, int hascnt, int op, Motion *m) {
         }
         m->jump = 1;
         m->to = res;
+        if (!msg[0]) set_msg("%c%s", c == '*' ? '/' : '?', pat);
         return 1;
     }
     case 'g': {
-        int k = getkey();
+        int k = mkey();
         switch (k) {
         case 'g':
             p.l = hascnt ? imin(cnt, nl) - 1 : 0;
@@ -867,7 +910,7 @@ int motion(int c, int cnt, int hascnt, int op, Motion *m) {
             p.l += n1 - 1;
             {
                 const char *s = ls(p.l);
-                int e = (int)L[p.l].len;
+                int e = (int)LN(p.l).len;
                 while (e > 0 && (s[e - 1] == ' ' || s[e - 1] == '\t')) e--;
                 p.c = e > 0 ? prev_c(p.l, e) : 0;
             }
@@ -879,7 +922,7 @@ int motion(int c, int cnt, int hascnt, int op, Motion *m) {
             if (!bckend_word(n1, 0)) m->fail = 1;
             m->incl = 1;
             m->to = w;
-            if (m->to.c >= (int)L[m->to.l].len) m->to.c = last_c(m->to.l);
+            if (m->to.c >= (int)LN(m->to.l).len) m->to.c = last_c(m->to.l);
             return 1;
         case 'j': case PT_K_DOWN: return motion('j', cnt, hascnt, op, m);
         case 'k': case PT_K_UP: return motion('k', cnt, hascnt, op, m);
@@ -888,7 +931,7 @@ int motion(int c, int cnt, int hascnt, int op, Motion *m) {
         case 'm': p.c = byte_at_vcol(p.l, text_cols() / 2); p.c = clamp_col(p.l, p.c, 0); m->to = p; return 1;
         case 'o': {
             long off = n1 - 1, l = 0;
-            while (l < nl - 1 && off > (long)L[l].len) { off -= (long)L[l].len + 1; l++; }
+            while (l < nl - 1 && off > (long)LN(l).len) { off -= (long)LN(l).len + 1; l++; }
             p.l = l; p.c = clamp_col(l, (int)off, 0); m->jump = 1; m->to = p; return 1;
         }
         default:
@@ -910,35 +953,64 @@ static void set_range_chars(Range *r, long l1, int c1, long l2, int c2_excl) {
     r->b.l = l2; r->b.c = c2_excl;
 }
 
+/* iw, aw, iW, aW: a port of Vim's current_word(). The position `w` walks over the text like the cursor does there. */
+static int wincl(void) { int r = winc(); if (r >= 1 && w.c) r = winc(); return r; }
+static int wdecl(void) { int r = wdec(); if (r == 1 && w.c) r = wdec(); return r; }
+
+static void back_in_line_w(void) {                       /* to the start of the word or white space the position is in */
+    int sclass = wcls();
+    while (w.c > 0) {
+        Pos sv = w;
+        wdec();
+        if (wcls() != sclass) { w = sv; break; }
+    }
+}
+
 static int obj_word(int inner, int cnt, int big, Range *r) {
-    long l = cur.l;
-    int len = (int)L[l].len;
-    if (len == 0) { set_range_chars(r, l, 0, l, 0); return 1; }
-    const char *s = ls(l);
-    int c = cur.c;
-    if (vis_mode && (vis_start.l != cur.l || vis_start.c != cur.c)) c = next_c(l, cur.c) < len ? next_c(l, cur.c) : cur.c;
-    int cl = cls(cp_at(l, c), big);
-    int st = c;
-    while (st > 0 && cls(cp_at(l, prev_c(l, st)), big) == cl) st = prev_c(l, st);
-    int e = c;
-    while (e < len && cls(cp_at(l, e), big) == cl) e = next_c(l, e);
-    int first_is_blank = cl == 0;
-    for (int i = 1; i < cnt; i++) {
-        if (e >= len) break;
-        int cl2 = cls(cp_at(l, e), big);
-        while (e < len && cls(cp_at(l, e), big) == cl2) e = next_c(l, e);
-    }
-    if (!inner) {
-        if (first_is_blank) {                            /* aw on white space: the space and the word after it */
-            if (e < len) { int cl2 = cls(cp_at(l, e), big); while (e < len && cls(cp_at(l, e), big) == cl2) e = next_c(l, e); }
-        } else if (e < len && cls(cp_at(l, e), big) == 0) {
-            while (e < len && cls(cp_at(l, e), big) == 0) e = next_c(l, e);
-        } else {
-            while (st > 0 && cls(cp_at(l, prev_c(l, st)), big) == 0) st = prev_c(l, st);
+    int include = !inner, include_white = 0, inclusive = 1;
+    wbig = big;
+    w = cur;
+    int fresh = !vis_mode || (vis_start.l == cur.l && vis_start.c == cur.c);
+    Pos start_pos = vis_mode ? vis_start : cur;
+    if (fresh) {
+        back_in_line_w();
+        start_pos = w;
+        if ((wcls() == 0) == include) {                  /* "aw" on white space, "iw" on a word: to the end of the word */
+            if (!end_word(1, 1, 1)) return 0;
+        } else {                                         /* "iw" on white space, "aw" on a word: up to the next word */
+            fwd_word(1, 1);
+            if (w.c == 0) wdecl();
+            else w.c = prev_c(w.l, w.c);
+            if (include) include_white = 1;
         }
+        cnt--;
     }
-    (void)s;
-    set_range_chars(r, l, st, l, e);
+    while (cnt > 0) {                                    /* more objects: each is a word or the white space after it */
+        inclusive = 1;
+        if (wincl() == -1) return 0;
+        if (include != (wcls() == 0)) {
+            if (!fwd_word(1, 1) && cnt > 1) return 0;
+            if (w.c > 0) w.c = prev_c(w.l, w.c);         /* just past a line break: not the first character of the next line */
+            else inclusive = 0;
+        } else {
+            if (!end_word(1, 1, 1)) return 0;
+        }
+        cnt--;
+    }
+    if (include_white && (wcls() != 0 || (w.c == 0 && !inclusive))) {
+        /* no white space after the last word: take the white space before the first one ("daw" on the last word) */
+        Pos pos = w;
+        w = start_pos;
+        if (w.c > 0) {
+            w.c = prev_c(w.l, w.c);
+            back_in_line_w();
+            if (wcls() == 0 && w.c > 0) start_pos = w;
+        }
+        w = pos;
+    }
+    Pos e = w;
+    if (inclusive && e.c < (int)LN(e.l).len) e.c = next_c(e.l, e.c);
+    set_range_chars(r, start_pos.l, start_pos.c, e.l, e.c);
     return 1;
 }
 
@@ -982,7 +1054,7 @@ static int obj_block(int open, int close, int inner, int cnt, Range *r) {
     Pos a = o1, b = c1;
     a.c++;
     int linewise = 0;
-    if (a.c >= (int)L[a.l].len && a.l < b.l) { a.l++; a.c = 0; linewise = 1; }
+    if (a.c >= (int)LN(a.l).len && a.l < b.l) { a.l++; a.c = 0; linewise = 1; }
     if (linewise) {
         const char *s = ls(b.l);
         int k = 0;
@@ -1000,7 +1072,7 @@ static int obj_block(int open, int close, int inner, int cnt, Range *r) {
 static int obj_quote(int q, int inner, Range *r) {
     long l = cur.l;
     const char *s = ls(l);
-    int len = (int)L[l].len;
+    int len = (int)LN(l).len;
     int pos[256], n = 0;
     for (int i = 0; i < len && n < 256; i++) {
         if (s[i] == '\\' && i + 1 < len) { i++; continue; }
@@ -1036,17 +1108,21 @@ static int obj_sentence(int inner, int cnt, Range *r) {
     for (int i = 0; i < cnt; i++) {
         Pos nx = e;
         sentence_fwd(&nx, 1);
-        if (nx.l == e.l && nx.c == e.c) { nx.c = (int)L[nx.l].len; }
+        if (nx.l == e.l && nx.c == e.c) { nx.c = (int)LN(nx.l).len; }
         e = nx;
     }
     /* e is the start of the next sentence: back up over the white space between */
     Pos b = e;
     if (!(e.l == nl - 1 && e.c >= last_c(e.l) && !sentence_start_at(e.l, e.c))) {
-        if (b.c == 0 && b.l > st.l) { b.l--; b.c = (int)L[b.l].len; }
-    } else b.c = (int)L[b.l].len;
+        if (b.c == 0 && b.l > st.l) { b.l--; b.c = (int)LN(b.l).len; }
+    } else b.c = (int)LN(b.l).len;
+    const char *s = ls(b.l);
     if (inner) {
-        const char *s = ls(b.l);
         while (b.c > 0 && (s[b.c - 1] == ' ' || s[b.c - 1] == '\t') && (b.l > st.l || b.c > st.c)) b.c--;
+    } else if (!(b.c > 0 && (s[b.c - 1] == ' ' || s[b.c - 1] == '\t'))) {
+        /* "as" takes the white space after the sentence; with none (the last sentence), the white space before it */
+        const char *t = ls(st.l);
+        while (st.c > 0 && (t[st.c - 1] == ' ' || t[st.c - 1] == '\t')) st.c--;
     }
     set_range_chars(r, st.l, st.c, b.l, b.c);
     return 1;
@@ -1058,7 +1134,7 @@ static int obj_tag(int inner, int cnt, Range *r) {
     PtBuf t = { 0 };
     long *lstart = malloc((size_t)(l1 - l0 + 2) * sizeof *lstart);
     if (!lstart) pt_oom();
-    for (long i = l0; i <= l1; i++) { lstart[i - l0] = (long)t.len; pb_add(&t, ls(i), L[i].len); pb_addc(&t, '\n'); }
+    for (long i = l0; i <= l1; i++) { lstart[i - l0] = (long)t.len; pb_add(&t, ls(i), LN(i).len); pb_addc(&t, '\n'); }
     long curoff = lstart[cur.l - l0] + cur.c;
     int ok = 0;
     long ostart = -1, oend = -1, cstart = -1, cend = -1;

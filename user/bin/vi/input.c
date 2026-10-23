@@ -7,6 +7,7 @@ int normal_depth;
 int in_dot_replay;
 int recording;
 int last_typed_key;
+static int plain_depth;                                  /* > 0: do not repaint while waiting for a key */
 
 /* ------------------------------------------------------------------ type-ahead: a stack, the next key is on top */
 
@@ -151,7 +152,18 @@ static int csi_key(void) {
     }
     if (fin >= 0 && (have_param || csi_plain_final(fin))) {
         int k = pt_csi_key(fin, params[0], np >= 1 ? params[1] : 0);
-        return k == PT_KEY_NONE ? K_NONE : (k & ~(PT_M_SHIFT | PT_M_ALT | PT_M_CTRL));
+        if (k == PT_KEY_NONE) return K_NONE;
+        int base = k & ~(PT_M_SHIFT | PT_M_ALT | PT_M_CTRL);
+        if (k & PT_M_CTRL) {                             /* Ctrl or Shift with Left / Right: a WORD or a word; Shift-Up / Down: a page */
+            if (base == PT_K_LEFT) return K_CLEFT;
+            if (base == PT_K_RIGHT) return K_CRIGHT;
+        } else if (k & PT_M_SHIFT) {
+            if (base == PT_K_LEFT) return K_SLEFT;
+            if (base == PT_K_RIGHT) return K_SRIGHT;
+            if (base == PT_K_UP) return PT_K_PGUP;
+            if (base == PT_K_DOWN) return PT_K_PGDN;
+        }
+        return base;
     }
     for (int i = n - 1; i >= 0; i--) unget_byte(seen[i]);   /* Esc followed by "[" and what came after it */
     unget_byte('[');
@@ -262,15 +274,18 @@ void dot_begin(void) {
     dot_on = 1;
 }
 
-static int dot_nokeep;                                   /* set for visual-mode commands: "." does not repeat them */
-void dot_nokeep_set(void) { dot_nokeep = 1; }
+/* A visual-mode change is repeated on an area of the same size starting at the cursor. */
+static VisRedo dot_vis, pending_vis;
+void dot_set_visual(const VisRedo *v) { pending_vis = *v; pending_vis.valid = 1; }
+const VisRedo *dot_visual(void) { return dot_vis.valid ? &dot_vis : NULL; }
+
+int dot_len(void) { return dotn; }
+void dot_set_len(int n) { if (n >= 0 && n <= dotn) dotn = n; }
 
 void dot_end(int keep) {
-    int nokeep = dot_nokeep;
-    dot_nokeep = 0;
-    if (!dot_on) return;
+    if (!dot_on) { pending_vis.valid = 0; return; }
     dot_on = 0;
-    if (!keep || nokeep) return;
+    if (!keep) { pending_vis.valid = 0; return; }
     free(dotkeys);
     dotkeys = malloc((size_t)dotn * sizeof *dotkeys + 4);
     if (!dotkeys) pt_oom();
@@ -278,13 +293,18 @@ void dot_end(int keep) {
     dotkn = dotn;
     dot_count = cur_count;
     dot_reg = cur_reg;
+    dot_vis = pending_vis;
+    pending_vis.valid = 0;
 }
 
+/* Puts the keys of the last change in front of the type-ahead queue. A count given to "." replaces the old one; a numbered
+ * register moves on to the next one ("1p then . puts "2p). */
 void dot_replay(int count) {
     if (!dotkn) return;
     if (count > 0) dot_count = count;
+    if (dot_reg >= '1' && dot_reg < '9') dot_reg++;
     int pre[40], np = 0;
-    if (dot_reg) { pre[np++] = '"'; pre[np++] = dot_reg >= '1' && dot_reg < '9' ? dot_reg + 1 : dot_reg; }
+    if (dot_reg) { pre[np++] = '"'; pre[np++] = dot_reg; }
     if (dot_count > 0) {
         char num[16];
         snprintf(num, sizeof num, "%d", dot_count);
@@ -384,17 +404,47 @@ void map_list(int imode) {
     pb_free(&b);
 }
 
-static const char *abbr_l[16], *abbr_r[16];
+#define MAXABBR 64
+static char *abbr_l[MAXABBR], *abbr_r[MAXABBR];
 static int nabbr;
 
 void abbr_add(const char *lhs, const char *rhs) {
-    for (int i = 0; i < nabbr; i++) if (!strcmp(abbr_l[i], lhs)) { free((char *)abbr_r[i]); abbr_r[i] = strdup(rhs); return; }
-    if (nabbr < 16) { abbr_l[nabbr] = strdup(lhs); abbr_r[nabbr] = strdup(rhs); nabbr++; }
+    for (int i = 0; i < nabbr; i++) if (!strcmp(abbr_l[i], lhs)) { free(abbr_r[i]); abbr_r[i] = strdup(rhs); return; }
+    if (nabbr < MAXABBR) { abbr_l[nabbr] = strdup(lhs); abbr_r[nabbr] = strdup(rhs); nabbr++; }
+}
+
+int abbr_del(const char *lhs) {
+    for (int i = 0; i < nabbr; i++) {
+        if (strcmp(abbr_l[i], lhs)) continue;
+        free(abbr_l[i]);
+        free(abbr_r[i]);
+        for (int j = i; j + 1 < nabbr; j++) { abbr_l[j] = abbr_l[j + 1]; abbr_r[j] = abbr_r[j + 1]; }
+        nabbr--;
+        return 1;
+    }
+    return 0;
+}
+
+void abbr_clear(void) {
+    while (nabbr > 0) { nabbr--; free(abbr_l[nabbr]); free(abbr_r[nabbr]); }
+}
+
+void abbr_list(PtBuf *out) {
+    for (int i = 0; i < nabbr; i++) pb_addf(out, "i  %-12s %s\n", abbr_l[i], abbr_r[i]);
+    if (!nabbr) pb_adds(out, "No abbreviation found\n");
 }
 
 const char *abbr_find(const char *w, size_t n) {
     for (int i = 0; i < nabbr; i++) if (strlen(abbr_l[i]) == n && !memcmp(abbr_l[i], w, n)) return abbr_r[i];
     return NULL;
+}
+
+/* A key read without repainting the editor first (for the "Press ENTER" prompt after a shell command). */
+int getkey_plain(void) {
+    plain_depth++;
+    int k = getkey();
+    plain_depth--;
+    return k;
 }
 
 /* ------------------------------------------------------------------ getkey */
@@ -408,7 +458,7 @@ static int raw_next(int *from_ta) {
     *from_ta = 0;
     if (normal_depth > 0) return K_ESC;                  /* :normal ran out of keys: finish like <Esc> */
     for (;;) {
-        if (!src_ready()) redraw();
+        if (!src_ready() && !plain_depth) redraw();
         int k = term_key(-1);
         if (k == K_EOF) {
             if (!quit_flag) { quit_flag = 1; exit_status = 1; }
