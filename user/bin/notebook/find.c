@@ -93,7 +93,7 @@ static void find_live(void) {
 
 bool replace_current(void) {
     Editor *e = &A.ed;
-    if (A.readonly) { msg_set("This file is read-only. Use Save As to keep a copy."); return false; }
+    if (A.readonly) { msg_set("Read-only file: use Save As to keep a copy."); return false; }
     size_t plen = strlen(A.find_buf), rlen = strlen(A.repl_buf);
     if (!plen) { msg_set("Type something to look for."); return false; }
     size_t lo, hi;
@@ -114,7 +114,7 @@ bool replace_current(void) {
 int replace_all(void) {
     Editor *e = &A.ed;
     Doc *d = &e->doc;
-    if (A.readonly) { msg_set("This file is read-only. Use Save As to keep a copy."); return 0; }
+    if (A.readonly) { msg_set("Read-only file: use Save As to keep a copy."); return 0; }
     size_t plen = strlen(A.find_buf), rlen = strlen(A.repl_buf);
     if (!plen) { msg_set("Type something to look for."); return 0; }
     size_t first = nb_find(d, A.find_buf, plen, 0, A.match_case, false);
@@ -190,6 +190,21 @@ static void update_count(KUI *ui) {
     nb_trace("find count=%d", A.match_count);
 }
 
+
+/* Focus requests made by key presses and clicks are applied at the start of the next frame, before keys are dispatched. */
+void find_apply_focus(KUI *ui) {
+    if (!A.find_open) { A.want_find_focus = A.want_repl_focus = A.want_find_keep = false; return; }
+    if (A.want_find_focus) {
+        k_focus_textfield(ui, A.find_buf);
+        if (!A.want_find_keep) ui->sel_anchor = 0;
+        A.want_find_focus = A.want_find_keep = false;
+    }
+    if (A.want_repl_focus) {
+        k_focus_textfield(ui, A.repl_buf);
+        ui->sel_anchor = 0;
+        A.want_repl_focus = false;
+    }
+}
 static bool take_tab(KUI *ui, bool *shift) {
     for (int i = 0; i < ui->nkeys; i++) {
         KKey *k = &ui->keys[i];
@@ -225,16 +240,7 @@ void findbar_draw(KUI *ui, KRect r) {
     KRect f1 = kr(fx, y1, fw, 24);
 
     kc_text(cv, r.x + 8, y1 + 4, "Find:", th->text);
-    if (A.want_find_focus) {
-        k_focus_textfield(ui, A.find_buf);
-        ui->sel_anchor = 0;
-        A.want_find_focus = false;
-    }
-    if (A.want_repl_focus) {
-        k_focus_textfield(ui, A.repl_buf);
-        ui->sel_anchor = 0;
-        A.want_repl_focus = false;
-    }
+    find_apply_focus(ui);
     bool enter = k_textfield(ui, f1, A.find_buf, sizeof A.find_buf);
     bool find_focused = ui->focus == ((uint32_t)(uintptr_t)A.find_buf * 2654435761u | 1);
     if (strcmp(A.find_buf, A.find_prev)) {
@@ -248,7 +254,7 @@ void findbar_draw(KUI *ui, KRect r) {
     if (k_button(ui, nextb, "Next")) find_next(false, false);
     bool before = A.match_case;
     k_checkbox(ui, casebox.x, casebox.y, "Match case", &A.match_case);
-    if (before != A.match_case) { A.count_valid = false; A.count_due = 1; find_live(); }
+    if (before != A.match_case) { A.count_valid = false; A.count_due = 1; find_live(); A.want_find_focus = A.want_find_keep = true; }
     if (k_icon_button(ui, closeb, KI_CLOSE, false)) find_close();
     if (prevb.x > fx + 60) {
         if (k_hover(ui, prevb)) k_tooltip_text(ui, "Previous match (Shift+F3)");

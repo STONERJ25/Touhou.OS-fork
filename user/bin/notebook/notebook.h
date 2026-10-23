@@ -174,6 +174,7 @@ int    replace_all(void);
 void   find_open(bool replace);
 void   find_close(void);
 int    findbar_height(void);
+void   find_apply_focus(KUI *ui);
 void   findbar_draw(KUI *ui, KRect r);
 
 /* ---------------------------------------------------------------- fileio.c */
@@ -233,7 +234,7 @@ typedef struct App {
     bool count_valid;
     uint32_t count_ver;
     uint64_t count_due;
-    bool want_find_focus, want_repl_focus, want_editor_focus;
+    bool want_find_focus, want_repl_focus, want_editor_focus, want_find_keep;
     char recent[NB_RECENT_MAX][NB_PATH_MAX];
     int nrecent;
     char *clip;

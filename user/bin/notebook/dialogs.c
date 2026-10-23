@@ -133,7 +133,7 @@ static void about_draw(KApp *app, KUI *ui, void *user) {
     kc_gradient_v(cv, kr(0, 0, cv->w, 96), 0x2A1650, 0x6C3FA3);
     k_icon(cv, KI_NOTEBOOK, 22, 16, 64);
     kc_text_scaled(cv, 104, 24, "Patchouli's Notebook", 0xFFF6E0, 2);
-    kc_text(cv, 104, 62, "Version " NB_VERSION " - the text editor of the Voile Library", 0xD9CCF2);
+    kc_text(cv, 104, 62, "Version " NB_VERSION " - text editor of the Voile Library", 0xD9CCF2);
     static const char *const lines[] = {
         "Patchouli reads every page twice and forgets nothing, so",
         "your pages are safe here: every edit can be undone, and a",
@@ -151,7 +151,7 @@ static void about_draw(KApp *app, KUI *ui, void *user) {
 void dlg_about(KApp *app) {
     if (g_about) return;
     nb_modal_enter();
-    g_about = kwin_new(app, -1, -1, 480, 310, "About Patchouli's Notebook", FW_DIALOG | FW_CENTER | FW_TOP, about_draw, NULL);
+    g_about = kwin_new(app, -1, -1, 520, 310, "About Patchouli's Notebook", FW_DIALOG | FW_CENTER | FW_TOP, about_draw, NULL);
     if (!g_about) { nb_modal_leave(); return; }
     kwin_set_close_handler(g_about, about_closed, NULL);
     nb_trace("dialog about");
@@ -173,10 +173,10 @@ static const Row k_right[] = {
     { "TEXT", NULL },
     { "Tab / Shift+Tab", "Indent / unindent" }, { "Ctrl+] / Ctrl+[", "Indent / unindent" },
     { "Ctrl+Shift+D", "Duplicate line" }, { "Ctrl+Shift+K", "Delete line" }, { "Alt+Up / Down", "Move line" },
-    { "Ctrl+Left / Right", "Move by word" }, { "Ctrl+Bksp / Del", "Delete a word" }, { "Home", "Start of text, then line" },
+    { "Ctrl+Left / Right", "Move by word" }, { "Ctrl+Bksp / Del", "Delete a word" }, { "Home", "Start of text / line" },
     { "MOUSE", NULL },
     { "Double click", "Select a word" }, { "Triple click", "Select a line" }, { "Click a number", "Select a line" },
-    { "Wheel", "Scroll (Shift: sideways)" },
+    { "Wheel", "Scroll, Shift: sideways" },
     { "WINDOW", NULL },
     { "Alt+F E V H", "Open a menu" }, { "F1", "This list" }, { "Esc", "Close the find bar" },
 };
@@ -195,18 +195,18 @@ static void help_closed(KWin *w, void *user) {
     if (g_help) { g_help = NULL; nb_modal_leave(); }
 }
 
-static void help_column(KUI *ui, int x, int y, const Row *rows, int n) {
+static void help_column(KUI *ui, int x, int y, const Row *rows, int n, int keyw, int linew) {
     KCanvas *cv = &ui->cv;
     for (int i = 0; i < n; i++) {
         if (!rows[i].what) {
             if (i) y += 6;
             kc_text_bold(cv, x, y, rows[i].keys, ui->theme->accent_dark);
-            kc_hline(cv, x, y + 17, 262, kc_shade(ui->theme->window_bg, 80));
+            kc_hline(cv, x, y + 17, linew, kc_shade(ui->theme->window_bg, 80));
             y += 22;
             continue;
         }
         kc_text(cv, x, y, rows[i].keys, ui->theme->accent_dark);
-        kc_text(cv, x + 126, y, rows[i].what, ui->theme->text);
+        kc_text(cv, x + keyw, y, rows[i].what, ui->theme->text);
         y += 18;
     }
 }
@@ -215,15 +215,15 @@ static void help_draw(KApp *app, KUI *ui, void *user) {
     (void)app; (void)user;
     KCanvas *cv = &ui->cv;
     k_clear(ui);
-    help_column(ui, 14, 12, k_left, (int)(sizeof k_left / sizeof k_left[0]));
-    help_column(ui, 296, 12, k_right, (int)(sizeof k_right / sizeof k_right[0]));
+    help_column(ui, 14, 12, k_left, (int)(sizeof k_left / sizeof k_left[0]), 124, 296);
+    help_column(ui, 340, 12, k_right, (int)(sizeof k_right / sizeof k_right[0]), 148, 346);
     if (k_button(ui, kr(cv->w - 100, cv->h - 40, 84, 26), "Close") || k_key_pressed(ui, KEY_ESC) || k_key_pressed(ui, KEY_ENTER)) help_close();
 }
 
 void dlg_help(KApp *app) {
     if (g_help) return;
     nb_modal_enter();
-    g_help = kwin_new(app, -1, -1, 580, 420, "Notebook keyboard shortcuts", FW_DIALOG | FW_CENTER | FW_TOP, help_draw, NULL);
+    g_help = kwin_new(app, -1, -1, 704, 420, "Notebook keyboard shortcuts", FW_DIALOG | FW_CENTER | FW_TOP, help_draw, NULL);
     if (!g_help) { nb_modal_leave(); return; }
     kwin_set_close_handler(g_help, help_closed, NULL);
     nb_trace("dialog shortcuts");

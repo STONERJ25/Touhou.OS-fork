@@ -177,9 +177,9 @@ static bool load_path(const char *path_in, bool must_exist) {
     ed_reset_view(&A.ed);
     A.count_valid = false;
     recent_add(path);
-    if (A.readonly) msg_set("%s is read-only: you can look but not touch. Save As makes a copy.", A.name);
+    if (A.readonly) msg_set("Read-only file. Save As makes an editable copy.");
     else if (fi.mixed) msg_set("Mixed line endings were normalised to %s.", nb_eol_name(fi.eol));
-    else if (!fi.utf8_ok) msg_set("Some bytes are not valid UTF-8; they are shown as boxes and kept as they are.");
+    else if (!fi.utf8_ok) msg_set("Invalid UTF-8 bytes are shown as boxes and kept.");
     nb_trace("open %s lines=%d bytes=%zu eol=%s lang=%s%s", path, doc_nlines(&A.ed.doc), n, nb_eol_name(fi.eol), syn_name(A.ed.lang),
              A.readonly ? " readonly" : "");
     return true;
@@ -413,8 +413,9 @@ static void act_goto(void) {
     char prompt[96], initial[24];
     int line, col;
     ed_caret_pos(&A.ed, &line, &col);
-    snprintf(prompt, sizeof prompt, "Line number (1 to %d), or line:column", doc_nlines(&A.ed.doc));
-    snprintf(initial, sizeof initial, "%d", line + 1);
+    snprintf(prompt, sizeof prompt, "Line number (1-%d) or line:column:", doc_nlines(&A.ed.doc));
+    snprintf(initial, sizeof initial, "%s", "");
+    (void)line;
     nb_modal_enter();
     k_input_dialog(A.app, "Go to line", prompt, initial, on_goto, NULL);
     nb_trace("dialog goto");
@@ -482,9 +483,13 @@ static void build_menus(void) {
     mitem(0, "Save As...", "Ctrl+Shift+S", MA_SAVEAS, false, false);
     mitem(0, "Close", "Ctrl+W", MA_CLOSE, false, false);
     mitem(0, "Quit", "Ctrl+Q", MA_QUIT, false, false);
-    if (A.nrecent > 0) {
+    int avail = (A.mainui ? A.mainui->cv.h : 400) - 26 - 6;       /* the drop-down must fit into the window */
+    int room = avail - (4 + 22 * 7);
+    int nshow = 0;
+    if (A.nrecent > 0 && room >= 7 + 22 + 7 + 22) nshow = (room - 7 - 7 - 22) / 22 < A.nrecent ? (room - 7 - 7 - 22) / 22 : A.nrecent;
+    if (nshow > 0) {
         msep(0);
-        for (int i = 0; i < A.nrecent; i++) {
+        for (int i = 0; i < nshow; i++) {
             char sp[64];
             short_path(A.recent[i], sp, sizeof sp);
             snprintf(g_recent_label[i], sizeof g_recent_label[i], "%d  %s", i + 1, sp);
@@ -666,7 +671,9 @@ static void draw_status(KUI *ui, KRect r) {
     int x = r.x + r.w - 4;
     int shown[5] = { 0 };
     int order[5] = { 1, 2, 0, 3, 4 };                           /* priority: line endings, encoding, language, size, lines */
-    int room = x - left_end - 120;
+    int minroom = A.msg[0] ? kc_text_width(A.msg) + 24 : 100;   /* a message is more important than the size and line count */
+    if (minroom > (x - left_end) * 3 / 4) minroom = (x - left_end) * 3 / 4;
+    int room = x - left_end - minroom;
     int used = 0;
     for (int i = 0; i < 5; i++) {
         int s = order[i];
@@ -711,12 +718,15 @@ static void draw_status(KUI *ui, KRect r) {
 static void trace_state(void) {
     if (!A.trace) return;
     static int pl = -1, pc = -1, pm = -1, pn = -1;
+    static size_t ps = (size_t)-1;
     int line, col;
     ed_caret_pos(&A.ed, &line, &col);
+    size_t lo, hi;
+    ed_selection(&A.ed, &lo, &hi);
     int m = is_modified(), nl = doc_nlines(&A.ed.doc);
-    if (line != pl || col != pc || m != pm || nl != pn) {
-        pl = line; pc = col; pm = m; pn = nl;
-        nb_trace("pos %d %d mod=%d lines=%d", line + 1, col + 1, m, nl);
+    if (line != pl || col != pc || m != pm || nl != pn || hi - lo != ps) {
+        pl = line; pc = col; pm = m; pn = nl; ps = hi - lo;
+        nb_trace("pos %d %d mod=%d lines=%d sel=%zu", line + 1, col + 1, m, nl, hi - lo);
     }
 }
 
@@ -730,6 +740,7 @@ static void draw(KApp *app, KUI *ui, void *user) {
     k_clear(ui);
     if (!A.focus_init) { ui->focus = ED_ID; A.focus_init = true; }
     if (A.want_editor_focus) { ui->focus = ED_ID; A.want_editor_focus = false; }
+    find_apply_focus(ui);
     reap_children();
     if (A.msg[0] && ui->now_ms > A.msg_until) A.msg[0] = 0;
     else if (A.msg[0]) ui->redraw_soon = true;
@@ -758,15 +769,18 @@ static void draw(KApp *app, KUI *ui, void *user) {
     ed_draw(&A.ed, ui, edr, ui->focus == ED_ID, blocked);
     findbar_draw(ui, fbr);
     if (A.show_status) draw_status(ui, sbr);
+    if (ui->focus == 0 && !ui->menu_open && !modal) ui->focus = ED_ID;     /* a click on a button must not leave the keyboard nowhere */
 
     /* menu bar last: its drop-down paints over everything */
     build_menus();
     static const char *const titles[] = { "File", "Edit", "View", "Help" };
     const KMenuItem *menus[4] = { g_items[0], g_items[1], g_items[2], g_items[3] };
     bool inside = ui->mouse_inside;
+    int menu_before = ui->menu_open;
     if (modal) ui->mouse_inside = false;
     int pick = k_menubar(ui, kr(0, 0, W, mb_h), titles, menus, g_count, 4);
     ui->mouse_inside = inside;
+    if (menu_before && !ui->menu_open) kapp_redraw(A.app);        /* the closing frame still shows the drop-down: paint again */
     if (pick) {
         int m = (pick >> 8) - 1, it = (pick & 255) - 1;
         if (m >= 0 && m < 4 && it >= 0 && it < g_count[m]) do_action(g_acts[m][it]);

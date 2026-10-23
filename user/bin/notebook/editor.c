@@ -375,7 +375,7 @@ void ed_goto(Editor *e, int line, int col) {
 /* ---------------------------------------------------------------- editing primitives */
 
 static bool deny_edit(void) {
-    if (A.readonly) { msg_set("This file is read-only. Use Save As to keep a copy."); return true; }
+    if (A.readonly) { msg_set("Read-only file: use Save As to keep a copy."); return true; }
     return false;
 }
 
