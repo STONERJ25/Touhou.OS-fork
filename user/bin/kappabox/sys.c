@@ -367,6 +367,20 @@ APPLET(dmesg) {
     return 0;
 }
 
+/* logger [-t TAG] MESSAGE...: one line into the kernel log (dmesg, the serial console); TAG replaces the process name as the klog tag. */
+APPLET(logger) {
+    int i = 1;
+    if (argc > 2 && !strcmp(argv[1], "-t")) { gap_setname(argv[2]); i = 3; }
+    char line[200] = "";
+    for (; i < argc; i++) {
+        size_t used = strlen(line);
+        snprintf(line + used, sizeof line - used, "%s%s", used ? " " : "", argv[i]);
+    }
+    if (!line[0]) { kb_error("usage: logger [-t TAG] MESSAGE..."); return 1; }
+    gap_log(line);
+    return 0;
+}
+
 APPLET(mount) {
     if (argc == 1) {
         int fd = open("/proc/mounts", O_RDONLY);

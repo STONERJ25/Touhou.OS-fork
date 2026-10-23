@@ -353,6 +353,7 @@ void server_accept(void) {
 
 void server_init(void) {
     S.next_win = 1;
+    umask(0);                                               /* the login screen runs as root, the desktop as a resident: both must reach the directory */
     mkdir(FAIRY_SHM_DIR, 0777);
     DIR *d = opendir(FAIRY_SHM_DIR);                        /* clean up after a crashed server */
     if (d) {
@@ -365,7 +366,6 @@ void server_init(void) {
         }
         closedir(d);
     }
-    umask(0);
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     struct sockaddr_un sa;
     memset(&sa, 0, sizeof sa);

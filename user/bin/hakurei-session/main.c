@@ -17,7 +17,11 @@ static pid_t spawn(const char *path) {
     return pid;
 }
 
-int main(void) {
+/* hakurei-session            the desktop: window server + hakurei-shell
+ * hakurei-session --greeter  the login screen: window server + hakurei-greeter (run by init as root) */
+int main(int argc, char **argv) {
+    const char *front = "/bin/hakurei-shell";
+    if (argc > 1 && !strcmp(argv[1], "--greeter")) front = "/bin/hakurei-greeter";
     gap_setname("session");
     pid_t server = spawn("/bin/fairyd");
     if (server < 0) { perror("hakurei-session: fork"); return 1; }
@@ -29,7 +33,7 @@ int main(void) {
         usleep(50000);
         waited++;
     }
-    pid_t shell = spawn("/bin/hakurei-shell");
+    pid_t shell = spawn(front);
     int rc = 0;
     for (;;) {
         int status = 0;

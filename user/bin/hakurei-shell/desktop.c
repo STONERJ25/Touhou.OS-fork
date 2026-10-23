@@ -67,7 +67,7 @@ void desktop_draw(KApp *app, KUI *ui, void *user) {
         if (G.menu) menu_close();
         if (hover >= 0 && ui->double_click) launch(g_icons[hover].cmd);
     }
-    if (ui->pressed[2]) {
+    if (ui->pressed[1]) {                                       /* right button: pressed[0] left, [1] right, [2] middle */
         G.selected_icon = hover;
         context_open(ui->mx, ui->my);
     }
@@ -187,6 +187,6 @@ static void shutdown_closed(KWin *w, void *user) { (void)w; (void)user; G.shutdo
 
 void shutdown_open(void) {
     if (G.shutdown) return;
-    G.shutdown = kwin_new(G.app, -1, -1, 400, 130, "Shut down", FW_DIALOG | FW_CENTER | FW_TOP, shutdown_draw, NULL);
+    G.shutdown = kwin_new(G.app, -1, -1, 424, 130, "Shut down", FW_DIALOG | FW_CENTER | FW_TOP, shutdown_draw, NULL);
     if (G.shutdown) kwin_set_close_handler(G.shutdown, shutdown_closed, NULL);
 }

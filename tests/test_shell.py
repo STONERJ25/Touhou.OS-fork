@@ -14,11 +14,11 @@ from qemu import Qemu, BUILD  # noqa: E402
 PROMPT = r"reimu@gensokyo \S+ \$ "
 
 
-def run(vm, cmd, timeout=25):
+def run(vm, cmd, timeout=25, prompt=PROMPT):
     """Runs one shell command line in the guest. Returns (output, exit_status)."""
     vm.send(f"echo __BE''GIN__; {cmd}; echo __EN''D__$?\n")
     m = vm.expect(r"\n__BEGIN__\n(.*?)__END__(\d+)\n", timeout=timeout)
-    vm.expect(PROMPT, timeout=10)           # let the shell get back to its prompt before the next line is typed
+    vm.expect(prompt, timeout=10)           # let the shell get back to its prompt before the next line is typed
     return m.group(1), int(m.group(2))
 
 
