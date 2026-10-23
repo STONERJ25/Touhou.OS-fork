@@ -1,0 +1,115 @@
+# Sound
+
+The sound system belongs to the Kappa/Nitori hardware crowd (kernel log tag `Nitori`). Reimu's Jukebox is the music player.
+
+```
+ programs: beep play volume jukebox desktop sounds   user/bin/kappabox/audio.c, user/bin/jukebox/
+        |  libaudio  (device, WAV, generators, chiptune synth, system sounds)    user/lib/audio/
+        v  /dev/audio (write PCM, ioctls) and /proc/audio
+ audio core  kernel/drivers/audio/audio.c      streams, software mixer, volume, limiter, mixer thread
+        |  AudioBackend: a looping 48 kHz 16-bit stereo DMA ring + "where is the hardware now?"
+        v
+ hda.c  Intel High Definition Audio (QEMU intel-hda, the Dell's 8086:a171 + Realtek codec)      ac97.c  AC'97 (QEMU AC97)
+```
+
+## Status (read this first)
+
+| Piece | State |
+|---|---|
+| Audio core: `/dev/audio`, mixer, per-stream and master volume, mute, soft limiter, `/proc/audio`, underruns are silence | done, tested in QEMU |
+| Intel HDA driver (CORB/RIRB polled, codec graph parse, path selection, unmute, EAPD, stream, jack auto-mute) | done, tested in QEMU with `hda-output` only; **never run on real hardware** |
+| AC'97 driver | not written yet |
+| libaudio: device, WAV reader/writer, tone and noise generators, system sounds | done |
+| libaudio: chiptune synthesizer / sequencer and the procedural tracks | not written yet |
+| `beep`, `play`, `volume` | done |
+| Reimu's Jukebox (GUI) | not written yet |
+| System sounds hooked into the shell, greeter, lock screen and dialogs | not hooked in yet (`beep -e login` plays them) |
+| Recording (capture) | not planned for the first round |
+| Tests | `tests/case_audio.py` (see the list below) |
+
+## The device
+
+`/dev/audio` (character device, group `shrine`, mode 0660) exists only when a sound controller with a usable output was found.
+Without hardware, or with `noaudio` on the kernel command line, opening it fails with `ENOENT` and every tool says
+"this machine has no sound device".
+
+Each `open()` is a stream. Nothing is allocated in the hardware until the first `write()`; opening only to change the
+master volume (`volume` does this) costs nothing. Per stream:
+
+* a format: 8-bit unsigned, 16/24/32-bit signed little endian (24-bit is packed in three bytes), 1 or 2 channels,
+  4000 to 192000 Hz. Default 48 kHz stereo 16-bit. `AUDIO_SET_FORMAT` fails with `EBUSY` while bytes are queued.
+* a 256 KiB byte queue. `write()` blocks until everything fits (or returns what fits with `O_NONBLOCK`, `-EAGAIN` if
+  nothing does); `poll()` reports `POLLOUT` when a quarter of the queue is free. Writes may be any number of bytes; the
+  mixer assembles frames.
+* a volume (0 to 100 per channel) and a mute flag.
+
+`close()` never blocks and never cuts off sound already written: the stream stays until its queue has been played out.
+`AUDIO_FLUSH` throws the queue away; `AUDIO_DRAIN` waits until everything has been heard.
+
+ioctls are in `shared/audio_abi.h`: `AUDIO_SET_FORMAT`, `AUDIO_GET_FORMAT`, `AUDIO_SET_VOLUME`, `AUDIO_GET_VOLUME`,
+`AUDIO_SET_MASTER`, `AUDIO_GET_MASTER`, `AUDIO_GET_INFO`, `AUDIO_GET_STATUS`, `AUDIO_DRAIN`, `AUDIO_FLUSH`. No new system
+calls are used (the numbers 100-105 stay free).
+
+## The mixer
+
+One kernel thread (`audio`, wakes every 5 ms while sound is playing, sleeps otherwise) keeps the hardware ring filled
+about 100 ms ahead of the play position:
+
+```
+ring (16384 frames = 341 ms):  [ played: zeroed ][ hw reads here ... mixed audio ... produced ][ zeros ]
+```
+
+* For every stream it converts to 48 kHz stereo (linear interpolation, 16.16 fixed point), applies the stream volume and
+  the master volume, and adds into a 32-bit accumulator. Everything is integer (the kernel has no SSE).
+* A soft limiter (linear up to 28000 of 32767, then a rational knee that never reaches full scale) replaces hard
+  clipping, so two loud programs do not wrap around into noise.
+* The frames behind the hardware position are zeroed as soon as the hardware has passed them. If the thread is late, the
+  hardware plays zeros, never old sound ("an underrun is silence"). A burst of sound after silence starts 20 ms ahead of
+  the play position so its first samples are not lost.
+* If the hardware position stops moving for 400 ms while sound is waiting (a controller that does not run), the core logs
+  one line and discards sound at the right speed instead of letting programs hang. `/proc/audio` says "stalled".
+* When nothing has played for 3 s (`audio.idle=MS` on the command line) the DMA engine is stopped and the ring cleared.
+* The master volume (default 60) lives in the kernel and lasts until the next boot. The curve is quadratic: the gain is
+  `(v/100)^2`, so 50 is a quarter of the amplitude of 100. The hardware amplifiers are set to 0 dB and left alone.
+
+## Intel HDA
+
+`kernel/drivers/audio/hda.c`. Polled; there are no interrupts and no MSI.
+
+1. PCI class 0x0403. Memory and bus master enabled; on Intel, traffic class 0 and snooped DMA (what Linux does).
+2. Controller reset, wait for the codec bits in `STATESTS`, CORB/RIRB set up (256 entries when the controller allows it).
+   The response flag in `RIRBSTS` is acknowledged after every command (QEMU stops reading commands until it is).
+3. For each codec: the audio function group is powered to D0, then every widget is read: type, capabilities, connection
+   list (short and long form, ranges), pin capabilities, pin default configuration, amplifier capabilities (with the
+   function group's values where the widget does not override them).
+4. Output pins are the ones the BIOS declared as line out, speaker or headphone and that are not "not connected". For each
+   a path pin <- (mixers, selectors) <- DAC is found by depth-first search, preferring a DAC no other pin uses. If the BIOS
+   declared nothing, any output-capable pin with a path is used (with a log line).
+5. Along every path: widgets that have power control go to D0, selectors and multi-input pins are pointed at the path,
+   mixer inputs other than the path's are muted, output amplifiers are unmuted at their 0 dB step, the pin is enabled
+   (`OUT_EN`, plus `HP_EN` on headphone drive capable pins) and its EAPD is switched on.
+6. One output stream, tag 1, 48 kHz 16-bit stereo, over a 64 KiB ring described by 16 buffer descriptors. All DACs used
+   by any enabled path listen to the same stream.
+7. Jack sensing (`GET_PIN_SENSE`, polled four times a second while playing): headphones plugged in silence the speaker
+   and the rear line out; a plugged line out silences the speaker. Pins without presence detect count as plugged.
+
+Failure is quiet: if a codec stops answering, if there is no analog output (an HDMI-only codec), or if the controller
+will not reset, the driver logs one `[Nitori]` line and `/dev/audio` does not appear. Nothing is ever played on a pin the
+BIOS marked unused, and the default master volume is moderate.
+
+What has **not** been done: vendor specific coefficient programming (Realtek `COEF` tweaks some laptops need), GPIO
+controlled external amplifiers, digital (S/PDIF, HDMI) outputs, input streams (recording), power saving of idle widgets.
+The path logic follows the specification and Linux's generic parser, but it has only ever run against QEMU's simple
+codec. If the Dell's front or rear jack stays silent, `cat /proc/audio` lists the codec, each pin with its configuration
+word, whether a jack is sensed, the path chosen, and `dmesg | grep Nitori` shows what the driver decided.
+
+## Tests
+
+`python tests/run_all.py audio` runs `tests/case_audio.py`. The harness (`tools/qemu.py`) takes
+`Qemu(audio="hda" | "hda-duplex" | "ac97")`, which adds a sound card and an `-audiodev wav` backend writing
+`build/<name>-audio.wav`; the file is complete once `vm.stop()` has run. The host side parses it with numpy
+(`tests/audiotools.py`: loud segments, dominant frequency, peak, band power). The guest clock can be several times slower
+than wall time, so tests never depend on durations: they find the loud stretches and measure those. System sounds are
+switched off in the harness (`nosounds` is added to the command line) unless a test passes `sounds=True`.
+
+Covered so far: the HDA path end to end (a 440 Hz `beep` has the right pitch, level and purity).
