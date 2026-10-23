@@ -1,0 +1,10 @@
+.page unset 1 remove variables
+
+# SYNOPSIS
+*unset* _NAME_...
+
+# DESCRIPTION
+`unset` is a gapsh builtin that removes each variable (the options `-v` and `-f` are accepted and ignored). A removed variable is no longer in the environment of commands either.
+
+# SEE ALSO
+export(1), set(1)

@@ -1,0 +1,10 @@
+.page halt 8 stop the machine
+
+# SYNOPSIS
+*halt*
+
+# DESCRIPTION
+`halt` is another name for poweroff(8): it powers the machine off.
+
+# SEE ALSO
+poweroff(8), reboot(8)

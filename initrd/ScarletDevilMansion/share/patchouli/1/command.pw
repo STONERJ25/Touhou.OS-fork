@@ -1,0 +1,11 @@
+.page command 1 run a command ignoring aliases and functions
+
+# SYNOPSIS
+*command* _NAME_ [_ARGUMENT_...]
+*command* *-v* _NAME_
+
+# DESCRIPTION
+`command` is a gapsh builtin. With a command it runs the builtin or the program called _NAME_ and skips any function or alias of that name, which is useful for wrappers: `ls() { command ls -l "$@"; }`. With `-v` it prints the name of a builtin or function, or the path of a program, and exits with status 1 if there is none.
+
+# SEE ALSO
+type(1), which(1), alias(1)

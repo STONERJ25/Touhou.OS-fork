@@ -1,0 +1,43 @@
+.page date 1 print the date and time
+
+# SYNOPSIS
+*date* [*-u*] [*-d* _WHEN_] [*-R* | *-I*] [*+*_FORMAT_]
+
+# DESCRIPTION
+`date` prints the current date and time, always in UTC: Gensokyo keeps its own time zone, and the system does not know the rest. The clock cannot be set from here.
+
+The default format looks like `Fri Oct 23 14:05:09 UTC 2026`.
+
+# OPTIONS
+@ *-d* _WHEN_
+    Show _WHEN_ instead of the current time: `@`_SECONDS_ for seconds since 1970, or a date like `2026-10-23` or `2026-10-23 14:05:09`.
+@ *-u*
+    Accepted; the time is UTC anyway.
+@ *-R*
+    RFC 2822 format.
+@ *-I*
+    Just the date, as `2026-10-23`. `--iso-8601=seconds` gives the date and time with a zone.
+@ *+*_FORMAT_
+    Print using _FORMAT_. These conversions are understood:
+
+        %Y  year                    %y  two-digit year
+        %m  month (01-12)           %d  day of the month (01-31)
+        %e  day, space padded       %j  day of the year (001-366)
+        %H  hour (00-23)            %I  hour (01-12)
+        %M  minute                  %S  second
+        %p  AM or PM                %a  short weekday name
+        %A  weekday name            %b  short month name
+        %B  month name              %F  the same as %Y-%m-%d
+        %T  the same as %H:%M:%S    %R  the same as %H:%M
+        %D  the same as %m/%d/%y    %c  date and time
+        %s  seconds since 1970      %Z  zone name (UTC)
+        %z  offset (+0000)          %%  a percent sign
+
+# EXAMPLES
+    date
+    date +%Y-%m-%d
+    date -d @86400
+    date -d '2024-02-29' +%A
+
+# SEE ALSO
+cal(1), uptime(1), sleep(1)

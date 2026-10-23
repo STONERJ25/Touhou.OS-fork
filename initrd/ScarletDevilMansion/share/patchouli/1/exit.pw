@@ -1,0 +1,10 @@
+.page exit 1 leave the shell
+
+# SYNOPSIS
+*exit* [_STATUS_]
+
+# DESCRIPTION
+`exit` is a gapsh builtin: the shell stops with the exit status _STATUS_ (only the lowest eight bits count), or with the status of the last command if none is given. An `EXIT` trap, if one was set, runs first. In an interactive login shell the init process then starts a new one.
+
+# SEE ALSO
+return(1), trap(1)

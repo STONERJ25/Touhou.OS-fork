@@ -1,0 +1,21 @@
+.page mktemp 1 create a temporary file or directory
+
+# SYNOPSIS
+*mktemp* [*-d*] [_TEMPLATE_]
+
+# DESCRIPTION
+`mktemp` creates a new, empty temporary file (mode 0600) and prints its name. The template is a path whose last characters are `X`; they are replaced with random letters and digits. The default template is `/tmp/tmp.XXXXXXXXXX`. The file is created with `O_EXCL`, so two programs can never get the same one.
+
+# OPTIONS
+@ *-d*
+    Create a directory (mode 0700) instead of a file.
+
+# EXIT STATUS
+0, or 1 when the file could not be created.
+
+# EXAMPLES
+    f=$(mktemp)
+    d=$(mktemp -d /tmp/work.XXXXXX)
+
+# SEE ALSO
+touch(1), mkdir(1), rm(1)

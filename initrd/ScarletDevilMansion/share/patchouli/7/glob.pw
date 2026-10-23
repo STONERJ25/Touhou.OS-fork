@@ -1,0 +1,29 @@
+.page glob 7 file name patterns
+
+# DESCRIPTION
+A glob is a pattern for file names, not a regular expression. It is used by gapsh(1) when it expands words such as `*.c`, in the patterns of `case` and of `${NAME#pattern}`, by `find -name`, and by `grep --include`.
+
+# PATTERNS
+@ *
+    Any string of characters, including none.
+@ ?
+    Any single character.
+@ [abc], [a-z]
+    Any one of the characters or ranges listed.
+@ [!abc], [^abc]
+    Any one character not listed.
+@ \\c
+    The character c, taken literally.
+
+In a file name expansion a slash must be matched by a slash and a leading dot by a dot: `*` does not match `.profile`. If nothing matches, the word is left as it was typed. Quoting a character takes away its special meaning.
+
+The matching of `find -name` is on the base name; `find -path` matches the whole path. `grep --include` understands only `*` and `?`.
+
+# EXAMPLES
+    ls /bin/p*
+    ls *.[ch]
+    case "$f" in *.txt|*.md) echo text;; esac
+    f=archive.tar.gz; echo ${f%%.*}
+
+# SEE ALSO
+gapsh-language(7), find(1), regex(7)

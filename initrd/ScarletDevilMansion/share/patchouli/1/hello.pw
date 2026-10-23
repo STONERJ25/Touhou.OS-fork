@@ -1,0 +1,13 @@
+.page hello 1 greet Gensokyo from user space
+
+# SYNOPSIS
+*hello* [_ARGUMENT_...]
+
+# DESCRIPTION
+`hello` prints a greeting with its process id and user id, then lists its own arguments. It exists to check that a freshly built program can be loaded and run by the kernel, and that arguments reach it.
+
+# EXAMPLES
+    hello a "b c"
+
+# SEE ALSO
+utest(1), init(8)

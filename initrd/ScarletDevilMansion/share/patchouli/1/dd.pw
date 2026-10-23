@@ -1,0 +1,37 @@
+.page dd 1 copy and convert data
+
+# SYNOPSIS
+*dd* [*if*=_FILE_] [*of*=_FILE_] [*bs*=_N_] [*count*=_N_] [*skip*=_N_] [*seek*=_N_] [*conv*=_LIST_] [*status*=*none*]
+
+# DESCRIPTION
+`dd` copies its input to its output in blocks. The operands are written as `NAME=VALUE`, not as options. It copies from standard input to standard output unless `if` and `of` say otherwise, and it is the tool to use on block devices such as `/dev/vda`. Be careful where you point `of`: nothing asks for confirmation.
+
+# OPERANDS
+@ if=_FILE_
+    Read from _FILE_.
+@ of=_FILE_
+    Write to _FILE_, which is created and truncated unless `seek` or `conv=notrunc` is given.
+@ bs=_N_, ibs=_N_, obs=_N_
+    The block size in bytes (512 by default). All three set the same size.
+@ count=_N_
+    Copy at most _N_ blocks.
+@ skip=_N_
+    Skip _N_ blocks at the start of the input (read and discarded if the input cannot seek).
+@ seek=_N_
+    Skip _N_ blocks at the start of the output.
+@ conv=_LIST_
+    A comma separated list: `notrunc` do not truncate the output file, `sync` pad a short last input block with zeros to the block size.
+@ status=none
+    Do not print the summary.
+
+Sizes accept the suffixes `b` (512), `k` or `K` (1024), `M` (1048576), `G` (1073741824) and `w` (2).
+
+When finished `dd` prints the numbers of full and partial blocks read and written, the bytes copied and the speed, on standard error.
+
+# EXAMPLES
+    dd if=/dev/zero of=/tmp/blank bs=1k count=64
+    dd if=/dev/vda bs=512 count=1 | xxd | head
+    dd if=disk.img of=/dev/vdb bs=1M
+
+# SEE ALSO
+cp(1), xxd(1), lsblk(1)

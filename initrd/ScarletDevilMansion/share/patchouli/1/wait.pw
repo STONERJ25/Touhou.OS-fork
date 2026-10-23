@@ -1,0 +1,13 @@
+.page wait 1 wait for processes to finish
+
+# SYNOPSIS
+*wait* [_PID_]
+
+# DESCRIPTION
+`wait` is a gapsh builtin. With a process id it waits for that process and returns its exit status; without one it waits for all child processes.
+
+# EXAMPLES
+    sleep 2 & wait $!; echo done
+
+# SEE ALSO
+jobs(1), kill(1)

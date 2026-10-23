@@ -1,0 +1,24 @@
+.page top 1 watch the processes that use the most CPU
+
+# SYNOPSIS
+*top* [*-b*] [*-n* _COUNT_] [*-d* _SECONDS_]
+
+# DESCRIPTION
+`top` shows a live table of processes, busiest first: id, user, state, virtual and resident size, CPU share since the last refresh, and name. A line above it shows the uptime, the process count and the memory in use. The display is refreshed every two seconds; press `q` to leave.
+
+When standard input is not a terminal `top` runs in batch mode.
+
+# OPTIONS
+@ *-b*
+    Batch mode: print each table in turn without clearing the screen or reading keys.
+@ *-n* _COUNT_
+    Stop after _COUNT_ refreshes.
+@ *-d* _SECONDS_
+    Seconds between refreshes (fractions allowed). The default is 2.
+
+# EXAMPLES
+    top
+    top -b -n 1
+
+# SEE ALSO
+ps(1), uptime(1), free(1)

@@ -1,0 +1,24 @@
+.page ln 1 make symbolic links
+
+# SYNOPSIS
+*ln* *-s* [*-f*] _TARGET_ _LINKNAME_
+*ln* *-s* [*-f*] _TARGET_ _DIRECTORY_
+
+# DESCRIPTION
+`ln` creates a symbolic link called _LINKNAME_ that points at _TARGET_. If the second operand is an existing directory the link is created inside it, named after the target. The filesystem of this system has no hard links, so `-s` is required and `ln` without it explains why it cannot comply.
+
+# OPTIONS
+@ *-s*
+    Make a symbolic link.
+@ *-f*
+    Remove an existing file called _LINKNAME_ first.
+
+# EXAMPLES
+    ln -s /Hakurei/etc /tmp/etc-link
+    ln -sf /bin/ls /tmp/dir
+
+# EXIT STATUS
+0, or 1 on failure.
+
+# SEE ALSO
+readlink(1), ls(1), realpath(1)

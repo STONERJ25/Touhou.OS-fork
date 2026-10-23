@@ -1,0 +1,83 @@
+.page gapsh-language 7 the language understood by gapsh
+
+# DESCRIPTION
+This page describes what gapsh(1) understands. It is a practical subset of the POSIX shell language with a few conveniences. What is missing is listed at the end.
+
+# SIMPLE COMMANDS
+A command is a list of words. The first word names the program, function, alias or builtin to run; the others are its arguments. Variable assignments written before the command (`LINES=20 pnote file`) are exported to that command only; written alone (`x=5`) they set a shell variable. Words are separated by blanks. A `#` that starts a word begins a comment that runs to the end of the line. A backslash at the end of a line joins it to the next.
+
+The exit status of a command is available afterwards as `$?`. By convention 0 means success, 127 that the command was not found, 126 that it could not be run, and 128+N death by signal N.
+
+# QUOTING
+@ \\
+    A backslash makes the next character ordinary.
+@ 'text'
+    Single quotes keep every character as it is.
+@ "text"
+    Double quotes keep spaces together but still allow dollar expansions and backquotes. Inside them a backslash escapes only the dollar sign, the double quote, the backslash and the backquote.
+
+# PIPELINES AND LISTS
+@ A | B
+    The output of A is the input of B. The status is that of the last command. `!` in front negates the status.
+@ A && B, A || B
+    Run B only if A succeeded / failed.
+@ A ; B, A newline B
+    Run A, then B.
+@ A &
+    Run A in the background.
+@ ( LIST )
+    Run the list in a subshell: a copy of the shell whose changes do not reach the parent.
+@ { LIST; }
+    Group commands without a subshell; the `;` (or newline) before the closing brace is required.
+
+# REDIRECTION
+@ < FILE
+    Read standard input from FILE.
+@ > FILE, >> FILE
+    Write standard output to FILE (truncating it / appending).
+@ 2> FILE, N> FILE
+    The same for file descriptor 2 (or N).
+@ &> FILE, &>> FILE
+    Standard output and standard error together.
+@ N>&M, N<&M, N>&-
+    Make descriptor N a copy of M; close N.
+@ << WORD
+    A here document: the following lines up to a line containing only WORD become standard input. Variables and `$(...)` are expanded in it unless WORD is quoted (`<<'EOF'`).
+
+# COMPOUND COMMANDS
+    if LIST; then LIST; elif LIST; then LIST; else LIST; fi
+    while LIST; do LIST; done
+    until LIST; do LIST; done
+    for NAME in WORD...; do LIST; done
+    for NAME; do LIST; done                  (loops over "$@")
+    case WORD in PATTERN | PATTERN) LIST ;; ... esac
+    NAME() { LIST; }          function NAME { LIST; }
+
+`break` and `continue` leave or restart loops. A function's arguments are `$1`, `$2` ... and `return` ends it; `local` makes a variable private to a call. The patterns of `case` are those of file name expansion.
+
+# EXPANSIONS
+Words are expanded in this order.
+
+@ Tilde
+    `~` at the start of a word is the home directory, `~user` that of another user.
+@ Parameters
+    `$NAME` and `${NAME}`. The special parameters are `$?` the last status, `$$` the shell's process id, `$!` the last background process id, `$#` the number of arguments, `$@` and `$*` all the arguments (in double quotes `"$@"` keeps them as separate words), `$0` the script name and `$1` to `$9` and beyond the positional parameters.
+@ Parameter operators
+    `${NAME:-WORD}` WORD if NAME is unset or empty; `${NAME:=WORD}` and assign it; `${NAME:+WORD}` WORD if NAME is set and not empty; `${NAME:?WORD}` complain if it is not; without the colon only unset counts. `${#NAME}` the length. `${NAME#PAT}` and `${NAME##PAT}` remove the shortest / longest matching prefix, `${NAME%PAT}` and `${NAME%%PAT}` the suffix. `${NAME/PAT/STR}` and `${NAME//PAT/STR}` replace the first / every match. `${NAME:OFFSET:LENGTH}` a substring.
+@ Command substitution
+    `$(COMMAND)` or \`COMMAND\` is replaced by the output of the command, without trailing newlines.
+@ Arithmetic
+    `$((EXPRESSION))` is the value of an integer expression with the operators `+ - * / %`, `<< >>`, `< <= > >= == !=`, `& ^ |`, `&& ||`, `!` and `~`, the conditional `A ? B : C`, parentheses, and the variable assignments `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `++` and `--`. Variables are named without a `$`.
+@ Field splitting
+    The results of unquoted expansions are split into words at the characters of `IFS` (blank, tab and newline by default).
+@ File names
+    A word containing `*` (any string), `?` (any character) or `[...]` (a set or range; `[!...]` for its complement) is replaced by the sorted list of matching file names, if there are any. A leading dot must be matched explicitly. Quoted characters are not special.
+
+# ALIASES
+The first word of a simple command is replaced by the value of an alias of that name (`alias ll='ls -l'`), with the rest of the command appended. Aliases apply wherever a simple command is run, in scripts and functions as well as at the prompt, and may refer to other aliases up to eight levels deep.
+
+# NOT SUPPORTED
+There are no arrays, no `[[ ... ]]` or `(( ... ))`, no process substitution (`<(...)`), no `$'...'` quoting, no `select` and no `set -e` (the options are accepted and ignored). `readonly` does not protect variables. Job control stops at `jobs`, `fg` and `bg`: a stopped job cannot be resumed.
+
+# SEE ALSO
+gapsh(1), gapsh-builtins(7), test(1), regex(7)

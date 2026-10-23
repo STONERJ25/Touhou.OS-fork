@@ -1,0 +1,53 @@
+.page keys 7 the console keyboard and what the keys do
+
+# DESCRIPTION
+The console turns key presses into bytes for the program that reads the terminal. Programs that put the terminal in raw mode (the editor, the pager, top(1)) see those bytes directly; ordinary programs see lines, edited with the keys of the line discipline below.
+
+# WHAT THE KEYS SEND
+    Enter       CR (13)            Tab          TAB (9)
+    Backspace   DEL (127)          Escape       ESC (27)
+    Ctrl-letter the letter's code: Ctrl-A is 1, Ctrl-Z is 26
+    Ctrl-[      ESC                Ctrl-\       28
+    Ctrl-]      29                 Ctrl-/       31
+    Ctrl-Space  NUL (0)            Alt-key      ESC, then the key
+
+    Up Down Right Left       ESC [ A  ESC [ B  ESC [ C  ESC [ D
+    Home  End                ESC [ H  ESC [ F
+    Insert  Delete           ESC [ 2 ~  ESC [ 3 ~
+    Page Up  Page Down       ESC [ 5 ~  ESC [ 6 ~
+    F1 F2 F3 F4              ESC O P  ESC O Q  ESC O R  ESC O S
+    F5 F6 F7 F8 F9 F10       ESC [ 15 ~  17 ~  18 ~  19 ~  20 ~  21 ~
+    F11  F12                 ESC [ 23 ~  ESC [ 24 ~
+
+With Num Lock on, the keypad types digits and the point; with it off, its keys act as the navigation keys.
+
+# THE LINE DISCIPLINE
+Until a program asks otherwise the terminal collects a whole line before handing it over (canonical mode) and echoes what is typed:
+
+@ Enter
+    Ends the line (CR is turned into newline).
+@ Backspace, ^U, ^W
+    Erase a character, the whole line, the last word.
+@ ^D
+    At the start of a line: end of input. Elsewhere: hand over what has been typed.
+@ ^C
+    Interrupt: SIGINT goes to the foreground process group and the line is thrown away.
+@ ^\\
+    Quit: SIGQUIT.
+@ ^Z
+    SIGTSTP.
+
+A program in raw mode turns these off and gets every byte, including ^C as the byte 3.
+
+# KEYS OF THE PROGRAMS
+@ gapsh(1)
+    Line editing: arrows, Home, End, ^A, ^E, ^K, ^U, ^W, ^Y, ^R, Tab; Up and Down for history.
+@ pnote(1)
+    ^S save, ^X exit, ^W search, ^R replace, ^K cut, ^U paste, ^Z undo, ^Y redo, ^L go to a line, ^G help.
+@ patchouli-pager(1)
+    SPACE and b to page, j and k to scroll, / and ? to search, g and G to jump, h for help, q to quit.
+@ top(1)
+    q quits.
+
+# SEE ALSO
+gapsh(1), pnote(1), patchouli-pager(1), top(1)

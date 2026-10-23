@@ -1,0 +1,10 @@
+.page nproc 1 print the number of processors
+
+# SYNOPSIS
+*nproc*
+
+# DESCRIPTION
+`nproc` prints the number of processors that are online. At present the kernel runs on one.
+
+# SEE ALSO
+uname(1), top(1)

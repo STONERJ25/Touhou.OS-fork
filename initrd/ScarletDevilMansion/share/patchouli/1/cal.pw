@@ -1,0 +1,18 @@
+.page cal 1 show a calendar
+
+# SYNOPSIS
+*cal* [[_MONTH_] _YEAR_]
+
+# DESCRIPTION
+`cal` prints a calendar. Without arguments it shows the current month, with today's date in reverse video when output goes to a terminal. With one argument (a year) it prints all twelve months of that year; with two, the given month (1 to 12) of the given year. Weeks start on Sunday. Dates are those of the proleptic Gregorian calendar, in UTC.
+
+# EXAMPLES
+    cal
+    cal 2 2024
+    cal 1999
+
+# EXIT STATUS
+0, or 1 for a month outside 1 to 12.
+
+# SEE ALSO
+date(1), uptime(1)

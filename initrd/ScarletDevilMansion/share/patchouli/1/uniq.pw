@@ -1,0 +1,28 @@
+.page uniq 1 report or filter out repeated lines
+
+# SYNOPSIS
+*uniq* [*-cdui*] [*-f* _N_] [_FILE_]
+
+# DESCRIPTION
+`uniq` reads _FILE_ (or standard input) and collapses runs of identical adjacent lines into one. It only compares neighbours, so sort the input first if equal lines are not next to each other.
+
+# OPTIONS
+@ *-c*
+    Put the number of occurrences in front of each line.
+@ *-d*
+    Write only lines that occur more than once.
+@ *-u*
+    Write only lines that occur exactly once.
+@ *-i*
+    Ignore case when comparing.
+@ *-f* _N_
+    Skip the first _N_ white space separated fields of each line when comparing.
+
+Only one input file is read; a second operand is ignored.
+
+# EXAMPLES
+    sort words.txt | uniq -c | sort -rn
+    uniq -d sorted.txt
+
+# SEE ALSO
+sort(1), comm(1), wc(1)

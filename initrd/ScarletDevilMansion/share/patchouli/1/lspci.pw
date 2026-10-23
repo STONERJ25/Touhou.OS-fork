@@ -1,0 +1,18 @@
+.page lspci 1 list PCI devices
+
+# SYNOPSIS
+*lspci* [*-v*]
+
+# DESCRIPTION
+`lspci` shows the PCI devices the kernel found, read from `/proc/pci`. Each line gives the bus address (`bus:device.function`), the class code, the vendor and device ids, the name of the class and, if a driver has claimed the device, the driver's name in brackets.
+
+# OPTIONS
+@ *-v*
+    Verbose: also print the indented lines that describe each base address register of a device (its kind, address and size).
+
+# EXAMPLES
+    lspci
+    lspci -v | less
+
+# SEE ALSO
+lsusb(1), lsblk(1), dmesg(1)

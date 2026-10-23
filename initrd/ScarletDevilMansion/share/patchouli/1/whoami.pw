@@ -1,0 +1,10 @@
+.page whoami 1 print the name of the current user
+
+# SYNOPSIS
+*whoami*
+
+# DESCRIPTION
+`whoami` prints the name that goes with the effective user id, looked up in `/Hakurei/etc/passwd`, or the number if there is no such entry.
+
+# SEE ALSO
+id(1), logname(1), passwd(5)

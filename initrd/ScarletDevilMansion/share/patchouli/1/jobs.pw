@@ -1,0 +1,21 @@
+.page jobs 1 manage background jobs
+.alias fg bg
+
+# SYNOPSIS
+*jobs*
+*fg* [%_N_]
+*bg* [%_N_]
+
+# DESCRIPTION
+These gapsh builtins deal with commands started with `&`. `jobs` lists the running jobs as `[N]  Running  COMMAND`. `fg` makes the most recent job (or job _N_) the foreground job and waits for it, returning its status. `bg` only prints the job: background jobs already run in the background, and a job cannot be stopped and resumed here.
+
+# EXIT STATUS
+1 if there is no such job.
+
+# EXAMPLES
+    sleep 100 &
+    jobs
+    fg %1
+
+# SEE ALSO
+wait(1), kill(1), ps(1)

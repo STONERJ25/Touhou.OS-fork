@@ -1,0 +1,21 @@
+.page pushd 1 keep a stack of directories
+.alias popd dirs
+
+# SYNOPSIS
+*pushd* _DIRECTORY_
+*popd*
+*dirs*
+
+# DESCRIPTION
+These gapsh builtins keep a stack of directories (up to 32). `pushd` remembers the current directory and changes to _DIRECTORY_. `popd` goes back to the directory most recently pushed and forgets it. `dirs` prints the current directory followed by the stack, most recent first.
+
+# EXIT STATUS
+1 if `pushd` has no argument or cannot change directory, and if `popd` finds the stack empty.
+
+# EXAMPLES
+    pushd /Hakurei/etc
+    dirs
+    popd
+
+# SEE ALSO
+cd(1), gapsh-builtins(7)

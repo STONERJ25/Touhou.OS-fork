@@ -1,0 +1,20 @@
+.page passwd 5 the user database
+
+# DESCRIPTION
+`/Hakurei/etc/passwd` lists the users, one per line, in seven fields separated by colons:
+
+    name:password:uid:gid:gecos:home:shell
+
+The password field holds `x`; the system has no password prompts yet and every user is entered at the shrine by name. The gecos field is the full name. The shell is started by init(8) (which runs `/bin/gapsh` regardless).
+
+The shipped file:
+
+    root:x:0:0:Yukari Yakumo:/root:/bin/gapsh
+    reimu:x:1000:1000:Reimu Hakurei:/HumanVillage/reimu:/bin/gapsh
+    marisa:x:1001:1001:Marisa Kirisame:/HumanVillage/marisa:/bin/gapsh
+    sakuya:x:1002:1002:Sakuya Izayoi:/HumanVillage/sakuya:/bin/gapsh
+
+The tools that show names for numbers (`ls -l`, `id`, `ps`, `stat`) read this file when they run; gapsh reads it for `~user`.
+
+# SEE ALSO
+group(5), id(1), chown(1), ls(1)

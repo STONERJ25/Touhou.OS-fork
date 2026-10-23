@@ -1,0 +1,27 @@
+.page saisen 1 put a coin in the shrine's offering box
+
+# SYNOPSIS
+*saisen* [*-s*] [_AMOUNT_]
+
+# DESCRIPTION
+`saisen` is the offering box at the Hakurei Shrine. It takes _AMOUNT_ yen (5 if you give none: the five-yen coin, *go-en*, is the traditional lucky offering), adds it to the shrine's running total, and reports what Reimu thinks of the amount. An amount of 0 is allowed: you stand before the box and offer nothing, and Reimu says what she thinks of that too.
+
+The total is kept in the file `/var/lib/saisen/total` when `/var/lib/saisen` can be written (it can for root) and in `/tmp/saisen-total` otherwise. It is shared by everyone who uses the same file.
+
+# OPTIONS
+@ *-s*
+    Do not make an offering; only show how much the box holds.
+
+The amount is a whole number of yen, optionally followed by `yen` or `en`. A negative amount is refused: taking money out of the box would be theft.
+
+# EXIT STATUS
+0, or 1 for an amount that is not a number or is negative.
+
+# EXAMPLES
+    saisen
+    saisen 100
+    saisen 0
+    saisen -s
+
+# SEE ALSO
+omikuji(1), reimusay(1)

@@ -1,0 +1,21 @@
+.page paste 1 merge lines of files side by side
+
+# SYNOPSIS
+*paste* [*-s*] [*-d* _LIST_] [_FILE_...]
+
+# DESCRIPTION
+`paste` writes lines that consist of the corresponding lines of each _FILE_ joined by a tab. A file name of `-` stands for standard input; with no file `paste` reads standard input. When one file runs out its column is left empty.
+
+# OPTIONS
+@ *-d* _LIST_
+    Use the characters of _LIST_, one after another and cycling, instead of tabs as separators.
+@ *-s*
+    Serial: paste all the lines of one file into one output line, then do the same for the next file.
+
+# EXAMPLES
+    paste names.txt scores.txt
+    seq 1 4 | paste -s -d,
+    paste -d: users.txt homes.txt
+
+# SEE ALSO
+cut(1), sort(1), tr(1)

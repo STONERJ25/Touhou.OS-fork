@@ -1,0 +1,29 @@
+.page deluser 8 send a resident away from the Human Village
+
+# SYNOPSIS
+*deluser* [*--remove-home*] [*--force*] _NAME_
+
+# DESCRIPTION
+`deluser` removes the account _NAME_: its lines in `/Hakurei/etc/passwd` and `/Hakurei/etc/shadow`, its group of the same name, and its name in the member lists of the other groups. Only root may do it (try `sudo deluser`).
+
+Accounts with a number below 1000 belong to the shrine itself and are refused unless `--force` is given. The home directory is left alone unless `--remove-home` is given; it is only removed if it lies below `/HumanVillage`.
+
+# OPTIONS
+@ *--remove-home*
+    Also delete the home directory and everything in it.
+@ *--force*
+    Allow the removal of an account with a number below 1000.
+
+# EXIT STATUS
+0 on success; 1 if the account does not exist, is a system account, or the caller is not root; 2 for a usage error.
+
+# EXAMPLES
+    sudo deluser alice
+    sudo deluser --remove-home alice
+
+# FILES
+@ /Hakurei/etc/passwd, /Hakurei/etc/shadow, /Hakurei/etc/group
+    The databases that are edited.
+
+# SEE ALSO
+adduser(8), passwd(5), group(5)

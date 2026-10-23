@@ -1,0 +1,24 @@
+.page free 1 show how much memory there is
+
+# SYNOPSIS
+*free* [*-hkmg*]
+
+# DESCRIPTION
+`free` reads `/proc/meminfo` and prints a small table: total, used and free physical memory, then the kernel heap in use and the space taken by tmpfs files. The whole root filesystem of this system lives in memory, so files count against it.
+
+# OPTIONS
+@ *-k*
+    Kibibytes (the default).
+@ *-m*
+    Mebibytes.
+@ *-g*
+    Gibibytes.
+@ *-h*
+    Human readable sizes such as `3.1M`.
+
+# EXAMPLES
+    free
+    free -h
+
+# SEE ALSO
+top(1), uptime(1), ps(1), lsblk(1)

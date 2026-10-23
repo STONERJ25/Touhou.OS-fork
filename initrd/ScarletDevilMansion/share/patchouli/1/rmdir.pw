@@ -1,0 +1,13 @@
+.page rmdir 1 remove empty directories
+
+# SYNOPSIS
+*rmdir* _DIRECTORY_...
+
+# DESCRIPTION
+`rmdir` removes each _DIRECTORY_, which must be empty. To remove a directory with its contents use `rm -r`; to keep a copy in the Netherworld use trash(1).
+
+# EXIT STATUS
+0, or 1 if any directory could not be removed.
+
+# SEE ALSO
+mkdir(1), rm(1), trash(1)

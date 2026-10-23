@@ -1,0 +1,29 @@
+.page tr 1 translate or delete characters
+
+# SYNOPSIS
+*tr* [*-cCdst*] _SET1_ [_SET2_]
+
+# DESCRIPTION
+`tr` copies standard input to standard output, replacing each character found in _SET1_ by the character at the same position in _SET2_. It never reads files; use a redirection or a pipe. It works on bytes.
+
+A set is a list of characters in which these forms are understood: a range `a-z`; a character class such as `[:alpha:]`, `[:digit:]`, `[:alnum:]`, `[:upper:]`, `[:lower:]`, `[:space:]`, `[:blank:]`, `[:punct:]`, `[:print:]`, `[:graph:]`, `[:cntrl:]` or `[:xdigit:]`; and the escapes `\n`, `\t`, `\r`, `\a`, `\b`, `\f`, `\v`, `\\` and `\`NNN (octal). If _SET2_ is shorter than _SET1_ its last character is repeated.
+
+# OPTIONS
+@ *-d*
+    Delete the characters of _SET1_; no _SET2_ is needed.
+@ *-s*
+    Squeeze: replace each run of a repeated character from _SET2_ (or from _SET1_ when there is no _SET2_) by one occurrence.
+@ *-c*, *-C*
+    Use the complement of _SET1_: every byte that is not in it.
+@ *-t*
+    Cut _SET1_ down to the length of _SET2_ before translating.
+
+# EXAMPLES
+    echo hello | tr a-z A-Z
+    tr -d '\r' < dosfile.txt > unixfile.txt
+    echo "a   b    c" | tr -s ' '
+    tr -cd '[:alnum:]\n' < messy.txt
+    echo gensokyo | tr 'aeiou' '*'
+
+# SEE ALSO
+sed(1), cut(1), rev(1)

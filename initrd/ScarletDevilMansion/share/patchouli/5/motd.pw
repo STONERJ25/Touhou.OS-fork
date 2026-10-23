@@ -1,0 +1,7 @@
+.page motd 5 the message of the day
+
+# DESCRIPTION
+`/Hakurei/etc/motd` is shown by gapsh(1) when it starts as a login shell. It is plain text in which the two characters `\e` stand for the escape character, so the file can carry ANSI colours: `\e[1;31m` starts bold red and `\e[0m` ends it. The shipped one draws a torii and mentions `help`, `patchouli` and `omikuji`.
+
+# SEE ALSO
+gapsh(1), profile(5), omikuji(1)

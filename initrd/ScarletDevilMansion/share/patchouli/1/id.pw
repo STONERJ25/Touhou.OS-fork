@@ -1,0 +1,27 @@
+.page id 1 print user and group identities
+
+# SYNOPSIS
+*id* [*-ugGnr*] [_USER_]
+
+# DESCRIPTION
+`id` prints the user id and the group ids of the current user, or of _USER_, as names and numbers: `uid=1000(reimu) gid=1000(reimu) groups=1000(reimu),100(shrine)`. Group membership comes from the fourth field of `/Hakurei/etc/group`.
+
+# OPTIONS
+@ *-u*
+    Print only the user id.
+@ *-g*
+    Print only the primary group id.
+@ *-G*
+    Print all group ids, separated by spaces.
+@ *-n*
+    Print names instead of numbers (with `-u`, `-g` or `-G`).
+@ *-r*
+    Accepted and ignored.
+
+# EXAMPLES
+    id
+    id -un
+    id marisa
+
+# SEE ALSO
+whoami(1), groups(1), passwd(5), group(5)

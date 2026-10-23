@@ -1,0 +1,10 @@
+.page poweroff 8 switch the machine off
+
+# SYNOPSIS
+*poweroff*
+
+# DESCRIPTION
+`poweroff` flushes the filesystems, says `The shrine maiden is closing up for the night. Goodbye!` and asks the kernel to switch the machine off. Arguments are ignored. The login profile defines the alias `shutdown` for it.
+
+# SEE ALSO
+halt(8), shutdown(8), reboot(8)

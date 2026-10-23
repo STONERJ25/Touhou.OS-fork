@@ -1,0 +1,10 @@
+.page lsusb 1 list USB devices
+
+# SYNOPSIS
+*lsusb*
+
+# DESCRIPTION
+`lsusb` prints `/proc/usb`, the list of USB devices the kernel has enumerated. If the kernel has no USB support it says `no USB subsystem (no /proc/usb)` and exits with status 1.
+
+# SEE ALSO
+lspci(1), dmesg(1)

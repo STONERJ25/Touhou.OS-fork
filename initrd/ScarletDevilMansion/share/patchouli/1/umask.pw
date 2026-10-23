@@ -1,0 +1,14 @@
+.page umask 1 show or set the file creation mask
+
+# SYNOPSIS
+*umask* [_MODE_]
+
+# DESCRIPTION
+`umask` is a gapsh builtin. With an octal _MODE_ it sets the file creation mask: the permission bits in the mask are removed from newly created files. Without one it prints the current mask.
+
+# EXAMPLES
+    umask 077
+    umask
+
+# SEE ALSO
+chmod(1), stat(1)

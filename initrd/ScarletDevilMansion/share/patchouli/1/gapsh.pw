@@ -1,0 +1,77 @@
+.page gapsh 1 the Gensokyo shell
+
+# SYNOPSIS
+*gapsh* [*-li*] [*-c* _COMMAND_ [_NAME_ [_ARGUMENT_...]]]
+*gapsh* [_SCRIPT_ [_ARGUMENT_...]]
+
+# DESCRIPTION
+`gapsh` is the command interpreter. Every command passes through a gap in the Boundary, which is why it is called that. It reads commands from the terminal, from a script file or from the `-c` option, and runs them. The language is a practical subset of the Bourne shell family; see gapsh-language(7). The builtin commands are listed in gapsh-builtins(7).
+
+Programs are looked up in the directories of `PATH`, which the login profile sets to `/bin:/sbin:/usr/bin`. A command that cannot be found is reported with the name of the closest program in `/bin`, if there is one: `Did Yukari's gap lead you astray? Perhaps you meant 'ls'.`
+
+# OPTIONS
+@ *-c* _COMMAND_
+    Run _COMMAND_ and exit. Extra operands set `$0` and the positional parameters.
+@ *-l*
+    Act as a login shell: read `/Hakurei/etc/profile` and show `/Hakurei/etc/motd` on starting.
+@ *-i*
+    Behave as an interactive shell even without a terminal on the error output.
+@ *-s*, *-e*, *-x*
+    Accepted and ignored.
+
+Without `-c` and without a script the shell reads standard input; it is interactive if that is a terminal.
+
+# STARTUP
+A login shell reads `/Hakurei/etc/profile`. The interactive and the login shell then read `~/.gaprc` if it exists. A script is run without either. The `/etc/profile` of this system sets `PATH`, `TERM`, `EDITOR` (pnote) and `PAGER` (patchouli-pager) and defines the aliases `ll`, `la`, `l`, `..`, `grep`, `cls`, `shutdown`, `exorcise`, `spellcards` and `netherworld`; see profile(5).
+
+# THE PROMPT
+The default prompt is `reimu@gensokyo ~ $`, the user in shrine red, the host in white, the directory in cyan, with the previous exit status in front when it was not zero. The sigil is `#` for root. Set `PS1` to change it; these escapes are understood in its value: `\u` user, `\h` host, `\w` directory (with `~` for home), `\W` its last component, `\$` the sigil, `\n` a newline, `\e` the escape character, `\\` a backslash. A continuation line (after an unfinished quote or `if`) is prompted with `>`.
+
+# LINE EDITING
+@ Enter
+    Run the line.
+@ Left, Right, ^B, ^F; Home, ^A; End, ^E
+    Move the cursor. Alt-B and Alt-F move by words.
+@ Backspace, Delete, ^D
+    Delete before / under the cursor. ^D on an empty line leaves the shell.
+@ ^K, ^U, ^W, Alt-D
+    Cut to the end of the line, to the start, the word before the cursor, the word after it.
+@ ^Y
+    Paste what was cut last.
+@ ^T
+    Swap the two characters before the cursor.
+@ Up, Down
+    Walk through the history.
+@ ^R
+    Search the history backwards as you type; Enter accepts, Esc cancels.
+@ Tab
+    Complete a command name (first word) or a file name. A second Tab lists the possibilities.
+@ ^L
+    Clear the screen.
+@ ^C
+    Abandon the line being typed.
+
+The history keeps the last 1000 lines in memory and saves the last 500 in `~/.gapsh_history`. The builtin `history` lists it.
+
+# JOBS
+A command ending in `&` runs in the background; the shell prints its job number and process id. Finished background jobs are reported before the next prompt. `jobs`, `fg` and `bg` manage them. The shell itself ignores ^C, ^\ and ^Z; programs started from it get the default behaviour, so ^C interrupts the foreground job.
+
+# EXIT STATUS
+The status of the last command; 127 if a script cannot be read; 2 for a bad option or a syntax error in `-c`.
+
+# FILES
+@ /Hakurei/etc/profile
+    Read by login shells.
+@ /Hakurei/etc/motd
+    Shown by login shells. A `\e` in it is the escape character, so it can carry colours.
+@ ~/.gaprc
+    Read by interactive shells.
+@ ~/.gapsh_history
+    The saved history.
+
+# EXAMPLES
+    gapsh -c 'echo $((6*7))'
+    gapsh script.sh one two
+
+# SEE ALSO
+gapsh-language(7), gapsh-builtins(7), profile(5), keys(7), kappabox(1)

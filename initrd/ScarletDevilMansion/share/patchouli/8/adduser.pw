@@ -1,0 +1,39 @@
+.page adduser 8 add a resident to the Human Village
+
+# SYNOPSIS
+*adduser* [*-c* _FULLNAME_] [*-s* _SHELL_] [*-L*] [*--no-seat*] _NAME_
+
+# DESCRIPTION
+`adduser` creates an account. It adds a line for _NAME_ to `/Hakurei/etc/passwd`, `/Hakurei/etc/shadow` and `/Hakurei/etc/group` and makes the home directory `/HumanVillage/`_NAME_. The user and a group of the same name get the next free number from 1000 upward. Only root may do it (try `sudo adduser`).
+
+Unless `-L` is given, `adduser` asks for a password twice; an empty answer means an account without a password. If the two answers differ nothing is created.
+
+_NAME_ must start with a lower case letter or `_`, may contain only lower case letters, digits, `_` and `-`, and may be at most 31 characters long. A name that is already taken is refused.
+
+The new account joins the group `shrine`, which is what gives a user a seat at the desktop. Use `--no-seat` to leave it out.
+
+# OPTIONS
+@ *-c* _FULLNAME_
+    The full name, kept in the comment field of the user database. The default is _NAME_ with a capital first letter.
+@ *-s* _SHELL_
+    The login shell. The default is `/bin/gapsh`.
+@ *-L*
+    Create the account locked: no password is asked for and nobody can log in to it until a password is set.
+@ *--no-seat*
+    Do not put the user into the group `shrine`: the account gets no desktop.
+
+# EXIT STATUS
+0 on success; 1 if the account could not be created (not root, a bad or taken name, passwords that differ, a file that could not be written); 2 for a usage error.
+
+# EXAMPLES
+    sudo adduser -c "Alice Margatroid" alice
+    sudo adduser -L --no-seat nobody2
+
+# FILES
+@ /Hakurei/etc/passwd, /Hakurei/etc/shadow, /Hakurei/etc/group
+    The databases that are edited.
+@ /HumanVillage
+    Where home directories are made.
+
+# SEE ALSO
+deluser(8), passwd(5), group(5)

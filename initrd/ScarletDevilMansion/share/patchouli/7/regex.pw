@@ -1,0 +1,67 @@
+.page regex 7 regular expressions as understood by the system tools
+
+# DESCRIPTION
+A regular expression describes a set of strings. The system's C library implements two flavours, and the tools use them like this:
+
+    basic (BRE)       grep, sed, expr, find -regex
+    extended (ERE)    grep -E, egrep, sed -E, pnote (Alt-R), the pager
+
+The two flavours differ only in which characters are special and which need a backslash. The matcher works on bytes, not on multibyte characters, and finds the leftmost match; of the alternatives it tries them in order and keeps the first that leads to a match, which is not always the longest (`a|ab` matches only `a` in `ab`). Repetition is greedy. A pattern that would make the matcher run for an absurd number of steps is given up as "no match".
+
+# THE COMMON PARTS
+@ c
+    An ordinary character matches itself.
+@ .
+    Any single character.
+@ [abc], [a-z], [^abc]
+    A bracket expression: any one of the characters or ranges listed, or with `^` first, any one that is not listed. A `]` placed first is a member of the set. Inside the brackets the character classes `[:alpha:]`, `[:digit:]`, `[:alnum:]`, `[:upper:]`, `[:lower:]`, `[:space:]`, `[:blank:]`, `[:punct:]`, `[:print:]`, `[:graph:]`, `[:cntrl:]` and `[:xdigit:]` may be used: `[[:digit:]_]`.
+@ ^
+    The beginning of the line (basic: only at the start of the pattern or of a group or alternative).
+@ $
+    The end of the line (basic: only at the end of the pattern or of a group or alternative).
+@ *
+    Zero or more of the preceding item. In a basic expression a `*` at the very start is an ordinary character.
+@ \\.  \\*  \\[  \\\\
+    A backslash makes the next special character ordinary.
+
+These escapes are available in both flavours:
+
+    \n  \t        newline and tab
+    \d  \D        a digit; anything but a digit
+    \w  \W        a word character (letter, digit, _); its opposite
+    \s  \S        white space; its opposite
+    \b  \B        a word boundary; anywhere that is not one
+    \<  \>        the beginning and the end of a word
+    \1 ... \9     what the first ... ninth group matched, again
+
+# BASIC EXPRESSIONS
+Groups, repetition counts and alternation need a backslash:
+
+    \( \)         group, and remember what it matched
+    \{n\}         exactly n repetitions
+    \{n,\}        at least n repetitions
+    \{n,m\}       between n and m repetitions
+    \+  \?        one or more; zero or one
+    \|            alternation
+
+# EXTENDED EXPRESSIONS
+The same operators are written without the backslash:
+
+    ( )           group
+    {n}  {n,}     exactly n; at least n repetitions
+    {n,m}         between n and m repetitions
+    +  ?          one or more; zero or one
+    |             alternation
+
+A `{` that does not begin a valid count is an ordinary character.
+
+# EXAMPLES
+    grep '^reimu:' /Hakurei/etc/passwd
+    grep -E '(cat|dog)s?' pets.txt
+    sed 's/\(.*\)@\(.*\)/\2 at \1/' addresses.txt
+    sed -E 's/([0-9]+)-([0-9]+)/\2-\1/' ranges.txt
+    expr "hello world" : '\(h.*o\)'
+    find /Hakurei -regex '.*\.conf'
+
+# SEE ALSO
+grep(1), sed(1), expr(1), find(1), glob(7), pnote(1)

@@ -1,0 +1,22 @@
+.page logger 1 write a message into the kernel log
+
+# SYNOPSIS
+*logger* [*-t* _TAG_] _MESSAGE_...
+
+# DESCRIPTION
+`logger` joins its arguments with single spaces and writes them as one line into the kernel log, where `dmesg` shows them and the serial console prints them. The line is tagged with the name of the program unless `-t` gives another tag. Lines longer than about 200 characters are cut.
+
+# OPTIONS
+@ *-t* _TAG_
+    Use _TAG_ instead of `logger` as the tag of the line.
+
+# EXIT STATUS
+0 on success; 1 if there is no message.
+
+# EXAMPLES
+    logger backup finished
+    logger -t cron nightly job done
+    dmesg | tail -2
+
+# SEE ALSO
+dmesg(1), gensokyo(7)

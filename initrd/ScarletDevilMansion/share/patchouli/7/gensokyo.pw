@@ -1,0 +1,70 @@
+.page gensokyo 7 an introduction to TouhouOS and the lay of the land
+
+# DESCRIPTION
+TouhouOS is a small operating system for x86-64 PCs, written from scratch and dressed as Gensokyo, the hidden land of the Touhou Project. The kernel is called Gensokyo. Underneath the costume everything is real: a UEFI loader, a higher-half kernel, a scheduler, virtual memory, user processes, a virtual filesystem and a C library of its own. The rule of the house is that the joke sits on top of a true mechanism, and the plain fact stays readable next to it. A page fault really is a boundary violation.
+
+This page is the map. Every command has its own page in this library (`patchouli -l` lists them all), and `patchouli ls`, `patchouli gapsh` and `patchouli pnote` are good first visits.
+
+# COMING AND GOING
+The firmware starts the loader, which loads the kernel and an archive called the initrd and hands over. The kernel unpacks the initrd into its in-memory root filesystem, mounts `/dev`, `/proc` and a second memory filesystem on `/BambooForest`, and starts `/sbin/init` (see init(8)), the shrine maiden. She starts a login shell, gapsh(1), as the user `reimu`, and starts another whenever it ends. `poweroff` and `reboot` (see poweroff(8) and reboot(8)) close the shrine. The root filesystem lives in memory, so what is written outside a mounted disk does not survive a restart.
+
+# THE FILESYSTEM
+The directories are named for places in Gensokyo, and the usual Unix names are links to them, so that both old habits and local colour work.
+
+    /Hakurei               the shrine: configuration (/etc links here)
+    /HumanVillage          home directories (/home)
+    /ScarletDevilMansion   programs, libraries, this library (/usr)
+    /YoukaiMountain        devices and news: Kappa and Bunbunmaru
+    /BambooForest          temporary files (/tmp); easy to get lost in
+    /Netherworld           the trash: trash(1) sends files here
+    /.boundary             hidden system metadata
+    /bin  /sbin            programs
+    /dev  /proc  /sys      devices, kernel information, kernel settings
+    /mnt                   where other volumes are mounted
+    /root                  home of the superuser
+    /var                   variable data
+
+The pages of this library are in `/ScarletDevilMansion/share/patchouli`.
+
+# PEOPLE
+@ root (Yukari Yakumo)
+    The superuser. She can cross any boundary.
+@ reimu (1000)
+    The shrine maiden, and the default resident: `reimu@gensokyo:/HumanVillage/reimu`.
+@ marisa (1001), sakuya (1002)
+    Other residents with their own homes. All three belong to the group `shrine` (100).
+
+The machine is called `gensokyo`. See passwd(5) and group(5).
+
+# THE LOG AND ITS VOICES
+Kernel messages (`dmesg`) are tagged with the name of the subsystem that spoke:
+
+    Gensokyo   core and boot            Boundary   memory management
+    Sakuya     time and the tick        Alice      tasks and processes
+    Eiki       faults, permissions      Kappa      hardware and drivers
+    Satori     the keyboard             Koishi     the mouse
+    Keine      filesystems              Yukari     pipes and other gaps
+    Yuyuko     running out of memory    Patchouli  documentation
+
+A page fault in the kernel is reported as a `BOUNDARY VIOLATION`; any fatal error is an `INCIDENT: KERNEL PANIC` with a remark that suits the fault, followed by the registers and a backtrace. Running out of memory is `Yuyuko is hungry.`; a refusal of rights is reported to Eiki.
+
+# THE TOOLS
+@ gapsh
+    The shell: gapsh(1). The builtins: gapsh-builtins(7).
+@ kappabox
+    Nitori's toolbox: about a hundred small commands in one program (kappabox(1)).
+@ pnote
+    Patchouli's Notebook, the text editor (pnote(1)).
+@ patchouli, patchouli-pager
+    The manual viewer and the pager (patchouli(1), patchouli-pager(1)); `man`, `less` and `more` are other names for them.
+@ omikuji, saisen, reimusay, kappasay
+    The shrine's small pleasures. Try `omikuji` every morning.
+
+# VERSIONS
+Releases are named after the games of the series, in order: 0.1 Story of Eastern Wonderland, 0.2 Phantasmagoria of Dim.Dream, 0.3 Lotus Land Story, 0.4 Mystic Square, 0.5 Embodiment of Scarlet Devil, 0.6 Perfect Cherry Blossom, 0.7 Imperishable Night, 0.8 Phantasmagoria of Flower View, 0.9 Mountain of Faith, and 1.0 Subterranean Animism. `uname -a` says which one you are in.
+
+# NOTES
+TouhouOS is an unofficial fan work. It is not affiliated with, approved by or endorsed by ZUN or Team Shanghai Alice; Touhou Project and the names and settings of its characters belong to their rights holders. All the art and text in the system are original.
+
+# SEE ALSO
+patchouli(1), gapsh(1), kappabox(1), keys(7), passwd(5), profile(5), init(8)

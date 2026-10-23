@@ -1,0 +1,15 @@
+.page utest 1 the user-space test suite
+
+# SYNOPSIS
+*utest*
+
+# DESCRIPTION
+`utest` exercises the C library and the system call interface from user space: formatted output and parsing, memory allocation, files and directories, `fork`, `exec` and `wait`, pipes, signals, `mmap`, user and group credentials and the maths functions. It prints a line for every section and `UTEST PASS` or `UTEST FAIL` at the end.
+
+It is normally started by the init process when the word `utest` is on the kernel command line, after which the machine powers off with the test result as its exit code. That is how `tests/run_all.py` runs it.
+
+# EXIT STATUS
+0 if everything passed, otherwise the number of failed checks.
+
+# SEE ALSO
+init(8), hello(1)

@@ -1,0 +1,19 @@
+.page mount 8 mount a filesystem or list the mounts
+
+# SYNOPSIS
+*mount*
+*mount* [*-t* _TYPE_] _SOURCE_ _TARGET_
+
+# DESCRIPTION
+Without arguments `mount` lists the mounted filesystems as `SOURCE on TARGET type TYPE`, from `/proc/mounts`. With a source and a target it asks the kernel to mount _SOURCE_ (a device name such as `vda1` or a label) on the directory _TARGET_. The type is `auto` unless given with `-t`.
+
+# EXAMPLES
+    mount
+    mount -t tmpfs scratch /mnt
+    mount vda1 /mnt
+
+# EXIT STATUS
+0, or 1 if the mount failed (the message includes the kernel's reason).
+
+# SEE ALSO
+umount(8), lsblk(1), dmesg(1)
