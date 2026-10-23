@@ -20,9 +20,10 @@ are what is left, roughly in the order they matter.
 
 ## 0.3 Lotus Land Story -- applications
 - [x] terminal, text editor (pnote), manual viewer, pager
-- [ ] Explorer, Spell Manager, Kappa Control Panel, Patchouli's Notebook, Ran's Calculator, Sakuya's Pocket Watch,
-      Bunbunmaru News, danmaku shooter, small games, image viewer, music player (written by background agents; see
-      `docs/NEXT.md` for the state of each branch)
+- [x] Ran's Calculator, Sakuya's Pocket Watch, Spell Manager, Kappa Control Panel, Bunbunmaru News
+- [x] Patchouli's Notebook, Sketchbook, danmaku shooter, Minesweeper, Snake
+- [ ] Gensokyo Explorer (file manager; see `docs/NEXT.md`)
+- [ ] image viewer, music player (in progress on branches)
 
 ## 0.4+ -- system depth
 - [x] ACPI poweroff/reset/power button, RTC and time zones, APIC virtual wire
