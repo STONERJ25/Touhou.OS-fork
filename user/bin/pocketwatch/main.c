@@ -55,7 +55,7 @@ static int cli(int argc, char **argv) {
         if (!strcmp(argv[i], "--calendar")) {
             time_t now = time(NULL);
             struct tm t;
-            gmtime_r(&now, &t);
+            localtime_r(&now, &t);
             int y = t.tm_year + 1900, m = t.tm_mon + 1;
             if (i + 2 < argc) { y = atoi(argv[i + 1]); m = atoi(argv[i + 2]); }
             if (y < 1 || y > 9999 || m < 1 || m > 12) { fprintf(stderr, "pocketwatch: year 1..9999 and month 1..12 expected\n"); return 2; }
@@ -140,7 +140,12 @@ static void status_bar(KUI *ui, KRect r) {
         n += (size_t)snprintf(line + n, sizeof line - n, "%sStopwatch %s%s", n ? "   |   " : "", t, W.sw_running ? "" : " (stopped)");
     }
     if (W.frozen) n += (size_t)snprintf(line + n, sizeof line - n, "%sTime is stopped", n ? "   |   " : "");
-    if (!n) snprintf(line, sizeof line, "All times are UTC.");
+    if (!n) {
+        time_t zn = time(NULL);
+        struct tm zt;
+        localtime_r(&zn, &zt);
+        snprintf(line, sizeof line, "All times are %s.", zt.tm_zone ? zt.tm_zone : "UTC");
+    }
     kc_text_in(cv, kr(r.x + 8, r.y + 2, r.w - 16, r.h - 2), line, ui->theme->text_dim, KA_LEFT);
 }
 

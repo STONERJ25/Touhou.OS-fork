@@ -123,7 +123,7 @@ void face_draw(KCanvas *cv, int cx, int cy, int R, const struct tm *t, bool froz
         int bw = (int)strlen(brand) * 8 * scale;
         kc_text_scaled(cv, cx - bw / 2, cy - (int)(R * 0.42) - 8 * scale, brand, case_mid, scale);
         kc_text_scaled(cv, cx - bw / 2 + 1, cy - (int)(R * 0.42) - 8 * scale, brand, case_mid, scale);
-        const char *z = "UTC";
+        const char *z = t->tm_zone && t->tm_zone[0] ? t->tm_zone : "UTC";
         int zw = (int)strlen(z) * 8 * scale;
         kc_text_scaled(cv, cx - zw / 2, cy + (int)(R * 0.36), z, tick_minor, scale);
         kc_text_scaled(cv, cx - zw / 2 + 1, cy + (int)(R * 0.36), z, tick_minor, scale);

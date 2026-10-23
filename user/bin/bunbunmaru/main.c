@@ -26,7 +26,7 @@ static int g_fy, g_fm, g_fd;
 static void today(int *y, int *m, int *d) {
     time_t now = time(NULL);
     struct tm t;
-    gmtime_r(&now, &t);
+    localtime_r(&now, &t);
     *y = t.tm_year + 1900; *m = t.tm_mon + 1; *d = t.tm_mday;
 }
 

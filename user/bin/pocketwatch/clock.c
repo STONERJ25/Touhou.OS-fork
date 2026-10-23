@@ -1,4 +1,4 @@
-/* The clock tab: the pocket watch face on one side, the digital time and the date on the other. All times are UTC. */
+/* The clock tab: the pocket watch face on one side, the digital time and the date on the other. All times follow the system time zone (see timezone(5)). */
 #include "watch.h"
 #include "dates.h"
 #include <stdio.h>
@@ -8,7 +8,7 @@ void clock_now(struct tm *t, long *ms_in_second) {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     time_t secs = W.frozen ? W.frozen_at : ts.tv_sec;
-    gmtime_r(&secs, t);
+    localtime_r(&secs, t);
     if (ms_in_second) *ms_in_second = ts.tv_nsec / 1000000;
 }
 
@@ -60,7 +60,11 @@ void clock_tab(KUI *ui, KRect b) {
     if (ampm[0]) kc_text_bold(cv, dx + adv + 8, dy + 16 * scale - 18, ampm, 0xD9A441);
     int y = dy + 16 * scale + 14;
 
-    kc_text_in(cv, kr(info.x, y, info.w, 16), "Universal Time (UTC)", W.frozen ? 0x3F5088 : ui->theme->accent_dark, KA_CENTER);
+    char caption[48];
+    const char *zone = t.tm_zone && t.tm_zone[0] ? t.tm_zone : "UTC";
+    if (!strcmp(zone, "UTC")) snprintf(caption, sizeof caption, "Universal Time (UTC)");
+    else snprintf(caption, sizeof caption, "Local time (%s)", zone);
+    kc_text_in(cv, kr(info.x, y, info.w, 16), caption, W.frozen ? 0x3F5088 : ui->theme->accent_dark, KA_CENTER);
     y += 24;
     char date[80];
     snprintf(date, sizeof date, "%s", g_weekday_names[t.tm_wday]);

@@ -198,9 +198,9 @@ static void draw_details(KUI *ui, KRect r) {
         long age_s = (long)((up_ms > p->start_ms ? up_ms - p->start_ms : 0) / 1000);
         time_t started = now - age_s;
         struct tm t;
-        gmtime_r(&started, &t);
+        localtime_r(&started, &t);
         fmt_duration((unsigned long long)age_s * 1000, a, sizeof a);
-        snprintf(kv[rows].v, sizeof kv[rows].v, "%02d:%02d:%02d UTC, %s ago", t.tm_hour, t.tm_min, t.tm_sec, a);
+        snprintf(kv[rows].v, sizeof kv[rows].v, "%02d:%02d:%02d %s, %s ago", t.tm_hour, t.tm_min, t.tm_sec, t.tm_zone ? t.tm_zone : "UTC", a);
         kv[rows].k = "Started";
         rows++;
     }
