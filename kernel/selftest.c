@@ -5,6 +5,7 @@
 #include "irq.h"
 #include "cpu.h"
 #include "arch.h"
+#include "futex.h"
 
 static int g_failures;
 
@@ -140,6 +141,7 @@ void selftest_run(void) {
     test_pmm();
     test_heap();
     test_vmm();
+    g_failures += futex_selftest();             /* kernel/sys/futex.c */
     test_sched();
     if (g_failures) {
         printk("SELFTEST FAIL (%d failures)\n", g_failures);
