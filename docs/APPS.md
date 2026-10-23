@@ -157,9 +157,9 @@ along the way are in [EXPLORER.md](EXPLORER.md); the manual page is `man explore
 Notes for developers: source in `user/bin/explorer/` (`util.c` paths, formats and file types; `model.c`; `fileops.c` and `trash.c`
 the job engine, which needs no window and is what `--selftest` exercises; `view.c`; `menus.c`; `dialogs.c`; `main.c`).
 `EXPLORER_TRACE=1` prints `ex: ...` lines on stdout (folder read, selection, sort order, jobs, dialogs) that the tests wait for.
-Tests: `python tests/run_all.py explorer` (`tests/case_explorer.py`): the self test (about 120 checks, also across volumes), navigation
-and sorting, selection and keyboard, the Netherworld, copy / move / conflicts, drag and drop, rename and properties, a folder of
-3000 files, and opening in the other applications.
+Tests: `python tests/run_all.py explorer` (`tests/case_explorer.py`): the self test (123 checks, also across volumes), navigation
+and sorting, selection and keyboard, the Netherworld, copy / move / conflicts / the error list, drag and drop, rename and
+properties, the progress window and Cancel, a folder of 3000 files, and opening in the other applications.
 
 ## Developer tools
 

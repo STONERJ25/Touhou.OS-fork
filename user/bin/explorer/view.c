@@ -521,18 +521,25 @@ static void draw_header(KUI *ui, bool inside) {
         nc++;
     }
     cells[nc - 1].w += G.hdr.x + G.hdr.w - (cells[nc - 1].x + cells[nc - 1].w);       /* the last cell also covers the scrollbar column */
+    static int s_press = -1;                                             /* a click needs its press and its release on the same heading */
+    int pressed_on = s_press;
+    if (ui->released[0]) s_press = -1;
+    int sort_col = -1;
+    const char *sort_title = "";
     for (int i = 0; i < nc; i++) {
         KRect c = kr(cells[i].x, G.hdr.y, cells[i].w, L_HEAD_H);
         bool hv = inside && kr_contains(c, ui->mx, ui->my) && !V.dragging && !V.band;
-        bool down = hv && (ui->buttons & 1);
+        bool down = hv && (ui->buttons & 1) && s_press == i;
         kc_panel(cv, c, down ? KB_SUNKEN : KB_RAISED, hv ? kc_shade(th->button_bg, 104) : th->button_bg);
         KRect tr = kr(c.x + 6 + (down ? 1 : 0), c.y + (down ? 1 : 0), c.w - 12, c.h);
         kc_text_in(cv, tr, cells[i].title, th->text, KA_LEFT);
         if (X.m.sort_col == cells[i].col && c.w > 40) draw_sort_arrow(cv, c.x + c.w - 14, c.y + 8, X.m.sort_desc, th->text);
-        if (hv && ui->released[0]) {
-            ex_trace("header click %s", cells[i].title);
-            ex_set_sort(cells[i].col);
-        }
+        if (hv && ui->pressed[0]) s_press = i;
+        if (hv && ui->released[0] && (pressed_on == i || ui->pressed[0])) { sort_col = cells[i].col; sort_title = cells[i].title; }
+    }
+    if (sort_col >= 0) {
+        ex_trace("header click %s", sort_title);
+        ex_set_sort(sort_col);
     }
 }
 
@@ -657,15 +664,17 @@ void view_draw(KUI *ui, KRect r, bool blocked) {
 
     /* pointer */
     bool over_body = inside && kr_contains(G.body, ui->mx, ui->my);
+    bool committed = false;
     if (V.ren && V.ren_idx >= 0 && V.ren_idx < X.m.nshown && inside && (ui->pressed[0] || ui->pressed[1]) &&
         !kr_contains(rename_rect(), ui->mx, ui->my)) {
         V.ren = false;                                                  /* a click elsewhere keeps what was typed */
         ui->focus = VIEW_ID;
         if (strcmp(V.ren_orig, V.ren_buf)) {
             ex_rename_commit(V.ren_orig, V.ren_buf);
-            return;                                                     /* the folder is being read again: nothing to draw on */
+            committed = true;                                           /* the folder is being read again: that click was only for the rename */
         }
     }
+    if (committed) over_body = false;
     if (over_body && ui->pressed[0] && !V.ren) on_press(ui, hit_at(ui->mx, ui->my));
     if (over_body && ui->pressed[1] && !V.ren) {
         int hit = hit_at(ui->mx, ui->my);
@@ -697,7 +706,11 @@ void view_draw(KUI *ui, KRect r, bool blocked) {
             if (V.band) { V.band = false; free(V.base); V.base = NULL; ex_trace("band done"); }
             V.pending = false;
         }
-        if (!(ui->buttons & 1) && V.band) { V.band = false; free(V.base); V.base = NULL; }
+        if (!(ui->buttons & 1) && !ui->released[0] && !ui->pressed[0]) {          /* a gesture whose release was never seen */
+            if (V.band) { V.band = false; free(V.base); V.base = NULL; }
+            V.pending = V.dragging = V.ctrl_off = false;
+            g_drop_place = -1;
+        }
     }
 
     /* contents */

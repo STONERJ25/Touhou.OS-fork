@@ -47,7 +47,8 @@ job: they are collected and shown in one list when it is finished.
 
 Names that begin with a dot are hidden until Show Hidden Files (Ctrl+H) is
 on. The window title says where you are. The Explorer looks at the folder
-twice a second and shows files that appeared or vanished by themselves.
+twice a second and shows files that appeared or vanished by themselves (F5
+reads the folder again by hand).
 
 # SELECTING
 A click selects one item, Ctrl+click adds or removes one, Shift+click selects

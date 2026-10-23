@@ -163,6 +163,25 @@ def mod_click(vm, g, mods, pos, pattern, timeout=10, tries=3):
     raise last
 
 
+def drag_wait(vm, g, a, b, pattern, timeout=12, tries=3, mods=(), steps=8):
+    """Drags from window position a to b (holding the modifier keys, if any) and waits for the console line that shows it worked;
+    like click_wait it homes the pointer and tries again when nothing happened."""
+    last = None
+    for attempt in range(tries):
+        if attempt:
+            g.home()
+        m = mark(vm)
+        if mods:
+            hold(vm, list(mods), lambda: g.drag(*win(*a), *win(*b), steps=steps))
+        else:
+            g.drag(*win(*a), *win(*b), steps=steps)
+        try:
+            return wait_after(vm, m, pattern, timeout)
+        except TimeoutError as e:
+            last = e
+    raise last
+
+
 def ctrl_click(vm, g, pos, pattern, timeout=10):
     return mod_click(vm, g, ["ctrl"], pos, pattern, timeout)
 
@@ -202,21 +221,17 @@ def explorer_navigate_sort():
         g.shot("start")
         # sort by size, then reverse, then by name again
         m1 = mark(vm)
-        g.click(*win(*HEAD_SIZE))
-        wait_after(vm, m1, r"ex: sort 1 desc=0")
+        click_wait(vm, g, HEAD_SIZE, r"ex: sort 1 desc=0")
         wait_after(vm, m1, r"ex: order [^\n]*")
         o = order_of(vm, m1)
-        assert o[:3] == ["Alpha", "Beta", "link-to-alpha"] and o[3] == "pic.ppm" or o[3] == "a.txt", o         # smallest files first
-        assert o[-1] == "numbers.dat", o
+        assert o[:4] == ["Alpha", "Beta", "link-to-alpha", "a.txt"] and o[-1] == "numbers.dat", o         # smallest files first, biggest last
         m2 = mark(vm)
-        g.click(*win(*HEAD_SIZE))
-        wait_after(vm, m2, r"ex: sort 1 desc=1")
+        click_wait(vm, g, HEAD_SIZE, r"ex: sort 1 desc=1")
+        wait_after(vm, m2, r"ex: order [^\n]*")
         time.sleep(0.4)
         o = order_of(vm, m2)
         assert o[3] == "numbers.dat" and o[:3] == ["link-to-alpha", "Beta", "Alpha"], o
-        m3 = mark(vm)
-        g.click(*win(*HEAD_NAME))
-        wait_after(vm, m3, r"ex: sort 0 desc=0")
+        click_wait(vm, g, HEAD_NAME, r"ex: sort 0 desc=0")
         # open Beta by double click
         click_wait(vm, g, row(1), r"ex: sel 1 first=Beta")
         click_wait(vm, g, row(1), r"ex: nav /tmp/x/Beta", count=2)
@@ -246,6 +261,18 @@ def explorer_navigate_sort():
         g.key("esc")
         time.sleep(0.5)
         never_after(vm, m5, r"ex: nav /no/such")
+        # a folder that may not be read says so (Eiki), and the window stays where it was
+        g.sh("mkdir /tmp/x/locked; chmod 000 /tmp/x/locked")
+        g.click(*win(*ADDRESS))
+        g.key("a", ctrl=True)
+        g.type("/tmp/x/locked")
+        m7 = mark(vm)
+        g.key("ret")
+        wait_after(vm, m7, r"ex: dialog Cannot open the folder")
+        time.sleep(1.0)
+        g.shot("locked")
+        g.key("esc")
+        time.sleep(0.5)
         # a file typed into the address field shows its folder with the file selected
         g.click(*win(*ADDRESS))
         g.key("a", ctrl=True)
@@ -443,6 +470,32 @@ def explorer_copy_move():
         g.key("v", ctrl=True)
         job_done(vm, m, 1, 1, 1)
         assert g.sh("cat /HumanVillage/reimu/prog.c").strip() == "int main(void){return 0;}" and not shell_has(g, "/tmp/x/prog.c")
+        # a paste that cannot work (a folder nobody may write to) does not stop the job: one list of problems at the end
+        g.sh("mkdir /tmp/x/ro; chmod 555 /tmp/x/ro; echo q > /tmp/x/q.txt")
+        g.click(*win(*ADDRESS))
+        g.key("a", ctrl=True)
+        g.type("/tmp/x")
+        m = mark(vm)
+        g.key("ret")
+        wait_after(vm, m, r"ex: order [^\n]*q\.txt")
+        o = order_of(vm, m)
+        click_wait(vm, g, row(o.index("q.txt")), r"ex: sel 1 first=q.txt")
+        key_wait(vm, g, "c", r"ex: clipboard copy 1", ctrl=True)
+        g.click(*win(*ADDRESS))
+        g.key("a", ctrl=True)
+        g.type("/tmp/x/ro")
+        m = mark(vm)
+        g.key("ret")
+        wait_after(vm, m, r"ex: dir /tmp/x/ro items=0")
+        m = mark(vm)
+        g.key("v", ctrl=True)
+        wait_after(vm, m, r"ex: job done kind=0 ok=0 of 1 errors=1")
+        wait_after(vm, m, r"ex: dialog Something went wrong")
+        time.sleep(1.0)
+        g.shot("errors")
+        g.key("ret")
+        time.sleep(0.6)
+        assert not shell_has(g, "/tmp/x/ro/q.txt")
     gui_test("t-explorer-copy", body)
 
 
@@ -453,23 +506,20 @@ def explorer_drag_drop():
         launch(vm, g)
         # numbers.dat (row 4) onto the folder Beta (row 1): moved, same volume
         m = mark(vm)
-        g.drag(*win(*row(4)), *win(*row(1)), steps=8)
-        wait_after(vm, m, r"ex: drag start")
-        wait_after(vm, m, r"ex: drop 1 items on /tmp/x/Beta")
+        drag_wait(vm, g, row(4), row(1), r"ex: drop 1 items on /tmp/x/Beta")
         job_done(vm, m, 1, 1, 1)
         assert shell_has(g, "/tmp/x/Beta/numbers.dat") and not shell_has(g, "/tmp/x/numbers.dat")
         # now: Alpha Beta link-to-alpha a.txt pic.ppm prog.c run.sh. With Ctrl held a drag copies: pic.ppm (row 4) onto Alpha (row 0)
         wait_after(vm, m, r"ex: order Alpha\|Beta\|link-to-alpha\|a.txt\|pic.ppm")
         m = mark(vm)
-        hold(vm, ["ctrl"], lambda: g.drag(*win(*row(4)), *win(*row(0)), steps=8))
+        drag_wait(vm, g, row(4), row(0), r"ex: drop 1 items on /tmp/x/Alpha", mods=["ctrl"])
         job_done(vm, m, 0, 1, 1)
         assert shell_has(g, "/tmp/x/Alpha/pic.ppm") and shell_has(g, "/tmp/x/pic.ppm")
         # two selected items go together: a.txt and pic.ppm onto Alpha
         click_wait(vm, g, row(3), r"ex: sel 1 first=a.txt")
         ctrl_click(vm, g, row(4), r"ex: sel 2 first=a.txt")
         m = mark(vm)
-        g.drag(*win(*row(3)), *win(*row(0)), steps=8)
-        wait_after(vm, m, r"ex: drop 2 items on /tmp/x/Alpha")
+        drag_wait(vm, g, row(3), row(0), r"ex: drop 2 items on /tmp/x/Alpha")
         # pic.ppm is already in Alpha (the copy above): the job asks, Enter keeps both
         wait_after(vm, m, r"ex: dialog Name already taken")
         time.sleep(0.8)
@@ -480,17 +530,16 @@ def explorer_drag_drop():
         # onto the Netherworld place: a delete
         wait_after(vm, m, r"ex: order Alpha\|Beta\|link-to-alpha\|prog.c\|run.sh")
         m = mark(vm)
-        g.drag(*win(*row(3)), *win(*NW_PLACE), steps=8)
+        drag_wait(vm, g, row(3), NW_PLACE, r"ex: drop 1 items on /Netherworld")
         job_done(vm, m, 2, 1, 1)
         assert shell_has(g, "/Netherworld/prog.c") and not shell_has(g, "/tmp/x/prog.c")
         # dropped on empty space or on a file: nothing happens
         m = mark(vm)
-        g.drag(*win(*row(3)), *win(*BODY_EMPTY), steps=8)
-        wait_after(vm, m, r"ex: drag start")
+        drag_wait(vm, g, row(3), BODY_EMPTY, r"ex: drag start")
         never_after(vm, m, r"ex: job queued")
         # to another volume the default is a copy: run.sh onto Home
         m = mark(vm)
-        g.drag(*win(*row(3)), *win(*HOME_PLACE), steps=8)
+        drag_wait(vm, g, row(3), HOME_PLACE, r"ex: drop 1 items on /HumanVillage/reimu")
         job_done(vm, m, 0, 1, 1)
         assert shell_has(g, "/HumanVillage/reimu/run.sh") and shell_has(g, "/tmp/x/run.sh")
     gui_test("t-explorer-dnd", body)
@@ -508,8 +557,7 @@ def explorer_rename_properties():
         launch(vm, g)
         # New Folder makes "New Folder" and starts renaming it
         m = mark(vm)
-        g.click(*win(*NEWF_BTN))
-        wait_after(vm, m, r"ex: created /tmp/x/New Folder")
+        click_wait(vm, g, NEWF_BTN, r"ex: created /tmp/x/New Folder")
         wait_after(vm, m, r"ex: rename start New Folder")
         time.sleep(0.6)
         g.shot("newfolder")
@@ -592,6 +640,35 @@ def explorer_rename_properties():
         time.sleep(0.8)
         g.key("esc")
     gui_test("t-explorer-rename", body)
+
+
+@test
+def explorer_progress_cancel():
+    """A long copy gets a progress window; Cancel stops it and removes the half-written file; the same copy left alone completes byte for byte."""
+    def body(vm, g):
+        g.sh("seq 1 5000000 > /tmp/x/big.bin; ls -l /tmp/x/big.bin", timeout=240)
+        launch(vm, g)
+        o = order_of(vm, 0)
+        assert "big.bin" in o, o
+        click_wait(vm, g, row(o.index("big.bin")), r"ex: sel 1 first=big.bin")
+        key_wait(vm, g, "c", r"ex: clipboard copy 1", ctrl=True)
+        click_wait(vm, g, HOME_PLACE, r"ex: nav /HumanVillage/reimu")
+        # paste and cancel while the progress window is up
+        m = mark(vm)
+        g.key("v", ctrl=True)
+        wait_after(vm, m, r"ex: dialog File operation", timeout=60)
+        time.sleep(0.8)
+        g.shot("progress")
+        g.key("esc")
+        wait_after(vm, m, r"ex: job done kind=0 ok=0 of 1 errors=0 skipped=0 cancelled", timeout=40)
+        assert not shell_has(g, "/HumanVillage/reimu/big.bin"), "the half-written copy must be removed"
+        # paste again and let it finish
+        time.sleep(1.0)
+        m = mark(vm)
+        g.key("v", ctrl=True)
+        job_done(vm, m, 0, 1, 1, timeout=120)
+        assert g.sh("cmp /tmp/x/big.bin /HumanVillage/reimu/big.bin && echo SAME").strip().endswith("SAME")
+    gui_test("t-explorer-progress", body, mem="1024M")
 
 
 @test

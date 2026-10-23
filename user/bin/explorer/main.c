@@ -740,7 +740,7 @@ void ex_job_done(Job *j) {
     default: break;
     }
     if (job_cancelled(j)) snprintf(msg, sizeof msg, "Stopped. %s %s before that.%s", verb, what, tail);
-    else if (ji.nerr) snprintf(msg, sizeof msg, "%s %d of %d items; %d problem%s.%s", verb, ok, total, ji.nerr, ji.nerr == 1 ? "" : "s", tail);
+    else if (ji.nerr) snprintf(msg, sizeof msg, "%s %d of %d item%s; %d problem%s.%s", verb, ok, total, total == 1 ? "" : "s", ji.nerr, ji.nerr == 1 ? "" : "s", tail);
     else snprintf(msg, sizeof msg, "%s %s.%s", verb, what, tail);
     ex_msg("%s", msg);
     if (ji.nerr && !job_cancelled(j)) {
@@ -856,8 +856,10 @@ void ex_action(int act) {
         ex_spawn_explorer(X.m.shown[i]->is_dir ? full : X.m.path);
         break;
     }
-    case A_NEW_FOLDER: ex_new_item(true); break;
-    case A_NEW_FILE: ex_new_item(false); break;
+    case A_NEW_FOLDER: case A_NEW_FILE:
+        if (X.in_netherworld) ex_msg("Nothing new can be made in the Netherworld: it only keeps what was deleted.");
+        else ex_new_item(act == A_NEW_FOLDER);
+        break;
     case A_NEW_WINDOW: ex_spawn_explorer(X.m.path); break;
     case A_TERMINAL_HERE: {
         char q[EX_PATH * 2], cmd[EX_PATH * 3];
@@ -872,7 +874,10 @@ void ex_action(int act) {
         if (n) { clip_set(act == A_CUT, paths, n); ex_msg("%s %d item%s. Paste puts %s in another folder.", act == A_CUT ? "Cut" : "Copied", n, n == 1 ? "" : "s", n == 1 ? "it" : "them"); }
         free_paths(paths, n);
         break;
-    case A_PASTE: ex_start_paste(X.m.path); break;
+    case A_PASTE:
+        if (X.in_netherworld) ex_msg("Nothing can be pasted into the Netherworld. Delete things to send them there.");
+        else ex_start_paste(X.m.path);
+        break;
     case A_PASTE_INTO: {
         int i = first_selected();
         if (i >= 0 && X.m.shown[i]->is_dir) {
@@ -1277,6 +1282,10 @@ static void draw_places(KUI *ui) {
     kc_text_bold(cv, 8, L_MAIN_Y + 6, "Places", th->accent_dark);
     bool inside = !ui->input_blocked && ui->mouse_inside;
     bool dragging = view_dragging();
+    static int press;                                                   /* the place a press began on: a click needs the press and the release on it */
+    int pressed_on = press;
+    if (ui->released[0]) press = -1;
+    int navigate = -1;
     for (int i = 0; i < X.nplaces; i++) {
         Place *p = &X.places[i];
         KRect r = place_rect(i);
@@ -1289,7 +1298,8 @@ static void draw_places(KUI *ui) {
         k_icon(cv, p->icon, r.x + 4, r.y + 3, 18);
         kc_text_in(cv, kr(r.x + 28, r.y, r.w - 30, r.h), p->label, th->text, KA_LEFT);
         if (hv) {
-            if (ui->released[0] && !dragging) { ex_trace("place %s", p->path); ex_navigate(p->path, NULL); }
+            if (ui->pressed[0]) press = i;
+            if (ui->released[0] && (pressed_on == i || ui->pressed[0])) navigate = i;
             if (ui->pressed[1]) {
                 g_ctx_place = i;
                 Menu m;
@@ -1300,6 +1310,10 @@ static void draw_places(KUI *ui) {
             k_tooltip_text(ui, p->path);
         }
     }
+    if (navigate >= 0) {
+        ex_trace("place %s", X.places[navigate].path);
+        ex_navigate(X.places[navigate].path, NULL);
+    }
 }
 
 static void draw_banner(KUI *ui) {
@@ -1309,7 +1323,8 @@ static void draw_banner(KUI *ui) {
     kc_panel(cv, b, KB_FLAT, kc_mix(th->window_bg, th->accent_light, 40));
     k_icon(cv, KI_TRASH, b.x + 6, b.y + 5, 20);
     char t[160];
-    int n = trash_count();
+    int n = X.m.nall;                                                   /* what was read, without the folder of notes */
+    for (int i = 0; i < X.m.nall; i++) if (!strcmp(X.m.all[i]->name, ".trashinfo")) { n--; break; }
     snprintf(t, sizeof t, "The Netherworld holds %d item%s. Restore puts them back.", n, n == 1 ? "" : "s");
     kc_text_in(cv, kr(b.x + 32, b.y, b.w - 32 - 212, b.h), t, th->text, KA_LEFT);
     KRect re = kr(b.x + b.w - 208, b.y + 3, 96, 24), em = kr(b.x + b.w - 106, b.y + 3, 100, 24);
