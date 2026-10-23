@@ -321,16 +321,16 @@ static void kbd_boot_report(HidDev *h, const u8 *d, int len) {
     keys_apply(h, cur);
 }
 
-static void kbd_report_mode(HidDev *h, const u8 *d, int len) {
-    HidKbdMap *m = &h->km;
-    if (m->use_id) { if (len < 1 || d[0] != m->id) return; d++; len--; }
-    if ((u32)len * 8 < m->need_bits) return;
-    u8 cur[32] = { 0 };
+/* Report-protocol keyboard report -> set of pressed usages. False: not our report id, too short, or a rollover error report. */
+static bool kbd_decode(const HidKbdMap *m, const u8 *d, int len, u8 *cur) {
+    if (m->use_id) { if (len < 1 || d[0] != m->id) return false; d++; len--; }
+    if ((u32)len * 8 < m->need_bits) return false;
+    memset(cur, 0, 32);
     bool any_real = false, any_err = false;
     for (int i = 0; i < 8; i++)
         if (m->mod_off[i] != 0xFFFF && get_bits(d, len, m->mod_off[i], 1, false)) bit_set(cur, 0xE0 + (unsigned)i);
     for (int a = 0; a < m->narr; a++) {
-        HidField *f = &m->arr[a];
+        const HidField *f = &m->arr[a];
         for (u32 e = 0; e < f->count; e++) {
             u32 u = get_bits(d, len, f->off + e * f->size, f->size, false);
             if (!u) continue;
@@ -338,7 +338,12 @@ static void kbd_report_mode(HidDev *h, const u8 *d, int len) {
             else if (u < 256) { any_real = true; bit_set(cur, u); }
         }
     }
-    if (any_err && !any_real) return;
+    return !(any_err && !any_real);
+}
+
+static void kbd_report_mode(HidDev *h, const u8 *d, int len) {
+    u8 cur[32];
+    if (!kbd_decode(&h->km, d, len, cur)) return;
     g_stats.kbd_reports++;
     keys_apply(h, cur);
 }
@@ -367,16 +372,23 @@ static void mouse_boot_report(HidDev *h, const u8 *d, int len) {
     mouse_emit(h, (s8)d[1], (s8)d[2], len >= 4 ? (s8)d[3] : 0, d[0] & 7);
 }
 
-static void mouse_report_mode(HidDev *h, const u8 *d, int len) {
-    HidMouseMap *m = &h->mm;
-    if (m->use_id) { if (len < 1 || d[0] != m->id) return; d++; len--; }
-    if ((u32)len * 8 < m->need_bits) return;
-    int dx = (s32)get_bits(d, len, m->x.off, m->x.size, m->x.lmin < 0);
-    int dy = (s32)get_bits(d, len, m->y.off, m->y.size, m->y.lmin < 0);
-    int wheel = m->has_wheel ? (s32)get_bits(d, len, m->wheel.off, m->wheel.size, m->wheel.lmin < 0) : 0;
+/* Report-protocol mouse report -> motion, wheel, buttons. False: not our report id or too short. */
+static bool mouse_decode(const HidMouseMap *m, const u8 *d, int len, int *dx, int *dy, int *wheel, u8 *buttons) {
+    if (m->use_id) { if (len < 1 || d[0] != m->id) return false; d++; len--; }
+    if ((u32)len * 8 < m->need_bits) return false;
+    *dx = (s32)get_bits(d, len, m->x.off, m->x.size, m->x.lmin < 0);
+    *dy = (s32)get_bits(d, len, m->y.off, m->y.size, m->y.lmin < 0);
+    *wheel = m->has_wheel ? (s32)get_bits(d, len, m->wheel.off, m->wheel.size, m->wheel.lmin < 0) : 0;
     u8 b = 0;
     for (int i = 0; i < 3; i++) if (m->has_btn[i] && get_bits(d, len, m->btn_off[i], 1, false)) b |= (u8)(1u << i);
-    mouse_emit(h, dx, dy, wheel, b);
+    *buttons = b;
+    return true;
+}
+
+static void mouse_report_mode(HidDev *h, const u8 *d, int len) {
+    int dx, dy, wheel;
+    u8 b;
+    if (mouse_decode(&h->mm, d, len, &dx, &dy, &wheel, &b)) mouse_emit(h, dx, dy, wheel, b);
 }
 
 static void hid_irq(UsbDevice *dev, UsbEndpoint *ep, const u8 *data, int len, void *ctx) {
@@ -665,3 +677,5 @@ size_t hid_describe_stats(char *buf, size_t cap) {
 }
 
 const UsbDriver usb_hid_driver = { "hid", hid_match, hid_probe, hid_disconnect, hid_label };
+
+#include "hid_selftest.h"

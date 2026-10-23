@@ -370,6 +370,39 @@ def usb_mouse(devs, hubs, name):
 
 
 @test
+def usb_ring_wrap():
+    """Hundreds of mouse and keyboard reports: transfer rings (255 TRBs) and the event ring (256) wrap several times without losing any."""
+    with usb_vm(KBD + MOUSE, name="t-usb-wrap") as vm:
+        boot(vm)
+        vm.select_mouse("HID")
+        s0 = stat(vm)
+        n = 1500
+        for _ in range(n):
+            vm.mouse_move(1, 2)
+            time.sleep(0.004)
+        time.sleep(1.0)
+        s1 = stat(vm)
+        assert s1["mouse_dx"] - s0["mouse_dx"] == n and s1["mouse_dy"] - s0["mouse_dy"] == 2 * n, (s0, s1)
+        assert s1["mouse_reports"] - s0["mouse_reports"] > 600, (s0, s1)       # well over two laps of a 255 entry ring
+        for k in "abcdefghij" * 14:
+            vm.key(k, hold=0.012)
+        time.sleep(1.0)
+        clear_line(vm)
+        s2 = stat(vm)
+        assert s2["key_down"] - s1["key_down"] == 140 and s2["keys_held"] == 0, (s1, s2)
+        no_errors(vm)
+
+
+@test
+def usb_hid_parser():
+    """HID report descriptor parser and report decoders against descriptors of common mice and keyboards (kernel self test)."""
+    with Qemu(cmdline="usb=parsertest", name="t-usb-parser") as vm:
+        m = vm.expect(r"hid parser self test: (\d+) checks, (\d+) failed", timeout=60)
+        assert int(m.group(1)) >= 20 and m.group(2) == "0", vm.text()[-1500:]
+        assert "FAILED" not in vm.text(), vm.text()[-1500:]
+
+
+@test
 def usb_report_protocol():
     """usb=hidreport parses the report descriptors even for boot interfaces: keyboard and mouse still work."""
     with usb_vm(KBD + MOUSE, cmdline="usb=hidreport", name="t-usb-report") as vm:

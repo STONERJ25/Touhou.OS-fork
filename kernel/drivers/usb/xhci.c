@@ -873,7 +873,7 @@ static int root_reset(UsbHub *hub, int port, bool warm, UsbPortStatus *out) {
         if (x->hc.dead) return -ENODEV;
         v = portsc_read(x, port);
         if (v == 0xFFFFFFFFu) return -ENODEV;
-        if (!(v & PORTSC_PR) && (v & PORTSC_PRC)) break;
+        if (!(v & PORTSC_PR) && (v & (warm ? (PORTSC_PRC | PORTSC_WRC) : PORTSC_PRC))) break;      /* a warm reset reports through WRC */
         if (!warm && !(v & PORTSC_CCS)) return -ENODEV;                 /* unplugged during the reset */
         if (uptime_ms() >= end) {
             usb_dbg("xhci: port %d reset did not finish (portsc %08x)", port, v);

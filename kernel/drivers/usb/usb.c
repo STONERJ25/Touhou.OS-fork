@@ -753,6 +753,7 @@ void usb_init(void) {
         if (!strcmp(opt, "hidreport")) { g_usb_debug = true; g_usb_hidreport = true; }
         if (!strcmp(opt, "stalltest")) { g_usb_debug = true; g_usb_stalltest = true; }
         if (!strcmp(opt, "bulktest")) g_usb_bulktest = true;
+        if (!strcmp(opt, "parsertest")) hid_parser_selftest();
     }
     for (PciDev *d = pci_find_class(0x0C, 0x03, 0x30, NULL); d && g_nhc < MAX_BUSES; d = pci_find_class(0x0C, 0x03, 0x30, d)) {
         UsbHc *hc = xhci_create(d, g_nhc + 1);

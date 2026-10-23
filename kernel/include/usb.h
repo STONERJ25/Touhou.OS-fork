@@ -268,6 +268,7 @@ void usb_disconnect(UsbDevice *dev);                 /* tears a device (and ever
 /* hid.c */
 void hid_service(void);             /* top-level housekeeping (keyboard LEDs) */
 int  hid_keyboard_count(void);
+void hid_parser_selftest(void);     /* usb=parsertest */
 size_t hid_describe_stats(char *buf, size_t cap);
 
 #endif
