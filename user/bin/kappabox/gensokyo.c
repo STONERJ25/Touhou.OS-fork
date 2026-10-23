@@ -217,16 +217,21 @@ static void print_wrapped(const char *prefix_first, const char *prefix_rest, con
 }
 
 static int omikuji_main(int argc, char **argv, int force_random) {
-    int random_mode = force_random, ascii = 0, c;
+    int random_mode = force_random, ascii = 0, kanji = 0, c;
     optind = 0;
-    while ((c = getopt(argc, argv, "rah")) != -1) {
+    while ((c = getopt(argc, argv, "rakh")) != -1) {
         switch (c) {
         case 'r': random_mode = 1; break;
         case 'a': ascii = 1; break;
-        case 'h': printf("usage: %s [-r] [-a]\n  -r  draw a fresh slip instead of today's\n  -a  plain ASCII (no kanji, no box drawing)\n", kb_name); return 0;
+        case 'k': kanji = 1; break;
+        case 'h':
+            printf("usage: %s [-r] [-a] [-k]\n  -r  draw a fresh slip instead of today's\n  -a  plain ASCII: no box-drawing characters\n"
+                   "  -k  add the kanji (for terminals with a CJK font; the console font has none)\n", kb_name);
+            return 0;
         default: return 2;
         }
     }
+    if (ascii) kanji = 0;
     time_t now = time(NULL);
     struct tm tm;
     gmtime_r(&now, &tm);
@@ -255,7 +260,7 @@ static int omikuji_main(int argc, char **argv, int force_random) {
 
     if (!fancy) {
         printf("Omikuji for %s, %s\n", who, date);
-        if (ascii) printf("Fortune: %s (%s)\n", r->romaji, r->meaning);
+        if (!kanji) printf("Fortune: %s (%s)\n", r->romaji, r->meaning);
         else printf("Fortune: %s (%s, %s)\n", r->romaji, r->kanji, r->meaning);
         printf("  %s\n\n", r->general[gen]);
         for (int i = 0; i < NCAT; i++) printf("%-10s %s\n", cat_en[i], r->line[i][pick[i]]);
@@ -266,23 +271,24 @@ static int omikuji_main(int argc, char **argv, int force_random) {
     const char *top = ascii ? "+" : "┌";
     const char *bot = ascii ? "+" : "└";
     const char *hl = ascii ? "-" : "─";
-    printf("\033[31m%s%s%s\033[0m \033[1m%s\033[0m \033[31m%s%s%s\033[0m %s \033[90m%s\033[0m\n", top, hl, hl, ascii ? "Omikuji" : "御神籤 Omikuji", hl, hl, hl, who, date);
+    printf("\033[31m%s%s%s\033[0m \033[1m%s\033[0m \033[31m%s%s%s\033[0m %s \033[90m%s\033[0m\n", top, hl, hl, kanji ? "御神籤 Omikuji" : "Omikuji", hl, hl, hl, who, date);
     printf("%s\n", B);
     printf("%s\033[%sm", B, r->color);
-    if (ascii) printf("%s", r->romaji); else printf("%s  %s", r->kanji, r->romaji);
+    if (!kanji) printf("%s", r->romaji); else printf("%s  %s", r->kanji, r->romaji);
     printf("\033[0m  (%s)\n", r->meaning);
     print_wrapped("   ", "   ", r->general[gen], width, B, "\033[3m");
     printf("%s\n", B);
     for (int i = 0; i < NCAT; i++) {
         char label[64];
-        if (ascii) snprintf(label, sizeof label, "%-10s", cat_en[i]);
-        else snprintf(label, sizeof label, "%s %-10s", cat_jp[i], cat_en[i]);
+        if (!kanji) snprintf(label, sizeof label, "%-10s", cat_en[i]);
+        else snprintf(label, sizeof label, "%s %-10s", cat_jp[i], cat_en[i]);       /* a kanji is two columns wide */
+        int labw = kanji ? 15 : 10;
         int n;
-        int tw = width - 15 > 20 ? width - 15 : 20;
+        int tw = width - labw > 20 ? width - labw : 20;
         char **lines = wrap_text(r->line[i][pick[i]], tw, &n, 0);
         for (int k = 0; k < n; k++) {
             if (k == 0) printf("%s\033[1m%s\033[0m  %s\n", B, label, lines[k]);
-            else printf("%s%*s  %s\n", B, ascii ? 10 : 13, "", lines[k]);
+            else printf("%s%*s  %s\n", B, labw, "", lines[k]);
         }
         free_lines(lines, n);
     }

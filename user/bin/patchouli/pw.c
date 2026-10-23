@@ -247,8 +247,26 @@ static void ch_push(ChBuf *b, uint32_t cp, unsigned char st) {
     b->n++;
 }
 
-static int open_ctx(char prev) { return prev == 0 || isspace((unsigned char)prev) || strchr("([{\"'/=|,", prev) != NULL; }
-static int close_ctx(char next) { return next == 0 || isspace((unsigned char)next) || strchr(".,;:)]}!?\"'/-|=", next) != NULL; }
+static void push_text(ChBuf *b, const char *s, unsigned char st) {
+    size_t n = strlen(s);
+    for (size_t i = 0; i < n;) {
+        uint32_t cp;
+        i += (size_t)pt_u8_decode((const unsigned char *)s + i, n - i, &cp);
+        ch_push(b, cp, st);
+    }
+}
+
+static int open_ctx(char prev) { return prev == 0 || isspace((unsigned char)prev) || strchr("([{\"'/=|,*_`?+:%", prev) != NULL; }
+static int close_ctx(char next) { return next == 0 || isspace((unsigned char)next) || strchr(".,;:)]}!?\"'/-|=[*_`", next) != NULL; }
+
+/* p points just after a closing mark. The mark may be followed by punctuation, or by the plural "s" or the ordinal "th"
+ * of a placeholder: _NAME_s, the _N_th. */
+static int close_ctx_at(const char *p) {
+    if (close_ctx(p[0])) return 1;
+    if (p[0] == 's' && !isalnum((unsigned char)p[1])) return 1;
+    if (p[0] == 't' && p[1] == 'h' && !isalnum((unsigned char)p[2])) return 1;
+    return 0;
+}
 
 static int closer_exists(const char *s, size_t from, char c) {
     for (size_t j = from; s[j]; j++) {
@@ -257,7 +275,7 @@ static int closer_exists(const char *s, size_t from, char c) {
             const char *e = strchr(s + j + 1, '`');
             if (e) { j = (size_t)(e - s); continue; }
         }
-        if (s[j] == c && j > from && !isspace((unsigned char)s[j - 1]) && close_ctx(s[j + 1])) return 1;
+        if (s[j] == c && j > from && !isspace((unsigned char)s[j - 1]) && close_ctx_at(s + j + 1)) return 1;
     }
     return 0;
 }
@@ -298,7 +316,7 @@ static int inline_parse(const char *s, ChBuf *out, int *trailing_backslash) {
         } else if (c == '*' || c == '_') {
             int *flag = c == '*' ? &bold : &uline;
             if (*flag) {
-                if (prev && !isspace((unsigned char)prev) && close_ctx(s[i + 1])) { *flag = 0; prev = (char)c; i++; continue; }
+                if (prev && !isspace((unsigned char)prev) && close_ctx_at(s + i + 1)) { *flag = 0; prev = (char)c; i++; continue; }
             } else if (open_ctx(prev) && s[i + 1] && !isspace((unsigned char)s[i + 1]) && s[i + 1] != (char)c && closer_exists(s, i + 1, (char)c)) {
                 *flag = 1;
                 prev = (char)c;
@@ -402,13 +420,12 @@ void pw_render(Page *pg, PtBuf *out, int width, int ansi) {
     pb_adds(out, "NAME");
     if (ansi) pb_adds(out, "\x1b[0m");
     pb_addc(out, '\n');
-    spaces(out, BODY);
-    if (ansi) pb_adds(out, "\x1b[1m");
-    pb_adds(out, pg->name ? pg->name : "?");
-    if (ansi) pb_adds(out, "\x1b[0m");
-    pb_adds(out, " - ");
-    pb_adds(out, pg->desc ? pg->desc : "");
-    pb_addc(out, '\n');
+    ChBuf nm = { 0 };
+    push_text(&nm, pg->name ? pg->name : "?", S_BOLD);
+    push_text(&nm, " - ", 0);
+    push_text(&nm, pg->desc ? pg->desc : "", 0);
+    emit_wrapped(out, nm.c, nm.n, BODY, BODY, width, ansi, 0);
+    free(nm.c);
 
     int prev = -1;                                          /* kind of the previous block, -1 at the start */
     for (int bi = 0; bi < pg->nb; bi++) {
@@ -548,6 +565,12 @@ int pw_check(Page *pg, const char *path, const char *dir_section, const char *fi
         if (b->kind == BK_HEADING) {
             snprintf(section, sizeof section, "%s", b->text);
             if (i + 1 >= pg->nb || pg->b[i + 1].kind == BK_HEADING) problems += report(rep, path, b->line, "section %s is empty", b->text);
+        }
+        if (b->kind == BK_VERB) {                       /* verbatim lines are never wrapped: they must fit an 80 column screen */
+            for (int k = 0; k < b->nlines; k++) {
+                int cols = (b->in_item ? BODY + 7 : BODY + 4) + (int)pt_u8_count(b->lines[k], strlen(b->lines[k]));
+                if (cols > 78) { problems += report(rep, path, b->line + k, "verbatim line is %d columns wide (the limit is 78)", cols); break; }
+            }
         }
         if (b->kind == BK_ITEM) {
             int has = 0;
