@@ -79,6 +79,14 @@ def kshell_keyboard():
         vm.shot = vm.screenshot(BUILD / "t-kshell-kbd.png")
 
 
+@test
+def shell():
+    """gapsh and the kappabox userland (about 150 command checks driven over the serial console)."""
+    import test_shell
+    failures = test_shell.run_checks(verbose=False)
+    assert not failures, f"{len(failures)} shell check(s) failed:\n" + "\n".join(failures[:6])
+
+
 def crash_case(kind, expected):
     def run():
         with Qemu(cmdline=f"crash={kind}", name=f"t-crash-{kind}") as vm:

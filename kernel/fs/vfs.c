@@ -346,7 +346,7 @@ ssize_t vfs_read(File *f, void *buf, size_t n) {
     if (S_ISDIR(v->mode)) return -EISDIR;
     if (!v->ops->read) return -EINVAL;
     ssize_t r = v->ops->read(v, f, buf, n, f->off);
-    if (r > 0 && S_ISREG(v->mode)) f->off += (u64)r;
+    if (r > 0 && (S_ISREG(v->mode) || S_ISBLK(v->mode))) f->off += (u64)r;
     return r;
 }
 
@@ -358,7 +358,7 @@ ssize_t vfs_write(File *f, const void *buf, size_t n) {
     if (!v->ops->write) return -EINVAL;
     if ((f->flags & O_APPEND) && S_ISREG(v->mode)) f->off = v->size;
     ssize_t r = v->ops->write(v, f, buf, n, f->off);
-    if (r > 0 && S_ISREG(v->mode)) f->off += (u64)r;
+    if (r > 0 && (S_ISREG(v->mode) || S_ISBLK(v->mode))) f->off += (u64)r;
     return r;
 }
 

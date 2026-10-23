@@ -169,6 +169,9 @@ extern const FsType g_fat32_type;
 int    tmpfs_add_special(VNode *dir, const char *name, u32 mode, const VNodeOps *ops, void *priv, u64 rdev, VNode **out);
 void   tmpfs_stats(u64 *pages_used);
 
+/* Adds a read-only text file /proc/<name> generated on every read (drivers use this for /proc/usb and the like). */
+int    procfs_register(const char *name, size_t (*gen)(char *buf, size_t cap));
+
 void   initrd_unpack(const void *tar, size_t size);
 void   layout_create(void);                                  /* mounts "/" and builds the Gensokyo directory tree */
 void   devfs_register_standard(void);

@@ -13,6 +13,8 @@ size_t strlen(const char *s);
 size_t strnlen(const char *s, size_t max);
 int    strcmp(const char *a, const char *b);
 int    strncmp(const char *a, const char *b, size_t n);
+int    strcasecmp(const char *a, const char *b);
+int    strncasecmp(const char *a, const char *b, size_t n);
 char  *strcpy(char *dst, const char *src);
 char  *strncpy(char *dst, const char *src, size_t n);
 size_t strlcpy(char *dst, const char *src, size_t size);

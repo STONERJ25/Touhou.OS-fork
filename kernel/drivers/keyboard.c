@@ -147,6 +147,8 @@ static void set_mod(u8 bit, bool down) {
     else g_mods &= (u8)~bit;
 }
 
+static void key_event(u8 code, bool down, bool sw_repeat);
+
 static void kbd_byte(u8 sc) {
     if (g_skip) { g_skip--; return; }
     if (sc == 0xE0) { g_e0 = true; return; }
@@ -161,27 +163,64 @@ static void kbd_byte(u8 sc) {
         code |= KEY_EXT;
     }
 
+    key_event(code, !up, false);                    /* PS/2 keyboards repeat in hardware */
+}
+
+/* ---------------------------------------------------------------- source independent key path */
+
+static u8  g_rep_code;                  /* key being repeated by software (USB keyboards do not repeat themselves) */
+static u64 g_rep_next_ms;
+
+static bool is_modifier_key(u8 code) {
+    switch (code) {
+    case KEY_LSHIFT: case KEY_RSHIFT: case KEY_LCTRL: case KEY_RCTRL: case KEY_LALT: case KEY_RALT:
+    case KEY_LSUPER: case KEY_RSUPER: case KEY_CAPSLOCK: case KEY_NUMLOCK: case KEY_SCROLLLOCK:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/* A key went down or up. `sw_repeat`: this source needs typematic repeat generated here. */
+static void key_event(u8 code, bool down, bool sw_repeat) {
     bool was_down = g_down[code >> 3] & (1 << (code & 7));
-    if (up) g_down[code >> 3] &= (u8)~(1 << (code & 7));
+    if (!down) g_down[code >> 3] &= (u8)~(1 << (code & 7));
     else g_down[code >> 3] |= (u8)(1 << (code & 7));
 
     switch (code) {
-    case KEY_LSHIFT: case KEY_RSHIFT: set_mod(MOD_SHIFT, !up); break;
-    case KEY_LCTRL:  case KEY_RCTRL:  set_mod(MOD_CTRL, !up); break;
-    case KEY_LALT:   case KEY_RALT:   set_mod(MOD_ALT, !up); break;
-    case KEY_LSUPER: case KEY_RSUPER: set_mod(MOD_SUPER, !up); break;
-    case KEY_CAPSLOCK: if (!up && !was_down) g_mods ^= MOD_CAPS; break;
-    case KEY_NUMLOCK:  if (!up && !was_down) g_numlock = !g_numlock; break;
+    case KEY_LSHIFT: case KEY_RSHIFT: set_mod(MOD_SHIFT, down); break;
+    case KEY_LCTRL:  case KEY_RCTRL:  set_mod(MOD_CTRL, down); break;
+    case KEY_LALT:   case KEY_RALT:   set_mod(MOD_ALT, down); break;
+    case KEY_LSUPER: case KEY_RSUPER: set_mod(MOD_SUPER, down); break;
+    case KEY_CAPSLOCK: if (down && !was_down) g_mods ^= MOD_CAPS; break;
+    case KEY_NUMLOCK:  if (down && !was_down) g_numlock = !g_numlock; break;
     default: break;
     }
 
-    int value = up ? 0 : (was_down ? 2 : 1);
+    if (sw_repeat) {
+        if (down && !was_down && !is_modifier_key(code)) { g_rep_code = code; g_rep_next_ms = uptime_ms() + 500; }
+        else if (!down && code == g_rep_code) g_rep_code = 0;
+    }
+
+    int value = !down ? 0 : (was_down ? 2 : 1);
     if (g_input_grab > 0 || g_input_readers > 0) input_emit(EV_KEY, code, value);
-    if (g_input_grab > 0 || up) return;
+    if (g_input_grab > 0 || !down) return;
 
     u8 bytes[8];
     int n = key_to_bytes(code, g_mods, bytes);
     if (n > 0) tty_receive(tty_console(), bytes, (size_t)n);
+}
+
+/* For USB (and any other non-PS/2) keyboards: KEY_* code plus pressed/released. Repeat is synthesised from the timer. */
+void input_key(u8 code, bool down) { key_event(code, down, true); }
+
+/* Called from the 1 kHz timer interrupt. */
+void input_tick(void) {
+    if (!g_rep_code) return;
+    u64 now = uptime_ms();
+    if (now < g_rep_next_ms) return;
+    g_rep_next_ms = now + 33;
+    key_event(g_rep_code, true, true);
 }
 
 /* ---------------------------------------------------------------- mouse */
@@ -213,7 +252,12 @@ static void mouse_byte(u8 b) {
         if (wheel & 8) wheel -= 16;
     }
     dy = -dy;                                   /* PS/2 reports up as positive */
+    input_mouse(dx, dy, wheel, flags & 7);
+}
 
+/* Movement since the last report (dy positive = down), wheel (positive = up) and the absolute button state
+ * (bit0 left, bit1 right, bit2 middle). Used by the PS/2 decoder above and by USB HID mice. */
+void input_mouse(int dx, int dy, int wheel, u8 buttons) {
     g_mouse.x += dx;
     g_mouse.y += dy;
     if (g_mouse.x < 0) g_mouse.x = 0;
@@ -225,12 +269,12 @@ static void mouse_byte(u8 b) {
         if (dx) input_emit(EV_REL, REL_X, dx);
         if (dy) input_emit(EV_REL, REL_Y, dy);
         if (wheel) input_emit(EV_REL, REL_WHEEL, wheel);
-        u8 changed = (flags ^ g_mouse.buttons) & 7;
+        u8 changed = (buttons ^ g_mouse.buttons) & 7;
         static const u16 btn[3] = { BTN_LEFT, BTN_RIGHT, BTN_MIDDLE };
         for (int i = 0; i < 3; i++)
-            if (changed & (1 << i)) input_emit(EV_KEY, btn[i], (flags >> i) & 1);
+            if (changed & (1 << i)) input_emit(EV_KEY, btn[i], (buttons >> i) & 1);
     }
-    g_mouse.buttons = flags & 7;
+    g_mouse.buttons = buttons & 7;
 }
 
 /* ---------------------------------------------------------------- controller */

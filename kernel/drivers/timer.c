@@ -3,6 +3,7 @@
 #include "kernel.h"
 #include "cpu.h"
 #include "task.h"
+#include "input.h"
 
 #define PIT_CH0  0x40
 #define PIT_CMD  0x43
@@ -17,6 +18,7 @@ u64 uptime_ms(void) { return g_ticks * 1000 / TIMER_HZ; }
 static void timer_irq(int irq, void *ctx) {
     (void)irq; (void)ctx;
     g_ticks++;
+    input_tick();
     sched_tick();
 }
 

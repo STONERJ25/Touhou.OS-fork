@@ -27,6 +27,11 @@ bool input_pop(struct ginput_event *out);
 void keyboard_init(void);               /* sets up the i8042 controller, keyboard and mouse, unmasks IRQ1/IRQ12 */
 u8   keyboard_modifiers(void);          /* MOD_* bits */
 
+/* Entry points for non-PS/2 devices (USB HID). They behave exactly like the i8042 path: console tty bytes or GUI events. */
+void input_key(u8 code, bool down);                                  /* code: KEY_* from keys.h; repeat is generated here */
+void input_mouse(int dx, int dy, int wheel, u8 buttons);             /* dy > 0 moves down; buttons: absolute state */
+void input_tick(void);                                               /* 1 kHz, from the timer interrupt (software key repeat) */
+
 /* Mouse state, for in-kernel consumers and the window server */
 typedef struct {
     int x, y;                           /* absolute position clamped to the screen */

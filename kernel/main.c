@@ -17,6 +17,13 @@
 #include "ktime.h"
 #include "random.h"
 #include "process.h"
+#include "pci.h"
+
+void virtio_blk_init(void);
+void ahci_init(void);
+void nvme_init(void);
+void usb_init(void);
+void storage_mount_boot_volumes(void);
 
 u64 g_hhdm;
 u64 g_kernel_phys, g_kernel_virt;
@@ -118,6 +125,15 @@ NORETURN void kmain(BootInfo *bi) {
     layout_create();
     keyboard_init();
     serial_rx_init();
+
+    /* Buses and device drivers. Each *_init is a weak no-op until a driver supplies it (see drivers/driver_stubs.c). */
+    pci_init();
+    virtio_blk_init();
+    ahci_init();
+    nvme_init();
+    storage_mount_boot_volumes();
+    usb_init();
+
     if (g_boot.initrd_phys && g_boot.initrd_size) {
         initrd_unpack(phys_to_virt(g_boot.initrd_phys), g_boot.initrd_size);
         pmm_add_region(g_boot.initrd_phys, ALIGN_UP(g_boot.initrd_size, PAGE_SIZE));    /* contents now live in tmpfs */

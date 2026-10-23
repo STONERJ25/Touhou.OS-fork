@@ -61,6 +61,18 @@ int strncmp(const char *a, const char *b, size_t n) {
     return n ? (u8)*a - (u8)*b : 0;
 }
 
+static int lower_ascii(int c) { return c >= 'A' && c <= 'Z' ? c + 32 : c; }
+
+int strcasecmp(const char *a, const char *b) {
+    while (*a && lower_ascii((u8)*a) == lower_ascii((u8)*b)) { a++; b++; }
+    return lower_ascii((u8)*a) - lower_ascii((u8)*b);
+}
+
+int strncasecmp(const char *a, const char *b, size_t n) {
+    while (n && *a && lower_ascii((u8)*a) == lower_ascii((u8)*b)) { a++; b++; n--; }
+    return n ? lower_ascii((u8)*a) - lower_ascii((u8)*b) : 0;
+}
+
 char *strcpy(char *dst, const char *src) {
     char *d = dst;
     while ((*d++ = *src++)) { }

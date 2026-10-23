@@ -29,6 +29,41 @@
 | `tools/` | build driver, QEMU harness, generators |
 | `tests/` | scripted QEMU tests |
 
+## Writing a hardware driver
+
+Everything a PCI driver needs already exists; look at `kernel/include/pci.h`, `blk.h`, `input.h` and `mm.h`.
+
+- **Probing:** `pci_init()` enumerates every bus once (legacy 0xCF8/0xCFC mechanism, BARs sized and decoded, bridges
+  followed). Drivers search with `pci_find_class()` / `pci_find_id()`, call `pci_enable(dev, PCI_CMD_MEM | PCI_CMD_MASTER)`
+  and map registers with `pci_map_bar()` (uncached). Set `dev->driver = "name"` once a device is claimed; it shows in
+  `/proc/pci` (`lspci`).
+- **Entry points:** `kmain()` calls the weak functions `virtio_blk_init`, `ahci_init`, `nvme_init`, `storage_mount_boot_volumes`
+  and `usb_init` (defaults in `kernel/drivers/driver_stubs.c`). A driver just defines the strong function in its own file,
+  so adding a driver never edits `main.c`. New `.c` files anywhere under `kernel/` are picked up by `tools/build.py`.
+- **No interrupts, poll instead.** Interrupt routing (IOAPIC, `_PRT`, MSI) is the most fragile part of real PCs and
+  QEMU hides most of it, so drivers poll from a kernel thread (`task_create_detached` + `task_sleep_ms(1)`), or spin with
+  a timeout for short synchronous operations. At 1 kHz this is invisible in CPU usage and behaves the same everywhere.
+  Every wait must have a timeout; a missing or misbehaving device must never hang boot.
+- **DMA:** `dma_alloc(size, &phys)` returns zeroed, physically contiguous, page-aligned memory in the direct map.
+  `virt_to_phys()` converts any heap or direct-map pointer (never a kernel stack or an ioremap alias). x86 DMA is
+  cache-coherent, so no flushing is needed; use `barrier()` and ordered MMIO accesses.
+- **Block devices:** fill in a `BlockDev` (heap allocated), set `read`/`write`/`flush`, then `blk_register()`. The block layer
+  creates `/dev/<name>`, scans GPT/MBR into partition devices (`vda1`, `nvme0n1p2`), and lists everything in
+  `/proc/partitions` (`lsblk`). Filesystems take a `BlockDev` by name (`blk_find("sda1")`, `blk_find_label("HUMANVILLAGE")`).
+- **Input:** USB HID turns reports into `input_key(KEY_*, down)` and `input_mouse(dx, dy, wheel, buttons)`; the same path as
+  the PS/2 driver feeds the console tty and `/dev/input/events`. Repeat is generated in the input layer.
+- **/proc files:** `procfs_register("name", gen)` adds a text file generated on each read.
+- **Logging:** `klog("Kappa", ...)` for hardware (see THEMING.md for tags). Never `printk` raw from a driver.
+- **Safety:** never write to a disk or partition on your own initiative. Only the explicit mount path and `/dev` writes by root
+  may modify storage.
+
+## Testing
+
+`python tools/build.py` builds everything into `build/`; `python tests/run_all.py` runs the whole suite in QEMU
+(`tools/qemu.py` is the harness: serial console over TCP, QMP input injection, `screendump`). `Qemu(extra=[...])` appends
+QEMU arguments (devices, drives); `Qemu(disk=path)` attaches a virtio-blk disk. `tests/test_shell.py` shows how to drive
+the shell and check output; `tests/debug_shell.py` prints what the console says for a list of lines.
+
 ## Conventions
 
 - Canonical pixel format is `0x00RRGGBB`; the framebuffer layer swaps channels when the hardware is RGBX.

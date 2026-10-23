@@ -5,6 +5,8 @@
 #include "irq.h"
 #include "cpu.h"
 #include "cpuinfo.h"
+#include "pci.h"
+#include "blk.h"
 #include "ktime.h"
 #include "task.h"
 #include "cmdline.h"
@@ -84,12 +86,25 @@ static size_t gen_loadavg(char *b, size_t cap) {
     return (size_t)snprintf(b, cap, "0.00 0.00 0.00 %d/%d %d\n", 1, task_count(), process_count());
 }
 
-static const ProcEntry g_entries[] = {
+static size_t gen_pci(char *b, size_t cap) { return pci_describe(b, cap); }
+static size_t gen_partitions(char *b, size_t cap) { return blk_describe(b, cap); }
+
+/* The table grows at run time: drivers add their own files with procfs_register(). */
+static ProcEntry g_entries[48] = {
     { "version", gen_version }, { "uptime", gen_uptime }, { "meminfo", gen_meminfo }, { "cpuinfo", gen_cpuinfo },
     { "mounts", gen_mounts }, { "interrupts", gen_interrupts }, { "tasks", gen_tasks }, { "cmdline", gen_cmdline },
-    { "loadavg", gen_loadavg },
+    { "loadavg", gen_loadavg }, { "pci", gen_pci }, { "partitions", gen_partitions },
 };
-#define NSTATIC ARRAY_SIZE(g_entries)
+static unsigned g_nentries = 11;
+#define NSTATIC g_nentries
+
+int procfs_register(const char *name, size_t (*gen)(char *buf, size_t cap)) {
+    if (g_nentries >= ARRAY_SIZE(g_entries)) return -ENOSPC;
+    g_entries[g_nentries].name = name;
+    g_entries[g_nentries].gen = gen;
+    g_nentries++;
+    return 0;
+}
 
 /* ---- per-process files ---- */
 

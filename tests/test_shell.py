@@ -130,12 +130,12 @@ CHECKS = [
 ]
 
 
-def main():
-    want = sys.argv[1] if len(sys.argv) > 1 else ""
-    failures = 0
-    with Qemu(cmdline="", name="t-shell") as vm:
+def run_checks(want="", extra_checks=(), verbose=True, **qemu_args):
+    """Boots the system and runs every check. Returns the list of failure descriptions (empty = all passed)."""
+    failures = []
+    with Qemu(cmdline="", name="t-shell", **qemu_args) as vm:
         vm.expect(PROMPT, timeout=90)
-        for cmd, expect, status in CHECKS:
+        for cmd, expect, status in list(CHECKS) + list(extra_checks):
             if want and want not in cmd:
                 continue
             try:
@@ -144,12 +144,19 @@ def main():
                     raise AssertionError(f"expected {expect!r} in output:\n{out}")
                 if status is not None and rc != status:
                     raise AssertionError(f"exit status {rc}, expected {status}; output:\n{out}")
-                print("PASS", cmd)
+                if verbose:
+                    print("PASS", cmd)
             except Exception as e:  # noqa: BLE001
-                failures += 1
+                failures.append(f"{cmd}\n    {str(e)[-900:]}")
                 print("FAIL", cmd, "\n   ", str(e)[-900:].replace("\n", "\n    "))
         vm.screenshot(BUILD / "t-shell.png")
-    print(f"{failures} failure(s)")
+    return failures
+
+
+def main():
+    want = sys.argv[1] if len(sys.argv) > 1 else ""
+    failures = run_checks(want)
+    print(f"{len(failures)} failure(s)")
     sys.exit(1 if failures else 0)
 
 
