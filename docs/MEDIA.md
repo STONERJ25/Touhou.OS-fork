@@ -66,6 +66,10 @@ Not supported: arithmetic-coded, lossless or 12-bit JPEG, JPEG with a frame heig
 first image, ICC profiles, CMYK TIFF-style tricks, GIF frames larger than the pixel cap. There is no decode-time downscaling: a very
 large photograph is decoded in full (a 24 megapixel 4:2:0 JPEG needs about 36 MB of planes plus 96 MB of pixels) and then scaled.
 
+**Speed** (`imginfo -t`, in QEMU on the development PC, so only an order of magnitude): a 1920x1080 JPEG (4:2:0) decodes in 0.4 to 0.7 s, a 3840x2160 one in 1.4 s,
+a 12 megapixel one in 2.2 s, a 3.8 MB 1920x1080 PNG in 0.4 s, a BMP in 60 ms. The Gallery and the wallpaper code decode in the event loop and the desktop shell, so a
+photograph of that size makes the window (or the shell, once, when the wallpaper changes) wait for about that long.
+
 ## Tools
 
 * `gzip [-cdfklnNqrtv1-9]`, `gunzip`, `zcat`: compress to `FILE.gz` and remove the original (unless `-k`), keep mode and mtime, refuse to
