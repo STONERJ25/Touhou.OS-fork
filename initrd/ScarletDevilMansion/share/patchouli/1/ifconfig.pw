@@ -1,0 +1,36 @@
+.page ifconfig 1 show and change network interfaces
+
+# SYNOPSIS
+*ifconfig* [*-a*]
+*ifconfig* _IFACE_
+*ifconfig* _IFACE_ [_ADDRESS_[/_LEN_]] [*netmask* _MASK_] [*mtu* _N_] [*up* | *down* | *dhcp*]
+
+# DESCRIPTION
+`ifconfig` without arguments lists the interfaces that are up (`-a`: all of them). With an interface name it shows that one. With more arguments it changes the interface; changing anything needs root.
+
+For each interface the listing shows the flags (`UP`, `BROADCAST`, `RUNNING` for "carrier present", `LOOPBACK`, `NOARP`), the MTU, the IPv4 address with netmask and broadcast address, the hardware address and the name of the driver that serves it, and the packet, byte, error and drop counters (the same numbers as `/proc/net/dev`).
+
+Giving an address sets it, replaces any address the interface had, drops the routes that belonged to it and installs the connected route of the new network. The netmask comes from a `/LEN` suffix, from `netmask`, or, failing both, from the old class of the address. The broadcast address is always derived from address and mask.
+
+@ *up*, *down*
+    Switch the interface on or off. A down interface sends and receives nothing and loses its routes.
+@ *mtu* _N_
+    Set the largest packet the interface sends (68 to 1500).
+@ *dhcp*
+    Forget a manual setting and start the DHCP client again on this interface. The kernel does this by itself when a cable is plugged in; this is for starting over by hand.
+
+# EXAMPLES
+    ifconfig
+    ifconfig eth0 192.168.7.9/24
+    ifconfig eth0 10.0.2.15 netmask 255.255.255.0 mtu 1400 up
+    ifconfig eth0 dhcp
+
+# FILES
+@ /proc/net/dev
+    Counters per interface.
+
+# EXIT STATUS
+0 on success, 1 when the interface does not exist or the kernel refused (root is needed to change anything), 2 for a usage error.
+
+# SEE ALSO
+ip(1), route(1), netstat(1), network(7)

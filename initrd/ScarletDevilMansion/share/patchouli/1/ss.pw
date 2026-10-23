@@ -1,0 +1,12 @@
+.page ss 1 show sockets
+
+# SYNOPSIS
+*ss* [*-altun*]
+
+# DESCRIPTION
+`ss` prints the TCP and UDP sockets known to the kernel in the compact style of the modern tools: one line each with the protocol (`Netid`), state, the two queue sizes and the local and peer `address:port`. Like `netstat` it reads `/proc/net/tcp` and `/proc/net/udp`.
+
+Without options only connected sockets are shown; `-l` shows listening ones, `-a` both, `-t` and `-u` pick the protocol. `-n` is accepted and ignored (addresses are always numeric).
+
+# SEE ALSO
+netstat(1), network(7)

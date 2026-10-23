@@ -86,17 +86,29 @@ def net_loopback():
 @test
 def net_robust():
     """3000 malformed frames (truncated, bad checksums, absurd lengths, odd fragments, bogus TCP options and flags) through /proc/net/inject; the stack keeps working"""
-    out = nettest("fuzz", root=True, timeout=400)
-    assert re.search(r"ok\s+fuzz", out), out[-800:]
+    with Guest("t-net-robust", root=True) as g:
+        out, rc = g.run("nettest fuzz", timeout=400)
+        assert "NETTEST PASS" in out and re.search(r"ok\s+fuzz", out) and rc == 0, (rc, out[-1200:])
+        tune = g.out("cat /proc/net/tune")
+        ip_bad = int(re.search(r"ip_bad (\d+)", tune).group(1))
+        tcp_bad = int(re.search(r"tcp_bad (\d+)", tune).group(1))
+        assert ip_bad > 500 and tcp_bad > 0, tune                 # the garbage really reached the parsers and was rejected
+        out, rc = g.run("echo alive; ping -c 1 127.0.0.1")
+        assert "alive" in out and "1 received" in out, out
 
 
 @test
 def net_loss():
     """a 400 KB TCP transfer over a loopback that drops 5%, duplicates 3% and reorders 5% of the frames arrives intact (retransmission, out-of-order data)"""
-    setup = ["echo 'rto_min_ms 40' > /proc/net/tune", "echo 'lo_drop 5' > /proc/net/tune", "echo 'lo_dup 3' > /proc/net/tune",
-             "echo 'lo_reorder 5' > /proc/net/tune"]
-    out = nettest("loss", root=True, timeout=600, setup=setup)
-    assert re.search(r"loss: 409600 bytes intact", out), out[-800:]
+    with Guest("t-net-loss", root=True) as g:
+        for knob in ("rto_min_ms 40", "lo_drop 5", "lo_dup 3", "lo_reorder 5"):
+            g.run(f"echo '{knob}' > /proc/net/tune")
+        out, rc = g.run("nettest loss", timeout=600)
+        assert "NETTEST PASS" in out and re.search(r"loss: 409600 bytes intact", out) and rc == 0, (rc, out[-1200:])
+        dev = g.out("grep 'lo:' /proc/net/dev")
+        fields = dev.split("lo:")[1].split()
+        tx_packets, tx_dropped = int(fields[9]), int(fields[11])
+        assert tx_packets > 200 and tx_dropped > 5, dev            # frames really were thrown away on the way
 
 
 @test
