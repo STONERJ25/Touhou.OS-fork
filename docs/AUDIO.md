@@ -18,7 +18,7 @@ staged in the Prismriver Concert Hall.
 | Piece | State |
 |---|---|
 | Audio core: `/dev/audio`, mixer, per-stream and master volume, mute, soft limiter, `/proc/audio`, underruns are silence, instant flush | done, tested in QEMU |
-| Intel HDA driver: generic codec graph walk, output planner, auto-mute, immediate-command and position-buffer fallbacks | done, tested in QEMU (`hda-output`, `hda-duplex`) and, for the planner, against invented Realtek-style codecs; **never run on real hardware** |
+| Intel HDA driver: generic codec graph walk, output planner, auto-mute, immediate-command and position-buffer fallbacks | done, tested in QEMU (`hda-output`, `hda-duplex`, `hda-micro`, and a controller with no codec) and, for the planner, against invented Realtek-style codecs; **never run on real hardware** |
 | AC'97 driver | done, tested in QEMU (`AC97`); never run on real hardware |
 | libaudio: device, WAV reader/writer, tone and noise generators, system sounds | done |
 | Song engine: pulse / triangle / saw / noise / 2-operator FM voices, the `.tms` pattern format, parser, sequencer | done, tested (pitch, tempo, bar alignment) |
@@ -135,7 +135,8 @@ logged (`dmesg | grep 'hda:  0x'`). With that and `dmesg | grep Nitori` a silent
 without a debugger. Two more command line words exercise the fallbacks on any machine: `hda.imm` (immediate commands instead
 of CORB/RIRB) and `hda.posbuf` (position from the DMA position buffer).
 
-**Not verified, not done.** Everything above ran only against QEMU's `hda-output` / `hda-duplex` (one converter, one pin);
+**Not verified, not done.** Everything above ran only against QEMU's three codecs `hda-output`, `hda-duplex` and `hda-micro`
+(one converter and one output pin each);
 the Realtek-style trees in `hdatest` are invented, not recorded from a real machine, so they show that the planner copes
 with those shapes (mixers that add converters and input pins, selectors in front of pins, bidirectional pins, a digital
 converter, jack associations), not that it is right for the Dell's ALC3xxx. Never exercised on anything but QEMU: a
@@ -295,7 +296,7 @@ volume twice a second, so `volume 30` in a terminal shows up there.
 
 `python tests/run_all.py audio_` runs `tests/case_audio.py` (about ten minutes; `tests/modtools.py` builds the tracker modules
 it plays). The harness (`tools/qemu.py`) takes
-`Qemu(audio="hda" | "hda-duplex" | "hda-nocodec" | "ac97", sounds=True|False)`: a sound card and an `-audiodev wav` backend writing
+`Qemu(audio="hda" | "hda-duplex" | "hda-micro" | "hda-nocodec" | "ac97", sounds=True|False)`: a sound card and an `-audiodev wav` backend writing
 `build/<name>-audio.wav`; the file is complete once `vm.stop()` has run. The host side parses it with numpy
 (`tests/audiotools.py`: loud segments, dominant frequency, peak, band power). The guest clock can be several times slower
 than wall time, so tests never depend on how long the guest takes: they find the loud stretches of the recording and measure
@@ -313,6 +314,8 @@ those. `tests/guitext.py` finds text on a screenshot by rendering it with the de
   say "no sound device" with status 1; `beep -o file.wav` still works.
 * `audio_hda_no_codec` -- an HDA controller with nothing on its link (`hda-nocodec`): the driver logs "no codec answered",
   there is no `/dev/audio`, the tools say so, and the machine carries on.
+* `audio_hda_micro_codec` -- QEMU's third codec, `hda-micro` (a speaker pin and a microphone pin): the speaker is chosen, the
+  microphone is listed and left alone, and the tone is right.
 * `audio_hda_graph` -- boots the guest and runs `hdatest` (`tests/host/hdatest.c`, built as the guest program
   `user/bin/hdatest` because the Windows host has no C library headers): 62 checks of the output planner on twelve codec
   descriptions, most of them invented Realtek-style trees (desktop and laptop shapes, a shared selector, loops, HDMI-only, a

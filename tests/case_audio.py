@@ -189,6 +189,22 @@ def audio_hda_no_codec():
 
 
 @test
+def audio_hda_micro_codec():
+    """QEMU's third codec, hda-micro (a speaker pin and a microphone pin): the planner picks the speaker and the tone is right."""
+    with Qemu(cmdline="text", name="t-audio-micro", audio="hda-micro") as vm:
+        vm.expect(test_shell.PROMPT, timeout=90)
+        out, rc = sh(vm, "cat /proc/audio")
+        assert "speaker(0x03<-0x02)" in out, out                 # pin 0x03 is fed by the converter 0x02
+        assert "other pin 0x05: mic" in out, out                 # the microphone is listed, and not driven
+        out, rc = sh(vm, "volume 100 && beep -f 523 -l 1000 -a 50")
+        assert rc == 0, out
+        rate, x = capture(vm)
+    tone = at.trimmed(loudest(x, rate), rate)
+    assert abs(at.dominant_freq(tone, rate) - 523) < 6, at.dominant_freq(tone, rate)
+    assert 0.42 < at.peak(tone) < 0.55, at.peak(tone)
+
+
+@test
 def audio_hda_graph():
     """The HDA output planner picks the right pins, mixers, selectors and converters in invented Realtek-style codecs."""
     with Qemu(cmdline="text", name="t-audio-graph") as vm:
