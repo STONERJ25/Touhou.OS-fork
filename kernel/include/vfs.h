@@ -11,6 +11,7 @@
 #include "types.h"
 #include "task.h"
 #include "abi.h"
+#include "syscall.h"
 
 #define PATH_MAX 1024
 
@@ -54,6 +55,7 @@ struct VNodeOps {
     int     (*mmap_phys)(VNode *v, u64 off, paddr_t *phys);          /* device memory that user space may map */
     void    (*opened)(VNode *v, File *f);
     void    (*closed)(VNode *v, File *f);
+    int     (*poll)(VNode *v, File *f);                              /* POLLIN | POLLOUT readiness */
     /* directories */
     int     (*lookup)(VNode *dir, const char *name, VNode **out);    /* 0 + referenced vnode, or -ENOENT */
     int     (*create)(VNode *dir, const char *name, u32 mode, VNode **out);
@@ -92,6 +94,7 @@ typedef struct FileOps {
     ssize_t (*write)(File *f, const void *buf, size_t n);
     int     (*ioctl)(File *f, unsigned long req, void *arg);
     void    (*close)(File *f);
+    int     (*poll)(File *f);
 } FileOps;
 
 struct File {
@@ -131,6 +134,7 @@ ssize_t vfs_read(File *f, void *buf, size_t n);
 ssize_t vfs_write(File *f, const void *buf, size_t n);
 s64    vfs_lseek(File *f, s64 off, int whence);
 int    vfs_ioctl(File *f, unsigned long req, void *arg);
+int    vfs_poll(File *f);
 int    vfs_readdir(File *f, struct gdirent *out);                       /* 1 entry, 0 end, <0 error */
 int    vfs_ftruncate(File *f, u64 size);
 

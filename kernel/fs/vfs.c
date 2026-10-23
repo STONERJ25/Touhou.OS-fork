@@ -383,6 +383,12 @@ int vfs_ioctl(File *f, unsigned long req, void *arg) {
     return -ENOTTY;
 }
 
+int vfs_poll(File *f) {
+    if (f->fops) return f->fops->poll ? f->fops->poll(f) : (POLLIN | POLLOUT);
+    if (f->vn && f->vn->ops && f->vn->ops->poll) return f->vn->ops->poll(f->vn, f);
+    return POLLIN | POLLOUT;
+}
+
 int vfs_ftruncate(File *f, u64 size) {
     if ((f->flags & O_ACCMODE) == O_RDONLY) return -EBADF;
     if (!S_ISREG(f->vn->mode) || !f->vn->ops->truncate) return -EINVAL;

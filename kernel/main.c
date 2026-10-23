@@ -16,6 +16,7 @@
 #include "serial.h"
 #include "ktime.h"
 #include "random.h"
+#include "process.h"
 
 u64 g_hhdm;
 u64 g_kernel_phys, g_kernel_virt;
@@ -122,8 +123,20 @@ NORETURN void kmain(BootInfo *bi) {
         pmm_add_region(g_boot.initrd_phys, ALIGN_UP(g_boot.initrd_size, PAGE_SIZE));    /* contents now live in tmpfs */
     }
 
+    process_init();
     klog("Gensokyo", "boot complete");
     printk("\n\x1b[1;35m Welcome to Gensokyo. \x1b[0m\n");
-    task_create_detached("kshell", kshell_main, NULL);
+
+    char initpath[64] = "/sbin/init";
+    cmdline_value("init", initpath, sizeof initpath);
+    struct gstat st;
+    if (strcmp(initpath, "kshell") && vfs_stat(initpath, NULL, NULL, 0, &st) == 0) {
+        int rc = process_spawn_init(initpath, NULL);
+        if (rc) klog("Gensokyo", "cannot start %s (%d)", initpath, rc);
+        else klog("Alice", "init: %s", initpath);
+    } else {
+        klog("Alice", "no init program (%s): starting the kernel shell instead", initpath);
+        task_create_detached("kshell", kshell_main, NULL);
+    }
     for (;;) task_sleep_ms(1000);
 }

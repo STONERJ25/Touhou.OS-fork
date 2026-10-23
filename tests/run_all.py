@@ -30,6 +30,15 @@ def selftest():
 
 
 @test
+def utest():
+    """User-space suite: libc, fork/exec/wait, pipes, signals, mmap, files, credentials, math."""
+    with Qemu(cmdline="utest", name="t-utest") as vm:
+        vm.expect(r"UTEST (PASS|FAIL)", timeout=90)
+        assert "UTEST PASS" in vm.text(), vm.text()[-1500:]
+        assert vm.wait_exit(10) == 0
+
+
+@test
 def kshell_serial():
     """kshell over serial: themed directory tree, initrd unpack, tmpfs create/read, symlinks."""
     with Qemu(cmdline="", name="t-kshell-serial") as vm:

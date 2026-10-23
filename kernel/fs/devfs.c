@@ -73,7 +73,12 @@ static int tty_node_ioctl(VNode *v, File *f, unsigned long req, void *arg) {
     (void)v; (void)f;
     return tty_ioctl(tty_console(), req, arg);
 }
-static const VNodeOps tty_ops = { .read = tty_node_read, .write = tty_node_write, .ioctl = tty_node_ioctl };
+static int tty_node_poll(VNode *v, File *f) {
+    (void)v; (void)f;
+    Tty *t = tty_console();
+    return POLLOUT | (tty_pending(t) || t->eof ? POLLIN : 0);
+}
+static const VNodeOps tty_ops = { .read = tty_node_read, .write = tty_node_write, .ioctl = tty_node_ioctl, .poll = tty_node_poll };
 
 /* ---- kernel log ---- */
 static ssize_t kmsg_read(VNode *v, File *f, void *b, size_t n, u64 off) {

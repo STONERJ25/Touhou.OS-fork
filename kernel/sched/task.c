@@ -5,6 +5,7 @@
 #include "cpu.h"
 #include "mm.h"
 #include "irq.h"
+#include "process.h"
 
 extern char boot_stack_top[];
 
@@ -42,7 +43,7 @@ static void list_remove(Task *t) {
     }
 }
 
-static Task *task_create_common(const char *name, void (*entry)(void *), void *arg, bool detached);
+static Task *task_create_common(const char *name, void (*entry)(void *), void *arg, bool detached, Process *proc);
 
 static void idle_loop(void *arg) {
     (void)arg;
@@ -63,7 +64,7 @@ void sched_init(void) {
     fpu_save(g_fpu_default);
     tss_set_rsp0((u64)boot_stack_top);
 
-    g_idle = task_create_common("idle", idle_loop, NULL, false);
+    g_idle = task_create_common("idle", idle_loop, NULL, false, NULL);
     if (!g_idle) panic("cannot create the idle task");
 }
 
@@ -121,11 +122,11 @@ void schedule(void) {
 }
 
 void task_on_trap_return(TrapFrame *tf) {
-    (void)tf;
     if (g_need_resched) {
         g_need_resched = false;
         schedule();
     }
+    if ((tf->cs & 3) == 3) signal_deliver(tf);
 }
 
 static void wq_unlink(Task *t) {
@@ -172,7 +173,7 @@ void sched_tick(void) {
     else if (--g_current->slice <= 0) g_need_resched = true;
 }
 
-static Task *task_create_common(const char *name, void (*entry)(void *), void *arg, bool detached) {
+static Task *task_create_common(const char *name, void (*entry)(void *), void *arg, bool detached, Process *proc) {
     Task *t = kzalloc(sizeof(Task));
     if (!t) return NULL;
     t->kstack = kstack_alloc(KSTACK_SIZE);
@@ -183,6 +184,12 @@ static Task *task_create_common(const char *name, void (*entry)(void *), void *a
     t->arg = arg;
     t->detached = detached;
     t->pml4 = vmm_kernel_pml4();
+    if (proc) {
+        t->proc = proc;
+        t->fpu = kmalloc(512);
+        if (!t->fpu) { kstack_free(t->kstack, KSTACK_SIZE); kfree(t); return NULL; }
+        memcpy(t->fpu, g_fpu_default, 512);
+    }
 
     u64 *frame = (u64 *)(t->kstack_top - 72);
     frame[0] = 0;                       /* r15 */
@@ -204,11 +211,52 @@ static Task *task_create_common(const char *name, void (*entry)(void *), void *a
 }
 
 Task *task_create(const char *name, void (*entry)(void *), void *arg) {
-    return task_create_common(name, entry, arg, false);
+    return task_create_common(name, entry, arg, false, NULL);
 }
 
 Task *task_create_detached(const char *name, void (*entry)(void *), void *arg) {
-    return task_create_common(name, entry, arg, true);
+    return task_create_common(name, entry, arg, true, NULL);
+}
+
+/* The kernel half of a user process: starts in `entry` (which execs and drops to ring 3). */
+Task *task_create_user(const char *name, void (*entry)(void *), void *arg, Process *proc) {
+    return task_create_common(name, entry, arg, true, proc);
+}
+
+/* A forked child: resumes from the parent's syscall frame with rax = 0 (see fork_child_start in syscall.asm). */
+Task *task_create_fork(const char *name, const TrapFrame *tf, Process *proc) {
+    Task *t = kzalloc(sizeof(Task));
+    if (!t) return NULL;
+    t->kstack = kstack_alloc(KSTACK_SIZE);
+    t->fpu = kmalloc(512);
+    if (!t->kstack || !t->fpu) {
+        if (t->kstack) kstack_free(t->kstack, KSTACK_SIZE);
+        kfree(t->fpu);
+        kfree(t);
+        return NULL;
+    }
+    t->kstack_top = (u64)t->kstack + KSTACK_SIZE;
+    strlcpy(t->name, name, sizeof t->name);
+    t->detached = true;
+    t->proc = proc;
+    t->pml4 = proc->as.pml4;
+    fpu_save(t->fpu);                           /* the child inherits the parent's live FPU/SSE state */
+
+    TrapFrame *ctf = (TrapFrame *)(t->kstack_top - sizeof(TrapFrame));
+    *ctf = *tf;
+    ctf->rax = 0;
+    u64 *frame = (u64 *)((u64)ctf - 72);
+    memset(frame, 0, 72);
+    frame[3] = (u64)ctf;                        /* r12 */
+    frame[6] = (u64)fork_child_start;
+    t->rsp = (u64)frame;
+
+    u64 f = irq_save();
+    t->tid = g_next_tid++;
+    t->state = TASK_READY;
+    list_add(t);
+    irq_restore(f);
+    return t;
 }
 
 NORETURN void task_exit(int code) {

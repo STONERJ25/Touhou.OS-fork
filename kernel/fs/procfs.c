@@ -6,6 +6,7 @@
 #include "cpuinfo.h"
 #include "ktime.h"
 #include "task.h"
+#include "cmdline.h"
 
 typedef size_t (*GenFn)(char *buf, size_t cap);
 
@@ -19,6 +20,10 @@ u64 irq_count(int irq);
 
 static size_t gen_version(char *b, size_t cap) {
     return (size_t)snprintf(b, cap, "%s version %s \"%s\" (clang, x86_64) #1\n", KERNEL_NAME, KERNEL_VERSION, KERNEL_CODENAME);
+}
+
+static size_t gen_cmdline(char *b, size_t cap) {
+    return (size_t)snprintf(b, cap, "%s\n", cmdline_string());
 }
 
 static size_t gen_uptime(char *b, size_t cap) {
@@ -76,7 +81,7 @@ static size_t gen_tasks(char *b, size_t cap) {
 
 static const ProcEntry g_entries[] = {
     { "version", gen_version }, { "uptime", gen_uptime }, { "meminfo", gen_meminfo }, { "cpuinfo", gen_cpuinfo },
-    { "mounts", gen_mounts }, { "interrupts", gen_interrupts }, { "tasks", gen_tasks },
+    { "mounts", gen_mounts }, { "interrupts", gen_interrupts }, { "tasks", gen_tasks }, { "cmdline", gen_cmdline },
 };
 
 static const VNodeOps proc_dir_ops, proc_file_ops;

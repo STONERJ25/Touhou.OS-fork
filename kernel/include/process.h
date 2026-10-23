@@ -1,0 +1,133 @@
+/* Processes: address space, descriptors, credentials, signals, fork/exec/exit/wait. */
+#ifndef K_PROCESS_H
+#define K_PROCESS_H
+
+#include "types.h"
+#include "task.h"
+#include "vfs.h"
+#include "mm.h"
+#include "abi.h"
+#include "syscall.h"
+
+#define MAX_FD          64
+#define MAX_PROCS       256
+#define USER_TOP        0x0000800000000000UL
+#define USER_STACK_TOP  0x00007FFFFFFFF000UL
+#define USER_STACK_MAX  (8UL * 1024 * 1024)
+#define USER_STACK_INIT (64UL * 1024)
+#define USER_MMAP_BASE  0x0000100000000000UL
+
+#define VMA_R        PROT_READ
+#define VMA_W        PROT_WRITE
+#define VMA_X        PROT_EXEC
+#define VMA_STACK    0x100
+#define VMA_HEAP     0x200
+#define VMA_IO       0x400          /* pages are not owned by this mapping and must not be freed */
+#define VMA_WC       0x800          /* map write-combining (framebuffer) */
+
+typedef struct Vma {
+    u64 start, end;
+    u32 prot;                       /* PROT_* */
+    u32 flags;                      /* VMA_* */
+    struct Vma *next;
+} Vma;
+
+typedef struct AddrSpace {
+    paddr_t pml4;
+    Vma *vmas;
+    u64 brk_start, brk;
+    u64 mmap_next;
+} AddrSpace;
+
+typedef enum { PROC_RUNNING, PROC_ZOMBIE } ProcState;
+
+typedef struct Process {
+    int pid, ppid, pgid, sid;
+    char name[32];
+    char cwd_path[256];
+    VNode *cwd;
+    Cred cred;
+    u32 umask;
+    ProcState state;
+    int exit_status;                /* wait()-style status word */
+
+    AddrSpace as;
+
+    File *fds[MAX_FD];
+    u8 fd_flags[MAX_FD];
+
+    Task *task;
+    struct Process *parent;
+    struct Process *children;       /* singly linked through `sibling` */
+    struct Process *sibling;
+    struct Process *all_next;
+    WaitQueue wait_wq;              /* the parent blocks here in waitpid */
+
+    u32 sig_pending;
+    u32 sig_blocked;
+    struct gsigaction sigact[NSIG];
+
+    u64 start_ms;
+    char cmdline[128];
+} Process;
+
+extern Process *g_init_proc;
+
+/* lifecycle */
+void     process_init(void);
+Process *process_by_pid(int pid);
+int      process_spawn_init(const char *path, char *const argv[]);      /* kernel: start PID 1 */
+NORETURN void process_exit(int status);                                  /* status is a wait() word */
+int      process_fork(TrapFrame *tf);                                    /* child pid or -errno */
+int      process_exec(Process *p, const char *path, char *const argv[], char *const envp[], TrapFrame *tf);
+long     process_wait(int pid, int *status, int options);
+void     process_for_each(void (*fn)(Process *p, void *ctx), void *ctx);
+int      process_count(void);
+
+/* descriptors */
+int      fd_install(Process *p, File *f, int minfd, int flags);        /* takes over the File reference */
+File    *fd_get(Process *p, int fd);                                    /* borrowed reference */
+int      fd_close(Process *p, int fd);
+
+/* user address space */
+int      uvm_new(AddrSpace *as);
+Vma     *vma_find(AddrSpace *as, u64 addr);
+int      uvm_map(AddrSpace *as, u64 addr, u64 len, u32 prot, u32 flags);   /* demand-zero region */
+int      uvm_populate(AddrSpace *as, u64 addr, u64 len);                   /* allocate and map pages now */
+int      uvm_unmap(AddrSpace *as, u64 addr, u64 len);
+int      uvm_protect(AddrSpace *as, u64 addr, u64 len, u32 prot);
+u64      uvm_find_free(AddrSpace *as, u64 len);
+int      uvm_clone(AddrSpace *dst, const AddrSpace *src);
+void     uvm_destroy(AddrSpace *as);
+bool     uvm_fault(AddrSpace *as, TrapFrame *tf, u64 addr);             /* demand paging; true if handled */
+int      uvm_write(AddrSpace *as, u64 uaddr, const void *src, size_t n);   /* through the direct map */
+u64      pte_flags_for(u32 prot, u32 vflags);
+
+/* user memory access */
+bool user_range_ok(const void *p, size_t n);
+int  copy_from_user(void *dst, const void *src, size_t n);
+int  copy_to_user(void *dst, const void *src, size_t n);
+int  strncpy_from_user(char *dst, const char *src, size_t max);        /* length, or -EFAULT / -ENAMETOOLONG */
+int  clear_user(void *dst, size_t n);
+
+/* signals */
+void signal_send(Process *p, int sig);
+void signal_force(Process *p, int sig);                                 /* synchronous faults: cannot be ignored or blocked */
+void signal_pgrp(int pgid, int sig);
+void signal_deliver(TrapFrame *tf);                                     /* on the way back to user mode */
+bool signal_pending_now(Process *p);
+long sys_sigreturn_impl(TrapFrame *tf);
+
+/* syscall plumbing */
+void syscall_init(void);
+void syscall_dispatch(TrapFrame *tf);
+void enter_user(TrapFrame *tf);                                         /* never returns */
+void fork_child_start(void);
+Task *task_create_fork(const char *name, const TrapFrame *tf, Process *proc);
+Task *task_create_user(const char *name, void (*entry)(void *), void *arg, Process *proc);
+extern u64 g_syscall_kstack;
+
+/* helpers */
+void path_normalize(const char *base, const char *path, char *out, size_t n);
+
+#endif

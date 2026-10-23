@@ -58,6 +58,9 @@ void gdt_init(void) {
     __asm__ volatile ("ltr %0" : : "r"((u16)TSS_SEL));
 }
 
+extern u64 g_syscall_kstack;
+
 void tss_set_rsp0(u64 rsp0) {
     g_tss.rsp[0] = rsp0;
+    g_syscall_kstack = rsp0;            /* SYSCALL does not switch stacks by itself */
 }

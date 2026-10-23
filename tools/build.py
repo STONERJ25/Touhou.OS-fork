@@ -68,7 +68,7 @@ KERNEL_CFLAGS = [
 
 USER_CFLAGS = [
     "-target", "x86_64-unknown-none-elf", "-ffreestanding", "-fno-stack-protector", "-fno-pic", "-fno-pie",
-    "-fno-asynchronous-unwind-tables", "-fno-unwind-tables", "-mno-red-zone",
+    "-fno-asynchronous-unwind-tables", "-fno-unwind-tables", "-fno-math-errno",
     "-O2", "-g", "-std=gnu17", *COMMON_WARN,
     "-I", str(ROOT / "user" / "libc" / "include"), "-I", str(ROOT / "shared"),
 ]
@@ -302,38 +302,39 @@ def build_libc(nproc):
 
 
 def build_user(nproc):
-    bindir = ROOT / "user" / "bin"
-    if not bindir.exists():
-        return []
+    """Builds every program under user/bin (-> /bin) and user/sbin (-> /sbin). Returns [(install_dir, path)]."""
     crt0, lib = build_libc(nproc)
-    entries = sorted(p for p in bindir.iterdir() if (p.suffix == ".c" and p.is_file()) or p.is_dir())
-    if not entries:
-        return []
-    print("[user]")
     script = ROOT / "user" / "user.ld"
     outputs = []
     all_jobs = []
     progs = []
-    for e in entries:
-        if e.is_file():
-            name, srcs = e.stem, [e]
-        else:
-            name, srcs = e.name, sources(e, ["**/*.c"])
-            if not srcs:
-                continue
-        jobs = [c_job(s, "user/" + name, USER_CFLAGS + ["-I", str(e if e.is_dir() else e.parent)]) for s in srcs]
-        progs.append((name, jobs))
-        all_jobs += jobs
+    for kind in ("bin", "sbin"):
+        d = ROOT / "user" / kind
+        if not d.exists():
+            continue
+        for e in sorted(p for p in d.iterdir() if (p.suffix == ".c" and p.is_file()) or p.is_dir()):
+            if e.is_file():
+                name, srcs = e.stem, [e]
+            else:
+                name, srcs = e.name, sources(e, ["**/*.c"])
+                if not srcs:
+                    continue
+            jobs = [c_job(s, f"user/{kind}/{name}", USER_CFLAGS + ["-I", str(e if e.is_dir() else e.parent)]) for s in srcs]
+            progs.append((kind, name, jobs))
+            all_jobs += jobs
+    if not progs:
+        return []
+    print("[user]")
     build_jobs(all_jobs, nproc)
-    for name, jobs in progs:
-        out = BUILD / "user" / "bin" / name
+    for kind, name, jobs in progs:
+        out = BUILD / "user" / kind / name
         cmd = [LD_LLD, "-nostdlib", "-static", "-z", "max-page-size=4096", "-z", "noexecstack",
                "-T", str(script), "-o", str(out), *map(str, crt0), *[str(j.obj) for j in jobs]]
         if lib:
             cmd.append(str(lib))
         ins = [j.obj for j in jobs] + crt0 + ([lib] if lib else []) + [script]
-        link(out, cmd, ins, f"link {name}")
-        outputs.append(out)
+        link(out, cmd, ins, f"link {kind}/{name}")
+        outputs.append((kind, out))
     return outputs
 
 
@@ -343,8 +344,13 @@ def build_initrd(user_bins):
     print("[initrd]")
     out = BUILD / "initrd.img"
     items = []   # (arcname, path)
-    for b in user_bins:
-        items.append(("bin/" + b.name, b))
+    stripped_dir = BUILD / "user-stripped"
+    for kind, b in user_bins:
+        sdst = stripped_dir / kind / b.name
+        if not sdst.exists() or sdst.stat().st_mtime < b.stat().st_mtime:
+            sdst.parent.mkdir(parents=True, exist_ok=True)
+            run([OBJCOPY, "--strip-all", str(b), str(sdst)], f"strip {b.name}")
+        items.append((f"{kind}/{b.name}", sdst))
     root = ROOT / "initrd"
     if root.exists():
         for p in sorted(root.rglob("*")):
@@ -361,7 +367,7 @@ def build_initrd(user_bins):
             ti.uid = ti.gid = 0
             ti.uname = ti.gname = ""
             ti.mtime = int(p.stat().st_mtime)
-            ti.mode = 0o755 if arc.startswith("bin/") else 0o644
+            ti.mode = 0o755 if arc.startswith(("bin/", "sbin/")) else 0o644
             with open(p, "rb") as f:
                 tf.addfile(ti, f)
     stamp.write_text(sig)

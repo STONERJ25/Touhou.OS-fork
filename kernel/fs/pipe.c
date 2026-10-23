@@ -82,7 +82,20 @@ static void pipe_close(File *f) {
     if (dead) kfree(p);
 }
 
-static const FileOps pipe_fops = { pipe_read, pipe_write, pipe_ioctl, pipe_close };
+static int pipe_poll(File *f) {
+    Pipe *p = f->priv;
+    int m = 0;
+    if ((f->flags & O_ACCMODE) == O_RDONLY) {
+        if (pipe_count(p)) m |= POLLIN;
+        if (p->writers == 0) m |= POLLHUP;
+    } else {
+        if (pipe_count(p) < PIPE_SIZE) m |= POLLOUT;
+        if (p->readers == 0) m |= POLLERR;
+    }
+    return m;
+}
+
+static const FileOps pipe_fops = { .read = pipe_read, .write = pipe_write, .ioctl = pipe_ioctl, .close = pipe_close, .poll = pipe_poll };
 static const VNodeOps pipe_vnode_ops = { 0 };
 
 int vfs_pipe(File **rd, File **wr) {
