@@ -156,6 +156,7 @@ static int cmd_raw(Hda *h, u32 cmd, u32 *resp) {
             if ((e >> 32) & 0x10) continue;             /* unsolicited response: not ours */
             if (resp) *resp = (u32)e;
             h->timeouts = 0;
+            wr8(h, R_RIRBSTS, 0x05);                    /* acknowledge: response interrupt flag and overrun */
             return 0;
         }
         udelay(25);
@@ -201,8 +202,10 @@ static bool cmd_rings_init(Hda *h) {
     u8 cs = rd8(h, R_CORBSIZE), rs = rd8(h, R_RIRBSIZE);
     h->corb_n = (cs & 0x40) ? 256 : (cs & 0x20) ? 16 : 2;
     h->rirb_n = (rs & 0x40) ? 256 : (rs & 0x20) ? 16 : 2;
-    wr8(h, R_CORBSIZE, (cs & 0xFC) | (h->corb_n == 256 ? 2 : h->corb_n == 16 ? 1 : 0));
-    wr8(h, R_RIRBSIZE, (rs & 0xFC) | (h->rirb_n == 256 ? 2 : h->rirb_n == 16 ? 1 : 0));
+    u8 want_cs = (u8)((cs & 0xFC) | (h->corb_n == 256 ? 2 : h->corb_n == 16 ? 1 : 0));
+    u8 want_rs = (u8)((rs & 0xFC) | (h->rirb_n == 256 ? 2 : h->rirb_n == 16 ? 1 : 0));
+    if (want_cs != cs) wr8(h, R_CORBSIZE, want_cs);         /* some controllers fix the size and complain about writes */
+    if (want_rs != rs) wr8(h, R_RIRBSIZE, want_rs);
 
     wr8(h, R_CORBCTL, 0);                               /* DMA off while it is programmed */
     wr8(h, R_RIRBCTL, 0);
@@ -221,7 +224,8 @@ static bool cmd_rings_init(Hda *h) {
     wr16(h, R_RIRBWP, 0x8000);
     wr16(h, R_RINTCNT, 1);
     h->rirb_rp = 0;
-    wr8(h, R_RIRBCTL, 0x02);                            /* response DMA on */
+    wr8(h, R_RIRBCTL, 0x03);                            /* response DMA on; the response-count flag is polled and acknowledged
+                                                           after every command (QEMU stops reading commands until it is) */
     wr8(h, R_CORBCTL, 0x02);                            /* command DMA on */
     return true;
 }
@@ -261,13 +265,13 @@ static void read_connections(Hda *h, u32 nid, HdaWidget *w) {
 static bool parse_codec(Hda *h, int addr) {
     h->codec = addr;
     u32 vid = param(h, 0, 0x00);
-    if (!vid || vid == 0xFFFFFFFF) return false;
+    if (!vid || vid == 0xFFFFFFFF) { klog("Nitori", "hda: codec address %d does not answer (%08x)", addr, vid); return false; }
     u32 root = param(h, 0, 0x04);
     u32 fg0 = (root >> 16) & 0xFF, nfg = root & 0xFF;
     int afg = -1;
     for (u32 i = 0; i < nfg && i < 8; i++)
         if ((param(h, fg0 + i, 0x05) & 0xFF) == 1) { afg = (int)(fg0 + i); break; }
-    if (afg < 0) return false;
+    if (afg < 0) { klog("Nitori", "hda: codec %08x has no audio function group (root %08x)", vid, root); return false; }
     u32 sub = param(h, (u32)afg, 0x04);
     h->afg = (u8)afg;
     h->first = (u8)((sub >> 16) & 0xFF);
@@ -520,6 +524,13 @@ static size_t hda_describe(AudioBackend *b, char *buf, size_t cap) {
 
 static bool codec_has_analog_out(Hda *h) {
     collect_pins(h);
+    if (!h->npins) {
+        klog("Nitori", "hda: codec %08x (address %d) has no usable analog output; its widgets:", h->vendor_id, h->codec);
+        for (u32 i = 0; i < h->count && i < 40; i++) {
+            HdaWidget *w = &h->w[i];
+            klog("Nitori", "hda:   0x%02x type %u caps %08x pincap %08x config %08x conns %u", h->first + i, w->type, w->caps, w->pincap, w->pincfg, w->nconn);
+        }
+    }
     return h->npins > 0;
 }
 
