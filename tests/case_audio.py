@@ -312,6 +312,95 @@ def audio_jukebox():
 
 
 @test
+def audio_system_sounds():
+    """System sounds honour the switch: silent with 'nosounds', on with HAKUREI_SOUNDS=on, off with =off; beep -e forces one."""
+    with Qemu(cmdline="text", name="t-audio-snd-off", audio="hda") as vm:                 # the harness adds "nosounds"
+        vm.expect(test_shell.PROMPT, timeout=90)
+        sh(vm, "volume 100")
+        out, rc = sh(vm, "beep -E dialog; echo rc=$?")
+        assert "rc=0" in out, out
+        out, rc = sh(vm, "sleep 1; HAKUREI_SOUNDS=on beep -E dialog; echo rc=$?")        # the environment wins over the command line
+        assert "rc=0" in out, out
+        out, rc = sh(vm, "beep -E nonsense; echo rc=$?")
+        assert "rc=2" in out and "no system sound called" in out, out
+        rate, x = capture(vm)
+    segs = at.segments(x, rate, threshold=0.003, merge_ms=300)
+    assert len(segs) == 1, f"only the HAKUREI_SOUNDS=on bell should be audible, found {segs}"
+    f = at.dominant_freq(at.trimmed(x[segs[0][0]:segs[0][1]], rate, ms=20), rate)
+    assert abs(f - 1318.5) < 15, f"the dialog bell is an E6 (1318 Hz), heard {f:.1f}"
+
+    with Qemu(cmdline="text", name="t-audio-snd-on", audio="hda", sounds=True) as vm:
+        vm.expect(test_shell.PROMPT, timeout=90)
+        sh(vm, "volume 100")
+        sh(vm, "beep -E error")                                                          # on by default when nothing says otherwise
+        sh(vm, "sleep 1; HAKUREI_SOUNDS=off beep -E dialog")                             # silent
+        sh(vm, "sleep 1; HAKUREI_SOUNDS=off beep -e shutdown")                           # -e plays whatever the switch says
+        rate, x = capture(vm)
+    segs = at.segments(x, rate, threshold=0.003, merge_ms=300)
+    assert len(segs) == 2, f"expected the error buzz and the forced shutdown tune, found {segs}"
+    low = at.dominant_freq(at.trimmed(x[segs[0][0]:segs[0][1]], rate, ms=20), rate)
+    assert 150 < low < 240, f"the error sound is two low notes (220 and 165 Hz), heard {low:.1f}"
+    tune = x[segs[1][0]:segs[1][1]]
+    assert at.band_power(tune, rate, 523.25, 25) > 0.1 and (segs[1][1] - segs[1][0]) / rate > 0.7, "the shutdown tune ends on C5"
+
+
+@test
+def audio_desktop_sounds():
+    """The desktop plays the login chime when it opens, and the login screen buzzes at a wrong password."""
+    with Qemu(cmdline="text", name="t-audio-desktop", mem="768M", audio="hda", sounds=True) as vm:
+        from guitools import Gui
+        g = Gui(vm)
+        vm.expect(test_shell.PROMPT, timeout=90)
+        vm.send("volume 100\n")                               # start_desktop() waits for the prompt that follows
+        g.start_desktop()
+        time.sleep(6)
+        rate, x = capture(vm)
+    segs = at.segments(x, rate, threshold=0.003, merge_ms=300)
+    assert segs, "no login chime"
+    chime = x[segs[0][0]:segs[0][1]]
+    assert 0.6 < (len(chime) / rate) < 3.0, f"the chime lasts about a second, not {len(chime) / rate:.1f} s"
+    assert at.band_power(chime, rate, 1046.5, 25) > 0.12, "the login chime ends on a high C"
+
+    with Qemu(cmdline="login", name="t-audio-greeter", mem="768M", audio="hda", sounds=True) as vm:
+        vm.expect(r"opening the login screen", timeout=120)
+        time.sleep(8)
+        vm.type("wrong\n")
+        vm.expect(r"reimu was turned away at the gate", timeout=90)
+        time.sleep(4)
+        rate, x = capture(vm)
+    segs = at.segments(x, rate, threshold=0.003, merge_ms=300)
+    assert segs, "the login screen made no sound for a wrong password"
+    low = at.dominant_freq(at.trimmed(x[segs[-1][0]:segs[-1][1]], rate, ms=20), rate)
+    assert 150 < low < 240, f"the error sound is two low notes, heard {low:.1f} Hz"
+
+
+@test
+def audio_panel_volume():
+    """The speaker in the panel: click it for the slider, drag the slider and the master volume follows; Mute mutes."""
+    from guitools import Gui
+    with Qemu(cmdline="text", name="t-audio-panel", mem="768M", audio="hda") as vm:
+        g = Gui(vm)
+        g.start_desktop()
+        out = g.sh("volume 60")
+        g.click(919, 750)                                     # the speaker in the tray
+        time.sleep(1.5)
+        vm.screenshot(BUILD / "t-audio-panel.png")
+        g.click(869, 692)                                     # a quarter of the way along the slider in the popup
+        time.sleep(1.5)
+        out = g.sh("volume")
+        m = re.search(r"Master volume: (\d+)%", out)
+        assert m and 15 <= int(m.group(1)) <= 35, f"the slider should have set about 25%, volume says: {out!r}"
+        g.click(862, 715)                                     # Mute
+        time.sleep(1.5)
+        out = g.sh("volume")
+        assert "(muted)" in out, out
+        g.click(862, 715)                                     # Unmute
+        time.sleep(1.5)
+        out = g.sh("volume")
+        assert "muted" not in out and "Master volume" in out, out
+
+
+@test
 def audio_ac97_tone():
     """AC'97 fallback: a card without HDA works through the same /dev/audio, at the right pitch and level."""
     with Qemu(cmdline="text", name="t-audio-ac97", audio="ac97") as vm:

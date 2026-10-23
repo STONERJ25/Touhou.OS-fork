@@ -38,10 +38,10 @@ APPLET(beep) {
     unsigned rate = 48000, channels = 2, bits = 16;
     AudioWave wave = AUDIO_SINE;
     bool noise = false, wait = true;
-    const char *wavfile = NULL, *event = NULL;
+    const char *wavfile = NULL, *event = NULL, *polite = NULL;
     int c;
     optind = 1;
-    while ((c = getopt(argc, argv, "f:l:a:w:r:c:b:o:e:n")) != -1) {
+    while ((c = getopt(argc, argv, "f:l:a:w:r:c:b:o:e:E:n")) != -1) {
         switch (c) {
         case 'f': freq = atof(optarg); break;
         case 'l': ms = atoi(optarg); break;
@@ -59,10 +59,11 @@ APPLET(beep) {
         case 'b': bits = (unsigned)atoi(optarg); break;
         case 'o': wavfile = optarg; break;
         case 'e': event = optarg; break;
+        case 'E': polite = optarg; break;
         case 'n': wait = false; break;
         default:
             fprintf(stderr, "usage: beep [-f HZ] [-l MS] [-a PERCENT] [-w sine|square|triangle|saw|noise] [-r RATE] [-c 1|2] [-b 8|16|24|32] [-o FILE.wav] [-n]\n"
-                            "       beep -e login|dialog|error|shutdown\n");
+                            "       beep -e login|dialog|error|shutdown [-o FILE.wav]     (-E NAME: the same, but silent when the system sounds are off)\n");
             return 2;
         }
     }
@@ -75,6 +76,14 @@ APPLET(beep) {
         return 2;
     }
 
+    if (polite) {                                                   /* what the desktop does: honour the switch */
+        int e = audio_event_by_name(polite);
+        if (e < 0) { kb_error("no system sound called '%s' (login, dialog, error, shutdown)", polite); return 2; }
+        if (!audio_events_enabled()) return 0;
+        int rc = audio_event_wait((AudioEvent)e);
+        if (rc) { no_device("cannot play", rc); return 1; }
+        return 0;
+    }
     if (event) {
         int e = audio_event_by_name(event);
         if (e < 0) { kb_error("no system sound called '%s' (login, dialog, error, shutdown)", event); return 2; }

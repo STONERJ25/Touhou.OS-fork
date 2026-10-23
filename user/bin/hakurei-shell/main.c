@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <gensokyo.h>
+#include <audio.h>
 
 Shell G;
 
@@ -22,7 +23,7 @@ static void event_hook(KApp *app, const FairyEvent *ev, void *user) {
         case FH_TASKS: launch("spellmgr"); break;
         case FH_LOCK: menu_close(); launch("hakurei-lock"); break;
         case FH_POWER:                                                  /* the power button: ask first, and a second press means it */
-            if (G.shutdown) { sync(); gap_reboot(REBOOT_POWEROFF); }
+            if (G.shutdown) { audio_event_wait(AUDIO_EV_SHUTDOWN); sync(); gap_reboot(REBOOT_POWEROFF); }
             else shutdown_open();
             break;
         default: break;
@@ -44,6 +45,7 @@ int main(void) {
     fairy_register_shell(kapp_display(G.app));
     fairy_subscribe_windows(kapp_display(G.app));
     panel_open();
+    audio_event(AUDIO_EV_LOGIN);                                      /* the shrine bell: the desktop is open (silent without sound hardware, or with sounds off) */
     int rc = kapp_run(G.app);
     kapp_destroy(G.app);
     return rc;

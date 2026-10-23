@@ -13,6 +13,7 @@
 #include <grp.h>
 #include <shadow.h>
 #include <gensokyo.h>
+#include <audio.h>
 #include <sys/utsname.h>
 
 #define MAX_RESIDENTS 8
@@ -91,6 +92,7 @@ static void attempt(void) {
     gap_log(note);
     memset(g_pw, 0, sizeof g_pw);
     g_msg = "Login incorrect";
+    audio_event(AUDIO_EV_ERROR);
     g_fail_ms = k_now_ms();
     g_refocus = true;
 }
@@ -190,12 +192,12 @@ static void greeter_draw(KApp *app, KUI *ui, void *user) {
         else if (k_key_pressed(ui, KEY_UP) || k_key_pressed(ui, KEY_TAB)) select_resident(g_sel - 1);
     }
 
-    if (k_key_pressed(ui, KEY_POWER)) { sync(); gap_reboot(REBOOT_POWEROFF); }     /* the machine's power button */
+    if (k_key_pressed(ui, KEY_POWER)) { audio_event_wait(AUDIO_EV_SHUTDOWN); sync(); gap_reboot(REBOOT_POWEROFF); }     /* the machine's power button */
 
     /* footer: a way out to the text console, and the power buttons */
     if (k_button_icon(ui, kr(16, cv->h - 48, 144, 32), KI_TERMINAL, "Text console")) kapp_quit(g_app, GREETER_EXIT_TEXT);
-    if (k_button_icon(ui, kr(cv->w - 280, cv->h - 48, 128, 32), KI_POWER, "Shut down")) { sync(); gap_reboot(REBOOT_POWEROFF); }
-    if (k_button_icon(ui, kr(cv->w - 144, cv->h - 48, 128, 32), KI_REFRESH, "Restart")) { sync(); gap_reboot(REBOOT_RESTART); }
+    if (k_button_icon(ui, kr(cv->w - 280, cv->h - 48, 128, 32), KI_POWER, "Shut down")) { audio_event_wait(AUDIO_EV_SHUTDOWN); sync(); gap_reboot(REBOOT_POWEROFF); }
+    if (k_button_icon(ui, kr(cv->w - 144, cv->h - 48, 128, 32), KI_REFRESH, "Restart")) { audio_event_wait(AUDIO_EV_SHUTDOWN); sync(); gap_reboot(REBOOT_RESTART); }
 }
 
 int main(void) {
