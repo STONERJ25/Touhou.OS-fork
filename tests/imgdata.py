@@ -11,6 +11,8 @@ import zlib
 
 from PIL import Image, ImageOps
 
+from jpegenc import encode_jpeg
+
 
 def png_chunk(t, data):
     return struct.pack(">I", len(data)) + t + data + struct.pack(">I", zlib.crc32(t + data) & 0xFFFFFFFF)
@@ -271,6 +273,21 @@ def build_corpus():
     b = io.BytesIO()
     photo(70, 50, seed=8).save(b, "JPEG", quality=60, subsampling=2)
     pillow("jpeg-70x50-q60.jpg", b.getvalue(), "JPEG")
+    for name, kw in (("blocks2", dict(restart_marker_blocks=2)), ("rows1-420", dict(restart_marker_rows=1, subsampling=2)),
+                     ("prog-blocks3", dict(restart_marker_blocks=3, progressive=True))):
+        b = io.BytesIO()
+        photo(70, 50, seed=9).save(b, "JPEG", quality=80, **kw)
+        pillow(f"jpeg-restart-{name}.jpg", b.getvalue(), "JPEG")
+    # sampling layouts Pillow cannot write, made with tests/jpegenc.py: 4:4:0, 4:1:1, 4:1:0, chroma that is only half as tall, mixed
+    odd = photo(37, 29, seed=4)
+    for name, samp, rst in (("s440", [(1, 2), (1, 1), (1, 1)], 0), ("s411", [(4, 1), (1, 1), (1, 1)], 0), ("s410", [(4, 2), (1, 1), (1, 1)], 0),
+                            ("chroma-h1v2", [(2, 2), (2, 1), (2, 1)], 0), ("mixed", [(2, 2), (1, 2), (2, 1)], 0), ("s440-restart3", [(1, 2), (1, 1), (1, 1)], 3)):
+        pillow(f"jpeg-hand-{name}.jpg", encode_jpeg(odd, samp, rst), "JPEG")
+    # tiny pictures: the chroma plane is two columns wide or less (no fancy upsampling), one column, one row
+    for w, h, sub in ((3, 17, 2), (3, 17, 1), (1, 9, 2), (5, 9, 2), (2, 2, 2), (17, 1, 2)):
+        b = io.BytesIO()
+        photo(w, h, seed=6).save(b, "JPEG", quality=90, subsampling=sub)
+        pillow(f"jpeg-tiny-{w}x{h}-s{sub}.jpg", b.getvalue(), "JPEG")
     for orient in (3, 6, 8):
         b = io.BytesIO()
         ex = Image.Exif()
@@ -321,6 +338,10 @@ def build_corpus():
     data = struct.pack("<2sIHHI", b"BM", 14 + 40 + 16 + len(rle), 0, 0, 14 + 40 + 16) + struct.pack("<IiiHHIIiiII", 40, 4, 2, 1, 8, 1, len(rle), 2835, 2835, 4, 0)
     data += b"".join(bytes((b_, g, r, 0)) for r, g, b_ in bpal) + rle
     add("bmp-rle8.bmp", data, "BMP", 4, 2, False, b"".join(bytes((*c, 255)) for c in [bpal[0], bpal[1], bpal[2], bpal[3]] + [bpal[1]] * 4))
+    rle4 = bytes([4, 0x12, 0, 0, 0, 3, 0x12, 0x30, 1, 0x30, 0, 1])      # bottom row: run 1,2,1,2; top row: absolute 1,2,3 then a run of one pixel (3)
+    data = struct.pack("<2sIHHI", b"BM", 14 + 40 + 64 + len(rle4), 0, 0, 14 + 40 + 64) + struct.pack("<IiiHHIIiiII", 40, 4, 2, 1, 4, 2, len(rle4), 2835, 2835, 16, 0)
+    data += b"".join(bytes((b_, g, r, 0)) for r, g, b_ in bpal + [(0, 0, 0)] * 12) + rle4
+    add("bmp-rle4.bmp", data, "BMP", 4, 2, False, b"".join(bytes((*c, 255)) for c in [bpal[1], bpal[2], bpal[3], bpal[3]] + [bpal[1], bpal[2], bpal[1], bpal[2]]))
     vals = [[0xF800, 0x07E0, 0x001F], [0xFFFF, 0x0000, 0x8410]]
     body = b"".join(b"".join(struct.pack("<H", v) for v in r) + b"\0\0" for r in vals)
     data = struct.pack("<2sIHHI", b"BM", 14 + 40 + 12 + len(body), 0, 0, 14 + 40 + 12) + struct.pack("<IiiHHIIiiII", 40, 3, -2, 1, 16, 3, len(body), 2835, 2835, 0, 0) + struct.pack("<III", 0xF800, 0x07E0, 0x001F) + body

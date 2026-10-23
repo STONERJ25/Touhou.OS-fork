@@ -21,7 +21,7 @@ import zlib
 
 import harness
 import test_shell
-from guitools import Gui, near
+from guitools import Gui, near, SHRINE_RED, PAPER
 from harness import Qemu, BUILD
 from imgdata import make_png, expect_png, photo, build_corpus, mutate, clear_transparent, make_gif
 from PIL import Image, ImageOps
@@ -326,6 +326,30 @@ def media_archives():
     files["media/arch/cut.tar"] = files["media/arch/gnu.tar"][:900]
     files["media/arch/cut.zip"] = files["media/arch/host.zip"][:300]
     files["media/arch/hello.txt"] = text
+    # hostile archives: names that climb out of the target directory, absolute names, a symlink followed by a file written through it
+    evil = io.BytesIO()
+    with tarfile.open(fileobj=evil, mode="w", format=tarfile.GNU_FORMAT) as tf:
+        def add(name, data=b"bad\n", kind=tarfile.REGTYPE, link=""):
+            ti = tarfile.TarInfo(name)
+            ti.type = kind
+            ti.size = 0 if kind != tarfile.REGTYPE else len(data)
+            ti.linkname = link
+            ti.mode = 0o644
+            ti.mtime = MTIME
+            tf.addfile(ti, io.BytesIO(data) if kind == tarfile.REGTYPE else None)
+        add("good.txt", b"good\n")
+        add("../escape.txt")
+        add("a/../../escape2.txt")
+        add("/tmp/abs-escape.txt")
+        add("lnk", kind=tarfile.SYMTYPE, link="/tmp/xe")
+        add("lnk/pwn.txt")
+    files["media/arch/evil.tar"] = evil.getvalue()
+    ez = io.BytesIO()
+    with zipfile.ZipFile(ez, "w") as zf:
+        zf.writestr("ok.txt", b"fine\n")
+        zf.writestr("../zipescape.txt", b"bad\n")
+        zf.writestr("/tmp/zipabs.txt", b"bad\n")
+    files["media/arch/evil.zip"] = ez.getvalue()
     esp = media_esp(files, "esp-media-arch")
     with Qemu(cmdline="text", name="t-media-arch", esp=esp, mem="768M") as vm:
         vm.expect(test_shell.PROMPT, timeout=120)
@@ -364,6 +388,16 @@ def media_archives():
             assert "st=1" in out and "zc=1" in out, f"{what} gzip should be refused: {out}"
         out, rc = run("tar -tf /media/arch/cut.tar > /dev/null; echo tar=$?; unzip -t /media/arch/cut.zip; echo zip=$?; echo notazip > /tmp/n.zip; unzip -t /tmp/n.zip; echo nz=$?")
         assert "tar=2" in out and "zip=" in out and "zip=0" not in out and "nz=" in out and "nz=0" not in out, out
+        # --- hostile archives stay inside the directory they are unpacked into
+        out, rc = run("rm -rf /tmp/xe /tmp/abs-escape.txt /tmp/zipabs.txt && mkdir -p /tmp/xe/inner && tar -xf /media/arch/evil.tar -C /tmp/xe/inner; echo st=$?; "
+                      "ls /tmp/xe /tmp/xe/inner; ls /tmp/abs-escape.txt /tmp/xe/escape.txt /tmp/xe/escape2.txt /tmp/xe/pwn.txt 2>&1")
+        assert "good.txt" in out and "st=2" in out, out
+        assert out.count("cannot access") == 4, f"nothing may be written outside the directory (all four stray paths must be missing): {out}"
+        assert "unsafe or empty name" in out and "refusing to extract through a symbolic link" in out, f"the refusals should be explained: {out}"
+        out, rc = run("ls /tmp/xe/inner/tmp; cat /tmp/xe/inner/tmp/abs-escape.txt; ls /tmp/xe/pwn.txt 2>&1")
+        assert "abs-escape.txt" in out and "bad" in out and out.count("cannot access") == 1, out         # the absolute name lands inside; nothing goes through the symlink
+        out, rc = run("mkdir -p /tmp/xe/zinner && unzip -d /tmp/xe/zinner /media/arch/evil.zip; echo st=$?; ls /tmp/xe/zinner; ls /tmp/xe/zipescape.txt /tmp/zipabs.txt 2>&1")
+        assert "ok.txt" in out and "st=1" in out and out.count("cannot access") == 2, out                 # neither stray file exists
         # --- archives made in the guest are read by Python
         out, rc = run("rm -rf /tmp/src && mkdir -p /tmp/src/a/b && echo hello > /tmp/src/a/hello.txt && echo deep > /tmp/src/a/b/deep.txt && ln -s hello.txt /tmp/src/a/link && chmod 750 /tmp/src/a/b "
                       "&& head -c 5000 /dev/zero > /tmp/src/zeros.bin && cp /media/arch/hello.txt /tmp/src/big.txt && cd /tmp && tar -czf g.tgz src && tar -cf g.tar src && zip -rq g.zip src && gzip -c /media/arch/hello.txt > g.gz && echo made")
@@ -428,6 +462,44 @@ def media_thumbnails():
         assert "none" in out and "st=1" in out, out
         out, rc = run("gallery --thumb 32 /media/t/missing.png; echo st=$?")
         assert "none" in out and "st=1" in out, out
+
+
+@harness.test
+def media_utimes_fat():
+    """tar -x and unzip restore modification times on a FAT volume: utimes() goes through to the directory entry, so the checker that reads the image after the guest is gone sees them."""
+    from case_storage import Image, hv_part, Guest, MIB
+    t1, t2 = MTIME, MTIME + 86400 + 6                    # even seconds: FAT keeps two-second steps
+    tb = io.BytesIO()
+    with tarfile.open(fileobj=tb, mode="w", format=tarfile.USTAR_FORMAT) as tf:
+        for name, data, mt in (("kept.txt", b"kept\n", t1), ("sub/deep.txt", b"deep\n" * 100, t2)):
+            ti = tarfile.TarInfo(name)
+            ti.size = len(data)
+            ti.mtime = mt
+            ti.mode = 0o644
+            tf.addfile(ti, io.BytesIO(data))
+    zb = io.BytesIO()
+    with zipfile.ZipFile(zb, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(zipfile.ZipInfo("zipped.txt", (2023, 11, 15, 22, 13, 26)), b"zipped\n")
+    esp = media_esp({"media/t.tar": tb.getvalue(), "media/t.zip": zb.getvalue()}, "esp-media-fat")
+    with Image("media-fat", 64 * MIB, [hv_part({})]) as img:
+        with Qemu(cmdline="text user=root", disk=img.path, esp=esp, name="t-media-fat", mem="512M") as vm:
+            vm.expect(r"root@gensokyo \S+ # ", timeout=120)
+            g = Guest(vm, True)
+            g.ok("tar -xf /media/t.tar -C /HumanVillage && unzip -q -d /HumanVillage /media/t.zip && ls -l /HumanVillage /HumanVillage/sub")
+            out = g.ok("stat /HumanVillage/kept.txt")
+            assert "2023-11-14 22:13:20" in out, f"the guest should see the restored time at once: {out}"
+            assert g.poweroff() is not None
+        img.check()
+        r = img.volume(1)
+        try:
+            kept, deep, zipped = r.find("/kept.txt"), r.find("/sub/deep.txt"), r.find("/zipped.txt")
+            assert kept and deep and zipped, "the extracted files must be on the disk"
+            assert kept.mtime == t1, f"kept.txt: {kept.mtime} on disk, expected {t1}"
+            assert deep.mtime == t2, f"sub/deep.txt: {deep.mtime} on disk, expected {t2}"
+            assert zipped.mtime == 1700086406, f"zipped.txt: {zipped.mtime} on disk (the zip's DOS time 2023-11-15 22:13:26, read in the guest's UTC)"
+            assert r.read_file("/sub/deep.txt") == b"deep\n" * 100
+        finally:
+            r.close()
 
 
 # ---------------------------------------------------------------------------------------------- tests: the desktop programs
@@ -621,8 +693,10 @@ def media_screenshot():
         g.start_desktop()
         g.sh("rm -f /tmp/screenshot.ppm; ls ~/Pictures 2>&1 | head -2")
         g.key("f12", ctrl=True)
-        listing = wait_for(lambda: g.sh("ls ~/Pictures/").strip() if "Screenshot-" in g.sh("ls ~/Pictures/ 2>&1") else "", 180, what="the screenshot in ~/Pictures")
-        name = re.search(r"Screenshot-\d{4}-\d{2}-\d{2}-\d{6}\.png", listing)
+        # the picture is written as Screenshot-...png.part and renamed when it is complete: wait for the final name
+        done = r"Screenshot-\d{4}-\d{2}-\d{2}-\d{6}\.png(?!\.part)"
+        listing = wait_for(lambda: (lambda ls: ls.strip() if re.search(done, ls) else "")(g.sh("ls ~/Pictures/ 2>&1")), 180, what="the screenshot in ~/Pictures")
+        name = re.search(done, listing)
         assert name, f"the file name should carry the date and time: {listing!r}"
         out = wait_for(lambda: g.sh(f"imginfo -s ~/Pictures/{name.group(0)} /tmp/screenshot.ppm") if "ppm" in g.sh("ls /tmp/screenshot.ppm 2>&1") else "", 120, what="/tmp/screenshot.ppm")
         lines = LINE.findall(out)
@@ -656,4 +730,40 @@ def media_screenshot():
         wait_for(lambda: near(g.pixel(300, 300), (255, 0, 0), 12) and near(g.pixel(900, 300), (0, 0, 255), 12) and not near(g.pixel(500, 60), (255, 0, 0), 40), 120, what="fit wallpaper")
         g.sh("wallpaper -m center")
         wait_for(lambda: not near(g.pixel(300, 300), (255, 0, 0), 40), 120, what="center wallpaper (a 4x2 dot in the middle)")
+        g.sh("wallpaper -c")
+
+
+@gui_test
+def media_panel_wallpaper():
+    """Control Panel > Appearance > Wallpaper: a placement button, Night scene and Choose picture... (the file dialog) change ~/.config/hakurei/wallpaper, and the desktop follows."""
+    img = Image.new("RGB", (4, 2))
+    for x in range(4):
+        for y in range(2):
+            img.putpixel((x, y), (255, 0, 0) if x < 2 else (0, 0, 255))
+    b = io.BytesIO()
+    img.save(b, "PNG")
+    esp = media_esp({"media/rb.png": b.getvalue()}, "esp-media-panel")
+    top, mid, BLUE = (1000, 100), (1000, 300), (0, 0, 255)   # right of the panel window (it opens at x = 40 and ends before 930), clear of the icons: a bar above a fitted 2:1 picture, blue once stretched
+    with Qemu(cmdline="text", name="t-media-panel", esp=esp, mem="768M") as vm:
+        g = watch(Gui(vm))
+        g.start_desktop()
+        g.sh("wallpaper -m fit /media/rb.png")
+        g.sh("kappa-panel --trace --pane appearance &")
+        vm.expect(r"kappa-panel: ready", timeout=180)
+        wait_for(lambda: near(g.pixel(140, 340), SHRINE_RED, 60) and near(g.pixel(600, 250), PAPER, 16), 180, what="the Control Panel window (Appearance selected in the sidebar)")
+        wait_for(lambda: not near(g.pixel(*top), BLUE, 60) and near(g.pixel(*mid), BLUE, 30), 120, what="the fitted wallpaper (a bar above, blue on the right)")
+        g.click(686, 217)                                   # the "Stretch" radio button of the Placement row (the panel is the first window: content at 44, 56)
+        vm.expect(r"kappa-panel: wallpaper /media/rb.png stretch", timeout=180)
+        assert g.sh("cat ~/.config/hakurei/wallpaper").split()[-2:] == ["/media/rb.png", "stretch"], "the setting file should hold the picture and the placement"
+        wait_for(lambda: near(g.pixel(*top), BLUE, 30), 120, what="the stretched wallpaper")
+        g.click(505, 185)                                   # "Night scene"
+        vm.expect(r"kappa-panel: wallpaper \(none\)", timeout=180)
+        assert "built-in night scene" in g.sh("wallpaper")
+        wait_for(lambda: not near(g.pixel(*top), BLUE, 60), 120, what="the night scene")
+        g.click(346, 185)                                   # "Choose picture...": the file dialog opens, the name field has the focus
+        wait_for(lambda: near(g.pixel(500, 166), SHRINE_RED, 70), 120, what="the file dialog")
+        g.type("/media/rb.png\n")
+        vm.expect(r"kappa-panel: wallpaper /media/rb.png cover", timeout=180)
+        assert "/media/rb.png (cover)" in g.sh("wallpaper")
+        wait_for(lambda: near(g.pixel(*top), BLUE, 30), 120, what="the chosen wallpaper (covering the screen)")
         g.sh("wallpaper -c")

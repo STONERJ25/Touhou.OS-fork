@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from imgdata import make_png, expect_png, photo, build_corpus, mutate  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent.parent
-OUT = REPO / "build" / "host-img"
+OUT = REPO / "build" / os.environ.get("IMGTEST_DIR", "host-img")      # a separate IMGTEST_DIR lets two runs go side by side
 OUT.mkdir(parents=True, exist_ok=True)
 TOOL = OUT / "imgtool"
 QUICK = len(sys.argv) > 1 and sys.argv[1] == "quick"
@@ -369,6 +369,46 @@ def test_writers():
 
 # ---------------------------------------------------------------------------------------------- hostile files
 
+def test_scale_quality():
+    """Bilinear upscaling and integer-ratio area shrinking against Pillow (which uses the same definitions there)."""
+    base = photo(12, 9, seed=4)
+    base.save(OUT / "sq.png")
+    for (nw, nh) in ((24, 18), (30, 20), (13, 10)):
+        rc, out, err = tool("scale", OUT / "sq.png", OUT / "sc.rgba", nw, nh, 1)
+        got = (OUT / "sc.rgba").read_bytes()
+        ref = base.convert("RGBA").resize((nw, nh), Image.BILINEAR).tobytes()
+        worst = max(abs(a - b) for a, b in zip(got, ref))
+        check(f"bilinear {nw}x{nh} vs Pillow", rc == 0 and worst <= 2, f"max difference {worst}")
+    big = photo(40, 30, seed=5)
+    big.save(OUT / "sq.png")
+    for (nw, nh) in ((20, 15), (10, 10), (8, 6), (40, 15)):
+        rc, out, err = tool("scale", OUT / "sq.png", OUT / "sc.rgba", nw, nh, 2)
+        got = (OUT / "sc.rgba").read_bytes()
+        ref = big.convert("RGBA").resize((nw, nh), Image.BOX).tobytes()
+        worst = max(abs(a - b) for a, b in zip(got, ref))
+        check(f"area {nw}x{nh} vs Pillow BOX", rc == 0 and worst <= 1, f"max difference {worst}")
+    # nearest: every output pixel is an input pixel, and a 2x upscale repeats each one
+    rc, out, err = tool("scale", OUT / "sq.png", OUT / "sc.rgba", 80, 60, 0)
+    got = (OUT / "sc.rgba").read_bytes()
+    ref = big.convert("RGBA").resize((80, 60), Image.NEAREST).tobytes()
+    check("nearest 2x vs Pillow", rc == 0 and got == ref)
+
+
+def test_corpus():
+    """Every file of the guest test's corpus, decoded under the sanitizers, against the same expected checksums."""
+    files, expect = build_corpus()
+    for path, data in sorted(files.items()):
+        name = path.split("/")[-1]
+        (OUT / "c.bin").write_bytes(data)
+        r = ours(OUT / "c.bin")
+        fmt, w, h, alpha, frames, crc = expect[name]
+        if not check(f"corpus {name} decodes", r is not None):
+            continue
+        check(f"corpus {name}", (r[0], r[1]) == (w, h) and zlib.crc32(r[3]) == crc, f"{(r[0], r[1])} vs {(w, h)}, crc {zlib.crc32(r[3]):08x} vs {crc:08x}")
+        rc, out, err = tool("info", OUT / "c.bin")
+        check(f"corpus {name} probe", out.split()[1:3] == [str(w), str(h)] and (alpha is None or out.split()[3] == ("1" if alpha else "0")) and int(out.split()[4]) == frames, out)
+
+
 def test_fuzz():
     rnd = random.Random(int(os.environ.get("FUZZ_SEED", "2024")))
     corpus = [data for data in build_corpus()[0].values() if len(data) > 8]       # every picture the guest test decodes
@@ -424,7 +464,9 @@ def test_fuzz():
 
 def main():
     build()
-    tests = (test_png, test_jpeg, test_gif, test_bmp_pnm_tga, test_writers, test_fuzz)
+    tests = (test_png, test_jpeg, test_gif, test_bmp_pnm_tga, test_writers, test_scale_quality, test_corpus, test_fuzz)
+    if os.environ.get("ONLY") == "corpus":
+        tests = (test_corpus, test_scale_quality)
     if os.environ.get("ONLY") == "fuzz":                      # ONLY=fuzz FUZZ_N=6000 FUZZ_SEED=7 for a long hostile-input run
         tests = (test_fuzz,)
     for fn in tests:
