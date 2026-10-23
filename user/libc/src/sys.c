@@ -147,7 +147,15 @@ int tcgetattr(int fd, struct termios *t) { return ioctl(fd, TCGETS, t); }
 int tcsetattr(int fd, int when, const struct termios *t) {
     return ioctl(fd, when == TCSANOW ? TCSETS : when == TCSADRAIN ? TCSETSW : TCSETSF, t);
 }
-char *ttyname(int fd) { return isatty(fd) ? "/dev/console" : NULL; }
+char *ttyname(int fd) {
+    static char name[80];
+    char n[64];
+    if (!isatty(fd)) return NULL;
+    memset(n, 0, sizeof n);
+    if (ioctl(fd, TIOCGNAME, n) < 0 || !n[0]) strcpy(n, "console");
+    snprintf(name, sizeof name, "/dev/%s", n);
+    return name;
+}
 
 /* ---------------------------------------------------------------- processes */
 
@@ -158,7 +166,7 @@ pid_t getpgid(pid_t p) { return (pid_t)__ret(__sc1(SYS_getpgid, p)); }
 pid_t getpgrp(void) { return getpgid(0); }
 int setpgid(pid_t p, pid_t g) { return (int)__ret(__sc2(SYS_setpgid, p, g)); }
 pid_t setsid(void) { return (pid_t)__ret(__sc0(SYS_setsid)); }
-int tcsetpgrp(int fd, pid_t pg) { (void)fd; return (int)__ret(__sc1(SYS_tcsetpgrp, pg)); }
+int tcsetpgrp(int fd, pid_t pg) { return ioctl(fd, TIOCSPGRP, &pg); }
 pid_t tcgetpgrp(int fd) { int pg = 0; return ioctl(fd, TIOCGPGRP, &pg) < 0 ? -1 : pg; }
 uid_t getuid(void) { return (uid_t)__sc0(SYS_getuid); }
 uid_t geteuid(void) { return getuid(); }

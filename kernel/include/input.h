@@ -31,6 +31,7 @@ u8   keyboard_modifiers(void);          /* MOD_* bits */
 void input_key(u8 code, bool down);                                  /* code: KEY_* from keys.h; repeat is generated here */
 void input_mouse(int dx, int dy, int wheel, u8 buttons);             /* dy > 0 moves down; buttons: absolute state */
 void input_tick(void);                                               /* 1 kHz, from the timer interrupt (software key repeat) */
+void input_kill_grabber(void);                                       /* Ctrl+Alt+Backspace while the keyboard is grabbed */
 
 /* Mouse state, for in-kernel consumers and the window server */
 typedef struct {

@@ -141,6 +141,7 @@ paddr_t pmm_alloc(unsigned order) {
     }
     g_pages[pfn].order = (u8)order;
     g_pages[pfn].flags |= PG_USED;
+    g_pages[pfn].refcount = 1;
     g_free_pages -= 1UL << order;
     irq_restore(f);
     return (paddr_t)pfn << PAGE_SHIFT;
@@ -152,6 +153,7 @@ void pmm_free(paddr_t p, unsigned order) {
     if (pfn >= g_max_pfn || (pfn & ((1UL << order) - 1))) panic("pmm_free: bad block %#lx order %u", (unsigned long)p, order);
     if (g_pages[pfn].flags & PG_FREE) panic("pmm_free: double free of %#lx", (unsigned long)p);
     g_pages[pfn].flags &= (u8)~(PG_USED | PG_SLAB | PG_LARGE);
+    g_pages[pfn].refcount = 0;
     g_free_pages += 1UL << order;
     while (order < PMM_MAX_ORDER) {
         u64 buddy = pfn ^ (1UL << order);
@@ -174,7 +176,32 @@ paddr_t pmm_alloc_page_zeroed(void) {
     return p;
 }
 
-void pmm_free_page(paddr_t p) { pmm_free(p, 0); }
+/* Single pages are reference counted so a page can be shared (tmpfs pages mapped into several processes): the page goes
+ * back to the allocator when the last reference is dropped. Larger blocks are never shared and use pmm_free directly. */
+void pmm_free_page(paddr_t p) {
+    u64 f = irq_save();
+    Page *pg = pmm_page(p);
+    if (pg && pg->refcount > 1) {
+        pg->refcount--;
+        irq_restore(f);
+        return;
+    }
+    irq_restore(f);
+    pmm_free(p, 0);
+}
+
+void pmm_get_page(paddr_t p) {
+    u64 f = irq_save();
+    Page *pg = pmm_page(p);
+    if (pg) pg->refcount++;
+    irq_restore(f);
+}
+
+/* True for an allocated page of ordinary RAM (as opposed to device memory such as the framebuffer or a BAR). */
+bool pmm_page_managed(paddr_t p) {
+    Page *pg = pmm_page(p);
+    return pg && (pg->flags & PG_USED) && !(pg->flags & PG_RESERVED);
+}
 
 u64 pmm_total_pages(void) { return g_total_pages; }
 u64 pmm_free_pages_count(void) { return g_free_pages; }

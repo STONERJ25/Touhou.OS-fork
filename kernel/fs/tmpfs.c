@@ -348,6 +348,38 @@ static int tmp_truncate(VNode *v, u64 size) {
     return 0;
 }
 
+/* Shared mappings of a file: hand out the file's own pages (allocated on demand, zero-filled). The mapping takes a page
+ * reference, so truncating or deleting the file while it is mapped cannot pull the memory out from under the mapper. */
+static int tmp_mmap_phys(VNode *v, u64 off, paddr_t *phys) {
+    if (!S_ISREG(v->mode)) return -ENODEV;
+    TmpNode *t = v->priv;
+    TmpFs *fs = fs_of(v);
+    int rc = 0;
+    mutex_lock(&fs->lock);
+    u64 idx = off >> PAGE_SHIFT;
+    if (off >= ALIGN_UP(v->size, PAGE_SIZE)) rc = -EINVAL;
+    else {
+        if (idx >= t->file.cap) {
+            u32 ncap = (u32)MAX(idx + 1, (u64)t->file.cap * 2);
+            u8 **np = krealloc(t->file.pages, ncap * sizeof(u8 *));
+            if (!np) rc = -ENOMEM;
+            else {
+                memset(np + t->file.cap, 0, (ncap - t->file.cap) * sizeof(u8 *));
+                t->file.pages = np;
+                t->file.cap = ncap;
+            }
+        }
+        if (!rc && !t->file.pages[idx]) {
+            paddr_t p = g_pages_used > pmm_total_pages() / 2 ? 0 : pmm_alloc_page_zeroed();
+            if (!p) rc = -ENOMEM;
+            else { t->file.pages[idx] = phys_to_virt(p); g_pages_used++; }
+        }
+        if (!rc) *phys = virt_to_phys_hhdm(t->file.pages[idx]);
+    }
+    mutex_unlock(&fs->lock);
+    return rc;
+}
+
 static ssize_t tmp_readlink(VNode *v, char *buf, size_t n) {
     TmpNode *t = v->priv;
     size_t len = MIN(strlen(t->link.target), n);
@@ -369,7 +401,7 @@ static void tmp_release(VNode *v) {
 }
 
 static const VNodeOps tmp_ops = {
-    .read = tmp_read, .write = tmp_write, .truncate = tmp_truncate,
+    .read = tmp_read, .write = tmp_write, .truncate = tmp_truncate, .mmap_phys = tmp_mmap_phys,
     .lookup = tmp_lookup, .create = tmp_create, .mkdir = tmp_mkdir, .symlink = tmp_symlink,
     .unlink = tmp_unlink, .rmdir = tmp_rmdir, .rename = tmp_rename, .readdir = tmp_readdir,
     .readlink = tmp_readlink, .release = tmp_release,

@@ -5,6 +5,7 @@
 #include "tty.h"
 #include "random.h"
 #include "ktime.h"
+#include "process.h"
 
 static VNode *g_devfs_root;
 
@@ -45,6 +46,32 @@ int devfs_register(const char *path, u32 mode, const VNodeOps *ops, void *priv, 
     return rc;
 }
 
+/* Removes a node created by devfs_register (used for pseudo-terminal slaves, which come and go). */
+int devfs_unregister(const char *path) {
+    if (!g_devfs_root) return -ENODEV;
+    VNode *dir = g_devfs_root;
+    vnode_get(dir);
+    char comp[GNAME_MAX + 1];
+    const char *p = path;
+    for (;;) {
+        const char *slash = strchr(p, '/');
+        size_t n = slash ? (size_t)(slash - p) : strlen(p);
+        if (n == 0 || n > GNAME_MAX) { vnode_put(dir); return -EINVAL; }
+        memcpy(comp, p, n);
+        comp[n] = 0;
+        if (!slash) break;
+        VNode *sub = NULL;
+        int rc = dir->ops->lookup(dir, comp, &sub);
+        vnode_put(dir);
+        if (rc) return rc;
+        dir = sub;
+        p = slash + 1;
+    }
+    int rc = dir->ops->unlink ? dir->ops->unlink(dir, comp) : -EPERM;
+    vnode_put(dir);
+    return rc;
+}
+
 /* ---- null / zero / full ---- */
 static ssize_t null_read(VNode *v, File *f, void *b, size_t n, u64 o) { (void)v; (void)f; (void)b; (void)n; (void)o; return 0; }
 static ssize_t null_write(VNode *v, File *f, const void *b, size_t n, u64 o) { (void)v; (void)f; (void)b; (void)o; return (ssize_t)n; }
@@ -80,6 +107,29 @@ static int tty_node_poll(VNode *v, File *f) {
 }
 static const VNodeOps tty_ops = { .read = tty_node_read, .write = tty_node_write, .ioctl = tty_node_ioctl, .poll = tty_node_poll };
 
+/* /dev/tty: whatever terminal the calling process is attached to (a pty slave inside the desktop's terminal, else the console). */
+static Tty *ctty_of_caller(void) {
+    return current && current->proc && current->proc->ctty ? current->proc->ctty : tty_console();
+}
+static ssize_t ctty_node_read(VNode *v, File *f, void *b, size_t n, u64 o) {
+    (void)v; (void)o;
+    return tty_read(ctty_of_caller(), b, n, f && (f->flags & O_NONBLOCK));
+}
+static ssize_t ctty_node_write(VNode *v, File *f, const void *b, size_t n, u64 o) {
+    (void)v; (void)f; (void)o;
+    return tty_write(ctty_of_caller(), b, n);
+}
+static int ctty_node_ioctl(VNode *v, File *f, unsigned long req, void *arg) {
+    (void)v; (void)f;
+    return tty_ioctl(ctty_of_caller(), req, arg);
+}
+static int ctty_node_poll(VNode *v, File *f) {
+    (void)v; (void)f;
+    Tty *t = ctty_of_caller();
+    return POLLOUT | (tty_pending(t) || t->eof ? POLLIN : 0);
+}
+static const VNodeOps ctty_ops = { .read = ctty_node_read, .write = ctty_node_write, .ioctl = ctty_node_ioctl, .poll = ctty_node_poll };
+
 /* ---- kernel log ---- */
 static ssize_t kmsg_read(VNode *v, File *f, void *b, size_t n, u64 off) {
     (void)v;
@@ -95,6 +145,6 @@ void devfs_register_standard(void) {
     devfs_register("random", S_IFCHR | 0666, &random_ops, NULL, 0x0108);
     devfs_register("urandom", S_IFCHR | 0666, &random_ops, NULL, 0x0109);
     devfs_register("console", S_IFCHR | 0620, &tty_ops, NULL, 0x0501);
-    devfs_register("tty", S_IFCHR | 0666, &tty_ops, NULL, 0x0500);
+    devfs_register("tty", S_IFCHR | 0666, &ctty_ops, NULL, 0x0500);
     devfs_register("kmsg", S_IFCHR | 0644, &kmsg_ops, NULL, 0x010B);
 }

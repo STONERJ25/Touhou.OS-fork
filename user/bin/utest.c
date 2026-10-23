@@ -14,6 +14,10 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <sys/ioctl.h>
+#include <pty.h>
 #include <gensokyo.h>
 
 static int g_fail;
@@ -236,8 +240,119 @@ static void test_misc(void) {
     CHECK(gap_sysinfo(&si) == 0 && si.total_ram > (64u << 20) && si.nprocs >= 1);
 }
 
+/* Sockets, shared memory, pseudo-terminals and the device nodes the window server relies on. */
+static void test_ipc(void) {
+    SECTION("sockets, shared memory, ptys");
+    signal(SIGPIPE, SIG_IGN);
+    int sv[2];
+    CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
+    CHECK(write(sv[0], "ping", 4) == 4);
+    char b[16] = {0};
+    CHECK(read(sv[1], b, sizeof b) == 4 && !memcmp(b, "ping", 4));
+    CHECK(write(sv[1], "pong!", 5) == 5 && read(sv[0], b, sizeof b) == 5);
+    close(sv[0]);
+    CHECK(read(sv[1], b, sizeof b) == 0);                       /* end of file once the peer is gone */
+    CHECK(write(sv[1], "x", 1) < 0 && errno == EPIPE);
+    close(sv[1]);
+
+    /* A named socket and a forked client */
+    unlink("/tmp/ut.sock");
+    int ls = socket(AF_UNIX, SOCK_STREAM, 0);
+    struct sockaddr_un sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sun_family = AF_UNIX;
+    strcpy(sa.sun_path, "/tmp/ut.sock");
+    CHECK(ls >= 0 && bind(ls, (struct sockaddr *)&sa, sizeof sa) == 0 && listen(ls, 4) == 0);
+    int s2 = socket(AF_UNIX, SOCK_STREAM, 0);
+    CHECK(bind(s2, (struct sockaddr *)&sa, sizeof sa) < 0 && errno == EADDRINUSE);
+    close(s2);
+    pid_t pid = fork();
+    if (pid == 0) {
+        int c = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (connect(c, (struct sockaddr *)&sa, sizeof sa) < 0) _exit(2);
+        write(c, "hello gap", 9);
+        char r[16] = {0};
+        int n = (int)read(c, r, sizeof r);
+        _exit(n == 6 && !memcmp(r, "reply!", 6) ? 0 : 3);
+    }
+    int conn = accept(ls, NULL, NULL);
+    CHECK(conn >= 0);
+    memset(b, 0, sizeof b);
+    CHECK(read(conn, b, sizeof b) == 9 && !memcmp(b, "hello gap", 9));
+    struct gpeercred pc;
+    CHECK(getpeercred(conn, &pc) == 0 && pc.pid == pid);
+    CHECK(write(conn, "reply!", 6) == 6);
+    int st = 0;
+    CHECK(waitpid(pid, &st, 0) == pid && WIFEXITED(st) && WEXITSTATUS(st) == 0);
+    close(conn);
+    close(ls);
+    int cl = socket(AF_UNIX, SOCK_STREAM, 0);
+    CHECK(connect(cl, (struct sockaddr *)&sa, sizeof sa) < 0 && errno == ECONNREFUSED);   /* nobody listens any more */
+    close(cl);
+    unlink("/tmp/ut.sock");
+
+    /* A shared mapping of a tmpfs file is visible to a forked child and survives deleting the file */
+    int fd = open("/tmp/ut.shm", O_RDWR | O_CREAT | O_TRUNC, 0600);
+    CHECK(fd >= 0 && ftruncate(fd, 8192) == 0);
+    volatile unsigned *m = mmap(NULL, 8192, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    CHECK(m != MAP_FAILED);
+    m[0] = 0x1234;
+    m[1024] = 0x5678;
+    pid = fork();
+    if (pid == 0) {
+        _exit(m[0] == 0x1234 && m[1024] == 0x5678 ? (m[2] = 99, 0) : 1);
+    }
+    CHECK(waitpid(pid, &st, 0) == pid && WIFEXITED(st) && WEXITSTATUS(st) == 0);
+    CHECK(m[2] == 99);                                          /* the child's write is ours too */
+    CHECK(unlink("/tmp/ut.shm") == 0);
+    CHECK(m[0] == 0x1234);                                      /* still mapped after the unlink */
+    CHECK(munmap((void *)m, 8192) == 0);
+    close(fd);
+
+    /* Pseudo-terminal: master writes become input, slave output comes back with CRLF */
+    char spath[40];
+    int mfd = ptyopen(spath, sizeof spath);
+    CHECK(mfd >= 0 && !strncmp(spath, "/dev/pts/", 9));
+    int sfd = open(spath, O_RDWR | O_NOCTTY);
+    CHECK(sfd >= 0);
+    CHECK(write(mfd, "ls -l\n", 6) == 6);
+    memset(b, 0, sizeof b);
+    CHECK(read(sfd, b, sizeof b) == 6 && !memcmp(b, "ls -l\n", 6));          /* canonical mode: the whole line */
+    CHECK(read(mfd, b, sizeof b) == 7 && !memcmp(b, "ls -l\r\n", 7));       /* ... and it was echoed back */
+    CHECK(write(sfd, "out\n", 4) == 4);
+    memset(b, 0, sizeof b);
+    CHECK(read(mfd, b, sizeof b) == 5 && !memcmp(b, "out\r\n", 5));
+    struct winsize ws = { 30, 100, 0, 0 };
+    CHECK(ioctl(mfd, TIOCSWINSZ, &ws) == 0);
+    struct winsize got;
+    CHECK(ioctl(sfd, TIOCGWINSZ, &got) == 0 && got.ws_row == 30 && got.ws_col == 100);
+    CHECK(isatty(sfd));
+    char *tn = ttyname(sfd);
+    CHECK(tn && !strncmp(tn, "/dev/pts/", 9));
+    close(sfd);
+    CHECK(read(mfd, b, sizeof b) == 0);                                     /* the program side is gone: end of file */
+    close(mfd);
+
+    /* The window server's devices */
+    int fb = open("/dev/fb0", O_RDWR);
+    if (fb >= 0) {
+        struct gfbinfo info;
+        CHECK(ioctl(fb, FBIOGET_INFO, &info) == 0 && info.width >= 640 && info.height >= 480 && info.bpp == 32 && info.pitch >= info.width * 4);
+        unsigned *px = mmap(NULL, (size_t)info.pitch * info.height, PROT_READ | PROT_WRITE, MAP_SHARED, fb, 0);
+        CHECK(px != MAP_FAILED);
+        close(fb);
+        if (px != MAP_FAILED) munmap(px, (size_t)info.pitch * info.height);
+    } else printf("  note: no /dev/fb0\n");
+    int ev = open("/dev/input/events", O_RDONLY | O_NONBLOCK);
+    CHECK(ev >= 0);
+    struct ginput_event ie;
+    CHECK(read(ev, &ie, sizeof ie) < 0 && errno == EAGAIN);
+    close(ev);
+}
+
 int main(void) {
     printf("utest: the shrine's test suite begins\n");
+    test_ipc();
     test_stdio();
     test_memory();
     test_files();

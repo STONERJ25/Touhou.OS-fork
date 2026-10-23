@@ -18,6 +18,7 @@
 #include "random.h"
 #include "process.h"
 #include "pci.h"
+#include "initcall.h"
 
 void virtio_blk_init(void);
 void ahci_init(void);
@@ -133,6 +134,7 @@ NORETURN void kmain(BootInfo *bi) {
     nvme_init();
     storage_mount_boot_volumes();
     usb_init();
+    run_initcalls();                    /* device nodes, sockets, ptys: everything registered with INITCALL() */
 
     if (g_boot.initrd_phys && g_boot.initrd_size) {
         initrd_unpack(phys_to_virt(g_boot.initrd_phys), g_boot.initrd_size);

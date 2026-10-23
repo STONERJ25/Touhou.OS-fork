@@ -5,6 +5,15 @@
 #ifndef SHARED_SYSCALL_H
 #define SHARED_SYSCALL_H
 
+/* Gensokyo extensions registered by their own subsystems (kernel/fs/socket.c, kernel/drivers/pty.c) */
+#define SYS_socket        70      /* (domain, type, protocol) -> fd; AF_UNIX / SOCK_STREAM only */
+#define SYS_bind          71      /* (fd, path) */
+#define SYS_listen        72      /* (fd, backlog) */
+#define SYS_accept        73      /* (fd) -> new fd */
+#define SYS_connect       74      /* (fd, path) */
+#define SYS_shutdown      75      /* (fd, how) */
+#define SYS_socketpair    76      /* (type, int sv[2]) */
+
 #define SYS_exit          0
 #define SYS_read          1
 #define SYS_write         2

@@ -144,11 +144,12 @@ static long sys_getpgid(TrapFrame *tf) {
 static long sys_setsid(TrapFrame *tf) {
     (void)tf;
     me()->sid = me()->pgid = me()->pid;
+    me()->ctty = NULL;                      /* a new session starts without a controlling terminal */
     return me()->sid;
 }
 
 static long sys_tcsetpgrp(TrapFrame *tf) {
-    tty_console()->fg_pgid = (int)A0(tf);
+    tty_console()->fg_pgid = (int)A0(tf);   /* legacy: libgap now uses ioctl(TIOCSPGRP) on the descriptor */
     return 0;
 }
 
@@ -588,13 +589,24 @@ static long sys_mmap(TrapFrame *tf) {
     File *f = fd_get(me(), fd);
     if (!f || !f->vn) return -EBADF;
     VNode *v = f->vn;
-    if (v->ops && v->ops->mmap_phys) {                      /* device memory (framebuffer, shared window buffers) */
-        int rc = uvm_map(as, addr, len, prot, VMA_IO | VMA_WC);
+    /* Device memory (framebuffer) and shared buffers (tmpfs files mapped MAP_SHARED, e.g. window contents). RAM pages are
+     * reference counted and mapped write-back; anything else (MMIO, framebuffer) is write-combining. */
+    if (v->ops && v->ops->mmap_phys && ((flags & MAP_SHARED) || !S_ISREG(v->mode))) {
+        if (off & (PAGE_SIZE - 1)) return -EINVAL;
+        int rc = uvm_map(as, addr, len, prot, VMA_IO);
         if (rc) return rc;
+        Vma *vma = vma_find(as, addr);
         for (u64 o = 0; o < len; o += PAGE_SIZE) {
             paddr_t pa;
             if (v->ops->mmap_phys(v, off + o, &pa)) { uvm_unmap(as, addr, len); return -EINVAL; }
-            vmm_map(as->pml4, addr + o, pa, pte_flags_for(prot, VMA_WC));
+            bool ram = pmm_page_managed(pa);
+            if (ram) pmm_get_page(pa);
+            else if (vma) vma->flags |= VMA_WC;
+            if (vmm_map(as->pml4, addr + o, pa, pte_flags_for(prot, ram ? 0 : VMA_WC))) {
+                if (ram) pmm_free_page(pa);
+                uvm_unmap(as, addr, len);
+                return -ENOMEM;
+            }
         }
         return (long)addr;
     }

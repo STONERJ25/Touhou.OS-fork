@@ -197,6 +197,11 @@ static void key_event(u8 code, bool down, bool sw_repeat) {
     default: break;
     }
 
+    if (down && code == KEY_BACKSPACE && (g_mods & MOD_CTRL) && (g_mods & MOD_ALT) && g_input_grab > 0) {
+        input_kill_grabber();                           /* escape hatch when the window server hangs */
+        return;
+    }
+
     if (sw_repeat) {
         if (down && !was_down && !is_modifier_key(code)) { g_rep_code = code; g_rep_next_ms = uptime_ms() + 500; }
         else if (!down && code == g_rep_code) g_rep_code = 0;

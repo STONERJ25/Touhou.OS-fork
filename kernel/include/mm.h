@@ -31,7 +31,9 @@ paddr_t pmm_alloc(unsigned order);                  /* 0 on failure */
 void    pmm_free(paddr_t p, unsigned order);
 paddr_t pmm_alloc_page(void);
 paddr_t pmm_alloc_page_zeroed(void);
-void    pmm_free_page(paddr_t p);
+void    pmm_free_page(paddr_t p);                   /* drops one reference; frees when it was the last */
+void    pmm_get_page(paddr_t p);                    /* takes an extra reference on an allocated page */
+bool    pmm_page_managed(paddr_t p);                /* ordinary allocated RAM, not device memory */
 void    pmm_add_region(paddr_t base, u64 length);   /* hand memory to the allocator (boot reclaim) */
 u64     pmm_total_pages(void);
 u64     pmm_free_pages_count(void);

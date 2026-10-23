@@ -194,9 +194,12 @@ int tty_ioctl(Tty *t, unsigned long req, void *arg) {
     case TIOCGWINSZ:
         memcpy(arg, &t->winsize, sizeof t->winsize);
         return 0;
-    case TIOCSWINSZ:
+    case TIOCSWINSZ: {
+        bool changed = memcmp(&t->winsize, arg, sizeof t->winsize) != 0;
         memcpy(&t->winsize, arg, sizeof t->winsize);
+        if (changed && t->fg_pgid && g_tty_signal_hook) g_tty_signal_hook(t->fg_pgid, SIGWINCH);
         return 0;
+    }
     case TIOCGPGRP:
         *(int *)arg = t->fg_pgid;
         return 0;
@@ -205,6 +208,9 @@ int tty_ioctl(Tty *t, unsigned long req, void *arg) {
         return 0;
     case FIONREAD:
         *(int *)arg = (int)tty_pending(t);
+        return 0;
+    case TIOCGNAME:
+        strlcpy(arg, t->name, 64);
         return 0;
     default:
         return -ENOTTY;

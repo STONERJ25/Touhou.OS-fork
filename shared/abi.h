@@ -44,8 +44,16 @@
 #define ENOSYS 38
 #define ENOTEMPTY 39
 #define ELOOP 40
+#define ENOTSOCK 88
+#define EPROTONOSUPPORT 93
 #define ENOTSUP 95
+#define EAFNOSUPPORT 97
+#define EADDRINUSE 98
+#define ECONNRESET 104
+#define EISCONN 106
+#define ENOTCONN 107
 #define ETIMEDOUT 110
+#define ECONNREFUSED 111
 
 /* ---- open flags ---- */
 #define O_RDONLY    0
@@ -164,6 +172,7 @@ struct gdirent {
 #define SIGTSTP  20
 #define SIGTTIN  21
 #define SIGTTOU  22
+#define SIGWINCH 28
 #define NSIG     32
 
 #define WNOHANG 1
@@ -245,6 +254,18 @@ struct gwinsize {
     uint16_t ws_row, ws_col, ws_xpixel, ws_ypixel;
 };
 
+/* Sockets (AF_UNIX stream only) */
+#define AF_UNIX         1
+#define SOCK_STREAM     1
+#define SOCK_NONBLOCK   0x800
+#define SOCK_CLOEXEC    0x80000
+#define SHUT_RD         0
+#define SHUT_WR         1
+#define SHUT_RDWR       2
+struct gpeercred { int32_t pid; uint32_t uid, gid; };
+#define SOCK_PEERCRED   0x8901          /* ioctl: struct gpeercred of the other end of a connected socket */
+
+#define TIOCGNAME  0x5480               /* ioctl: NUL-terminated terminal name ("console", "pts/3") into a 64 byte buffer */
 #define TCGETS     0x5401
 #define TCSETS     0x5402
 #define TCSETSW    0x5403
@@ -262,11 +283,14 @@ struct gwinsize {
 /* ---- framebuffer / graphics devices ---- */
 struct gfbinfo {
     uint32_t width, height, pitch;      /* pitch in bytes */
-    uint32_t bpp;
-    uint32_t reserved;
+    uint32_t bpp;                       /* always 32 */
+    uint32_t flags;                     /* FBINFO_* */
 };
+#define FBINFO_SWAP_RB 1                /* hardware order is R in the low byte (RGBX); otherwise B in the low byte (BGRX) */
 #define FBIOGET_INFO 0x4600
-#define FBIO_FLUSH   0x4601             /* arg: struct grect* (NULL = everything) */
+#define FBIO_FLUSH   0x4601             /* arg: struct grect* (NULL = everything); the display is single buffered, so a no-op today */
+#define FBIO_GRAPHICS 0x4602            /* arg: int. 1 = this open file draws the screen (kernel text console pauses), 0 = text mode.
+                                           Leaving graphics mode, or closing the file, restores the text console. */
 
 struct grect {
     int32_t x, y, w, h;

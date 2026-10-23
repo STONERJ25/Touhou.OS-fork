@@ -43,6 +43,7 @@ typedef enum { PROC_RUNNING, PROC_ZOMBIE } ProcState;
 
 typedef struct Process {
     int pid, ppid, pgid, sid;
+    struct Tty *ctty;               /* controlling terminal (what /dev/tty means); NULL = the console */
     char name[32];
     char cwd_path[256];
     VNode *cwd;
@@ -119,6 +120,16 @@ bool signal_pending_now(Process *p);
 long sys_sigreturn_impl(TrapFrame *tf);
 
 /* syscall plumbing */
+typedef long (*SyscallFn)(TrapFrame *tf);
+void syscall_register(int nr, SyscallFn fn);        /* subsystems add their own calls from an INITCALL */
+#ifndef A0
+#define A0(tf) ((tf)->rdi)
+#define A1(tf) ((tf)->rsi)
+#define A2(tf) ((tf)->rdx)
+#define A3(tf) ((tf)->r10)
+#define A4(tf) ((tf)->r8)
+#define A5(tf) ((tf)->r9)
+#endif
 void syscall_init(void);
 void syscall_dispatch(TrapFrame *tf);
 void enter_user(TrapFrame *tf);                                         /* never returns */

@@ -11,7 +11,7 @@ typedef struct SigFrame {
 } SigFrame;
 
 static bool default_ignored(int sig) {
-    return sig == SIGCHLD || sig == SIGCONT || sig == SIGSTOP || sig == SIGTSTP;
+    return sig == SIGCHLD || sig == SIGCONT || sig == SIGSTOP || sig == SIGTSTP || sig == SIGWINCH;
 }
 
 static bool ignored(Process *p, int sig) {

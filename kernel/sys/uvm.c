@@ -68,7 +68,9 @@ int uvm_unmap(AddrSpace *as, u64 addr, u64 len) {
         u64 lo = MAX(v->start, addr), hi = MIN(v->end, end);
         for (u64 va = lo; va < hi; va += PAGE_SIZE) {
             paddr_t p = vmm_unmap(as->pml4, va);
-            if (p && !(v->flags & VMA_IO)) pmm_free_page(p);
+            if (!p) continue;
+            if (!(v->flags & VMA_IO)) pmm_free_page(p);
+            else if (pmm_page_managed(p)) pmm_free_page(p);             /* drop the reference taken when it was mapped */
         }
         if (lo <= v->start && hi >= v->end) { *pp = v->next; kfree(v); continue; }
         if (lo <= v->start) {
@@ -147,6 +149,7 @@ int uvm_clone(AddrSpace *dst, const AddrSpace *src) {
             fl &= ~(PTE_A | PTE_D);
             if (v->flags & VMA_IO) {
                 if (vmm_map(dst->pml4, va, sp, fl)) return -ENOMEM;     /* shared device/shared-buffer pages */
+                if (pmm_page_managed(sp)) pmm_get_page(sp);
                 continue;
             }
             paddr_t np = pmm_alloc_page();
@@ -163,7 +166,10 @@ void uvm_destroy(AddrSpace *as) {
     for (Vma *v = as->vmas; v; ) {
         Vma *next = v->next;
         if (v->flags & VMA_IO)
-            for (u64 va = v->start; va < v->end; va += PAGE_SIZE) vmm_unmap(as->pml4, va);   /* detach, never free */
+            for (u64 va = v->start; va < v->end; va += PAGE_SIZE) {
+                paddr_t p = vmm_unmap(as->pml4, va);                     /* detach; shared RAM pages just lose one reference */
+                if (p && pmm_page_managed(p)) pmm_free_page(p);
+            }
         kfree(v);
         v = next;
     }

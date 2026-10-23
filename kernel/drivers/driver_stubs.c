@@ -3,6 +3,13 @@
  * in its own file and the linker picks it over these weak ones, so drivers can be added without touching kmain().
  */
 #include "kernel.h"
+#include "initcall.h"
+
+extern const initcall_t __initcall_start[], __initcall_end[];
+
+void run_initcalls(void) {
+    for (const initcall_t *fn = __initcall_start; fn < __initcall_end; fn++) (*fn)();
+}
 
 __attribute__((weak)) void virtio_blk_init(void) { }
 __attribute__((weak)) void ahci_init(void) { }

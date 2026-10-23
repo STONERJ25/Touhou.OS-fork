@@ -28,6 +28,10 @@ SECTIONS
     .rodata ALIGN(4096) : {
         __rodata_start = .;
         *(.rodata .rodata.*)
+        . = ALIGN(8);
+        __initcall_start = .;
+        KEEP(*(.initcall))
+        __initcall_end = .;
         . = ALIGN(4096);
         __rodata_end = .;
     } :rodata

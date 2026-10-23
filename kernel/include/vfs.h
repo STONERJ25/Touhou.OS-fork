@@ -159,6 +159,7 @@ int    vfs_pipe(File **rd, File **wr);
 
 /* ---- device nodes ---- */
 int    devfs_register(const char *path, u32 mode, const VNodeOps *ops, void *priv, u64 rdev);   /* "tty", "input/events" */
+int    devfs_unregister(const char *path);
 VNode *devfs_root(void);
 
 /* ---- concrete filesystems ---- */

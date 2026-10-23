@@ -126,6 +126,7 @@ int process_fork(TrapFrame *tf) {
     c->ppid = par->pid;
     c->pgid = par->pgid;
     c->sid = par->sid;
+    c->ctty = par->ctty;
     c->cred = par->cred;
     c->umask = par->umask;
     strlcpy(c->name, par->name, sizeof c->name);
