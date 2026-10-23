@@ -21,6 +21,7 @@ struct BlockDev {
     u32  sector_size;               /* bytes per logical sector: 512 or 4096 */
     u64  sectors;                   /* capacity in logical sectors */
     bool readonly;
+    volatile bool removed;          /* hot-unplugged (blk_unregister): every request fails with -ENODEV; the struct itself is never freed */
     int  (*read)(BlockDev *d, u64 lba, u32 count, void *buf);            /* 0 or -errno */
     int  (*write)(BlockDev *d, u64 lba, u32 count, const void *buf);
     int  (*flush)(BlockDev *d);                                          /* may be NULL */
@@ -39,6 +40,12 @@ struct BlockDev {
 
 /* Registers a driver-created device (heap-allocated, zero-filled except the fields above) and scans its partitions. */
 int        blk_register(BlockDev *d);
+/* Same, for a SCSI-style disk: gives it the first free name of the shared sda, sdb, ... scheme (SATA and USB sticks draw from it). */
+int        blk_register_sd(BlockDev *d);
+/* Hot-unplug: marks the disk and its partitions removed, takes them out of the list, /dev and /proc/partitions. Requests that are still
+ * running or arrive later (an open /dev node, a mounted filesystem) fail with -ENODEV. The BlockDev structs are kept (a few hundred bytes
+ * per unplug) because nothing counts who still holds a pointer; the driver keeps `priv` valid for as long as it keeps the struct. */
+void       blk_unregister(BlockDev *d);
 BlockDev  *blk_find(const char *name);                  /* "vda1" or "/dev/vda1" */
 BlockDev  *blk_find_label(const char *label);           /* partition label or filesystem label, case-insensitive */
 BlockDev  *blk_first(void);
@@ -48,6 +55,16 @@ int  blk_read(BlockDev *d, u64 lba, u32 count, void *buf);       /* bounds check
 int  blk_write(BlockDev *d, u64 lba, u32 count, const void *buf);
 int  blk_flush(BlockDev *d);
 size_t blk_describe(char *buf, size_t cap);                      /* text for /proc/partitions */
+
+/* Mount policy (kernel/fs/mountpolicy.c). storage_mount_boot_volumes() runs once at boot for the disks that exist by then. A driver whose
+ * disks appear later (USB sticks) calls storage_disk_added() for each one: the policy then looks at it on a worker thread of its own
+ * (a mount reads the disk through the very thread that announces it, so it must not run there) and mounts its HUMANVILLAGE volume if
+ * nothing is mounted on /HumanVillage yet. storage_disk_removed() is called just before blk_unregister(): it says in the log what the
+ * vanished disk takes with it. storage_automount_busy() is true while a worker is still at work (usb_wait_settled() waits for it). */
+void storage_mount_boot_volumes(void);
+void storage_disk_added(BlockDev *disk);
+void storage_disk_removed(BlockDev *disk);
+bool storage_automount_busy(void);
 
 /* GPT type GUID helpers (on-disk byte order). */
 extern const u8 GPT_GUID_EFI_SYSTEM[16], GPT_GUID_MS_BASIC_DATA[16], GPT_GUID_LINUX_FS[16];

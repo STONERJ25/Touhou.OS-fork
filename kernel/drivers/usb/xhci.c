@@ -694,6 +694,27 @@ static int xhci_int_start(UsbHc *hc, UsbDevice *dev, UsbEndpoint *ep) {
 
 #define BULK_MAX 65536
 
+/* wait_flag() for a bulk transfer, with one extra exit: a device on a root port whose port stopped reporting a connection is gone, and
+ * its transfer will never complete (QEMU simply drops it). Waiting for the full timeout would hold up every request to a pulled stick;
+ * -ENODEV lets the block layer fail them at once. Devices behind a hub still wait for the timeout (asking the hub needs the control pipe). */
+static int wait_bulk(Xhci *x, UsbDevice *dev, volatile bool *flag, u32 timeout_ms) {
+    u64 end = uptime_ms() + timeout_ms, last = 0;
+    for (int spin = 0;; spin++) {
+        x_pump(x);
+        if (*flag) return 0;
+        if (x->hc.dead) return -ENODEV;
+        u64 now = uptime_ms();
+        if (now >= end) return -ETIMEDOUT;
+        if (dev->depth == 0 && now != last) {
+            last = now;
+            u32 v = rd32(x->op, XOP_PORTSC(dev->root_port));
+            if (v == 0xFFFFFFFFu || !(v & PORTSC_CCS)) return -ENODEV;
+        }
+        if (spin < 100) udelay(10);
+        else task_sleep_ms(1);
+    }
+}
+
 /* One bulk TD through a 64 KiB aligned bounce buffer (a TRB's buffer must not cross a 64 KiB boundary). Returns the number of
  * bytes moved or -errno; -EPIPE means the endpoint stalled (the caller clears the halt on the device with usb_clear_halt). */
 static int xhci_bulk(UsbHc *hc, UsbDevice *dev, UsbEndpoint *ep, void *buf, u32 len, u32 timeout_ms) {
@@ -715,12 +736,16 @@ static int xhci_bulk(UsbHc *hc, UsbDevice *dev, UsbEndpoint *ep, void *buf, u32 
     xe->bulk_wait = true;
     ring_push(xe->ring, x->bulk_phys, len, TRB_TYPE(TRB_NORMAL) | TRB_IOC | (in ? TRB_ISP : 0));
     ring_db(x, s->id, ep->dci);
-    int rc = wait_flag(x, &xe->bulk_done, timeout_ms);
+    int rc = wait_bulk(x, dev, &xe->bulk_done, timeout_ms);
     xe->bulk_wait = false;
     if (rc == -ETIMEDOUT) {
         usb_dbg("usb %s: bulk transfer on endpoint %02x timed out", dev->path, ep->addr);
         ep_recover(x, s, ep->dci, true);
         return -ETIMEDOUT;
+    }
+    if (rc == -ENODEV && !x->hc.dead) {                                 /* the port went quiet: unplugged mid-transfer */
+        usb_dbg("usb %s: bulk transfer on endpoint %02x abandoned: the device is gone", dev->path, ep->addr);
+        dev->broken = true;                                             /* no more traffic; the port event tears the device down */
     }
     if (rc) return rc;
     if (xe->bulk_cc != CC_SUCCESS && xe->bulk_cc != CC_SHORT_PACKET) {

@@ -158,6 +158,7 @@ typedef struct UsbDriver {
 
 extern const UsbDriver usb_hub_driver;
 extern const UsbDriver usb_hid_driver;
+extern const UsbDriver usb_storage_driver;
 
 /* ---------------------------------------------------------------- hubs (the root hub is one too) */
 
@@ -268,6 +269,18 @@ int usb_clear_halt(UsbDevice *dev, UsbEndpoint *ep);
 const char *usb_speed_name(int speed);
 void usb_msleep(UsbHc *hc, u32 ms);                  /* sleeps while the controller's events keep being processed */
 void usb_disconnect(UsbDevice *dev);                 /* tears a device (and everything below it) down */
+
+/* Boot-time rendezvous (usb.c): blocks the calling thread (never usbd itself) until the bus is quiet -- every controller started, no port
+ * left to examine, no enumeration or storage bring-up in progress, the automount of a stick's HUMANVILLAGE volume finished -- or until
+ * max_ms have passed. Returns at once when there is no xHCI controller, when it failed, or when nothing was plugged in at start-up.
+ * Returns true if the bus really settled, false on the timeout. */
+bool usb_wait_settled(u32 max_ms);
+bool usb_bulktest_enabled(void);    /* usb=bulktest: mass storage stays unbound so the self test in usb.c owns the device */
+
+/* storage.c: the bulk-only mass storage class driver (registers sticks with the block layer as sda, sdb, ...) */
+void   msc_service(void);           /* called every usbd round: advances the bring-up state machine of each LUN by at most one command */
+bool   msc_busy(void);              /* some LUN is still being brought up (waiting for "ready", reading its capacity, being registered) */
+size_t msc_describe(char *buf, size_t cap);     /* /proc/usbstorage */
 
 /* hid.c */
 void hid_service(void);             /* top-level housekeeping (keyboard LEDs) */
