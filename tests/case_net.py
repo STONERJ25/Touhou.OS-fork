@@ -41,3 +41,5 @@ def nic_case(model, label):
 
 
 nic_case("virtio-net-pci", "virtio")
+nic_case("e1000", "e1000")
+nic_case("e1000e", "e1000e")
