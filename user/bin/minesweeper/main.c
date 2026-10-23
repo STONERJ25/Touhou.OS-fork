@@ -396,12 +396,13 @@ static KRect face_rect(const Game *g) { return kr((g->win_w - 36) / 2, MENU_H + 
 static void handle_pointer(Game *g, KUI *ui) {
     int hx = -1, hy = -1;
     if (!g->ptr_valid && (ui->mx != g->last_mx || ui->my != g->last_my || ui->pressed[0] || ui->pressed[1] || ui->pressed[2])) g->ptr_valid = true;
+    bool moved = ui->mx != g->last_mx || ui->my != g->last_my;
     g->last_mx = ui->mx;
     g->last_my = ui->my;
     bool over = g->ptr_valid && ui->mouse_inside && cell_at(g, ui->mx, ui->my, &hx, &hy);
     if (!over) hx = hy = -1;
     if (hx != g->hover_x || hy != g->hover_y) { g->hover_x = hx; g->hover_y = hy; if (g->lmb || g->mmb || g->both) g->dirty = true; }
-    if (over) g->kbd = false;
+    if (over && moved) g->kbd = false;                           /* moving the mouse hands control back to it */
 
     KRect fr = face_rect(g);
     bool on_face = ui->mouse_inside && kr_contains(fr, ui->mx, ui->my);
