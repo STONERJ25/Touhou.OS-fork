@@ -17,6 +17,7 @@
 #include "cpu.h"
 #include "mm.h"
 #include "irq.h"
+#include "acpi.h"
 
 #define IA32_APIC_BASE   0x1B
 #define APIC_BASE_X2APIC (1UL << 10)
@@ -52,6 +53,30 @@ bool lapic_present(void) { return g_present; }
 void lapic_eoi(void) { if (g_present) lapic_wr(LAPIC_EOI, 0); }
 
 static void lvt_mask(u32 reg) { lapic_wr(reg, lapic_rd(reg) | LVT_MASKED); }
+
+/*
+ * Only the boot processor runs this kernel. The others were left by the firmware spinning or halted in code and stacks that
+ * live in firmware memory, memory this kernel hands to its allocator later on: a core still looping in a page that has become
+ * somebody's heap executes garbage, and on an Intel chipset a core that triple-faults resets the whole machine, seconds after
+ * the screen came up. An INIT to everyone else puts them in the wait-for-SIPI state, where they run nothing and sit still.
+ */
+#define LAPIC_ICR_LO    0x300
+#define LAPIC_ICR_HI    0x310
+#define ICR_INIT_OTHERS 0x000C4500u         /* INIT, level assert, destination shorthand "all excluding self" (SDM 8.4.4.1) */
+
+static void park_other_processors(void) {
+    if (acpi_cpu_count() <= 1) return;
+    if (g_x2apic) {
+        wrmsr(0x800 + LAPIC_ICR_LO / 16, ICR_INIT_OTHERS);
+    } else {
+        g_lapic[LAPIC_ICR_HI / 4] = 0;
+        g_lapic[LAPIC_ICR_LO / 4] = ICR_INIT_OTHERS;
+        for (int i = 0; i < 1000 && (g_lapic[LAPIC_ICR_LO / 4] & (1u << 12)); i++) udelay(1);      /* delivery status: pending */
+    }
+    udelay(200);
+    klog("Gensokyo", "local APIC: %d other processor%s sent to wait-for-SIPI (only the boot processor is used)", acpi_cpu_count() - 1,
+         acpi_cpu_count() == 2 ? "" : "s");
+}
 
 void lapic_virtual_wire(void) {
     u64 base = rdmsr(IA32_APIC_BASE);
@@ -89,6 +114,7 @@ void lapic_virtual_wire(void) {
     if ((lint0 & 0x107FF) != LINT_EXTINT) lapic_wr(LAPIC_LINT0, LINT_EXTINT);
     klog("Gensokyo", "local APIC: %s mode, LINT0 was %#x, now ExtINT (the PIC reaches the boot processor)%s", g_x2apic ? "x2APIC" : "xAPIC", lint0,
          stuck ? " (the firmware had left interrupts in service; they were acknowledged)" : "");
+    park_other_processors();
 }
 
 /*

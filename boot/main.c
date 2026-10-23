@@ -218,9 +218,13 @@ static UINT64 find_rsdp(void) {
 
 static UINT32 classify(UINT32 t) {
     switch (t) {
-    case EfiConventionalMemory:
+    case EfiConventionalMemory:      return BOOTMEM_USABLE;
+    /* The firmware's own memory (boot services code and data) is free by the specification the moment boot services are gone, but
+     * hardware or other processors it left running may still be using it: a NIC or controller with a ring in there, or a core
+     * parked in a loop in there. It is handed to the kernel as "reclaimable": the kernel gives it to the allocator only after
+     * it has silenced every PCI DMA master (pci_init) and parked the other processors, which is what Linux does as well. */
     case EfiBootServicesCode:
-    case EfiBootServicesData:        return BOOTMEM_USABLE;
+    case EfiBootServicesData:
     case EfiLoaderCode:
     case EfiLoaderData:              return BOOTMEM_BOOT_RECLAIMABLE;
     case EFI_MEMTYPE_KERNEL:         return BOOTMEM_KERNEL;

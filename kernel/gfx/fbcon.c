@@ -473,6 +473,8 @@ int fbcon_selftest(void) {
     say("\x1b[0m");
     fails += verify_screen("after a wrapping line");
 
+    fbcon_set_enabled(false);                                         /* a panic while the window server owns the screen */
+    say("\x1b[1;31mPANIC-TEST\x1b[0m the screen must be taken back\n");
     fbcon_force_on();
     fails += verify_screen("after a forced redraw");
     klog("selftest", "fbcon: %s", fails ? "FAIL" : "ok");

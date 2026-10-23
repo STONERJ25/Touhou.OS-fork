@@ -152,7 +152,7 @@ void pmm_reclaim_boot_memory(void) {
         reclaimed += g_regions[i].length;
         g_regions[i].type = BOOTMEM_USABLE;
     }
-    klog("Boundary", "reclaimed %lu KiB of loader memory", (unsigned long)(reclaimed >> 10));
+    klog("Boundary", "reclaimed %lu KiB of loader and firmware memory", (unsigned long)(reclaimed >> 10));
 }
 
 paddr_t pmm_alloc(unsigned order) {
