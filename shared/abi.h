@@ -254,7 +254,7 @@ struct gwinsize {
     uint16_t ws_row, ws_col, ws_xpixel, ws_ypixel;
 };
 
-/* Sockets (AF_UNIX stream only) */
+/* Sockets: AF_UNIX streams here; AF_INET constants, socket options and the netctl structures are in netabi.h */
 #define AF_UNIX         1
 #define SOCK_STREAM     1
 #define SOCK_NONBLOCK   0x800
@@ -316,5 +316,7 @@ struct ginput_event {
     uint64_t time_ms;
 };
 #define INPUT_GRAB 0x4501               /* arg: 1 = deliver keyboard to this reader instead of the console tty */
+
+#include "netabi.h"
 
 #endif /* SHARED_ABI_H */

@@ -6,11 +6,11 @@
 #define SHARED_SYSCALL_H
 
 /* Gensokyo extensions registered by their own subsystems (kernel/fs/socket.c, kernel/drivers/pty.c) */
-#define SYS_socket        70      /* (domain, type, protocol) -> fd; AF_UNIX / SOCK_STREAM only */
-#define SYS_bind          71      /* (fd, path) */
+#define SYS_socket        70      /* (domain, type, protocol) -> fd; AF_UNIX streams and AF_INET streams / datagrams */
+#define SYS_bind          71      /* (fd, sockaddr*, len) */
 #define SYS_listen        72      /* (fd, backlog) */
-#define SYS_accept        73      /* (fd) -> new fd */
-#define SYS_connect       74      /* (fd, path) */
+#define SYS_accept        73      /* (fd, sockaddr*, len*) -> new fd; the address is only filled in for AF_INET */
+#define SYS_connect       74      /* (fd, sockaddr*, len) */
 #define SYS_shutdown      75      /* (fd, how) */
 #define SYS_socketpair    76      /* (type, int sv[2]) */
 #define SYS_getgroups     77      /* (n, gid_t list[]) -> count; n == 0 only counts */
@@ -86,6 +86,14 @@
 #define SYS_ptyopen       64      /* open a pseudo-terminal pair: returns master fd, slave path in buf */
 #define SYS_gettime_ms    65      /* wall clock, milliseconds since the epoch */
 #define SYS_tcsetpgrp     66
+/* Networking (kernel/net/sock.c): the AF_INET side of the socket calls. 70-76 above also serve AF_INET sockets. */
+#define SYS_sendto        90      /* (fd, buf, len, flags, sockaddr*, addrlen) */
+#define SYS_recvfrom      91      /* (fd, buf, len, flags, sockaddr*, addrlen*) */
+#define SYS_getsockname   92      /* (fd, sockaddr*, addrlen*) */
+#define SYS_getpeername   93      /* (fd, sockaddr*, addrlen*) */
+#define SYS_setsockopt    94      /* (fd, level, name, value*, len) */
+#define SYS_getsockopt    95      /* (fd, level, name, value*, len*) */
+#define SYS_netctl        96      /* (cmd, arg*): interfaces, routes, neighbours; see netabi.h */
 /* Number ranges for subsystems that register their own calls: networking 90-99, audio 100-105, threads 106-115, free 116-127. */
 #define SYS_nsyscalls     128
 
