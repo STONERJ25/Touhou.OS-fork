@@ -436,6 +436,16 @@ static uint64_t fp_parse(const char *str, char **endp, const FpFmt *f, int *rang
     return sign | pack(qq, -(long long)s - k, D.n != 0, f, range);
 }
 
+/* The nearest double to (q + frac) * 2^e2 (q != 0; frac in (0,1) when sticky is set, and then q needs 64 significant bits);
+ * used by fma. Overflow gives infinity, underflow a subnormal or zero. */
+double __fp_round_double(uint64_t q, long long e2, int sticky) {
+    int range;
+    uint64_t bits = pack(q, e2, sticky, &FMT_D, &range);
+    double d;
+    memcpy(&d, &bits, sizeof d);
+    return d;
+}
+
 double strtod(const char *s, char **end) {
     int range;
     uint64_t bits = fp_parse(s, end, &FMT_D, &range);

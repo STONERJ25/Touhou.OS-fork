@@ -23,4 +23,7 @@ typedef struct {
  * Whichever way it stops early, `more` says whether the exact expansion goes on. */
 void __fp_digits(double v, int sig, int frac, FpDigits *out);
 
+/* The nearest double to (q + frac) * 2^e2 for q != 0 (see fpconv.c). */
+double __fp_round_double(uint64_t q, long long e2, int sticky);
+
 #endif
