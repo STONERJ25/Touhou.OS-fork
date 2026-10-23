@@ -50,6 +50,8 @@ Everything a PCI driver needs already exists; look at `kernel/include/pci.h`, `b
 - **Block devices:** fill in a `BlockDev` (heap allocated), set `read`/`write`/`flush`, then `blk_register()`. The block layer
   creates `/dev/<name>`, scans GPT/MBR into partition devices (`vda1`, `nvme0n1p2`), and lists everything in
   `/proc/partitions` (`lsblk`). Filesystems take a `BlockDev` by name (`blk_find("sda1")`, `blk_find_label("HUMANVILLAGE")`).
+  The virtio-blk driver, the FAT32/FAT16 filesystem, the HUMANVILLAGE mount policy, `df`/`statfs` and `tools/mkdisk.py`
+  (image builder and fsck) are described in [STORAGE.md](STORAGE.md).
 - **Input:** USB HID turns reports into `input_key(KEY_*, down)` and `input_mouse(dx, dy, wheel, buttons)`; the same path as
   the PS/2 driver feeds the console tty and `/dev/input/events`. Repeat is generated in the input layer.
 - **/proc files:** `procfs_register("name", gen)` adds a text file generated on each read.

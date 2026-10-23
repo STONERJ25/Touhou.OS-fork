@@ -140,8 +140,8 @@ static void run_line(char *line) {
         for (int i = 0; vfs_mount_list(i, t, sizeof t, y, sizeof y, s, sizeof s); i++) printk("%-12s %-8s on %s\n", s, y, t);
     } else if (!strcmp(c, "clear")) printk("\x1b[2J\x1b[H");
     else if (!strcmp(c, "selftest")) selftest_run();
-    else if (!strcmp(c, "reboot")) machine_reboot();
-    else if (!strcmp(c, "poweroff")) machine_poweroff();
+    else if (!strcmp(c, "reboot")) { vfs_sync_all(); machine_reboot(); }
+    else if (!strcmp(c, "poweroff")) { vfs_sync_all(); machine_poweroff(); }
     else if (!strcmp(c, "exit") && argc >= 2) qemu_exit((int)(argv[1][0] - '0'));
     else if (!strcmp(c, "crash") && argc >= 2) {
         if (!strcmp(argv[1], "pf")) *(volatile u64 *)0xdead0000UL = 1;

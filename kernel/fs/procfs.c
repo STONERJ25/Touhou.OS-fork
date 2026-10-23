@@ -53,7 +53,7 @@ static size_t gen_mounts(char *b, size_t cap) {
     size_t n = 0;
     char t[64], y[16], s[64];
     for (int i = 0; vfs_mount_list(i, t, sizeof t, y, sizeof y, s, sizeof s); i++)
-        n += (size_t)snprintf(b + n, cap - n, "%s %s %s rw 0 0\n", s, t, y);
+        n += (size_t)snprintf(b + n, cap - n, "%s %s %s %s 0 0\n", s, t, y, (vfs_mount_flags(i) & MNT_RDONLY) ? "ro" : "rw");
     return n;
 }
 
@@ -301,4 +301,10 @@ static int procfs_mount(const char *source, u32 flags, Mount *m) {
     return 0;
 }
 
-const FsType g_procfs_type = { "procfs", procfs_mount, NULL };
+static int procfs_statfs(Mount *m, struct gstatfs *out) {
+    (void)m;
+    out->f_type = 0x9fa0;                       /* PROC_SUPER_MAGIC; nothing here occupies storage */
+    return 0;
+}
+
+const FsType g_procfs_type = { "procfs", procfs_mount, NULL, procfs_statfs };

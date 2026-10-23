@@ -677,6 +677,7 @@ static long sys_reboot(TrapFrame *tf) {
     /* root, or anyone sitting at the machine: members of the shrine group may close it up (the desktop's Shut down button) */
     if (me()->cred.uid != 0 && !cred_in_group(&me()->cred, GID_SHRINE)) return -EPERM;
     if (A0(tf) == REBOOT_CHECK) return 0;
+    vfs_sync_all();                                                         /* never leave the shrine with unwritten records */
     if ((A0(tf) & 0xFF00) == 0x100) qemu_exit((int)(A0(tf) & 0xFF));      /* test harness: leave QEMU with a status */
     klog("Gensokyo", "%s requested by '%s'", A0(tf) == REBOOT_POWEROFF ? "poweroff" : "restart", me()->name);
     if (A0(tf) == REBOOT_POWEROFF) machine_poweroff();
@@ -685,14 +686,20 @@ static long sys_reboot(TrapFrame *tf) {
 
 static long sys_mount(TrapFrame *tf) {
     if (me()->cred.uid != 0) return -EPERM;
-    char src[64], dst[PATH_MAX / 4], type[16];
+    char src[64], dst[PATH_MAX / 4], type[16], opts[96] = "";
     int n = strncpy_from_user(src, (const char *)A0(tf), sizeof src);
     if (n < 0) return n;
     n = strncpy_from_user(dst, (const char *)A1(tf), sizeof dst);
     if (n < 0) return n;
     n = strncpy_from_user(type, (const char *)A2(tf), sizeof type);
     if (n < 0) return n;
-    return vfs_mount(type, src, dst, (u32)A3(tf));
+    u32 flags = (u32)A3(tf);
+    if (flags & MNT_OPTS) {                                 /* the fifth argument (r8) is an option string */
+        n = strncpy_from_user(opts, (const char *)A4(tf), sizeof opts);
+        if (n < 0) return n;
+        flags &= ~(u32)MNT_OPTS;
+    }
+    return vfs_mount_opts(type, src, dst, flags, opts);
 }
 
 static long sys_umount(TrapFrame *tf) {
@@ -702,7 +709,22 @@ static long sys_umount(TrapFrame *tf) {
     return n < 0 ? n : vfs_umount(dst);
 }
 
-static long sys_sync(TrapFrame *tf) { (void)tf; return 0; }
+static long sys_sync(TrapFrame *tf) {
+    (void)tf;
+    vfs_sync_all();
+    return 0;
+}
+
+static long sys_statfs(TrapFrame *tf) {
+    char *path = kmalloc(PATH_MAX);
+    if (!path) return -ENOMEM;
+    struct gstatfs st;
+    long rc = get_path(A0(tf), path);
+    if (rc == 0) rc = vfs_statfs(path, me()->cwd, &me()->cred, &st);
+    kfree(path);
+    if (rc) return rc;
+    return copy_to_user((void *)A1(tf), &st, sizeof st);
+}
 
 static long sys_getrandom(TrapFrame *tf) {
     size_t n = MIN(A1(tf), (u64)4096);
@@ -769,7 +791,7 @@ static SyscallFn g_table[SYS_nsyscalls] = {
     [SYS_sigreturn] = sys_sigreturn, [SYS_sigprocmask] = sys_sigprocmask, [SYS_truncate] = sys_truncate,
     [SYS_access] = sys_access, [SYS_setsid] = sys_setsid, [SYS_mprotect] = sys_mprotect, [SYS_pause] = sys_pause,
     [SYS_setname] = sys_setname, [SYS_debuglog] = sys_debuglog, [SYS_gettime_ms] = sys_gettime_ms,
-    [SYS_tcsetpgrp] = sys_tcsetpgrp,
+    [SYS_tcsetpgrp] = sys_tcsetpgrp, [SYS_statfs] = sys_statfs,
 };
 
 void syscall_register(int nr, SyscallFn fn) {
