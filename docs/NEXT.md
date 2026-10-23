@@ -20,8 +20,9 @@ New kappabox applets need a manual page (`initrd/ScarletDevilMansion/share/patch
 
 | Branch (worktree-agent-...) | Area | Notes |
 |-----------------------------|------|-------|
-| a2a5636a2291d096d | Gensokyo Explorer (file manager) | **nothing committed**: its branch tip is already in `main` (it gave us `tests/guitools.py`; Notebook and Sketchbook were its sub-agents). The file manager still has to be written |
-| a21c5271eaed80a2d | Notebook polish (a fork of the explorer agent) | 6 small commits on top of the merged Notebook: Reload from Disk (F5), the unsaved-changes Save goes through the changed-on-disk check, a hint on an empty page, line-ending and gutter-click tests. Safe to merge first |
+| a2a5636a2291d096d | Gensokyo Explorer (file manager) | **no application code exists**. The branch adds only `docs/EXPLORER.md` (design decisions, platform facts, known toolkit problems, the order to build it in); `tests/guitools.py` from this agent is already in `main` |
+| a21c5271eaed80a2d | Notebook polish (a sub-agent of the explorer agent) | 6 small commits on top of the merged Notebook: Reload from Disk (F5), the unsaved-changes Save goes through the changed-on-disk check, a hint on an empty page, line-ending and gutter-click tests. Merges cleanly into `main` (dry run); the context-menu retry in its last commit is unverified |
+| ad1f2fdb71587f5e6 | Sketchbook polish (a sub-agent of the explorer agent) | 3 small commits on top of the merged Sketchbook (Enter confirms the size dialog and so on). Merges cleanly; the last tweak was only rebuilt, not re-tested |
 | a4adbf8e4aa5804b3 | threads: clone, futex, pthreads (syscalls 106-115) | 15 commits, paused, builds; the most mature branch of the second wave. Its last full test run was at a279b04. `docs/THREADS.md` on the branch |
 | a46f2d415c0a1a9ca | networking (syscalls 90-99) | 4 commits, paused: loopback TCP/IP, sockets, virtio-net/e1000/e1000e drivers and DHCP are in. Not done: ping/wget/nslookup tools, DNS, the RTL8168 driver. `docs/NETWORK.md` |
 | a3d380c78d6285728 | audio (syscalls 100-105) | 12 commits, paused: kernel mixer, HDA and AC97 drivers, libaudio, `play`/`beep`/`volume`. Not done: Jukebox, songs. `docs/AUDIO.md` |
@@ -46,6 +47,20 @@ the doc of the area say how far it got. An agent that is still resumable can be 
 - SMP bring-up (LAPIC IPIs, per-CPU run queues, honest locking), IOAPIC/MSI.
 - A small C compiler running on the OS itself.
 - A kernel hardening pass: syscall fuzzing, stress and leak tests, an OOM killer.
+
+## Problems found along the way (not fixed)
+
+- `kernel/drivers/keyboard.c` `mouse_byte()` passes the PS/2 wheel nibble through unchanged, so every app scrolls backwards with
+  QEMU's mouse; the fix is probably `wheel = -wheel;` there (check the xHCI HID mouse path separately).
+- Fairies has no call that tells a window where it is on the screen after the user moved it, so a popup menu cannot be placed at the
+  pointer (the Notebook draws its menu inside the window; `docs/EXPLORER.md` on the explorer branch has a plan).
+- Kappa: the system clipboard is capped at 1024 bytes; KUI keeps 64 key presses per frame; `k_slider` ignores a click whose press and release
+  land in one frame; `k_menubar` leaves the drop-down painted for a frame after a pick or Esc and crashes on a NULL label;
+  `k_input_dialog` does not preselect its initial text; there is no triple click.
+- libc/kernel (from the utilities agent): `strtod` is inexact ("0.3" parses as 0.30000000000000004), `printf %f` rounds approximately,
+  `fwrite` goes byte by byte, regex is a recursive leftmost-first backtracker, there is no hard link, no process priority, no
+  `/proc/<pid>/fd`; SIGTSTP/SIGSTOP are ignored because the kernel has no stopped state (so no job control).
+- The guest clock lags when the host is busy and the PS/2 pointer drops packets under load: GUI tests should poll and retry once.
 
 ## Brief for the USB mass storage task
 
