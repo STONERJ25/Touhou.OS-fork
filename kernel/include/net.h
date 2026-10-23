@@ -99,6 +99,7 @@ bool    net_have_hardware(void);
 int  eth_output(NetDev *d, u32 nexthop, u16 ethertype, NetBuf *nb);   /* prepends the Ethernet header, resolves ARP */
 void arp_input(NetDev *d, const u8 *p, size_t len);
 void arp_tick(u64 now);
+void arp_flush_dev(NetDev *d);                                      /* forget the neighbours learned on this device (link change) */
 int  arp_list(int index, struct gnet_arp *out);
 int  arp_set(u32 ip, const u8 *mac);
 int  arp_del(u32 ip);

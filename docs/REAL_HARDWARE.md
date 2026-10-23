@@ -96,5 +96,11 @@ clock is hours off on the first boot, the PC's clock chip holds local time (Wind
 - **Wrong time**: `rtc=local` and `tz=`; fix the chip with `sudo hwclock -w` (see [POWER_AND_TIME.md](POWER_AND_TIME.md)).
 - **Boots, then reboots**: the log's last lines name the subsystem; every driver polls and has timeouts, so a stall is
   normally one device being skipped after a few seconds, not a hang.
-- Not implemented: sound, network, USB mass storage, suspend, multi-core, GPU acceleration (software drawing at the
+- **Network** (see [NETWORK.md](NETWORK.md)): the I219-LM of the target machine (and RTL8168/8111 boards) have drivers that have
+  never run on hardware. On boot the log shows `[Yukari] eth0: Intel I219-LM at ..., MAC ...` and, when a cable is plugged in
+  and autonegotiation finishes, `link up, N Mb/s` followed by the DHCP lease line; `ifconfig`, `ip addr` and `cat /proc/net/dev`
+  show the state, `ping GATEWAY` is the first test. A line saying `did not answer sensibly; leaving it alone` means the card
+  was not touched. The driver never resets the card or the PHY (the firmware's setup is kept), so if there is no link at all,
+  the usual suspects are a cable in a port the ME owns or a PHY in ultra-low-power mode that the ME did not release.
+- Not implemented: sound, USB mass storage, suspend, multi-core, GPU acceleration (software drawing at the
   firmware's resolution is plenty for a desktop of this size).

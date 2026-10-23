@@ -1,0 +1,32 @@
+.page netstat 1 show network connections, routes and interface statistics
+
+# SYNOPSIS
+*netstat* [*-altun*]
+*netstat* *-r*
+*netstat* *-i*
+
+# DESCRIPTION
+`netstat` reads `/proc/net` and prints what the network stack is doing. Without options it lists the TCP and UDP sockets that are connected; `-l` lists the ones that are waiting for someone (listening TCP sockets and bound, unconnected UDP sockets), `-a` lists both kinds.
+
+The columns are the protocol, the bytes waiting to be read (`Recv-Q`) and not yet acknowledged by the other side (`Send-Q`), the local and foreign address with port (`*` is any address), and the TCP state: `ESTABLISHED`, `SYN_SENT`, `SYN_RECV`, `FIN_WAIT1`, `FIN_WAIT2`, `TIME_WAIT`, `CLOSE_WAIT`, `LAST_ACK`, `LISTEN`, `CLOSING`. A closed connection stays in `TIME_WAIT` for half a minute so that stray packets of the old conversation cannot confuse a new one.
+
+# OPTIONS
+@ *-a*
+    All sockets, listening or not.
+@ *-l*
+    Only listening sockets.
+@ *-t*, *-u*
+    Only TCP, only UDP.
+@ *-n*
+    Accepted for compatibility; addresses are always numeric.
+@ *-r*
+    The routing table, like route -n.
+@ *-i*
+    One line of packet counters per interface.
+
+# FILES
+@ /proc/net/tcp, /proc/net/udp, /proc/net/dev, /proc/net/route
+    Where the numbers come from.
+
+# SEE ALSO
+ss(1), route(1), ifconfig(1), network(7)

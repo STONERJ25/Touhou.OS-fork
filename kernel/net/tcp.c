@@ -62,8 +62,11 @@ static void tcp_alloc_bufs(Sock *s) {
 
 static void tcp_free_bufs(Sock *s) {
     kfree(s->sbuf);
-    kfree(s->rbuf);
-    s->sbuf = s->rbuf = NULL;
+    s->sbuf = NULL;
+    if (!s->has_file || s->rcv_nxt == s->rd_nxt) {          /* data the application has not read yet must outlive the connection */
+        kfree(s->rbuf);
+        s->rbuf = NULL;
+    }
 }
 
 void tcp_sock_init(Sock *s) {

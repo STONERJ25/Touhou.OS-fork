@@ -1,0 +1,40 @@
+.page ip 1 show and change addresses, links, routes and neighbours
+
+# SYNOPSIS
+*ip* [*-s*] *addr* [*show* [*dev* _IFACE_]]
+*ip* *addr* *add* _ADDRESS_/_LEN_ *dev* _IFACE_
+*ip* *addr* *del* _ADDRESS_/_LEN_ *dev* _IFACE_
+*ip* *addr* *flush* *dev* _IFACE_
+*ip* [*-s*] *link* [*show* [*dev* _IFACE_]]
+*ip* *link* *set* [*dev*] _IFACE_ [*up* | *down*] [*mtu* _N_]
+*ip* *route* [*show*]
+*ip* *route* *add* | *del* _TARGET_[/_LEN_] | *default* [*via* _GATEWAY_] [*dev* _IFACE_] [*metric* _N_]
+*ip* *neigh* [*show*]
+
+# DESCRIPTION
+`ip` looks at and changes the network configuration of the machine. The object (`addr`, `link`, `route`, `neigh`) may be shortened to `a`, `l`, `r`, `n`; the verb defaults to `show`. Changing anything needs root.
+
+@ *addr*
+    The IPv4 addresses. `add` gives an interface an address (replacing the one it had, the stack keeps one per interface), `del` removes it, `flush` removes it without asking which.
+@ *link*
+    The interfaces themselves: state, MTU, hardware address. With `-s` the packet counters are shown as well.
+@ *route*
+    The routing table: connected networks, the default gateway and anything added by hand. The kernel picks the longest matching prefix. A route needs a gateway that lies on a connected network, or an interface.
+@ *neigh*
+    The ARP cache: which hardware address answered for which IP address, and whether the entry is `REACHABLE`, `INCOMPLETE` (asked, no answer yet) or `PERMANENT`.
+
+The options `-4`, `-o` and `-br` are accepted and ignored: there is only IPv4 and one output style.
+
+# EXAMPLES
+    ip addr
+    ip addr add 192.168.7.9/24 dev eth0
+    ip route add default via 192.168.7.1
+    ip route add 10.9.0.0/16 via 192.168.7.1 dev eth0
+    ip link set eth0 mtu 1400
+    ip neigh
+
+# EXIT STATUS
+0 on success, 1 when the device does not exist or the kernel refused, 2 for a usage error.
+
+# SEE ALSO
+ifconfig(1), route(1), network(7)

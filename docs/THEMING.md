@@ -22,7 +22,7 @@ All art is original or procedurally generated. No assets are extracted from the 
 | Satori | keyboard | she reads your mind (your keystrokes) |
 | Koishi | mouse | unconscious movement |
 | Keine | filesystems, history | keeps history |
-| Yukari | gaps = pipes, IPC, (later) networking | gaps in the boundary |
+| Yukari | gaps = pipes, IPC, networking (the stack, the cards, DHCP) | gaps in the boundary; the packet-pushing kernel thread is "Yukari" too |
 | Yuyuko | out of memory, trash | hungry; the Netherworld takes deleted files |
 | Fairies | compositor / window server | three fairies of light hold the pixels |
 | Patchouli | documentation (`patchouli` command, man pages) | the library |
