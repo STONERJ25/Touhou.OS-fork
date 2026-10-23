@@ -232,6 +232,28 @@ char *strerror(int err) {
     case ENOTEMPTY: return "Directory not empty";
     case ELOOP: return "Too many levels of symbolic links";
     case ETIMEDOUT: return "Connection timed out";
+    case ENOTSOCK: return "Socket operation on non-socket";
+    case EDESTADDRREQ: return "Destination address required";
+    case EMSGSIZE: return "Message too long";
+    case EPROTOTYPE: return "Protocol wrong type for socket";
+    case ENOPROTOOPT: return "Protocol not available";
+    case EPROTONOSUPPORT: return "Protocol not supported";
+    case EOPNOTSUPP: return "Operation not supported";
+    case EAFNOSUPPORT: return "Address family not supported by protocol";
+    case EADDRINUSE: return "Address already in use";
+    case EADDRNOTAVAIL: return "Cannot assign requested address";
+    case ENETDOWN: return "Network is down (the gap is closed)";
+    case ENETUNREACH: return "Network is unreachable (Yukari found no gap)";
+    case ECONNABORTED: return "Software caused connection abort";
+    case ECONNRESET: return "Connection reset by peer";
+    case ENOBUFS: return "No buffer space available";
+    case EISCONN: return "Transport endpoint is already connected";
+    case ENOTCONN: return "Transport endpoint is not connected";
+    case ECONNREFUSED: return "Connection refused";
+    case EHOSTDOWN: return "Host is down";
+    case EHOSTUNREACH: return "No route to host";
+    case EALREADY: return "Operation already in progress";
+    case EINPROGRESS: return "Operation now in progress";
     default: return "Unknown error";
     }
 }

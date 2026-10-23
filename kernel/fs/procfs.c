@@ -14,9 +14,12 @@
 
 typedef size_t (*GenFn)(char *buf, size_t cap);
 
+typedef ssize_t (*WriteFn)(const char *buf, size_t n);
+
 typedef struct ProcEntry {
-    const char *name;
+    const char *name;           /* "uptime", or "net/dev" for a file inside a subdirectory */
     GenFn gen;
+    WriteFn wr;                 /* NULL = read-only */
 } ProcEntry;
 
 u64 irq_count(int irq);
@@ -93,7 +96,7 @@ static size_t gen_pci(char *b, size_t cap) { return pci_describe(b, cap); }
 static size_t gen_partitions(char *b, size_t cap) { return blk_describe(b, cap); }
 
 /* The table grows at run time: drivers add their own files with procfs_register(). */
-static ProcEntry g_entries[48] = {
+static ProcEntry g_entries[64] = {
     { "version", gen_version }, { "uptime", gen_uptime }, { "meminfo", gen_meminfo }, { "cpuinfo", gen_cpuinfo },
     { "mounts", gen_mounts }, { "interrupts", gen_interrupts }, { "tasks", gen_tasks }, { "cmdline", gen_cmdline },
     { "loadavg", gen_loadavg }, { "pci", gen_pci }, { "partitions", gen_partitions },
@@ -105,8 +108,34 @@ int procfs_register(const char *name, size_t (*gen)(char *buf, size_t cap)) {
     if (g_nentries >= ARRAY_SIZE(g_entries)) return -ENOSPC;
     g_entries[g_nentries].name = name;
     g_entries[g_nentries].gen = gen;
+    g_entries[g_nentries].wr = NULL;
     g_nentries++;
     return 0;
+}
+
+/* Like procfs_register, and root may also write the file (mode 0644): wr gets the bytes of each write(). A name with a
+ * slash ("net/dev") lives in a subdirectory of /proc that appears on its own. */
+int procfs_register_rw(const char *name, size_t (*gen)(char *buf, size_t cap), ssize_t (*wr)(const char *buf, size_t n)) {
+    int rc = procfs_register(name, gen);
+    if (!rc) g_entries[g_nentries - 1].wr = wr;
+    return rc;
+}
+
+/* Entries whose name contains a slash are hidden from the root listing; the first of each prefix shows up as a directory. */
+static bool entry_first_of_dir(unsigned i) {
+    const char *name = g_entries[i].name;
+    const char *sl = strchr(name, '/');
+    if (!sl) return false;
+    size_t plen = (size_t)(sl - name);
+    for (unsigned j = 0; j < i; j++)
+        if (!strncmp(g_entries[j].name, name, plen) && g_entries[j].name[plen] == '/') return false;
+    return true;
+}
+
+static unsigned root_visible_count(void) {
+    unsigned n = 0;
+    for (unsigned i = 0; i < g_nentries; i++) if (!strchr(g_entries[i].name, '/') || entry_first_of_dir(i)) n++;
+    return n;
 }
 
 /* ---- per-process files ---- */
@@ -176,7 +205,7 @@ static size_t gen_pidfile(const PidFile *pf, char *b, size_t cap) {
     return n;
 }
 
-static const VNodeOps proc_root_ops, proc_file_ops, pid_dir_ops, pid_file_ops;
+static const VNodeOps proc_root_ops, proc_file_ops, pid_dir_ops, pid_file_ops, proc_sub_ops;
 
 static ssize_t slice_read(char *tmp, size_t len, void *buf, size_t n, u64 off) {
     if (len > 16384) len = 16384;
@@ -196,6 +225,12 @@ static ssize_t proc_read(VNode *v, File *f, void *buf, size_t n, u64 off) {
     ssize_t r = slice_read(tmp, e->gen(tmp, 16384), buf, n, off);
     kfree(tmp);
     return r;
+}
+
+static ssize_t proc_write(VNode *v, File *f, const void *buf, size_t n, u64 off) {
+    (void)f; (void)off;
+    const ProcEntry *e = v->priv;
+    return e->wr ? e->wr(buf, n) : -EACCES;
 }
 
 static ssize_t pidfile_read(VNode *v, File *f, void *buf, size_t n, u64 off) {
@@ -222,11 +257,22 @@ static int proc_root_lookup(VNode *dir, const char *name, VNode **out) {
     if (!strcmp(name, ".") || !strcmp(name, "..")) { vnode_get(dir); *out = dir; return 0; }
     for (unsigned i = 0; i < NSTATIC; i++) {
         if (strcmp(g_entries[i].name, name)) continue;
-        VNode *v = vnode_alloc(&proc_file_ops, dir->mount, S_IFREG | 0444);
+        VNode *v = vnode_alloc(&proc_file_ops, dir->mount, S_IFREG | (g_entries[i].wr ? 0644 : 0444));
         if (!v) return -ENOMEM;
         v->priv = (void *)&g_entries[i];
         v->ino = 100 + i;
         *out = v;
+        return 0;
+    }
+    for (unsigned i = 0; i < NSTATIC; i++) {                    /* a subdirectory such as /proc/net */
+        const char *sl = strchr(g_entries[i].name, '/');
+        size_t nl = strlen(name);
+        if (!sl || (size_t)(sl - g_entries[i].name) != nl || strncmp(g_entries[i].name, name, nl)) continue;
+        VNode *d = vnode_alloc(&proc_sub_ops, dir->mount, S_IFDIR | 0555);
+        if (!d) return -ENOMEM;
+        d->priv = (void *)g_entries[i].name;
+        d->ino = 0x8000 + i;
+        *out = d;
         return 0;
     }
     int pid = -1;
@@ -257,14 +303,25 @@ static void pid_cb(Process *p, void *ctx) {
 
 static int proc_root_readdir(VNode *dir, u64 cookie, DirEntry *out) {
     (void)dir;
-    if (cookie < NSTATIC) {
-        out->ino = 100 + cookie;
-        out->type = DT_REG;
-        strlcpy(out->name, g_entries[cookie].name, sizeof out->name);
-        return 1;
+    unsigned nvis = root_visible_count();
+    if (cookie < nvis) {
+        u64 k = 0;
+        for (unsigned i = 0; i < g_nentries; i++) {
+            const char *sl = strchr(g_entries[i].name, '/');
+            if (sl && !entry_first_of_dir(i)) continue;
+            if (k++ != cookie) continue;
+            out->ino = 100 + i;
+            out->type = sl ? DT_DIR : DT_REG;
+            size_t nl = sl ? (size_t)(sl - g_entries[i].name) : strlen(g_entries[i].name);
+            if (nl >= sizeof out->name) nl = sizeof out->name - 1;
+            memcpy(out->name, g_entries[i].name, nl);
+            out->name[nl] = 0;
+            return 1;
+        }
+        return 0;
     }
     int pid = 0;
-    PidList l = { &pid, cookie - NSTATIC, 0 };
+    PidList l = { &pid, cookie - nvis, 0 };
     process_for_each(pid_cb, &l);
     if (!l.found) return 0;
     out->ino = 0x10000 + (u64)pid * 8;
@@ -298,8 +355,43 @@ static int pid_dir_readdir(VNode *dir, u64 cookie, DirEntry *out) {
     return 1;
 }
 
+/* A subdirectory of /proc made of the registered entries named "<dir>/<file>". */
+static int proc_sub_lookup(VNode *dir, const char *name, VNode **out) {
+    if (!strcmp(name, ".") || !strcmp(name, "..")) { vnode_get(dir); *out = dir; return 0; }
+    const char *full = dir->priv;
+    size_t plen = (size_t)(strchr(full, '/') - full);
+    for (unsigned i = 0; i < NSTATIC; i++) {
+        const char *en = g_entries[i].name;
+        if (strncmp(en, full, plen) || en[plen] != '/' || strcmp(en + plen + 1, name)) continue;
+        VNode *v = vnode_alloc(&proc_file_ops, dir->mount, S_IFREG | (g_entries[i].wr ? 0644 : 0444));
+        if (!v) return -ENOMEM;
+        v->priv = (void *)&g_entries[i];
+        v->ino = 100 + i;
+        *out = v;
+        return 0;
+    }
+    return -ENOENT;
+}
+
+static int proc_sub_readdir(VNode *dir, u64 cookie, DirEntry *out) {
+    const char *full = dir->priv;
+    size_t plen = (size_t)(strchr(full, '/') - full);
+    u64 k = 0;
+    for (unsigned i = 0; i < NSTATIC; i++) {
+        const char *en = g_entries[i].name;
+        if (strncmp(en, full, plen) || en[plen] != '/') continue;
+        if (k++ != cookie) continue;
+        out->ino = 100 + i;
+        out->type = DT_REG;
+        strlcpy(out->name, en + plen + 1, sizeof out->name);
+        return 1;
+    }
+    return 0;
+}
+
 static const VNodeOps proc_root_ops = { .lookup = proc_root_lookup, .readdir = proc_root_readdir };
-static const VNodeOps proc_file_ops = { .read = proc_read };
+static const VNodeOps proc_sub_ops = { .lookup = proc_sub_lookup, .readdir = proc_sub_readdir };
+static const VNodeOps proc_file_ops = { .read = proc_read, .write = proc_write };
 static const VNodeOps pid_dir_ops = { .lookup = pid_dir_lookup, .readdir = pid_dir_readdir };
 static const VNodeOps pid_file_ops = { .read = pidfile_read, .release = pidfile_release };
 

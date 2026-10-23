@@ -72,7 +72,7 @@ def char_to_key(ch):
 class Qemu:
     def __init__(self, cmdline="", mem="512M", display="none", disk=None, net=False, no_reboot=True,
                  trace_int=False, extra=(), esp=None, name="vm", video=None, headless_serial=True,
-                 boot_image=None, boot_bus="usb", audio=None, audio_path=None, sounds=False):
+                 boot_image=None, boot_bus="usb", audio=None, audio_path=None, sounds=False, hostfwd=(), netdev_opts=""):
         # audio: None (no sound hardware), "hda" / "hda-output" (Intel HDA + output-only codec), "hda-duplex", "ac97".
         # The sound card plays into a WAV file (audio_path, default build/<name>-audio.wav) that is complete once stop() ran.
         # sounds: system sounds (login chime...) are switched off with "nosounds" on the command line unless a test wants them.
@@ -80,6 +80,8 @@ class Qemu:
         self.audio, self.sounds = audio, sounds
         self.audio_path = Path(audio_path) if audio_path else BUILD / f"{name_safe(name)}-audio.wav"
         self.disk, self.net, self.no_reboot, self.trace_int = disk, net, no_reboot, trace_int
+        self.hostfwd = list(hostfwd)
+        self.netdev_opts = netdev_opts
         self.extra = list(extra)
         self.esp = Path(esp) if esp else BUILD / "esp"
         self.name = name
@@ -129,6 +131,25 @@ class Qemu:
             return ["-drive", img, "-device", "virtio-blk-pci,drive=bootdisk,bootindex=0"]
         raise ValueError(f"unknown boot bus {bus!r}")
 
+    def _net_args(self):
+        """The QEMU options for the guest's network card.
+
+        net=False             no card (and no -netdev), as before
+        net=True              an e1000 on user-mode networking (10.0.2.0/24, gateway 10.0.2.2, DNS 10.0.2.3), as before
+        net="virtio-net-pci"  any NIC model QEMU knows: e1000, e1000e, rtl8139, virtio-net-pci[,disable-legacy=on] ...
+        hostfwd=[...]         user-mode port forwards, each "tcp:127.0.0.1:18080-:80" (host side first, guest side after the dash)
+        netdev_opts="..."     extra -netdev user options such as "restrict=on" or "net=192.168.7.0/24"
+        """
+        if not self.net:
+            return ["-net", "none"]
+        model = "e1000" if self.net is True else str(self.net)
+        netdev = "user,id=net0"
+        for fwd in self.hostfwd:
+            netdev += f",hostfwd={fwd}"
+        if self.netdev_opts:
+            netdev += "," + self.netdev_opts
+        return ["-netdev", netdev, "-device", f"{model},netdev=net0"]
+
     def _args(self, vars_copy, serial_port, qmp_port):
         a = [str(QEMU),
              "-machine", "q35", "-cpu", "max", "-m", self.mem, "-smp", "1",
@@ -139,10 +160,7 @@ class Qemu:
              "-d", "guest_errors,cpu_reset" + (",int" if self.trace_int else ""), "-D", str(self.log_path)]
         if self.disk:
             a += ["-drive", f"if=none,id=data0,format=raw,file={self.disk}", "-device", "virtio-blk-pci,drive=data0"]
-        if self.net:
-            a += ["-netdev", "user,id=net0", "-device", "e1000,netdev=net0"]
-        else:
-            a += ["-net", "none"]
+        a += self._net_args()
         if self.audio:
             a += ["-audiodev", f"wav,id=snd0,path={str(self.audio_path).replace(chr(92), '/')},out.frequency=48000,out.channels=2,out.format=s16"]
             if self.audio == "ac97":

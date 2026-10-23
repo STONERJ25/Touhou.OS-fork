@@ -67,6 +67,10 @@ Everything a PCI driver needs already exists; look at `kernel/include/pci.h`, `b
   `/proc/partitions` (`lsblk`). Filesystems take a `BlockDev` by name (`blk_find("sda1")`, `blk_find_label("HUMANVILLAGE")`).
   The virtio-blk driver, the FAT32/FAT16 filesystem, the HUMANVILLAGE mount policy, `df`/`statfs` and `tools/mkdisk.py`
   (image builder and fsck) are described in [STORAGE.md](STORAGE.md).
+- **Network cards:** fill in a `NetDev` (`kernel/include/net.h`: MAC, MTU, `tx(frame)`, `poll()` that calls `net_rx(frame)`), set
+  `NDF_LINK` when the carrier is up and `netdev_register("eth", d)`; the stack, DHCP and `/proc/net` do the rest, all under one
+  network lock so the driver needs none. Call `pci_enable(dev, PCI_CMD_MEM | PCI_CMD_MASTER)` first. See [NETWORK.md](NETWORK.md)
+  (design, sockets, tools, tunables, tests, current state); `kernel/net/` holds the stack, `kernel/drivers/{virtio_net,e1000}.c` the cards.
 - **Input:** USB HID turns reports into `input_key(KEY_*, down)` and `input_mouse(dx, dy, wheel, buttons)`; the same path as
   the PS/2 driver feeds the console tty and `/dev/input/events`. Repeat is generated in the input layer.
 - **Sound:** a sound driver (`kernel/drivers/audio/hda.c`, `ac97.c`) fills in an `AudioBackend` (`kernel/include/audiodev.h`: a
