@@ -68,5 +68,8 @@ Nothing below has been written; the existing versions of the existing tools are 
 
 ## Tests run and not run for this merge
 
-Run on the individual branches before the merge: the tests named above (see the per-tool pages). Run on the merged tree:
-the build only (`python tools/build.py` passes). Not run: the complete suite, `manual`, `pager`, the shrine tests.
+Run on the individual branches before the merge: the tests named above (see the per-tool pages). Run on the merged tree
+(all passed): the build, `shell` (the existing 150-check table plus the two kshell tests), `vi_manual`, `bc_dc_manual_pages`
+and `awk_checks` (including the last edit that had not been re-run). Not run on the merged tree: `diff_*`/`patch_checks`,
+`bc_language`, `bc_mathlib`, `dc_stack_machine`, `vi_basic`, `awk_big_input`, `manual`, `pager`, the shrine tests and the
+complete suite.
