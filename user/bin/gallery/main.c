@@ -771,6 +771,29 @@ static int text_info(int argc, char **argv) {
     return rc;
 }
 
+/* gallery --thumb SIZE FILE [OUT.ppm]: what a file browser would get from k_image_thumbnail(), for tests and scripts. */
+static int text_thumb(int argc, char **argv) {
+    if (argc < 2) { fprintf(stderr, "usage: gallery --thumb SIZE FILE [OUT.ppm]\n"); return 2; }
+    int size = atoi(argv[0]);
+    KCanvas cv, again;
+    bool ok = k_image_thumbnail(argv[1], size, &cv);
+    bool cached = ok && k_image_thumbnail_cached(argv[1], size, &again) && again.px == cv.px;
+    if (!ok) { printf("thumbnail %s: none\n", argv[1]); return 1; }
+    printf("thumbnail %s: %dx%d cached=%d\n", argv[1], cv.w, cv.h, cached ? 1 : 0);
+    if (argc > 2) {
+        FILE *f = fopen(argv[2], "w");
+        if (!f) { perror(argv[2]); return 1; }
+        fprintf(f, "P6\n%d %d\n255\n", cv.w, cv.h);
+        for (int y = 0; y < cv.h; y++)
+            for (int x = 0; x < cv.w; x++) {
+                uint32_t p = cv.px[(size_t)y * cv.stride + x];
+                fputc((int)((p >> 16) & 255), f); fputc((int)((p >> 8) & 255), f); fputc((int)(p & 255), f);
+            }
+        fclose(f);
+    }
+    return 0;
+}
+
 int main(int argc, char **argv) {
     memset(&G, 0, sizeof G);
     G.slide_secs = 4;
@@ -781,6 +804,7 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--trace")) G.trace = true;
         else if (!strcmp(argv[i], "--info")) return text_info(argc - i - 1, argv + i + 1);
+        else if (!strcmp(argv[i], "--thumb")) return text_thumb(argc - i - 1, argv + i + 1);
         else if (!strcmp(argv[i], "--slideshow") && i + 1 < argc) { G.slideshow = true; G.slide_secs = atoi(argv[++i]); if (G.slide_secs < 1) G.slide_secs = 1; }
         else if (argv[i][0] == '-' && argv[i][1]) { fprintf(stderr, "usage: gallery [--trace] [--slideshow SECONDS] [FILE | FOLDER]\n       gallery --info FILE...\n"); return 2; }
         else target = argv[i];

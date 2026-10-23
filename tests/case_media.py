@@ -129,6 +129,10 @@ def area_reference(im, nw, nh):
     return bytes(out)
 
 
+def near_rgb(a, b, tol=2):
+    return all(abs(x - y) <= tol for x, y in zip(a, b))
+
+
 def crc_rgba(im):
     return zlib.crc32(im.convert("RGBA").tobytes())
 
@@ -604,6 +608,50 @@ def media_archives():
         assert (info["src/a/link"].external_attr >> 16) & 0o170000 == 0o120000, "symlinks are stored as links"
         assert gzip.decompress(fetch(vm, "/tmp/g.gz")) == text
         print(f"\n     tar/zip/gzip: host archives unpacked, guest archives verified by Python ({len(tgz.getnames())} tar members, {len(z.namelist())} zip entries)")
+
+
+@harness.test
+def media_thumbnails():
+    """k_image_thumbnail (libkappa): scaled to fit, never enlarged, transparency flattened onto paper, cached, and a file that is not a picture is refused."""
+    big = photo(100, 50, seed=3)
+    b = io.BytesIO()
+    big.save(b, "PNG")
+    jb = io.BytesIO()
+    photo(64, 64, seed=4).save(jb, "JPEG", quality=90)
+    small = io.BytesIO()
+    Image.new("RGB", (20, 10), (200, 30, 40)).save(small, "PNG")
+    rgba = Image.new("RGBA", (40, 40), (255, 0, 0, 0))
+    for x in range(20):
+        for y in range(40):
+            rgba.putpixel((x, y), (0, 0, 255, 255))
+    ab = io.BytesIO()
+    rgba.save(ab, "PNG")
+    files = {"media/t/big.png": b.getvalue(), "media/t/photo.jpg": jb.getvalue(), "media/t/small.png": small.getvalue(),
+             "media/t/alpha.png": ab.getvalue(), "media/t/notes.txt": b"just text\n"}
+    esp = media_esp(files, "esp-media-thumb")
+    with Qemu(cmdline="text", name="t-media-thumb", esp=esp, mem="768M") as vm:
+        vm.expect(test_shell.PROMPT, timeout=120)
+        run = lambda c: test_shell.run(vm, c, timeout=120)  # noqa: E731
+        out, rc = run("gallery --thumb 32 /media/t/big.png /tmp/big.ppm")
+        assert rc == 0 and "thumbnail /media/t/big.png: 32x16 cached=1" in out, out
+        got = Image.open(io.BytesIO(fetch(vm, "/tmp/big.ppm"))).convert("RGB")
+        assert got.size == (32, 16)
+        # 100 x 50 shrunk to 32 x 16 (an area average with fractional edges); the reference is computed from the definition
+        ref = area_reference(big, 32, 16)
+        worst = max(abs(a - c) for a, c in zip(got.tobytes(), ref))
+        assert worst <= 1, f"thumbnail pixels differ from the exact area average by {worst}"
+        out, rc = run("gallery --thumb 32 /media/t/photo.jpg")
+        assert "32x32 cached=1" in out, out
+        out, rc = run("gallery --thumb 32 /media/t/small.png")
+        assert "20x10" in out, f"a small picture must not be enlarged: {out}"
+        out, rc = run("gallery --thumb 24 /media/t/alpha.png /tmp/alpha.ppm")
+        assert "24x24" in out, out
+        a = Image.open(io.BytesIO(fetch(vm, "/tmp/alpha.ppm"))).convert("RGB")
+        assert near_rgb(a.getpixel((2, 12)), (0, 0, 255)) and near_rgb(a.getpixel((21, 12)), (0xEC, 0xE6, 0xD6)), "transparent pixels become the paper colour"
+        out, rc = run("gallery --thumb 32 /media/t/notes.txt; echo st=$?")
+        assert "none" in out and "st=1" in out, out
+        out, rc = run("gallery --thumb 32 /media/t/missing.png; echo st=$?")
+        assert "none" in out and "st=1" in out, out
 
 
 # ---------------------------------------------------------------------------------------------- tests: the desktop programs
