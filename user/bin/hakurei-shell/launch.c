@@ -15,6 +15,7 @@ const AppEntry g_apps[] = {
     { "Sakuya's Pocket Watch", "Clock, stopwatch and calendar",  KI_CLOCK,     "pocketwatch",   "Programs" },
     { "Bunbunmaru News",       "Today's paper",                  KI_NEWS,      "bunbunmaru",    "Programs" },
     { "Marisa's Sketchbook",   "Draw pictures",                  KI_SKETCH,    "sketchbook",    "Programs" },
+    { "Reimu's Jukebox",       "Play music (Prismriver Concert Hall)", KI_TORII, "jukebox",       "Programs" },
     { "Spell Manager",         "Running spells (processes)",     KI_SPELLCARD, "spellmgr",      "System" },
     { "Kappa Control Panel",   "Settings and hardware",          KI_GEAR,      "kappa-panel",   "System" },
     { "Danmaku",               "Dodge the bullets",              KI_STAR,      "danmaku",       "Games" },

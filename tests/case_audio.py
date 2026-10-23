@@ -4,6 +4,7 @@ QEMU's sound card plays into a WAV file (Qemu(audio=...)); the tests measure tha
 clock can be several times slower than wall time, so nothing here depends on how long a sound lasts: tests wait for the
 shell to come back, stop the VM, and look at the loud stretches of the recording."""
 import re
+import time
 
 import audiotools as at
 import test_shell
@@ -195,6 +196,119 @@ def audio_hda_fallbacks():
     assert abs(at.dominant_freq(tone, rate) - 660) < 7, at.dominant_freq(tone, rate)
     assert 0.42 < at.peak(tone) < 0.55, at.peak(tone)
     assert float(abs(tone[1:] - tone[:-1]).max()) < 0.2, "the output has a jump in it"
+
+
+SONGS = ("Bamboo Lantern Walk", "Kappa Workshop Rush", "Moonlit Lake Ripples", "Netherworld Tea Party", "Shrine Steps at Dawn")
+
+
+@test
+def audio_songs():
+    """The songs that ship with the system parse, are bar-aligned, have a sensible length and level, and show up in the Jukebox list."""
+    with Qemu(cmdline="text", name="t-audio-songs") as vm:
+        vm.expect(test_shell.PROMPT, timeout=90)
+        out, rc = sh(vm, "jukebox --list")
+        assert rc == 0, out
+        for i, title in enumerate(SONGS, 1):
+            assert re.search(rf"^\s*{i}\. {re.escape(title)} \(\d+:\d\d\) /ScarletDevilMansion/share/music/\S+\.tms$", out, re.M), f"{title!r} missing from:\n{out}"
+        for path in re.findall(r"(/ScarletDevilMansion/share/music/\S+\.tms)", out):
+            info, rc = sh(vm, f"play -i -t 10 {path}", timeout=180)
+            assert rc == 0, info
+            assert "note:" not in info, f"{path}: a channel does not fill its pattern: {info}"
+            m = re.search(r"(\d+) bpm, (\d) channels?, (\d+):(\d\d)", info)
+            assert m and 45 <= int(m.group(3)) * 60 + int(m.group(4)) <= 240, f"{path}: length: {info}"
+            m = re.search(r"peak ([\d.]+), rms ([\d.]+), (\d+) samples above 0.9, (\d+)% silent", info)
+            assert m, info
+            assert 0.2 < float(m.group(1)) < 0.9 and float(m.group(2)) > 0.04 and int(m.group(4)) < 30, f"{path}: {info}"
+        out, rc = sh(vm, "printf 'tms 1\\ntempo 120\\nchannel a inst=nope\\n' > /tmp/bad.tms; play -i /tmp/bad.tms")
+        assert rc == 1 and "no instrument 'nope'" in out, out
+        out, rc = sh(vm, "printf 'tms 1\\nchannel a inst=bass\\npattern P\\n  a: o4 c4 x4\\n' > /tmp/bad2.tms; play -i /tmp/bad2.tms")
+        assert rc == 1 and "cannot read the notation" in out, out
+
+
+@test
+def audio_song_timing_and_pitch():
+    """A song written in the notation plays at the right tempo and pitch: four quarter notes at 120 bpm, A4 to C5, FM and triangle."""
+    with Qemu(cmdline="text", name="t-audio-pitch", audio="hda") as vm:
+        vm.expect(test_shell.PROMPT, timeout=90)
+        sh(vm, "volume 100")
+        sh(vm, "printf 'tms 1\\ntempo 120\\nchannel a inst=bass\\npattern P\\n  a: q5 o4 a4 b4 >c4 <a4\\norder P\\n' > /tmp/tri.tms")
+        out, rc = sh(vm, "play -q /tmp/tri.tms", timeout=120)
+        assert rc == 0, out
+        sh(vm, "printf 'tms 1\\ntempo 120\\nchannel a inst=fm-epiano\\npattern P\\n  a: o5 e1\\norder P\\n' > /tmp/fm.tms")
+        out, rc = sh(vm, "sleep 1; play -q /tmp/fm.tms", timeout=120)
+        assert rc == 0, out
+        rate, x = capture(vm)
+    segs = at.segments(x, rate, threshold=0.004, merge_ms=60, min_ms=100)
+    assert len(segs) >= 5, f"expected four notes and a long one, found {segs}"
+    notes, longer = segs[:4], segs[4]
+    starts = [a / rate for a, _ in notes]
+    for i in range(3):
+        assert abs((starts[i + 1] - starts[i]) - 0.5) < 0.03, f"quarter notes at 120 bpm are 0.5 s apart, got {starts}"
+    for (a, b), want in zip(notes[:3], (440.0, 493.9, 523.3)):
+        f = at.dominant_freq(at.trimmed(x[a:b], rate, ms=60), rate)
+        assert abs(f - want) < want * 0.012, f"expected {want} Hz, heard {f:.1f}"
+    a, b = longer
+    assert 1.6 < (b - a) / rate < 3.0, f"a whole note at 120 bpm lasts about 2 s (gate 7/8, plus its release): {(b - a) / rate:.2f}"
+    f = at.dominant_freq(at.trimmed(x[a:b], rate, ms=60), rate)
+    assert abs(f - 659.3) < 8, f"the FM note should sound at E5 (659 Hz), heard {f:.1f}"
+
+
+@test
+def audio_jukebox():
+    """Reimu's Jukebox: plays the first song through the sound card, shows its title, pauses, skips, seeks and sets the volume."""
+    from guitools import Gui
+    import guitext
+    ink = (0x8E, 0x0B, 0x21)                                  # the colour of the "Now playing" line (the theme's dark accent)
+    region = (290, 285, 380, 40)
+
+    with Qemu(cmdline="text", name="t-audio-jukebox", mem="768M", audio="hda") as vm:
+        g = Gui(vm)
+        g.start_desktop()
+
+        def on_screen(text, timeout=90):
+            end = time.time() + timeout
+            while time.time() < end:
+                if guitext.find_text(vm.screen_ppm(), text, ink, region):
+                    return True
+                time.sleep(1.0)
+            vm.screenshot(BUILD / "t-audio-jukebox-fail.png")
+            return False
+
+        vm.send("volume 100; jukebox --trace -p &\n")
+        vm.expect(r"jukebox: ready with 5 tracks", timeout=180)
+        vm.expect(r"jukebox: playing Bamboo Lantern Walk", timeout=60)
+        assert on_screen("Now playing: Bamboo Lantern Walk"), "the title of the song never appeared in the window"
+        vm.screenshot(BUILD / "t-audio-jukebox.png")
+        time.sleep(3)
+
+        vm.key("spc")                                         # pause
+        vm.expect(r"jukebox: paused at (\d+\.\d)", timeout=60)
+        assert on_screen("Loaded: Bamboo Lantern Walk"), "the window should say the song is loaded, not playing"
+        vm.key("n")                                           # next song
+        vm.expect(r"jukebox: playing Kappa Workshop Rush", timeout=60)
+        assert on_screen("Now playing: Kappa Workshop Rush")
+        time.sleep(2)
+
+        g.click(496, 343)                                     # the middle of the seek bar: about 40 s into the 80 s song
+        m = vm.expect(r"jukebox: seek (\d+)\.\d", timeout=60)
+        assert 30 <= int(m.group(1)) <= 50, f"seek went to {m.group(1)} s"
+        g.click(525, 388)                                     # a quarter of the way along the volume bar
+        m = vm.expect(r"jukebox: volume (\d+)", timeout=60)
+        assert 15 <= int(m.group(1)) <= 35, f"volume went to {m.group(1)}"
+        time.sleep(2)
+        vm.key("m")
+        vm.expect(r"jukebox: muted", timeout=60)
+        vm.key("q", ctrl=True)
+        time.sleep(1)
+        rate, x = capture(vm)
+    assert at.peak(x) > 0.02, "nothing was played"
+    segs = at.segments(x, rate, threshold=0.004, merge_ms=400)
+    loud = sum((b - a) for a, b in segs) / rate
+    assert loud > 4, f"only {loud:.1f} s of music reached the sound card"
+    longest = max(segs, key=lambda s: s[1] - s[0])
+    seg = x[longest[0]:longest[1]]
+    jumps = float(abs(seg[1:] - seg[:-1]).max())
+    assert jumps < 0.6, f"a click of {jumps:.2f} in the music"
 
 
 @test
