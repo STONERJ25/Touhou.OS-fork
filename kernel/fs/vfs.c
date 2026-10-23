@@ -345,7 +345,20 @@ void file_put(File *f) {
     if (f->fops && f->fops->close) f->fops->close(f);
     else if (f->vn && f->vn->ops && f->vn->ops->closed) f->vn->ops->closed(f->vn, f);
     if (f->vn) vnode_put(f->vn);
+    kfree(f->path);
     kfree(f);
+}
+
+void file_set_path(File *f, const char *abs_path) {
+    size_t n = strlen(abs_path) + 1;
+    char *copy = kmalloc(n);
+    if (!copy) return;                              /* /proc/<pid>/fd then shows a generic name: not worth failing an open for */
+    memcpy(copy, abs_path, n);
+    u64 fl = irq_save();
+    char *old = f->path;
+    f->path = copy;
+    irq_restore(fl);
+    kfree(old);
 }
 
 int vfs_open(const char *path, int flags, u32 mode, const Cred *c, VNode *cwd, File **out) {
@@ -590,6 +603,34 @@ int vfs_symlink(const char *target, const char *path, const Cred *c, VNode *cwd)
         vnode_put(nv);
     }
     vnode_put(dir);
+    return rc;
+}
+
+/* link(2): a second name for an existing file. The link is to the file itself, never to what a final symlink points at. */
+int vfs_link(const char *from, const char *to, const Cred *c, VNode *cwd) {
+    VNode *v, *dir;
+    char name[GNAME_MAX + 1];
+    int rc = vfs_lookup(from, cwd, c, LOOKUP_NOFOLLOW, &v);
+    if (rc) return rc;
+    if (S_ISDIR(v->mode)) { vnode_put(v); return -EPERM; }
+    /* Like Linux's protected_hardlinks: nobody collects links to files they could not already read and write themselves, or to
+     * set-user-id programs (a link would keep an old vulnerable copy alive after the owner replaced it). */
+    if (c && c->uid != 0 && c->uid != v->uid && ((v->mode & (S_ISUID | S_ISGID)) || vfs_access(v, c, R_OK | W_OK))) {
+        vnode_put(v);
+        return -EPERM;
+    }
+    if ((rc = exists_check(to, cwd, c))) { vnode_put(v); return rc; }
+    if ((rc = parent_for_modify(to, cwd, c, &dir, name))) { vnode_put(v); return rc; }
+    if (dir->mount != v->mount) {
+        rc = -EXDEV;
+    } else {
+        mutex_lock(&g_ns);
+        rc = dir->ops->link ? dir->ops->link(dir, name, v) : -EPERM;
+        mutex_unlock(&g_ns);
+        if (rc == 0) v->ctime = time_now_sec();
+    }
+    vnode_put(dir);
+    vnode_put(v);
     return rc;
 }
 

@@ -8,6 +8,7 @@ THREAD_SECTIONS = [
     "create, join, return values",
     "many threads, one mutex, one atomic",
     "/proc shows the threads",
+    "stdio: a thread blocked in fgets on one stream does not stop output on another",
     "producer/consumer with condition variables",
     "rwlock",
     "barrier",

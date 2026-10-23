@@ -417,6 +417,7 @@ int process_spawn_init(const char *path, char *const argv[]) {
         File *f;
         int rc = vfs_open("/dev/console", i == 0 ? O_RDONLY : O_WRONLY, 0, NULL, NULL, &f);
         if (rc) { klog("Gensokyo", "no /dev/console for init (%d)", rc); return rc; }
+        file_set_path(f, "/dev/console");
         fd_install(p, f, i, 0);
     }
     p->task = task_create_user("init", init_entry, init_argv, p);

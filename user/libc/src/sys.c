@@ -96,7 +96,7 @@ int ftruncate(int fd, off_t n) { return (int)__ret(__sc2(SYS_ftruncate, fd, n));
 int chmod(const char *p, mode_t m) { return (int)__ret(__sc2(SYS_chmod, (long)p, (long)m)); }
 int chown(const char *p, uid_t u, gid_t g) { return (int)__ret(__sc3(SYS_chown, (long)p, (long)u, (long)g)); }
 mode_t umask(mode_t m) { return (mode_t)__sc1(SYS_umask, (long)m); }
-int link(const char *a, const char *b) { (void)a; (void)b; errno = ENOSYS; return -1; }
+int link(const char *a, const char *b) { return (int)__ret(__sc2(SYS_link, (long)a, (long)b)); }
 int sync(void) { return (int)__sc0(SYS_sync); }
 int stat(const char *p, struct stat *st) { return (int)__ret(__sc2(SYS_stat, (long)p, (long)st)); }
 int lstat(const char *p, struct stat *st) { return (int)__ret(__sc2(SYS_lstat, (long)p, (long)st)); }
@@ -162,18 +162,23 @@ char *ttyname(int fd) {
 /* ---------------------------------------------------------------- processes */
 
 extern volatile int __malloc_lock;
-extern RLock __stdio_lock;
+void __stdio_fork_prepare(void);
+void __stdio_fork_parent(void);
+void __stdio_fork_child(void);
 
 /* The child of a multi-threaded process has one thread, so the locks that other threads might have held at the moment of the
- * fork would never be released: fork() takes the allocator and stdio locks itself and lets go of them on both sides. */
+ * fork would never be released: fork() takes the stdio locks (the list and the three standard streams) and the allocator
+ * lock itself, in the order the library uses them (a stream, then the allocator), and lets go on both sides. The child also
+ * resets the locks of every other stream: their holders do not exist there. */
 pid_t fork(void) {
     __fork_run_prepare();
+    __stdio_fork_prepare();
     __lock(&__malloc_lock);
-    __rlock(&__stdio_lock);
     long r = __sc0(SYS_fork);
     if (r == 0) __pthread_self()->tid = (int)__sc0(SYS_gettid);    /* the copy of the control block still has the parent's tid */
-    __runlock(&__stdio_lock);
     __unlock(&__malloc_lock);
+    if (r == 0) __stdio_fork_child();
+    else __stdio_fork_parent();
     if (r == 0) __fork_run_child();
     else if (r > 0) __fork_run_parent();
     return (pid_t)__ret(r);

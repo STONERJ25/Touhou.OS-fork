@@ -120,6 +120,16 @@ static void reap(void) {
     if (g_reap) task_first_run();
 }
 
+/* The time slice, in ticks, for a nice value: SCHED_SLICE at 0, 1 tick at 19, 110 at -20. The round robin itself is unchanged, so
+ * two busy threads share the CPU in proportion to their slices (a nice-19 thread gets about a tenth of a nice-0 one). */
+static int slice_for(int nice) {
+    if (nice > 0) {
+        int s = SCHED_SLICE - (nice * (SCHED_SLICE - 1) + 18) / 19;
+        return s < 1 ? 1 : s;
+    }
+    return SCHED_SLICE + (-nice) * 5;
+}
+
 static Task *pick_next(Task *prev) {
     Task *t = prev;
     do {
@@ -137,7 +147,7 @@ void schedule(void) {
     if (next != prev) {
         if (prev->state == TASK_RUNNING) prev->state = TASK_READY;
         next->state = TASK_RUNNING;
-        next->slice = SCHED_SLICE;
+        next->slice = slice_for(next->nice);
         g_current = next;
         tss_set_rsp0(next->kstack_top);
         if (next->pml4 != prev->pml4) vmm_switch(next->pml4);
@@ -147,7 +157,7 @@ void schedule(void) {
         context_switch(&prev->rsp, next->rsp);
         reap();
     } else {
-        prev->slice = SCHED_SLICE;
+        prev->slice = slice_for(prev->nice);
     }
     irq_restore(f);
 }
@@ -235,7 +245,7 @@ static Task *task_create_common(const char *name, void (*entry)(void *), void *a
 
     u64 f = irq_save();
     t->tid = g_next_tid++;
-    if (proc) { t->utid = proc->pid; thread_link(proc, t); }
+    if (proc) { t->utid = proc->pid; t->nice = proc->nice; thread_link(proc, t); }
     t->state = TASK_READY;
     list_add(t);
     irq_restore(f);
@@ -274,6 +284,7 @@ Task *task_create_thread(const char *name, const TrapFrame *tf, Process *proc, c
     t->proc = proc;
     t->pml4 = proc->as.pml4;
     t->utid = proc->pid;
+    t->nice = proc->nice;
     if (ti) {
         t->utid = ti->utid;
         t->fs_base = ti->fs_base;

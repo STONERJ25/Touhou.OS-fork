@@ -22,7 +22,7 @@ are what is left, roughly in the order they matter.
 - [x] terminal, text editor (pnote), manual viewer, pager
 - [x] Ran's Calculator, Sakuya's Pocket Watch, Spell Manager, Kappa Control Panel, Bunbunmaru News
 - [x] Patchouli's Notebook, Sketchbook, danmaku shooter, Minesweeper, Snake
-- [ ] Gensokyo Explorer (file manager; in progress, design in `docs/EXPLORER.md`)
+- [x] Gensokyo Explorer (file manager; see `docs/APPS.md` and the notes in `docs/EXPLORER.md`)
 - [ ] image viewer, music player (in progress)
 
 ## 0.4+ -- system depth
@@ -39,7 +39,9 @@ are what is left, roughly in the order they matter.
 - [x] gzip/tar/zip
 - [ ] PNG/JPEG/GIF decoders, image viewer, wallpaper, PNG screenshots (in progress)
 - [x] awk, diff, patch, bc, dc, a first vi
-- [ ] vi hardening, a more POSIX gapsh, job control, the remaining small tools (in progress)
+- [x] kernel job control (stopped state, Ctrl-Z), nice/renice, hard links on tmpfs, `/proc/<pid>/fd`
+- [ ] vi hardening, a more POSIX gapsh with `jobs`/`fg`/`bg`, the remaining small tools (in progress)
+- [ ] C compiler `mcc` that runs on the OS and compiles itself (in progress)
 - [ ] package format and `gapget`, text editor syntax colours for more languages
 
 ## Long term

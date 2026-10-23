@@ -1,0 +1,143 @@
+.page explorer 1 the Gensokyo Explorer, the file manager of the desktop
+
+# SYNOPSIS
+*explorer* [_PATH_]
+*explorer* *--selftest*
+*explorer* *--help* | *--version*
+
+# DESCRIPTION
+`explorer` shows a folder as a list or as icons and lets you copy, move,
+rename, delete and open what is in it. It is the "Gensokyo Explorer" of the
+start menu, the folder button of the panel and the desktop icons for Home,
+Netherworld and the root.
+
+With no _PATH_ it opens your home folder. A relative _PATH_ is taken from the
+current directory. If _PATH_ is a file, its folder is shown with the file
+selected. A path that does not exist is reported in a dialog and the home
+folder is shown instead.
+
+Everything the Explorer does to files happens as a job that works in small
+slices, so the window never stops answering, however big the folder or the
+copy is. A job that takes more than a moment gets a progress window with a
+Cancel button; jobs started meanwhile wait their turn. Problems do not stop a
+job: they are collected and shown in one list when it is finished.
+
+# THE WINDOW
+@ Menu bar
+    File, Edit, View, Go and Help. They open with the mouse or from the
+    keyboard (Alt and the first letter, or F10; then the arrows, Enter and
+    Esc).
+@ Toolbar
+    Back, Forward, Up and Refresh, the address field, the list and icon
+    buttons, and New Folder. Type an address (a path, `~` for home) and press
+    Enter to go there; Esc puts the old address back.
+@ Places
+    Home, the root, the Netherworld and the mounted volumes listed in
+    `/proc/mounts`. A click goes there. Dropping files on a place moves or
+    copies them there.
+@ The folder
+    In list mode the columns are Name, Size, Modified, Type, Permissions and
+    Owner (the last ones disappear when the window is narrow). Clicking a
+    heading sorts by it, clicking it again reverses the order. Folders always
+    come first and numbers in names are compared as numbers (file2 before
+    file10). Icon mode shows a grid of icons with their names.
+@ Status bar
+    The number of items, how many are hidden, what is selected and how big it
+    is, messages, and the free space of the volume.
+
+Names that begin with a dot are hidden until Show Hidden Files (Ctrl+H) is
+on. The window title says where you are. The Explorer looks at the folder
+twice a second and shows files that appeared or vanished by themselves (F5
+reads the folder again by hand).
+
+# SELECTING
+A click selects one item, Ctrl+click adds or removes one, Shift+click selects
+a range, a drag over empty space draws a rubber band (with Ctrl or Shift it
+adds to the selection), Ctrl+A selects everything and Esc selects nothing.
+From the keyboard the arrows, Home, End, Page Up and Page Down move (with
+Shift they extend the selection, with Ctrl they only move). Typing letters
+jumps to the next name that begins with them; Esc or a second of quiet
+forgets them.
+
+# COPYING, MOVING AND DELETING
+@ Copy, Cut, Paste
+    Ctrl+C, Ctrl+X and Ctrl+V. The clipboard is a file in `/tmp`, so you can
+    copy in one Explorer window and paste in another. Pasting a copy into the
+    same folder makes "name (copy).ext".
+@ Drag and drop
+    Drag the selection onto a folder or a place. Within one volume the items
+    are moved, to another volume they are copied; hold Ctrl to copy or Shift
+    to move. Dropping on the Netherworld deletes them.
+@ Names that are taken
+    The job asks: Keep both ("name (2).ext"), Replace or Skip, with a box to
+    use the answer for all the others. Two folders of the same name are
+    merged. Moving between volumes copies each item and removes the original
+    after its copy succeeded, so a failure leaves the rest where it was.
+@ Rename
+    F2, or Rename in the context menu, edits the name in place (the extension
+    is not selected). New Folder and New File make an item called "New
+    Folder" or "New File.txt" and start renaming it.
+@ Properties
+    Alt+Enter shows size, times, type and volume, and lets you change the
+    permission bits; the superuser can also change the owner and the group.
+
+Copies keep permissions and modification times. Links are copied as links;
+devices, pipes and sockets are left alone and reported. The root, the
+Netherworld itself and mounted volumes cannot be deleted or moved.
+
+# THE NETHERWORLD
+`/Netherworld` is the trash, and it lives in memory like the rest of the
+root. Delete (and "Send to the Netherworld") moves things there and leaves a
+small note, `/Netherworld/.trashinfo/NAME.info`, saying where they came from.
+Things from another volume are copied in, except files too big for the memory
+that is free. If the name is taken the new arrival becomes NAME.1, NAME.2 and
+so on, like the trash(1) command.
+
+Inside the Netherworld a banner offers Restore, which puts the selection back
+where it came from (the folders are made again if they are gone, and a name
+that is taken asks the usual question), and Empty it. Things placed there by
+trash(1) have no note and are restored to your home folder. Delete for Good
+(Shift+Delete) and Empty ask first: Yuyuko eats what she is given and cannot
+give it back.
+
+# OPENING FILES
+Enter or a double click opens the item. A folder is entered. Text files (by
+extension or by looking inside) open in the Notebook, `.ppm`, `.pgm`, `.pbm`
+and `.bmp` pictures in the Sketchbook, and a program (a file with an execute
+bit) is run in a terminal window that waits for Enter when it has finished.
+The context menu offers each of these by hand. Anything else asks whether to
+open it as text.
+
+# KEYS
+@ Enter, Backspace, Alt+Left, Alt+Right, Alt+Up, Alt+Home
+    Open, up one folder, back, forward, up, home.
+@ F5, Ctrl+L or F6, Ctrl+H, Ctrl+1, Ctrl+2
+    Read again, address field, hidden files, list, icons.
+@ Delete, Shift+Delete, F2, Alt+Enter
+    Send to the Netherworld, delete for good, rename, properties.
+@ Ctrl+N, Ctrl+Shift+N, Ctrl+Shift+F, Ctrl+W, F1
+    New window, new folder, new file, close, the list of keys.
+
+# FILES
+@ ~/.config/explorer.conf
+    The view (list or icons), the sort column and order, and whether hidden
+    files are shown; kept between runs.
+@ /tmp/.explorer-clip-UID
+    The clipboard of the Explorer for the user with that number.
+@ /Netherworld, /Netherworld/.trashinfo
+    The trash and its notes.
+
+# ENVIRONMENT
+@ EXPLORER_TRACE
+    If set, progress lines starting with `ex:` are printed on standard output.
+    The tests read them.
+
+# EXIT STATUS
+0 normally, 1 if there is no window server. `explorer --selftest` prints the
+number of checks that passed and exits with 1 if any failed.
+
+# NOTES
+The Explorer needs the window server (`fairyd`); the self test does not.
+
+# SEE ALSO
+trash(1), cp(1), mv(1), rm(1), chmod(1), df(1), gensokyo(7)

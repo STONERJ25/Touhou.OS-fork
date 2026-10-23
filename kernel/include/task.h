@@ -45,6 +45,7 @@ typedef struct Task {
     void *arg;
     /* user threads (see docs/THREADS.md): one Task per thread, all threads of a process share its Process */
     struct Task *thread_next;   /* next thread of the same process (list head: Process.threads) */
+    int  nice;                  /* -20 .. 19: scales the time slice (set through the Process; threads copy it) */
     int  utid;                  /* thread id seen by user space (gettid); the first thread's id is the pid */
     int  tgid;                  /* pid of the process this thread belongs to (0 for kernel threads); stays valid after the Process is gone */
     u64  fs_base;               /* TLS base, loaded into IA32_FS_BASE when this thread runs */
