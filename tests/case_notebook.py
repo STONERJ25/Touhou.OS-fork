@@ -458,10 +458,10 @@ def notebook_big_file():
         for _ in range(5):
             g.key("pgdn")
         vm.expect(r"nb: pos 141 1 ", timeout=15)
-        for _ in range(3):                               # the mouse wheel scrolls three rows per notch (the PS/2 driver of the kernel
-            vm.mouse_button("wheel-down", True)          # reports the direction the wrong way round, so accept either direction)
+        for _ in range(3):                               # the mouse wheel scrolls three rows per notch, wheel-down towards the end
+            vm.mouse_button("wheel-down", True)
             vm.mouse_button("wheel-down", False)
-        vm.expect(r"nb: top (132|150)\b", timeout=15)
+        vm.expect(r"nb: top 150\b", timeout=15)
         g.drag(44 + 711, 56 + 36, 44 + 711, 56 + 236)    # the scroll bar thumb, at the top of its track
         vm.expect(r"nb: top \d{5}\b", timeout=15)
         g.key("end", ctrl=True)

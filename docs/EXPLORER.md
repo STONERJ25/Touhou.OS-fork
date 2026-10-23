@@ -1,80 +1,116 @@
-# Gensokyo Explorer (`explorer`): work not started, design notes
+# Gensokyo Explorer (`explorer`): design notes
 
-Command `explorer [path]` (start menu name "Gensokyo Explorer"), a file manager for the desktop. **No application code
-exists yet**; this branch only carries the shared GUI test helper `tests/guitools.py` (already in `main`) and this note.
-Patchouli's Notebook and Marisa's Sketchbook were built by two sub-agents of this branch's agent and are merged
-(branches `worktree-agent-a21c5271eaed80a2d` and `worktree-agent-ad1f2fdb71587f5e6`, see `docs/APPS_notebook.md` and
-`docs/APPS_sketchbook.md`).
+The file manager of the desktop: `explorer [path]`, start menu name "Gensokyo Explorer". The user-facing description (features,
+keys, files) is the Explorer section of [APPS.md](APPS.md) and `man explorer`; this note records how it is built, the platform
+facts it relies on, what the work turned up, and what is left. The first version of this note was written by an agent that only
+did the research; the code (`user/bin/explorer/`), the manual page, the tests (`tests/case_explorer.py`) and this rewrite came
+after.
 
-## State when paused
+## State
 
-* **Done**: reading of the toolkit, window server and shell code; the design decisions below; `tests/guitools.py`
-  (boot to the desktop, exact pointer positioning, click/drag/key helpers, `sh()` over the serial console, pixel
-  checks), used by the Notebook and Sketchbook tests.
-* **Half-done**: nothing.
-* **Not started**: `user/bin/explorer/*.c`, `tests/case_explorer.py`, the popup-menu helper, the `docs/APPS.md` section.
-* **Known problems** that affect the Explorer (found by the Notebook and Sketchbook agents and while reading):
-  * No API gives a window's screen position after the user moved it (`fairy_window_geometry` is only filled when the
-    window is created), so a popup window cannot be placed at the pointer without a trick (see "Context menu").
-  * `kernel/drivers/keyboard.c` `mouse_byte()` passes the PS/2 wheel nibble through unchanged, so every app scrolls
-    backwards with QEMU's mouse (fix: negate the wheel there). Not applied.
-  * The system clipboard is 1024 bytes. KUI keeps 64 key presses per frame. `k_slider` ignores a click whose press and
-    release land in one frame. `k_menubar` leaves the drop-down painted for one frame after a pick or Esc (call
-    `kapp_redraw()`) and crashes on a NULL label. `k_input_dialog` does not preselect its initial text, the stock file
-    dialog's first Esc only leaves the name field. `ui->double_click` is cleared after a double click (no triple click).
-  * The guest clock lags when the host is busy and the PS/2 pointer occasionally drops packets under load: tests that
-    need an mtime to change should `sleep` inside the guest, and GUI tests should retry once on a fresh VM.
-* **How to resume**: start from a fresh branch off `main` (or this one), `python tools/build.py`, read `docs/DESKTOP.md`,
-  `user/lib/kappa/include/kappa.h`, `user/bin/gapterm/main.c` and the Notebook (`user/bin/notebook/`, it has a keyboard
-  driven menu bar, an in-window context menu and dialogs that do not freeze the window, worth copying). Suggested order: directory
-  model (scan in slices, sort) -> list and icon views -> toolbar, places sidebar, address field, status bar -> navigation
-  and keyboard -> selection (click, Ctrl, Shift, rubber band, Ctrl+A) -> file operation engine (trash, restore, copy,
-  move with progress) -> context menu -> properties dialog -> drag and drop -> type-ahead -> tests -> `docs/APPS.md`.
-  Look at every step with `python tests/gui_session.py script.txt prefix` and the Read tool on the PNGs.
+* **Done**: everything in the task list of the first note: a folder model read in slices, list and icon views (virtualised),
+  sorting by column heading, toolbar, places (Home, root, Netherworld, volumes from `/proc/mounts`), address field, status bar
+  with free space, selection (click, Ctrl, Shift, rubber band, Ctrl+A, keyboard, type-ahead), a sliced job queue (copy, move,
+  send to the Netherworld, delete for good, restore, empty, measure) with a progress window, name conflict questions and one error
+  list at the end, the Netherworld with restore notes, new folder / new file / rename in place, a context menu and a menu bar,
+  Properties (chmod; chown for the superuser), drag and drop between folders and places, hidden files, a file clipboard that works
+  between windows, opening text in the Notebook, pictures in the Sketchbook and programs in a terminal, preferences, the manual
+  page, `docs/APPS.md`, and `tests/case_explorer.py` (a self test of the engine plus nine GUI sessions).
+* **Not done**: drag and drop *between two Explorer windows* (see below), column resizing, a popup-window context menu, "Open
+  with..." beyond the three fixed entries, searching, per-folder view settings, thumbnails.
+* **Shared files touched**: `user/bin/gapterm/main.c` (new options `-e COMMAND` and `-t TITLE`: run a shell command line instead of
+  a login shell, and the window title; the Explorer uses them to run programs). Nothing else outside `user/bin/explorer/`, the
+  manual page, the tests and the docs.
 
-## Design decisions already made
+## Platform facts (checked against the tree, October 2026)
 
-**Platform facts** (checked in `user/libc`, `shared/abi.h`, `kernel/fs`):
-* `opendir/readdir` (with `d_type`), `lstat`, `rename` (fails with `EXDEV` across mounts, so move = copy + delete),
-  `mkdir`, `rmdir`, `unlink`, `symlink`, `readlink`, `chmod`, `chown`, `getpwuid`, `getgrgid` exist. There is **no**
-  `link()` (ENOSYS), no `utimes` (copies cannot keep mtimes) and **no `statfs`**: omit "free space" from the status bar.
-* `/proc/mounts` lines are `source target type rw 0 0` (tmpfs `/`, devfs, procfs, tmpfs `/BambooForest`, plus FAT32
-  volumes mounted later). `/tmp` is a symlink to `/BambooForest`, `/home` to `/HumanVillage`.
-* The trash is `/Netherworld` (mode 1777). The `trash` applet of kappabox moves `/x/name` to `/Netherworld/name`,
-  `/Netherworld/name.1`, ... and writes no sidecar.
-* Launching other apps: `fork` + `execv("/bin/notebook", {"notebook", abs_path, NULL})` and the same for `sketchbook`;
-  both take exactly one argv path (spaces, relative and non-existent paths work). The shell's own `launch()` splits on
-  spaces and `chdir`s to `$HOME`; the desktop icons already run `explorer <home>`, `explorer /Netherworld`, `explorer /`.
+* `opendir/readdir` (with `d_type`), `lstat`, `rename` (fails with `EXDEV` across mounts), `mkdir`, `rmdir`, `unlink`, `symlink`,
+  `readlink`, `chmod`, `chown`, `getpwuid`, `getgrgid`, **`statfs`** (free space for the status bar and Properties) and **`utime`**
+  (copies keep modification times) exist. There is no hard `link()`, no `lutimes` use for links, and **no `/bin/sh`**: a script
+  with `#!/bin/sh` cannot be executed directly, so the Explorer runs such scripts as `gapsh script`.
+* `tmp_readdir` walks the directory list from the start for every entry (the cookie is an index), so reading N entries costs O(N^2)
+  list steps in the kernel. It is still fast enough (3000 entries in about 2 s in QEMU with the window answering throughout), and
+  it is why folders are read in slices and why deletion reads the names of a folder before removing any of them.
+* Mounts: `/` and `/BambooForest` (`/tmp`) are separate tmpfs mounts, so moving between `/tmp` and the home folder really goes
+  through `EXDEV` (the test and the self test depend on that). A FAT volume appears in `/proc/mounts` like any mount and so in the
+  places; the tests have no FAT disk, so that part was only read in the code, not run.
+* `/Netherworld` is mode 1777 on the root tmpfs, that is, in RAM: trashing a big file from another volume could eat the memory, so
+  copies into it are refused above half of what `statfs` says is free ("Too big for the Netherworld").
+* Limits met on the way: 64 open files per process (children of the Explorer close everything above 2), 12 windows per `KApp`
+  (dialogs are `kwin_new` windows of the same app), `exec` refuses more than 32 KiB of arguments (`xargs touch` of 3000 names
+  needs `-n`), a 1 KiB system clipboard (file clipboard instead).
+* Launching: `fork` + `execv` of `/bin/notebook`, `/bin/sketchbook`, `/bin/gapterm`, `/bin/explorer` with one argument each; the
+  child does `setsid`, reads `/dev/null` and keeps stdout (so a test started from the console sees the children's traces).
 
-**Model and speed**: scan with `readdir` + `lstat` in slices of about 25 ms per event-loop iteration (`kapp_set_tick` /
-`ui->redraw_soon`), keep entries in one array plus cached lower-case names for sorting and type-ahead, cache
-`getpwuid`/`getgrgid` results, draw only visible rows or cells (virtualised), `qsort` with directories first.
+## How it is built
 
-**Icons**: `k_icon` has folder, file, text, image, drive, trash, home but no executable, symlink or archive: draw
-those in the Explorer (a `KI_FILE` base with a badge from `kc_*` primitives, a small arrow for symlinks).
+**Model and speed** (`model.c`): `model_scan_step` reads entries with `readdir` + `lstat` for a time budget (20 ms per frame) and
+`model_refilter` sorts when the scan ends (arrival order until then). Entries carry a folded name for sorting and type-ahead;
+names compare "naturally" (file2 before file10); folders always sort first. `uid`/`gid` names are cached. The view draws and
+hit-tests only the visible rows or cells. A refresh (F5, after a job, or by itself when the folder's time stamp changed or was
+within a second of the scan) reads into a **second model** and swaps, so nothing flickers, the scroll position stays and a
+selection is restored by name; a refresh that finds the folder gone walks up to the nearest folder that exists.
 
-**Trash and restore**: delete = `rename` into `/Netherworld` under a unique name; the original absolute path and the
-deletion time go to a hidden sidecar `/Netherworld/.trashinfo/<trashed-name>.info` (hidden by the dot, shown with
-"show hidden"). Restore reads it; items put there by the shell `trash` applet have no sidecar, so they restore to `$HOME`
-with a message. "Delete permanently" and "Empty the Netherworld" ask first (`k_confirm_dialog`).
+**Views and input** (`view.c`): list mode has a header with sort arrows; columns drop out from the right when the window is narrow.
+Icon mode lays out 96 x 84 cells with two-line labels. A press on an entry selects it (Ctrl adds, Shift extends); a press on empty
+space starts a rubber band that scrolls at the edges; a press that moves more than 4 pixels on an entry becomes a drag of the
+selection. Dropping on a folder entry or a place calls `ex_start_drop` (same volume: move, other volume: copy, Ctrl: copy, Shift:
+move, Netherworld: delete). Type-ahead collects letters for a second. Rename is a `k_textfield` laid over the name, preselecting the
+name without its extension.
 
-**File operations**: a job queue worked in slices (copy a chunk of 64 KiB per step, one directory entry per step), a
-progress dialog (own `kwin_new` dialog with `k_progress` and a Cancel button) for jobs that take more than a moment,
-errors collected and shown in one dialog at the end; `rename` first, on `EXDEV` copy then delete the source tree.
+**Job engine** (`fileops.c`, `trash.c`; no window needed, exercised by `explorer --selftest`): a `Job` has top-level items and an
+explicit stack of folders being walked; `job_run(job, budget_ms)` does one step (one entry or one 64 KiB chunk) until the budget is
+spent, so jobs can stop anywhere (Cancel removes a half-written file). Errors are collected (200 are kept, all are counted) and shown
+once. A name that is taken raises a question: the job waits until `job_resolve` answers it; "do this for all" sets a policy for the
+rest. Move tries `rename`; across volumes and for merged folders it copies and removes each source item right after its copy
+succeeded, so a failure leaves the rest where it was. Folders merge; a folder cannot go into itself; `/`, `/Netherworld` and mount
+points are refused. Copies keep mode, owner (for root) and times.
 
-**Context menu** (the task asks for a popup window): the popup needs absolute screen coordinates, but the window's
-position is only known at creation. Planned trick, untested: on the right click call `fairy_subscribe_windows()` again
-(the server marks the list dirty on `FM_SUBSCRIBE` and re-sends `FE_WINDOWS` with every window's outer rectangle), find
-the own window by `fairy_window_id()` in the event hook, derive the content origin as
-`x = outer.x + (outer.w - content_w) / 2`, `y = outer.y + outer.h - content_h - (outer.w - content_w) / 2`, then open a
-`FW_POPUP | FW_NO_DECOR` window there (clamped to the work area, flipped upward near the bottom). If no answer arrives
-within about 400 ms fall back to an in-window overlay menu (what the Notebook does). Popups never take focus; `KApp`
-forwards the owner's key presses to them, so arrows/Enter/Esc work. A shared helper would go into new files only
-(`user/lib/kappa/src/ctxmenu.c`, `user/lib/kappa/include/kappa_ctxmenu.h`).
+**The Netherworld**: delete = move into `/Netherworld` under a free name (`NAME`, `NAME.1`, ... like the `trash` command) and write
+`/Netherworld/.trashinfo/NAME.info` with `path=` and `time=`; Restore reads the note (recreating folders; a name that is taken asks;
+no note: `$HOME`); Empty deletes everything including `.trashinfo`, which is made again by the next deletion.
 
-**Tests** (`tests/case_explorer.py`, QEMU names `t-explorer-*`): boot `text`, `Gui.start_desktop()`, create a tree with
-`g.sh("mkdir -p /tmp/x/dir; echo hi > /tmp/x/a.txt; ...")`, run `explorer /tmp/x &` (first window content origin is
-(44, 56)), assert on pixels and on the file system through `g.sh("ls ...")`: navigation, sort by header click, rubber
-band, delete -> `/Netherworld` + sidecar -> restore, copy/move of a directory tree, EXDEV path (a second tmpfs mount is
-`/BambooForest` versus `/`), thousands of entries (`seq`/`touch` loops) staying responsive, Enter opening a text file in
-`notebook`.
+**Clipboard**: `/tmp/.explorer-clip-<uid>` ("copy" or "cut", then one absolute path per line), polled twice a second, so copy in one
+window and paste in another works; cut items are drawn faded.
+
+**Context menu**: drawn inside the window (like the Notebook's) because `fairy_window_geometry` is only filled when a window is
+created, so a popup window cannot be placed at the pointer after the user has moved the window; the plan in the first version of
+this note (re-subscribing to the window list to learn the outer rectangle) was not needed. A menu that would leave the window is
+moved back inside it. The menu bar is the Notebook's keyboard-driven one made general (`menus.c`).
+
+**Dialogs** (`dialogs.c`): windows of the same `KApp`, modal ones block the file window (`X.modal`); the progress and conflict
+windows follow the front job of the queue through `jobs_front()` and its serial number, never a pointer they kept, because the job is
+freed the moment it ends.
+
+## Problems found in shared code (not changed)
+
+* No call reports a window's screen position after it was moved (see above); no drag and drop protocol in Fairies (a drag keeps
+  delivering events to the window where it began, so a cross-window drop would need the window list, a z-order the server does not
+  report, and a side channel such as a socket in `/tmp`).
+* `k_textfield` identifies itself by the address of its buffer: the Explorer mirrors that formula (`field_id` in `main.c`) to know
+  when the address field has the focus. `k_input_dialog` does not preselect its text and `k_confirm_dialog` has two buttons only, so
+  the Explorer has its own choice dialog (like the Notebook).
+* `KApp` marks every window dirty whenever a watched fd fires and redraws whole windows: a running job redraws the file window
+  every 25 ms. It is fast enough, but a damage-aware draw would be kinder.
+* The PS/2 pointer drops packets when the host is busy (the tests re-home the pointer and click again) and the guest clock lags, so
+  timing tests (type-ahead expiry) cannot rely on wall-clock sleeps.
+* `#!/bin/sh` scripts cannot run (no `/bin/sh`); a symlink to `gapsh` would fix it system-wide.
+
+## Tests
+
+`python tests/run_all.py explorer` (QEMU names `t-explorer-*`, about six minutes): `explorer_selftest` (123 checks of paths, formats,
+model, and the whole engine including `/tmp` against the home folder as two volumes), `explorer_navigate_sort`,
+`explorer_select_keys`, `explorer_netherworld`, `explorer_copy_move` (also a conflict question and the error list), `explorer_drag_drop`,
+`explorer_rename_properties`, `explorer_progress_cancel` (a 160 MB copy, cancelled and then completed), `explorer_big_folder` (3000
+files) and `explorer_open_apps`. The GUI tests read `ex:` lines from the console (`EXPLORER_TRACE=1`), look at the file system through
+the shell and at pixels, take their coordinates from the layout constants documented at the top of `tests/case_explorer.py`, repeat a
+click or drag whose effect does not show up (the pointer drops packets on a busy host), and run once more on a fresh VM before failing.
+
+## How to resume
+
+Ideas in rough order of value: drag and drop between two Explorer windows (each window could listen on a socket named after its pid
+in `/tmp/fairy`-like space and the source could find the target through `fairy_subscribe_windows`; the missing piece is which window is
+on top at the drop point); resizable columns; a real "Open with" chooser; a search box (the model already folds names); remembering
+the view per folder; hard-link-free "Create link" (`symlink` exists); progress for `Properties` on huge folders in the status bar.
+Start with `python tools/build.py`, `python tests/run_all.py explorer` and `python tests/gui_session.py script.txt prefix` plus a
+look at the PNGs.

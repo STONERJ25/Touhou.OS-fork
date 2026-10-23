@@ -75,8 +75,17 @@ typedef struct Process {
     u32 sig_pending;                /* process-directed signals not yet taken by a thread (per-thread masks live in Task) */
     struct gsigaction sigact[NSIG];
 
+    /* job control (docs/JOBCONTROL.md): a stopped process keeps all its threads parked at the edge of user mode */
+    bool stopped;                   /* SIGSTOP / SIGTSTP / SIGTTIN / SIGTTOU took effect and no SIGCONT has followed */
+    int  stop_sig;                  /* which signal stopped it (what WSTOPSIG reports) */
+    bool stop_unreported;           /* a waitpid(WUNTRACED) in the parent has not seen this stop yet */
+    bool continued_unreported;      /* a waitpid(WCONTINUED) in the parent has not seen the continue yet */
+    WaitQueue stop_wq;              /* parked threads sleep here until SIGCONT (or until they must die) */
+    int  nice;                      /* -20 (greedy) .. 19 (polite): scales the time slice of every thread */
+
     u64 start_ms;
     char cmdline[128];
+    char exe[128];                  /* absolute path of the running program (/proc/<pid>/exe) */
 } Process;
 
 extern Process *g_init_proc;
@@ -127,6 +136,19 @@ bool     thread_kill_others(Process *p);                                /* execv
 int      thread_count(void);                                            /* user threads in the whole system */
 void     thread_unlink(Process *p, Task *t);                            /* irq off; see task.c */
 void     futex_wake_all_at(u64 uaddr);                                  /* wake every waiter on a user word of the current address space */
+
+/* job control (kernel/sys/signal.c, kernel/drivers/tty.c) */
+void process_stop(Process *p, int sig);                                 /* the stop took effect: parents hear about it; threads park on their way to user mode */
+void process_continue(Process *p);
+void job_park(Process *p);                                              /* sleep while the process is stopped (returns at SIGCONT, or when the thread must die) */
+bool pgrp_orphaned(int pgid);                                           /* no member has a parent in another group of the same session */
+void pgrp_check_orphaned(int pgid);                                     /* orphaned and holds a stopped member: SIGHUP, then SIGCONT */
+void pgrp_terminal_granted(int pgid);                                   /* the group became a terminal's foreground group: members stopped by SIGTTIN/SIGTTOU go on */
+bool signal_is_stop(int sig);
+int  tty_job_check(struct Tty *t, int kind);                            /* kernel/drivers/tty.c: 0, -EIO or -EINTR; may stop the caller */
+#define JC_READ  0
+#define JC_WRITE 1
+#define JC_CTL   2
 
 /* signals */
 void signal_send(Process *p, int sig);                                  /* process-directed: any thread that does not block it */

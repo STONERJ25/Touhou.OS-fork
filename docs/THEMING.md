@@ -68,6 +68,9 @@ Prompt: `reimu@gensokyo ~ $`. See [ACCOUNTS.md](ACCOUNTS.md).
 - The window server's last resort (Ctrl+Alt+Backspace) opens the text door instead of handing out a shell.
 - Out of memory: `Yuyuko is hungry.`
 - `rm` -> Netherworld, `shutdown` -> "Yukari opens a gap...", `fortune`/`omikuji` -> shrine fortune slips, `saisen` -> offering box.
+- The Explorer: Delete sends things to the Netherworld (with a note of where they came from), an empty Netherworld says `Yuyuko is
+  hungry.`, deleting for good or emptying asks whether Yuyuko may eat it, an empty folder shows `Nothing here but the wind`, and
+  the permission errors keep their Eiki flavour from `strerror`. The plain fact (what failed, which path) is always in the text.
 
 ## Desktop (HakureiDE)
 

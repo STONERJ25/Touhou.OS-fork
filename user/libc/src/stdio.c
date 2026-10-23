@@ -13,8 +13,10 @@
 
 int signbit_d(double x);
 
-/* One recursive lock serialises all of stdio: threads share the streams, and a printf is never torn by another thread's output. */
-RLock __stdio_lock;
+/* Every stream has its own recursive lock (a printf is never torn by another thread's output, and a thread blocked reading
+ * stdin does not stop the others from printing). __stdio_list_lock guards the list of open streams; the lock order is always
+ * list first, then a stream, and fclose never holds a stream lock while it takes the list lock. */
+RLock __stdio_list_lock;
 
 #define F_READ  1
 #define F_WRITE 2
@@ -33,6 +35,7 @@ struct FILE {
     size_t wlen;                 /* pending write bytes */
     int ungot;                   /* pushed-back char or -1 */
     struct FILE *next;
+    RLock lock;                  /* held by every operation on this stream */
 };
 
 static unsigned char g_inbuf[BUFSIZ], g_outbuf[BUFSIZ];
@@ -47,10 +50,28 @@ void __stdio_init(void) {
     g_stdin.bufmode = _IOFBF;
 }
 
+/* The two places stdio blocks in the kernel. A thread cancelled there must let go of the stream's lock on its way out
+ * (pthread.c: __cancel_exit looks at stdio_blocked). */
+static ssize_t io_write(FILE *f, const void *p, size_t n) {
+    struct pthread *self = __pthread_self();
+    self->stdio_blocked = &f->lock;
+    ssize_t r = write(f->fd, p, n);
+    self->stdio_blocked = NULL;
+    return r;
+}
+
+static ssize_t io_read(FILE *f, void *p, size_t n) {
+    struct pthread *self = __pthread_self();
+    self->stdio_blocked = &f->lock;
+    ssize_t r = read(f->fd, p, n);
+    self->stdio_blocked = NULL;
+    return r;
+}
+
 static int flush_write(FILE *f) {
     size_t off = 0;
     while (off < f->wlen) {
-        ssize_t w = write(f->fd, f->buf + off, f->wlen - off);
+        ssize_t w = io_write(f, f->buf + off, f->wlen - off);
         if (w < 0) { if (errno == EINTR) continue; f->flags |= F_ERR; f->wlen = 0; return EOF; }
         off += (size_t)w;
     }
@@ -79,7 +100,7 @@ static int fill(FILE *f) {
         if (!f->buf) return EOF;
     }
     ssize_t r;
-    do r = read(f->fd, f->buf, f->bufsize); while (r < 0 && errno == EINTR);
+    do r = io_read(f, f->buf, f->bufsize); while (r < 0 && errno == EINTR);
     if (r < 0) { f->flags |= F_ERR; return EOF; }
     if (r == 0) { f->flags |= F_EOF; return EOF; }
     f->rpos = 0;
@@ -111,7 +132,7 @@ static int fputc_nl(int c, FILE *f) {
             if (f->buf) { f->bufsize = BUFSIZ; f->flags |= F_OWNBUF; }
         }
         if (!f->buf) {
-            return write(f->fd, &ch, 1) == 1 ? c : EOF;
+            return io_write(f, &ch, 1) == 1 ? c : EOF;
         }
     }
     if (f->rlen) { f->rpos = f->rlen = 0; }
@@ -136,7 +157,7 @@ static size_t fwrite_nl(const void *buf, size_t size, size_t n, FILE *f) {
         if (!f->buf) {
             size_t off = 0;
             while (off < total) {
-                ssize_t w = write(f->fd, p + off, total - off);
+                ssize_t w = io_write(f, p + off, total - off);
                 if (w <= 0) { f->flags |= F_ERR; break; }
                 off += (size_t)w;
             }
@@ -223,8 +244,10 @@ static FILE *fdopen_nl(int fd, const char *mode) {
     if (mode[0] == 'r') f->flags = F_READ | (plus ? F_WRITE : 0);
     else f->flags = F_WRITE | (plus ? F_READ : 0);
     if (mode[0] == 'a') f->flags |= F_APPEND;
+    __rlock(&__stdio_list_lock);
     f->next = g_files;
     g_files = f;
+    __runlock(&__stdio_list_lock);
     return f;
 }
 
@@ -249,15 +272,23 @@ FILE *freopen(const char *path, const char *mode, FILE *f) {
     return fopen(path, mode);
 }
 
-static int fclose_nl(FILE *f) {
-    int r = fflush(f);
-    if (f->fd > 2 || (f != &g_stdin && f != &g_stdout && f != &g_stderr)) {
+/* The stream lock is released before the stream leaves the list and is freed (list lock, then nothing: see the lock order). */
+int fclose(FILE *f) {
+    __rlock(&f->lock);
+    int r = fflush_nl(f);
+    int is_std = f == &g_stdin || f == &g_stdout || f == &g_stderr;
+    if (f->fd > 2 || !is_std) {
         if (close(f->fd) < 0) r = EOF;
     }
-    for (FILE **pp = &g_files; *pp; pp = &(*pp)->next)
-        if (*pp == f) { *pp = f->next; break; }
-    if (f->flags & F_OWNBUF) free(f->buf);
-    if (f != &g_stdin && f != &g_stdout && f != &g_stderr) free(f);
+    if (f->flags & F_OWNBUF) { free(f->buf); f->buf = NULL; f->flags &= ~F_OWNBUF; }
+    __runlock(&f->lock);
+    if (!is_std) {
+        __rlock(&__stdio_list_lock);
+        for (FILE **pp = &g_files; *pp; pp = &(*pp)->next)
+            if (*pp == f) { *pp = f->next; break; }
+        __runlock(&__stdio_list_lock);
+        free(f);
+    }
     return r;
 }
 
@@ -786,9 +817,9 @@ int fscanf(FILE *f, const char *fmt, ...) {
     Src src = { file_get, file_unget, f };
     va_list ap;
     va_start(ap, fmt);
-    __rlock(&__stdio_lock);
+    __rlock(&f->lock);
     int r = scan_core(&src, fmt, ap);
-    __runlock(&__stdio_lock);
+    __runlock(&f->lock);
     va_end(ap);
     return r;
 }
@@ -797,9 +828,9 @@ int scanf(const char *fmt, ...) {
     Src src = { file_get, file_unget, stdin };
     va_list ap;
     va_start(ap, fmt);
-    __rlock(&__stdio_lock);
+    __rlock(&stdin->lock);
     int r = scan_core(&src, fmt, ap);
-    __runlock(&__stdio_lock);
+    __runlock(&stdin->lock);
     va_end(ap);
     return r;
 }
@@ -808,13 +839,12 @@ int scanf(const char *fmt, ...) {
 
 #define STDIO_LOCKED(rettype, name, params, args)      \
     rettype name params {                              \
-        __rlock(&__stdio_lock);                        \
+        __rlock(&f->lock);                             \
         rettype r = name##_nl args;                    \
-        __runlock(&__stdio_lock);                      \
+        __runlock(&f->lock);                           \
         return r;                                      \
     }
 
-STDIO_LOCKED(int, fflush, (FILE *f), (f))
 STDIO_LOCKED(int, fgetc, (FILE *f), (f))
 STDIO_LOCKED(int, ungetc, (int c, FILE *f), (c, f))
 STDIO_LOCKED(int, fputc, (int c, FILE *f), (c, f))
@@ -822,8 +852,57 @@ STDIO_LOCKED(size_t, fwrite, (const void *buf, size_t size, size_t n, FILE *f), 
 STDIO_LOCKED(size_t, fread, (void *buf, size_t size, size_t n, FILE *f), (buf, size, n, f))
 STDIO_LOCKED(char *, fgets, (char *buf, int n, FILE *f), (buf, n, f))
 STDIO_LOCKED(ssize_t, getdelim, (char **line, size_t *cap, int delim, FILE *f), (line, cap, delim, f))
-STDIO_LOCKED(FILE *, fdopen, (int fd, const char *mode), (fd, mode))
-STDIO_LOCKED(int, fclose, (FILE *f), (f))
 STDIO_LOCKED(int, fseek, (FILE *f, long off, int whence), (f, off, whence))
 STDIO_LOCKED(long, ftell, (FILE *f), (f))
 STDIO_LOCKED(int, vfprintf, (FILE *f, const char *fmt, va_list ap), (f, fmt, ap))
+
+/* fflush(NULL) flushes every output stream. The list lock is held while the streams are visited (a stream cannot be closed
+ * meanwhile); the order is always list lock first, then a stream's lock. */
+int fflush(FILE *f) {
+    int r = 0;
+    if (f) {
+        __rlock(&f->lock);
+        r = fflush_nl(f);
+        __runlock(&f->lock);
+        return r;
+    }
+    __rlock(&g_stdout.lock);
+    if (flush_write(&g_stdout)) r = EOF;
+    __runlock(&g_stdout.lock);
+    __rlock(&__stdio_list_lock);
+    for (FILE *p = g_files; p; p = p->next) {
+        if (!(p->flags & F_WRITE)) continue;
+        __rlock(&p->lock);
+        if (flush_write(p)) r = EOF;
+        __runlock(&p->lock);
+    }
+    __runlock(&__stdio_list_lock);
+    return r;
+}
+
+FILE *fdopen(int fd, const char *mode) { return fdopen_nl(fd, mode); }         /* the list lock is taken inside */
+
+/* ---------------------------------------------------------------- around fork() (see sys.c) */
+
+void __stdio_fork_prepare(void) {
+    __rlock(&__stdio_list_lock);
+    __rlock(&g_stdin.lock);
+    __rlock(&g_stdout.lock);
+    __rlock(&g_stderr.lock);
+}
+
+void __stdio_fork_parent(void) {
+    __runlock(&g_stderr.lock);
+    __runlock(&g_stdout.lock);
+    __runlock(&g_stdin.lock);
+    __runlock(&__stdio_list_lock);
+}
+
+/* The child has one thread: every lock another thread held is dead for good, so all of them start again unlocked. */
+void __stdio_fork_child(void) {
+    memset(&__stdio_list_lock, 0, sizeof __stdio_list_lock);
+    for (FILE *p = g_files; p; p = p->next) memset(&p->lock, 0, sizeof p->lock);
+    memset(&g_stdin.lock, 0, sizeof g_stdin.lock);
+    memset(&g_stdout.lock, 0, sizeof g_stdout.lock);
+    memset(&g_stderr.lock, 0, sizeof g_stderr.lock);
+}

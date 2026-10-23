@@ -25,6 +25,7 @@ static Process *process_alloc(void) {
     if (!p) return NULL;
     wq_init(&p->wait_wq);
     wq_init(&p->thread_wq);
+    wq_init(&p->stop_wq);
     p->umask = 022;
     p->start_ms = uptime_ms();
     u64 f = irq_save();
@@ -160,6 +161,8 @@ int process_fork(TrapFrame *tf) {
     strlcpy(c->name, par->name, sizeof c->name);
     strlcpy(c->cwd_path, par->cwd_path, sizeof c->cwd_path);
     strlcpy(c->cmdline, par->cmdline, sizeof c->cmdline);
+    strlcpy(c->exe, par->exe, sizeof c->exe);
+    c->nice = par->nice;
     c->cwd = par->cwd;
     if (c->cwd) vnode_get(c->cwd);
     memcpy(c->sigact, par->sigact, sizeof c->sigact);
@@ -224,8 +227,14 @@ static NORETURN void process_finalize(Process *p, int status) {
 
     u64 f = irq_save();
     bool wake_init = false;
+    int kids_groups[16], nkids = 0;                 /* groups of our children that we were the link to (same session, other group) */
     for (Process *c = p->children; c; ) {
         Process *next = c->sibling;
+        if (c->pgid != p->pgid && c->sid == p->sid && c->state != PROC_ZOMBIE) {
+            bool seen = false;
+            for (int i = 0; i < nkids; i++) if (kids_groups[i] == c->pgid) seen = true;
+            if (!seen && nkids < 16) kids_groups[nkids++] = c->pgid;
+        }
         c->parent = g_init_proc;
         c->ppid = g_init_proc->pid;
         c->sibling = g_init_proc->children;
@@ -238,6 +247,7 @@ static NORETURN void process_finalize(Process *p, int status) {
     p->state = PROC_ZOMBIE;
     p->task = NULL;                                 /* the Task is about to be reaped; zombies keep only their status */
     Process *parent = p->parent;
+    int my_pgid = p->pgid;
     irq_restore(f);
 
     if (wake_init) wq_wake_all(&g_init_proc->wait_wq);
@@ -245,7 +255,43 @@ static NORETURN void process_finalize(Process *p, int status) {
         signal_send(parent, SIGCHLD);
         wq_wake_all(&parent->wait_wq);
     }
+    /* Our leaving can orphan process groups; a group that is orphaned and holds a stopped member gets SIGHUP and SIGCONT,
+     * because nobody is left who could continue it (POSIX 2.2.2.52). */
+    pgrp_check_orphaned(my_pgid);
+    for (int i = 0; i < nkids; i++) pgrp_check_orphaned(kids_groups[i]);
     task_exit(status);
+}
+
+/* A process group is orphaned when no member has a parent that is in another group of the same session. init does not count as
+ * such a parent: it only collects the pieces, it never does job control (and in a text login it shares the shell's session). */
+bool pgrp_orphaned(int pgid) {
+    bool orphan = true;
+    u64 f = irq_save();
+    for (Process *q = g_procs; q && orphan; q = q->all_next) {
+        if (q->pgid != pgid || q->state == PROC_ZOMBIE) continue;
+        Process *par = q->parent;
+        if (par && par != g_init_proc && par->state != PROC_ZOMBIE && par->pgid != pgid && par->sid == q->sid) orphan = false;
+    }
+    irq_restore(f);
+    return orphan;
+}
+
+static bool pgrp_has_stopped(int pgid) {
+    bool found = false;
+    u64 f = irq_save();
+    for (Process *q = g_procs; q && !found; q = q->all_next)
+        if (q->pgid == pgid && q->state != PROC_ZOMBIE && q->stopped) found = true;
+    irq_restore(f);
+    return found;
+}
+
+void pgrp_check_orphaned(int pgid) {
+    if (pgid <= 1) return;
+    if (pgrp_orphaned(pgid) && pgrp_has_stopped(pgid)) {
+        klog("Eiki", "process group %d is orphaned with stopped members: SIGHUP, then SIGCONT", pgid);
+        signal_pgrp(pgid, SIGHUP);
+        signal_pgrp(pgid, SIGCONT);
+    }
 }
 
 /* One thread leaves. Its tid word is zeroed and woken (that is how pthread_join learns it is gone), it unlinks itself, and
@@ -296,7 +342,24 @@ long process_wait(int pid, int *status, int options) {
             if (pid == 0 && c->pgid != p->pgid) continue;
             if (pid < -1 && c->pgid != -pid) continue;
             have_child = true;
-            if (c->state != PROC_ZOMBIE) continue;
+            if (c->state != PROC_ZOMBIE) {
+                /* WUNTRACED / WCONTINUED: a child that stopped or continued is reported once per change (docs/JOBCONTROL.md) */
+                if ((options & WUNTRACED) && c->stopped && c->stop_unreported) {
+                    int spid = c->pid;
+                    if (status) *status = (c->stop_sig << 8) | 0x7f;
+                    c->stop_unreported = false;
+                    irq_restore(f);
+                    return spid;
+                }
+                if ((options & WCONTINUED) && c->continued_unreported) {
+                    int cpid2 = c->pid;
+                    if (status) *status = 0xffff;
+                    c->continued_unreported = false;
+                    irq_restore(f);
+                    return cpid2;
+                }
+                continue;
+            }
             int cpid = c->pid;
             if (status) *status = c->exit_status;
             for (Process **pp = &p->children; *pp; pp = &(*pp)->sibling)
@@ -354,6 +417,7 @@ int process_spawn_init(const char *path, char *const argv[]) {
         File *f;
         int rc = vfs_open("/dev/console", i == 0 ? O_RDONLY : O_WRONLY, 0, NULL, NULL, &f);
         if (rc) { klog("Gensokyo", "no /dev/console for init (%d)", rc); return rc; }
+        file_set_path(f, "/dev/console");
         fd_install(p, f, i, 0);
     }
     p->task = task_create_user("init", init_entry, init_argv, p);

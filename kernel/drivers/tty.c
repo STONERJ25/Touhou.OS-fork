@@ -2,6 +2,7 @@
 #include "kernel.h"
 #include "cpu.h"
 #include "fbcon.h"
+#include "process.h"
 
 void (*g_tty_signal_hook)(int pgid, int sig);
 
@@ -139,6 +140,50 @@ void tty_flush_input(Tty *t) {
     irq_restore(f);
 }
 
+/* ---------------------------------------------------------------- job control (docs/JOBCONTROL.md)
+ *
+ * The terminal belongs to the session that set its foreground process group (tcsetpgrp, or the session leader that opened a
+ * pty slave). Inside that session only the foreground group may read, and (with TOSTOP, or for tcsetattr / tcsetpgrp) write
+ * or reconfigure. Anybody else gets SIGTTIN (reads) or SIGTTOU: the group stops, and the call goes on when it is continued
+ * and is the foreground group by then. If the signal is ignored or blocked a read fails with EIO and a write goes through;
+ * an orphaned group gets EIO instead of a signal. Returns 0, -EIO, or -EINTR (a handler for the signal must run first). */
+
+typedef struct { int pgid; bool found; } PgrpProbe;
+
+static void pgrp_probe_cb(Process *q, void *ctx) {
+    PgrpProbe *x = ctx;
+    if (q->pgid == x->pgid && q->state != PROC_ZOMBIE) x->found = true;
+}
+
+static bool pgrp_alive(int pgid) {
+    PgrpProbe a = { pgid, false };
+    process_for_each(pgrp_probe_cb, &a);
+    return a.found;
+}
+
+int tty_job_check(Tty *t, int kind) {
+    for (;;) {
+        Process *p = current ? current->proc : NULL;
+        if (p && p != g_init_proc && p->stopped && kind == JC_READ) {      /* a stopped process must not eat input, whoever the terminal belongs to */
+            job_park(p);
+            if (signal_pending_now(p)) return -EINTR;
+            continue;
+        }
+        if (!p || p == g_init_proc || !t->fg_pgid || !t->session || p->sid != t->session || p->pgid == t->fg_pgid) return 0;
+        if (kind == JC_WRITE && !(t->termios.c_lflag & TOSTOP)) return 0;
+        if (!pgrp_alive(t->fg_pgid)) return 0;              /* nobody holds the terminal any more: no one is a background process */
+        int sig = kind == JC_READ ? SIGTTIN : SIGTTOU;
+        if (p->sigact[sig].handler == SIG_IGN || (current->sig_blocked & (1U << sig))) return kind == JC_READ ? -EIO : 0;
+        if (pgrp_orphaned(p->pgid)) return -EIO;
+        if (!p->stopped) {                                  /* (already stopped: this is a thread waking up inside the call) */
+            signal_pgrp(p->pgid, sig);
+            if (!p->stopped) return -EINTR;                 /* a handler will run; the call fails with EINTR */
+        }
+        job_park(p);                                        /* asleep until SIGCONT, then look again */
+        if (signal_pending_now(p)) return -EINTR;
+    }
+}
+
 ssize_t tty_read(Tty *t, void *buf, size_t n, bool nonblock) {
     if (n == 0) return 0;
     u8 *out = buf;
@@ -146,7 +191,10 @@ ssize_t tty_read(Tty *t, void *buf, size_t n, bool nonblock) {
     bool canon = t->termios.c_lflag & ICANON;
     u8 vmin = t->termios.c_cc[VMIN];
 
-    while (t->in_head == t->in_tail && !t->eof) {
+    for (;;) {
+        int jc = tty_job_check(t, JC_READ);                 /* also after every wake-up: a stopped reader must not eat the shell's input */
+        if (jc) { irq_restore(f); return jc; }
+        if (t->in_head != t->in_tail || t->eof) break;
         if (nonblock || (!canon && vmin == 0)) { irq_restore(f); return nonblock ? -EAGAIN : 0; }
         if (signal_pending()) { irq_restore(f); return -EINTR; }
         current->intr = true;
@@ -171,6 +219,8 @@ ssize_t tty_read(Tty *t, void *buf, size_t n, bool nonblock) {
 }
 
 ssize_t tty_write(Tty *t, const void *buf, size_t n) {
+    int jc = tty_job_check(t, JC_WRITE);                    /* only does anything with TOSTOP set */
+    if (jc) return jc;
     tty_out(t, buf, n);
     return (ssize_t)n;
 }
@@ -181,6 +231,8 @@ int tty_ioctl(Tty *t, unsigned long req, void *arg) {
         memcpy(arg, &t->termios, sizeof t->termios);
         return 0;
     case TCSETS: case TCSETSW: case TCSETSF: {
+        int jc = tty_job_check(t, JC_CTL);                  /* a background job may not reconfigure the terminal */
+        if (jc) return jc;
         u64 f = irq_save();
         u32 was_canon = t->termios.c_lflag & ICANON;
         memcpy(&t->termios, arg, sizeof t->termios);
@@ -203,9 +255,17 @@ int tty_ioctl(Tty *t, unsigned long req, void *arg) {
     case TIOCGPGRP:
         *(int *)arg = t->fg_pgid;
         return 0;
-    case TIOCSPGRP:
+    case TIOCSPGRP: {
+        int jc = tty_job_check(t, JC_CTL);
+        if (jc) return jc;
         t->fg_pgid = *(int *)arg;
+        /* The process that hands out the terminal is the job-control shell of its session, provided the terminal is its own
+         * (the console for a process without a controlling terminal, a pty slave for its session leader). */
+        Process *p = current ? current->proc : NULL;
+        if (p && (p->ctty == t || (t == tty_console() && !p->ctty))) t->session = p->sid;
+        pgrp_terminal_granted(t->fg_pgid);                  /* members that stopped waiting for the terminal have it now */
         return 0;
+    }
     case FIONREAD:
         *(int *)arg = (int)tty_pending(t);
         return 0;

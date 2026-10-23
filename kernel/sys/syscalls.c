@@ -137,7 +137,9 @@ static long sys_setpgid(TrapFrame *tf) {
     Process *t = pid ? process_by_pid(pid) : me();
     if (!t) return -ESRCH;
     if (t != me() && t->ppid != me()->pid) return -EPERM;
+    int old_pgid = t->pgid;
     t->pgid = pg ? pg : t->pid;
+    if (old_pgid != t->pgid) pgrp_check_orphaned(old_pgid);        /* leaving may have orphaned the old group (job control) */
     return 0;
 }
 
@@ -148,13 +150,16 @@ static long sys_getpgid(TrapFrame *tf) {
 
 static long sys_setsid(TrapFrame *tf) {
     (void)tf;
+    int old_pgid = me()->pgid;
     me()->sid = me()->pgid = me()->pid;
+    if (old_pgid != me()->pgid) pgrp_check_orphaned(old_pgid);
     me()->ctty = NULL;                      /* a new session starts without a controlling terminal */
     return me()->sid;
 }
 
 static long sys_tcsetpgrp(TrapFrame *tf) {
     tty_console()->fg_pgid = (int)A0(tf);   /* legacy: libgap now uses ioctl(TIOCSPGRP) on the descriptor */
+    pgrp_terminal_granted(tty_console()->fg_pgid);
     return 0;
 }
 
@@ -239,6 +244,9 @@ static long sys_open(TrapFrame *tf) {
         File *f;
         rc = vfs_open(path, flags, (u32)A2(tf) & ~p->umask, &p->cred, p->cwd, &f);
         if (rc == 0) {
+            char abs[256];
+            path_normalize(p->cwd_path, path, abs, sizeof abs);        /* /proc/<pid>/fd/N shows this */
+            file_set_path(f, abs);
             rc = fd_install(p, f, 0, (flags & O_CLOEXEC) ? FD_CLOEXEC : 0);
             if (rc < 0) file_put(f);
         }
@@ -385,6 +393,19 @@ static long sys_rename(TrapFrame *tf) {
         rc = get_path(A0(tf), a);
         if (!rc) rc = get_path(A1(tf), b);
         if (!rc) rc = vfs_rename(a, b, &me()->cred, me()->cwd);
+    }
+    kfree(a);
+    kfree(b);
+    return rc;
+}
+
+static long sys_link(TrapFrame *tf) {
+    char *a = kmalloc(PATH_MAX), *b = kmalloc(PATH_MAX);
+    long rc = -ENOMEM;
+    if (a && b) {
+        rc = get_path(A0(tf), a);
+        if (!rc) rc = get_path(A1(tf), b);
+        if (!rc) rc = vfs_link(a, b, &me()->cred, me()->cwd);
     }
     kfree(a);
     kfree(b);
@@ -808,7 +829,7 @@ static SyscallFn g_table[SYS_nsyscalls] = {
     [SYS_yield] = sys_yield, [SYS_nanosleep] = sys_nanosleep, [SYS_clock_gettime] = sys_clock_gettime,
     [SYS_ioctl] = sys_ioctl, [SYS_uname] = sys_uname, [SYS_sysinfo] = sys_sysinfo, [SYS_reboot] = sys_reboot,
     [SYS_mount] = sys_mount, [SYS_umount] = sys_umount, [SYS_sync] = sys_sync, [SYS_ftruncate] = sys_ftruncate,
-    [SYS_getrandom] = sys_getrandom, [SYS_symlink] = sys_symlink, [SYS_readlink] = sys_readlink,
+    [SYS_getrandom] = sys_getrandom, [SYS_symlink] = sys_symlink, [SYS_link] = sys_link, [SYS_readlink] = sys_readlink,
     [SYS_chmod] = sys_chmod, [SYS_chown] = sys_chown, [SYS_getuid] = sys_getuid, [SYS_getgid] = sys_getgid,
     [SYS_setuid] = sys_setuid, [SYS_setgid] = sys_setgid, [SYS_umask] = sys_umask, [SYS_fcntl] = sys_fcntl,
     [SYS_poll] = sys_poll, [SYS_setpgid] = sys_setpgid, [SYS_getpgid] = sys_getpgid, [SYS_sigaction] = sys_sigaction,

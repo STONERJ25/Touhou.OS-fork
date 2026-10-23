@@ -190,6 +190,7 @@ int process_exec(Process *p, const char *path, char *const argv[], char *const e
     current->clear_tid = 0;
     task_set_fs_base(current, 0);                                     /* the new program sets up its own TLS */
     strlcpy(p->name, base_name(argv && argv[0] ? argv[0] : path), sizeof p->name);
+    path_normalize(p->cwd_path, path, p->exe, sizeof p->exe);              /* /proc/<pid>/exe */
     p->cmdline[0] = 0;
     for (int i = 0; argv && argv[i]; i++) {
         if (i) strlcat(p->cmdline, " ", sizeof p->cmdline);
