@@ -646,6 +646,12 @@ void hid_service(void) {
     for (HidDev *h = g_kbds; h; h = h->next) update_leds_now(h);
 }
 
+int hid_keyboard_count(void) {
+    int n = 0;
+    for (HidDev *h = g_kbds; h; h = h->next) n++;
+    return n;
+}
+
 size_t hid_describe_stats(char *buf, size_t cap) {
     int nk = 0, nm = 0, held = 0;
     for (HidDev *h = g_kbds; h; h = h->next) nk++;

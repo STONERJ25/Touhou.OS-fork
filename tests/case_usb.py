@@ -133,6 +133,36 @@ def usb_nec_controller():
 
 
 @test
+def usb_fullspeed_devices():
+    """Full-speed devices (8 byte control packets, so the default 64 must be corrected with Evaluate Context) on root ports and a hub."""
+    extra = ["-device", "usb-kbd,id=ukbd,usb_version=1", "-device", "usb-mouse,id=umouse,usb_version=1"]
+    with usb_vm(extra, cmdline="usb=debug", name="t-usb-fs") as vm:
+        boot(vm)
+        text = vm.text()
+        assert len(re.findall(r"new full-speed device 0627:0001", text)) == 2, text[-2000:]
+        assert len(re.findall(r"control endpoint packet size is 8, not the 64 we assumed", text)) == 2, text[-2000:]
+        type_run(vm, "echo $((6*7))\n", r"\n42\r?\n")
+        vm.select_mouse("HID")
+        s0 = stat(vm)
+        vm.mouse_move(3, 4)
+        time.sleep(0.5)
+        s1 = stat(vm)
+        assert s1["mouse_dx"] - s0["mouse_dx"] == 3 and s1["mouse_dy"] - s0["mouse_dy"] == 4, (s0, s1)
+
+
+@test
+def usb_hub_port_power():
+    """A hub with per-port power switching: ports stay dark until the driver powers them, then the devices behind appear."""
+    extra = ["-device", "usb-hub,id=hub1,bus=xhci.0,port=1,port-power=on", "-device", "usb-kbd,id=ukbd,bus=xhci.0,port=1.1",
+             "-device", "usb-mouse,id=umouse,bus=xhci.0,port=1.2"]
+    with usb_vm(extra, name="t-usb-hubpower") as vm:
+        boot(vm, hubs=1)
+        assert len(devices(vm)) == 3
+        type_run(vm, "echo $((6*7))\n", r"\n42\r?\n")
+        no_errors(vm)
+
+
+@test
 def usb_superspeed():
     """A SuperSpeed device on a USB 3 root port enumerates (no driver binds); the keyboard on a USB 2 port still works."""
     img = BUILD / "usb-storage-test.img"
@@ -147,6 +177,32 @@ def usb_superspeed():
         assert any("high-speed" in ln and "hid-keyboard" in ln for ln in lines), lines
         no_errors(vm)
         type_run(vm, "echo $((6*7))\n", r"\n42\r?\n")
+
+
+@test
+def usb_bulk_transfers():
+    """Bulk endpoints (SuperSpeed direct, full-speed behind a hub): INQUIRY, READ CAPACITY and a 64 KiB READ(10) over bulk-only transport."""
+    img = BUILD / "usb-bulk-test.img"
+    data = bytes(((i * 31) + (i >> 9)) & 0xFF for i in range(1 << 20))
+    img.write_bytes(data)
+    want = sum(data[512:512 + 65536])
+    drive = ["-drive", f"if=none,id=usbd,format=raw,file={img}"]
+    cases = (
+        ("super-speed", drive + ["-device", "usb-storage,drive=usbd,id=ustor"]),
+        ("full-speed", drive + ["-device", "usb-hub,id=hub1,bus=xhci.0,port=1",
+                                "-device", "usb-storage,drive=usbd,id=ustor,bus=xhci.0,port=1.1"]),
+    )
+    for speed, extra in cases:
+        with usb_vm(extra, cmdline="usb=bulktest", name="t-usb-bulk") as vm:
+            vm.expect(PROMPT, timeout=90)
+            wait_count(vm, r"bulk test: READ\(10\) of 64 KiB ok", 1, timeout=60)
+            text = vm.text()
+            assert re.search(r"bulk test: INQUIRY -> 'QEMU    ' 'QEMU HARDDISK   '", text), text[-1500:]
+            assert re.search(r"bulk test: last block 2047, block size 512", text), text[-1500:]
+            m = re.search(r"READ\(10\) of 64 KiB ok, byte sum (\d+)", text)
+            assert int(m.group(1)) == want, (speed, m.group(1), want)
+            assert f"new {speed} device 46f4:0001" in text, (speed, text[-1500:])
+            no_errors(vm)
 
 
 @test

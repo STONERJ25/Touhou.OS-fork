@@ -37,6 +37,8 @@ typedef struct XEp {
     paddr_t buf_phys;
     u32 buf_len;
     bool queued;                        /* a TD is outstanding */
+    volatile bool bulk_wait, bulk_done; /* a bulk transfer is in flight / has finished (bulk endpoints have no callback) */
+    u32  bulk_cc, bulk_resid;
     bool need_recover;
     bool dead;                          /* stop polling (too many errors, or being torn down) */
     u8 errs;
@@ -101,6 +103,8 @@ typedef struct Xhci {
 
     u8  *ctl_buf;                       /* bounce page for control transfers */
     paddr_t ctl_phys;
+    u8  *bulk_buf;                      /* 64 KiB aligned bounce buffer for bulk transfers (allocated on first use) */
+    paddr_t bulk_phys;
 
     bool need_service;
     u64  last_health;
@@ -601,9 +605,11 @@ static int xhci_add_endpoints(UsbHc *hc, UsbDevice *dev, UsbEndpoint **eps, int 
         ec[3] = (u32)(deq >> 32);
         ec[4] = EP_DW4_AVG(avg) | EP_DW4_ESIT_LO(esit);
     }
-    /* The slot context comes from what the controller currently has, with the new "last valid context". */
+    /* The slot context comes from what the controller currently has, with the "last valid context" raised to cover the new ones. */
     volatile u32 *slot = ctx_in_slot(x, s);
     copy_ctx(slot, ctx_out_slot(x, s), x->csz);
+    int have = (int)(slot[0] >> 27);
+    if (have > last) last = have;
     slot[0] = (slot[0] & ~SLOT_DW0_ENTRIES_MASK) | SLOT_DW0_ENTRIES(last);
     ctrl[1] |= 1u;                                                      /* A0 */
     CmdResult r;
@@ -676,6 +682,50 @@ static int xhci_int_start(UsbHc *hc, UsbDevice *dev, UsbEndpoint *ep) {
     return 0;
 }
 
+/* ---------------------------------------------------------------- bulk transfers */
+
+#define BULK_MAX 65536
+
+/* One bulk TD through a 64 KiB aligned bounce buffer (a TRB's buffer must not cross a 64 KiB boundary). Returns the number of
+ * bytes moved or -errno; -EPIPE means the endpoint stalled (the caller clears the halt on the device with usb_clear_halt). */
+static int xhci_bulk(UsbHc *hc, UsbDevice *dev, UsbEndpoint *ep, void *buf, u32 len, u32 timeout_ms) {
+    Xhci *x = XH(hc);
+    XSlot *s = dev_slot(dev);
+    XEp *xe = ep->hc;
+    if (!s || x->hc.dead) return -ENODEV;
+    if (!xe || !xe->ring || ep->type != USB_EP_BULK || xe->uep != ep) return -EINVAL;
+    if (len == 0 || len > BULK_MAX) return -EINVAL;
+    if (!x->bulk_buf) {
+        void *b = x_dma(x, BULK_MAX, &x->bulk_phys);
+        if (!b) return -ENOMEM;
+        if (x->bulk_phys & (BULK_MAX - 1)) { dma_free(b, BULK_MAX); x->bulk_phys = 0; return -ENOMEM; }
+        x->bulk_buf = b;
+    }
+    bool in = ep->addr & USB_DIR_IN;
+    if (!in) memcpy(x->bulk_buf, buf, len);
+    xe->bulk_done = false;
+    xe->bulk_wait = true;
+    ring_push(xe->ring, x->bulk_phys, len, TRB_TYPE(TRB_NORMAL) | TRB_IOC | (in ? TRB_ISP : 0));
+    ring_db(x, s->id, ep->dci);
+    int rc = wait_flag(x, &xe->bulk_done, timeout_ms);
+    xe->bulk_wait = false;
+    if (rc == -ETIMEDOUT) {
+        usb_dbg("usb %s: bulk transfer on endpoint %02x timed out", dev->path, ep->addr);
+        ep_recover(x, s, ep->dci, true);
+        return -ETIMEDOUT;
+    }
+    if (rc) return rc;
+    if (xe->bulk_cc != CC_SUCCESS && xe->bulk_cc != CC_SHORT_PACKET) {
+        usb_dbg("usb %s: bulk transfer on endpoint %02x failed: %s", dev->path, ep->addr, cc_name(xe->bulk_cc));
+        ep_recover(x, s, ep->dci, false);
+        return cc_to_errno(xe->bulk_cc);
+    }
+    int actual = (int)len - (int)xe->bulk_resid;
+    if (actual < 0) actual = 0;
+    if (in && actual) memcpy(buf, x->bulk_buf, (size_t)actual);
+    return actual;
+}
+
 /* ---------------------------------------------------------------- transfer events */
 
 static void handle_transfer_event(Xhci *x, const Trb *ev) {
@@ -694,6 +744,12 @@ static void handle_transfer_event(Xhci *x, const Trb *ev) {
     }
 
     XEp *xe = &s->ep[dci];
+    if (xe->bulk_wait) {                                                /* a bulk transfer: just record how it ended */
+        xe->bulk_cc = code;
+        xe->bulk_resid = resid;
+        xe->bulk_done = true;
+        return;
+    }
     if (!xe->uep || !xe->queued) return;
     xe->queued = false;
     UsbDevice *dev = s->dev;
@@ -1085,13 +1141,35 @@ static int xhci_start(UsbHc *hc) {
     task_sleep_ms(100);                                                 // let USB 2 ports debounce and USB 3 links train
 
     /* Look at every port once, then let the change events drive everything. */
+    char list[96] = "";
+    int occupied = 0;
     for (u32 i = 1; i <= x->max_ports; i++) {
         UsbPortStatus st;
         root_get_status(root, (int)i, &st);
         if (st.change) root_clear_change(root, (int)i, st.change);
-        if (st.connected || st.warm_reset) usb_hub_mark_port(root, (int)i);
+        if (st.connected || st.warm_reset) {
+            usb_hub_mark_port(root, (int)i);
+            occupied++;
+            size_t l = strlen(list);
+            if (l + 8 < sizeof list) snprintf(list + l, sizeof list - l, " %u", i);
+        }
     }
+    klog("Kappa", "xhci %02x:%02x.%x: %d of %u ports have something attached%s%s", p->bus, p->dev, p->fn, occupied, x->max_ports,
+         occupied ? ":" : "", list);
+    usb_dbg("xhci: CAPLENGTH %#x HCSPARAMS %08x %08x %08x HCCPARAMS1 %08x DBOFF %#x RTSOFF %#x USBSTS %08x", caplen, x->hcs1, x->hcs2, x->hcs3, x->hcc1,
+            dboff, rtsoff, rd32(x->op, XOP_USBSTS));
     return 0;
+}
+
+/* One line for the log when something is wrong: every root port as "number:PORTSC" (decode with xHCI 1.1 table 5-27). */
+static size_t xhci_port_summary(UsbHc *hc, char *buf, size_t cap) {
+    Xhci *x = XH(hc);
+    size_t n = 0;
+    buf[0] = 0;
+    if (!x->op) return 0;
+    for (u32 i = 1; i <= x->max_ports && n + 16 < cap; i++)
+        n += (size_t)snprintf(buf + n, cap - n, "%s%u:%x", i > 1 ? " " : "", i, rd32(x->op, XOP_PORTSC(i)));
+    return n;
 }
 
 static void xhci_poll(UsbHc *hc) { x_pump(XH(hc)); }
@@ -1108,6 +1186,8 @@ static const UsbHcOps xhci_ops = {
     .free_dev = xhci_free_dev,
     .control = xhci_control,
     .int_start = xhci_int_start,
+    .bulk = xhci_bulk,
+    .port_summary = xhci_port_summary,
 };
 
 UsbHc *xhci_create(PciDev *pci, int busnum) {

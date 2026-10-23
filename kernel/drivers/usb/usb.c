@@ -26,6 +26,7 @@
 bool g_usb_debug;
 bool g_usb_hidreport;
 bool g_usb_stalltest;
+static bool g_usb_bulktest;
 static UsbHc *g_hcs[MAX_BUSES];
 static int g_nhc;
 static UsbHub *g_hubs;
@@ -90,6 +91,92 @@ int usb_int_start(UsbDevice *dev, UsbEndpoint *ep, UsbIntCb cb, void *ctx) {
     ep->cb = cb;
     ep->cb_ctx = ctx;
     return dev->hc->ops->int_start(dev->hc, dev, ep);
+}
+
+int usb_add_endpoints(UsbDevice *dev, UsbEndpoint **eps, int n) {
+    if (dev->dead || dev->broken || dev->hc->dead || !dev->hcpriv) return -ENODEV;
+    return dev->hc->ops->add_endpoints(dev->hc, dev, eps, n);
+}
+
+int usb_bulk(UsbDevice *dev, UsbEndpoint *ep, void *buf, u32 len, u32 timeout_ms) {
+    if (dev->dead || dev->broken || dev->hc->dead || !dev->hcpriv) return -ENODEV;
+    int rc = dev->hc->ops->bulk(dev->hc, dev, ep, buf, len, timeout_ms);
+    if (rc == -ETIMEDOUT) dev->broken = true;
+    return rc;
+}
+
+/* CLEAR_FEATURE(ENDPOINT_HALT) on the device; the controller side was reset when the stall was reported. */
+int usb_clear_halt(UsbDevice *dev, UsbEndpoint *ep) {
+    return usb_control(dev, USB_RECIP_EP, USB_REQ_CLEAR_FEATURE, 0, ep->addr, NULL, 0, CTRL_TIMEOUT);
+}
+
+/* usb=bulktest: SCSI INQUIRY, READ CAPACITY and a 64 KiB READ(10) over the bulk-only transport of a mass storage device. Reads only;
+ * the point is to prove the bulk path (rings, 64 KiB TDs, residuals) on real controllers. The kernel does not register a disk. */
+static int msc_command(UsbDevice *dev, UsbEndpoint *out, UsbEndpoint *in, const u8 *cdb, int cdb_len, void *data, u32 dlen) {
+    static u32 tag = 0x5000;
+    u8 cbw[31] = { 'U', 'S', 'B', 'C' };
+    u32 t = ++tag;
+    memcpy(cbw + 4, &t, 4);
+    memcpy(cbw + 8, &dlen, 4);
+    cbw[12] = 0x80;                                     /* data in */
+    cbw[14] = (u8)cdb_len;
+    memcpy(cbw + 15, cdb, (size_t)cdb_len);
+    int rc = usb_bulk(dev, out, cbw, sizeof cbw, 3000);
+    if (rc != (int)sizeof cbw) return rc < 0 ? rc : -EIO;
+    rc = usb_bulk(dev, in, data, dlen, 5000);
+    if (rc < 0) {
+        if (rc != -EPIPE) return rc;
+        usb_clear_halt(dev, in);
+    }
+    int got = rc;
+    u8 csw[13];
+    rc = usb_bulk(dev, in, csw, sizeof csw, 3000);
+    if (rc == -EPIPE) { usb_clear_halt(dev, in); rc = usb_bulk(dev, in, csw, sizeof csw, 3000); }
+    if (rc != (int)sizeof csw) return rc < 0 ? rc : -EIO;
+    if (memcmp(csw, "USBS", 4) || memcmp(csw + 4, &t, 4) || csw[12] != 0) return -EIO;
+    return got;
+}
+
+static void bulk_selftest(UsbDevice *dev) {
+    UsbInterface *it = NULL;
+    for (int i = 0; i < dev->nintf; i++)
+        if (dev->intf[i].cls == 8 && dev->intf[i].subcls == 6 && dev->intf[i].proto == 0x50) it = &dev->intf[i];
+    if (!it) return;
+    UsbEndpoint *in = NULL, *out = NULL, *eps[2];
+    for (int e = 0; e < it->nep; e++) {
+        if (it->ep[e].type != USB_EP_BULK) continue;
+        if (it->ep[e].addr & USB_DIR_IN) in = &it->ep[e]; else out = &it->ep[e];
+    }
+    if (!in || !out) return;
+    eps[0] = out;
+    eps[1] = in;
+    int rc = usb_add_endpoints(dev, eps, 2);
+    if (!rc) rc = usb_control(dev, 0, USB_REQ_SET_CONFIGURATION, dev->cfg_value, 0, NULL, 0, SET_TIMEOUT);
+    if (rc < 0) { klog("Kappa", "usb %s: bulk test: cannot configure the endpoints (%d)", dev->path, rc); return; }
+
+    u8 inq[6] = { 0x12, 0, 0, 0, 36, 0 }, cap[10] = { 0x25 }, rd[10] = { 0x28, 0, 0, 0, 0, 1, 0, 0, 128, 0 };   /* READ(10): LBA 1, 128 blocks */
+    u8 buf[36];
+    rc = msc_command(dev, out, in, inq, 6, buf, sizeof buf);
+    if (rc < 36) { klog("Kappa", "usb %s: bulk test: INQUIRY failed (%d)", dev->path, rc); return; }
+    klog("Kappa", "usb %s: bulk test: INQUIRY -> '%.8s' '%.16s'", dev->path, (const char *)buf + 8, (const char *)buf + 16);
+    u8 capbuf[8];
+    rc = msc_command(dev, out, in, cap, 10, capbuf, sizeof capbuf);
+    if (rc < 8) { klog("Kappa", "usb %s: bulk test: READ CAPACITY failed (%d)", dev->path, rc); return; }
+    u32 last = (u32)capbuf[0] << 24 | (u32)capbuf[1] << 16 | (u32)capbuf[2] << 8 | capbuf[3];
+    u32 bsz = (u32)capbuf[4] << 24 | (u32)capbuf[5] << 16 | (u32)capbuf[6] << 8 | capbuf[7];
+    klog("Kappa", "usb %s: bulk test: last block %u, block size %u", dev->path, last, bsz);
+    if (bsz != 512 || last < 130) return;
+    u8 *big = kmalloc(65536);
+    if (!big) return;
+    rc = msc_command(dev, out, in, rd, 10, big, 65536);
+    if (rc == 65536) {
+        u32 sum = 0;
+        for (u32 i = 0; i < 65536; i++) sum += big[i];
+        klog("Kappa", "usb %s: bulk test: READ(10) of 64 KiB ok, byte sum %u", dev->path, sum);
+    } else {
+        klog("Kappa", "usb %s: bulk test: READ(10) failed (%d)", dev->path, rc);
+    }
+    kfree(big);
 }
 
 /* UTF-16LE string descriptor -> printable ASCII. */
@@ -349,6 +436,7 @@ static int dev_address(UsbDevice *dev, int attempt) {
     u16 mps = mps0_from_descriptor(dev->speed, raw[7]);
     if (!mps) { klog("Kappa", "usb %s: bad bMaxPacketSize0 %u for a %s device", dev->path, raw[7], usb_speed_name(dev->speed)); return -EIO; }
     if (mps != dev->mps0) {
+        usb_dbg("usb %s: control endpoint packet size is %u, not the %u we assumed: updating the endpoint context", dev->path, mps, dev->mps0);
         g_step = "control endpoint size";
         rc = hc->ops->set_ep0_size(hc, dev, mps);
         if (rc) return rc;
@@ -485,6 +573,7 @@ static UsbDevice *usb_setup_device(UsbHub *hub, int port, const UsbPortStatus *s
     klog("Kappa", "usb %s: new %s device %04x:%04x \"%s%s%s\"", dev->path, usb_speed_name(dev->speed), dev->desc.idVendor, dev->desc.idProduct,
          dev->manufacturer, dev->manufacturer[0] && dev->product[0] ? " " : "", dev->product);
     proc_update();
+    if (g_usb_bulktest) bulk_selftest(dev);
     return dev;
 }
 
@@ -622,6 +711,7 @@ static void usbd_main(void *arg) {
     proc_update();
     if (!alive) return;                                     /* nothing to poll */
 
+    bool hinted = false;
     for (;;) {
         for (int i = 0; i < g_nhc; i++) {
             UsbHc *hc = g_hcs[i];
@@ -633,6 +723,21 @@ static void usbd_main(void *arg) {
         }
         service_hubs();
         hid_service();
+        if (!hinted && uptime_ms() > 8000) {
+            /* One line for whoever is staring at a machine whose keyboard does not work: what the controllers see on their ports. */
+            hinted = true;
+            if (!hid_keyboard_count()) {
+                for (int i = 0; i < g_nhc; i++) {
+                    UsbHc *hc = g_hcs[i];
+                    char ports[400];
+                    ports[0] = 0;
+                    if (!hc->failed && hc->ops->port_summary) hc->ops->port_summary(hc, ports, sizeof ports);
+                    klog("Satori", "no USB keyboard is bound 8 s after boot; xhci %02x:%02x.%x%s%s", hc->pci->bus, hc->pci->dev, hc->pci->fn,
+                         hc->failed ? " failed to start: " : hc->dead ? " is dead: " : " ports (number:PORTSC): ",
+                         hc->failed || hc->dead ? hc->status : ports);
+                }
+            }
+        }
         task_sleep_ms(1);
     }
 }
@@ -647,6 +752,7 @@ void usb_init(void) {
         if (!strcmp(opt, "debug")) g_usb_debug = true;
         if (!strcmp(opt, "hidreport")) { g_usb_debug = true; g_usb_hidreport = true; }
         if (!strcmp(opt, "stalltest")) { g_usb_debug = true; g_usb_stalltest = true; }
+        if (!strcmp(opt, "bulktest")) g_usb_bulktest = true;
     }
     for (PciDev *d = pci_find_class(0x0C, 0x03, 0x30, NULL); d && g_nhc < MAX_BUSES; d = pci_find_class(0x0C, 0x03, 0x30, d)) {
         UsbHc *hc = xhci_create(d, g_nhc + 1);

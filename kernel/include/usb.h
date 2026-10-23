@@ -226,6 +226,8 @@ typedef struct UsbHcOps {
     void (*free_dev)(struct UsbHc *hc, UsbDevice *dev);               /* Disable Slot, free contexts and rings */
     int  (*control)(struct UsbHc *hc, UsbDevice *dev, const UsbSetup *s, void *buf, u32 timeout_ms);
     int  (*int_start)(struct UsbHc *hc, UsbDevice *dev, UsbEndpoint *ep);   /* poll an interrupt-IN endpoint forever */
+    int  (*bulk)(struct UsbHc *hc, UsbDevice *dev, UsbEndpoint *ep, void *buf, u32 len, u32 timeout_ms);
+    size_t (*port_summary)(struct UsbHc *hc, char *buf, size_t cap);        /* raw root port registers for diagnostics */
 } UsbHcOps;
 
 typedef struct UsbHc {
@@ -253,12 +255,19 @@ extern bool g_usb_hidreport;        /* usb=hidreport: parse report descriptors e
 int usb_control(UsbDevice *dev, u8 rtype, u8 req, u16 value, u16 index, void *buf, u16 len, u32 timeout_ms);
 int usb_get_descriptor(UsbDevice *dev, u8 type, u8 index, u16 lang, void *buf, u16 len);
 int usb_int_start(UsbDevice *dev, UsbEndpoint *ep, UsbIntCb cb, void *ctx);
+/* Bulk endpoints (not needed by the hub and HID drivers; here for a future mass-storage driver). Endpoints must first be handed to
+ * the controller with usb_add_endpoints(). usb_bulk() moves up to 64 KiB and returns the byte count or -errno; after -EPIPE the
+ * halt must be cleared with usb_clear_halt(). */
+int usb_add_endpoints(UsbDevice *dev, UsbEndpoint **eps, int n);
+int usb_bulk(UsbDevice *dev, UsbEndpoint *ep, void *buf, u32 len, u32 timeout_ms);
+int usb_clear_halt(UsbDevice *dev, UsbEndpoint *ep);
 const char *usb_speed_name(int speed);
 void usb_msleep(UsbHc *hc, u32 ms);                  /* sleeps while the controller's events keep being processed */
 void usb_disconnect(UsbDevice *dev);                 /* tears a device (and everything below it) down */
 
 /* hid.c */
 void hid_service(void);             /* top-level housekeeping (keyboard LEDs) */
+int  hid_keyboard_count(void);
 size_t hid_describe_stats(char *buf, size_t cap);
 
 #endif
