@@ -20,14 +20,20 @@ New kappabox applets need a manual page (`initrd/ScarletDevilMansion/share/patch
 
 | Branch (worktree-agent-...) | Area | Notes |
 |-----------------------------|------|-------|
-| a2a5636a2291d096d | Gensokyo Explorer (file manager) | not finished when the session ended; `tests/guitools.py` came from this agent (Notebook and Sketchbook were its sub-agents and are merged) |
-| a46f2d415c0a1a9ca | networking: virtio-net/e1000/e1000e/rtl NIC drivers, TCP/IP, sockets, DHCP/DNS, tools | `docs/NETWORK.md` on the branch |
-| a3d380c78d6285728 | audio: kernel mixer, HDA, AC97, `play`, Jukebox | `docs/AUDIO.md` on the branch |
-| a651f6420dbc8cc2c | libz, gzip/tar/zip, PNG/JPEG/GIF decoders, Gallery viewer, wallpaper, PNG screenshots | `docs/MEDIA.md` on the branch |
-| a4adbf8e4aa5804b3 | threads: clone, futex, pthreads | `docs/THREADS.md` on the branch |
-| abec503ce2c98467a (parent) with a8e93238212e069d8 (awk), ac04a73bcf43119ad (diff, patch), a1fd026321d1dbac3 (bc, dc), aa2e138ddaa272338 (vi) | userland utilities | each child branch is a separate piece; `docs/UTILITIES.md` on the branch(es) |
+| a2a5636a2291d096d | Gensokyo Explorer (file manager) | **nothing committed**: its branch tip is already in `main` (it gave us `tests/guitools.py`; Notebook and Sketchbook were its sub-agents). The file manager still has to be written |
+| a21c5271eaed80a2d | Notebook polish (a fork of the explorer agent) | 6 small commits on top of the merged Notebook: Reload from Disk (F5), the unsaved-changes Save goes through the changed-on-disk check, a hint on an empty page, line-ending and gutter-click tests. Safe to merge first |
+| a4adbf8e4aa5804b3 | threads: clone, futex, pthreads (syscalls 106-115) | 15 commits, paused, builds; the most mature branch of the second wave. Its last full test run was at a279b04. `docs/THREADS.md` on the branch |
+| a46f2d415c0a1a9ca | networking (syscalls 90-99) | 4 commits, paused: loopback TCP/IP, sockets, virtio-net/e1000/e1000e drivers and DHCP are in. Not done: ping/wget/nslookup tools, DNS, the RTL8168 driver. `docs/NETWORK.md` |
+| a3d380c78d6285728 | audio (syscalls 100-105) | 12 commits, paused: kernel mixer, HDA and AC97 drivers, libaudio, `play`/`beep`/`volume`. Not done: Jukebox, songs. `docs/AUDIO.md` |
+| a651f6420dbc8cc2c | media: libz, gzip/tar/zip, image decoders | 9 commits, paused: libz and gzip/tar/zip are done (they add `SYS_utimes` = 82, check for a number clash when merging). The image library is only a skeleton: no PNG/JPEG/GIF decoders, Gallery, wallpaper or PNG screenshots yet. `docs/MEDIA.md` |
+| abec503ce2c98467a (parent) | userland utilities: merges the four children below, plus `docs/UTILITIES.md` | merge this one, not the children (same content). Done: awk, diff, patch, bc, dc and a first vi. Not started: the gapsh audit, job control (needs a kernel stopped state), join/split/fmt/column/timeout/time/watch/nohup/pgrep/killall..., extensions of the weak applets. `docs/UTILITIES.md` lists everything |
+| a8e93238212e069d8 / ac04a73bcf43119ad / a1fd026321d1dbac3 / aa2e138ddaa272338 | awk / diff and patch / bc and dc / vi | children of the utilities parent. **vi has only run 11 checks in the guest** (basic insert/delete/yank/put, undo, search, counts, dot, `:wq`); motions, text objects, registers, macros, visual modes, `:s`, `:g`, filters and mappings are written but untested, so expect bugs. awk, diff, patch, bc and dc passed their own tests on their branches |
 
-All of these branches are also on the Forgejo copy of the repository (`origin`).
+The agents were stopped at about 15:58 on 2026-10-23 (the user had to close the laptop). All of these branches, and `main`, are on the
+Forgejo copy of the repository (`origin` = `stonerj/Touhou.OS-fork`, private).
+
+When merging any of them: tests that wait for a serial shell prompt need `text` in their command line (the desktop is the default
+boot now, and it never prints a prompt), and the guest clock runs slowly when the host is busy, so give tests generous timeouts.
 
 The agents were told to commit working states before the session ended; a branch may stop mid-task. `git log -1 <branch>` and
 the doc of the area say how far it got. An agent that is still resumable can be sent a message with the same id.
