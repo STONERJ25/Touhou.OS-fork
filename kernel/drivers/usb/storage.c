@@ -27,6 +27,7 @@
  *   usbstorage.timeout=MS   every bulk wait (command, data, status) at most MS milliseconds (tests only; a timeout kills the device)
  *   usbstorage.fault=csw:N  treat the N-th status wrapper as corrupted (exercises reset recovery)
  *   usbstorage.fault=drop:N never send the N-th command wrapper (the device stays silent: exercises the timeout path)
+ *   usbstorage.fault=notready:MS  every unit is taken to be "not ready" for its first MS milliseconds (a stick that takes its time)
  */
 #include "usb.h"
 #include "blk.h"
@@ -48,7 +49,7 @@
 
 static u32 g_t_cbw = 3000, g_t_quick = 5000, g_t_csw = 5000, g_t_read = 15000, g_t_write = 30000, g_t_sync = 30000;
 static bool g_cfg_loaded, g_off, g_nosync, g_rw16, g_stalltest;
-static u32 g_fault_csw, g_fault_drop, g_csw_count, g_cbw_count;
+static u32 g_fault_csw, g_fault_drop, g_fault_notready, g_csw_count, g_cbw_count;
 
 /* ---------------------------------------------------------------- state */
 
@@ -89,7 +90,7 @@ struct Msc {
     MscLun lun[];
 };
 
-static Msc *g_msc;                              /* newest first; modified only by usbd, read by /proc with interrupts off (one CPU) */
+static Msc *g_msc;                              /* oldest first; modified only by usbd, read by /proc with interrupts off (one CPU) */
 static volatile int g_nbusy;                    /* LUNs in START or WAIT: what usb_wait_settled() waits for */
 
 static void recount(void) {
@@ -514,6 +515,7 @@ static int msc_sync_one(MscLun *l, BlockDev *bd) {
 typedef enum { RDY_READY, RDY_WAIT, RDY_NOMEDIA, RDY_DEAD } Ready;
 
 static Ready lun_ready(Msc *m, MscLun *l) {
+    if (g_fault_notready && uptime_ms() - l->started_at < g_fault_notready) return RDY_WAIT;        /* test aid: a stick that takes its time */
     u8 cdb[6] = { 0 };
     ScsiCmd c = { .cdb = cdb, .cdb_len = 6, .t_data = g_t_quick };
     int rc = msc_run(m, l->lun, &c);
@@ -798,8 +800,10 @@ static int msc_probe(UsbDevice *dev, UsbInterface *intf) {
         m->lun[i].started_at = now;
         m->lun[i].next_at = now + i * 20;
     }
-    m->next = g_msc;
-    g_msc = m;
+    m->next = NULL;                                                             /* oldest first: sticks are brought up (and named) in the order they were found */
+    Msc **tail = &g_msc;
+    while (*tail) tail = &(*tail)->next;
+    *tail = m;
     intf->drv_data = m;
     recount();
     klog("Kappa", "usb-storage %s: %04x:%04x, bulk-only transport, %u LUN%s -- the kappa are sizing the stick up", dev->path, m->vid, m->pid, nlun, nlun == 1 ? "" : "s");
@@ -939,10 +943,12 @@ static void cfg_load(void) {
     long t = cmdline_int("usbstorage.timeout", 0);
     if (t >= 100 && t <= 120000) g_t_cbw = g_t_quick = g_t_csw = g_t_read = g_t_write = g_t_sync = (u32)t;
     if (cmdline_value("usbstorage.fault", v, sizeof v)) {
+        const char *colon = strchr(v, ':');
         u32 n = 0;
-        for (const char *q = v + 4; *q >= '0' && *q <= '9'; q++) n = n * 10 + (u32)(*q - '0');
+        for (const char *q = colon ? colon + 1 : ""; *q >= '0' && *q <= '9'; q++) n = n * 10 + (u32)(*q - '0');
         if (!strncmp(v, "csw:", 4)) g_fault_csw = n;
-        else if (!strncmp(v, "drop:", 5)) { n = 0; for (const char *q = v + 5; *q >= '0' && *q <= '9'; q++) n = n * 10 + (u32)(*q - '0'); g_fault_drop = n; }
+        else if (!strncmp(v, "drop:", 5)) g_fault_drop = n;
+        else if (!strncmp(v, "notready:", 9)) g_fault_notready = n;
     }
     if (cmdline_flag("usbstorage.selftest")) selftest();
 }

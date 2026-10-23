@@ -193,6 +193,7 @@ static void mount_options(char *out, size_t cap) {
 
 static Mutex g_policy_lock;                                        /* the policy runs one pass at a time (boot call, hot-plug workers) */
 static bool g_policy_ready;
+static BlockDev *g_hv_dev;                                         /* what /HumanVillage was mounted from (may have been unplugged since) */
 static volatile int g_workers;                                     /* automount worker threads that exist (queued or running) */
 
 static void policy_init_once(void) {
@@ -215,8 +216,12 @@ static void run_policy(BlockDev *added) {
     if (humanvillage_mounted(holder, sizeof holder)) {
         const char *how = "";
         BlockDev *other = added ? find_humanvillage(added, &how) : NULL;
-        if (other) klog("Keine", "%s holds a HUMANVILLAGE volume too (%s), but /HumanVillage already lives on %s: the first one found wins, this one is left alone",
-                        other->name, how, holder);
+        if (other && g_hv_dev && g_hv_dev->removed)
+            klog("Keine", "%s holds a HUMANVILLAGE volume (%s), but /HumanVillage is still mounted on %s, whose stick was pulled out: umount it (or reboot) and the "
+                 "Human Village can move to the stick that is here now", other->name, how, holder);
+        else if (other)
+            klog("Keine", "%s holds a HUMANVILLAGE volume too (%s), but /HumanVillage already lives on %s: the first one found wins, this one is left alone",
+                 other->name, how, holder);
         return;
     }
     if (cmdline_flag("nohumanvillage")) {
@@ -238,6 +243,7 @@ static void run_policy(BlockDev *added) {
         klog("Keine", "HUMANVILLAGE on %s (%s) cannot be mounted (%d): homes stay in RAM (tmpfs)", hv->name, how, rc);
         return;
     }
+    g_hv_dev = hv;
     bool stick = hv->driver && !strcmp(hv->driver, "usb-storage");
     if (stick) klog("Keine", "the Human Village keeps its records on the stick now (%s, found by %s): the homes persist from here on", hv->name, how);
     ensure_homes();
@@ -248,10 +254,26 @@ static void run_policy(BlockDev *added) {
     bootlog_volume_mounted("/HumanVillage", rw);
 }
 
+/* "storage.selftest" on the kernel command line: the TZ parser against zones of every shape (one log line with the verdict). */
+static void tz_selftest(void) {
+    static const struct { const char *tz; int minutes; } T[] = {
+        { "EST5EDT,M3.2.0,M11.1.0", -300 }, { "JST-9", 540 }, { "UTC", 0 }, { "", 0 }, { "<+0530>-5:30", 330 }, { "PST8PDT", -480 },
+        { "AEST-10AEDT,M10.1.0,M4.1.0/3", 600 }, { "nonsense", 0 }, { "XYZ25", 0 }, { "<-03>3", -180 }, { "CET-1CEST,M3.5.0,M10.5.0/3", 60 },
+        { "NST3:30NDT", -210 }, { "GMT0", 0 }, { "ABC+4", -240 }, { "ABC-", 0 }, { "5", 0 },
+    };
+    int bad = 0;
+    for (unsigned i = 0; i < ARRAY_SIZE(T); i++) {
+        int got = storage_tz_offset_minutes(T[i].tz);
+        if (got != T[i].minutes) { bad++; klog("Keine", "storage selftest: tz '%s' gave %d minutes, expected %d", T[i].tz, got, T[i].minutes); }
+    }
+    klog("Keine", "storage selftest: %u time zone checks, %d failed", (unsigned)ARRAY_SIZE(T), bad);
+}
+
 /* Called by kmain once the block devices exist. A driver that finds disks later (USB, hot-plug) goes through storage_disk_added(). */
 void storage_mount_boot_volumes(void) {
     static bool registered;
     policy_init_once();
+    if (cmdline_flag("storage.selftest")) tz_selftest();
     if (!registered) {
         registered = true;
         vfs_register_fs(&g_vfat_type);

@@ -168,7 +168,7 @@ def usb_hub_port_power():
 
 @test
 def usb_superspeed():
-    """A SuperSpeed device on a USB 3 root port enumerates (no driver binds); the keyboard on a USB 2 port still works."""
+    """A SuperSpeed device (a mass storage stick) on a USB 3 root port enumerates and is bound by the usb-storage driver; the keyboard on a USB 2 port still works."""
     img = BUILD / "usb-storage-test.img"
     img.write_bytes(b"\0" * (1 << 20))
     extra = ["-drive", f"if=none,id=usbd,format=raw,file={img}", "-device", "usb-storage,drive=usbd,id=ustor"] + KBD
@@ -177,7 +177,7 @@ def usb_superspeed():
         wait_count(vm, KBD_UP, 1)
         wait_count(vm, r"\[Kappa\] usb \S+: new super-speed device 46f4:0001", 1)
         lines = devices(vm)
-        assert any("super-speed" in ln and "46f4:0001" in ln and "driver none" in ln for ln in lines), lines
+        assert any("super-speed" in ln and "46f4:0001" in ln and "driver usb-storage" in ln for ln in lines), lines
         assert any("high-speed" in ln and "hid-keyboard" in ln for ln in lines), lines
         no_errors(vm)
         type_run(vm, "echo $((6*7))\n", r"\n42\r?\n")

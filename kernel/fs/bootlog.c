@@ -151,6 +151,7 @@ void bootlog_volume_mounted(const char *mountpoint, bool rw) {
         return;
     }
     g_active = true;
+    klog("Keine", "bootlog: TOUHOU.LOG holds the boot log up to here (%lu bytes), safe on the stick", (unsigned long)g_size);
     if (!g_thread_started) {
         g_thread_started = true;
         if (!task_create_detached("bootlog", bootlog_thread, NULL)) {
