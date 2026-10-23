@@ -2,7 +2,7 @@
 
 Written at the end of the first long build session. `main` is the verified tree: everything in docs/STATUS.md works and
 is covered by `python tests/run_all.py`. Already merged from agents: Patchouli's library (pnote, pager, manuals), FAT32/virtio-blk,
-AHCI/NVMe, USB, the five desktop apps and the games. The branches below were started by background agents and are **not merged**.
+AHCI/NVMe, USB, the five desktop apps, the games, the Notebook and the Sketchbook. The branches below were started by background agents and are **not merged**.
 Each has its own `docs/<AREA>.md` written by its author; read that first, then `git log main..<branch>`.
 
 ## Branches and how to merge one
@@ -20,7 +20,7 @@ New kappabox applets need a manual page (`initrd/ScarletDevilMansion/share/patch
 
 | Branch (worktree-agent-...) | Area | Notes |
 |-----------------------------|------|-------|
-| a2a5636a2291d096d (+ a21c5271eaed80a2d notebook, ad1f2fdb71587f5e6 sketchbook) | Explorer, Patchouli's Notebook, Sketchbook | GUI apps; `tests/guitools.py` came from here. Notebook and sketchbook have commits; the Explorer itself may not be finished: check `git log` of each |
+| a2a5636a2291d096d (and whatever sub-agent branches it started) | Gensokyo Explorer (file manager) | not finished when the session ended; `tests/guitools.py` came from this agent. Notebook and Sketchbook were its sub-agents and are merged |
 | a46f2d415c0a1a9ca | networking: NIC drivers, TCP/IP, sockets, DHCP/DNS, tools | `docs/NETWORK.md` |
 | a3d380c78d6285728 | audio: HDA, AC97, mixer, Jukebox | `docs/AUDIO.md` |
 | a651f6420dbc8cc2c | libz, gzip/tar/zip, PNG/JPEG/GIF decoders, Gallery viewer, wallpaper, PNG screenshots | `docs/MEDIA.md` |
