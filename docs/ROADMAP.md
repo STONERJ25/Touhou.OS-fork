@@ -22,7 +22,7 @@ are what is left, roughly in the order they matter.
 - [x] terminal, text editor (pnote), manual viewer, pager
 - [x] Ran's Calculator, Sakuya's Pocket Watch, Spell Manager, Kappa Control Panel, Bunbunmaru News
 - [x] Patchouli's Notebook, Sketchbook, danmaku shooter, Minesweeper, Snake
-- [ ] Gensokyo Explorer (file manager; in progress, design in `docs/EXPLORER.md`)
+- [x] Gensokyo Explorer (file manager; see `docs/APPS.md` and the notes in `docs/EXPLORER.md`)
 - [ ] image viewer, music player (in progress)
 
 ## 0.4+ -- system depth
