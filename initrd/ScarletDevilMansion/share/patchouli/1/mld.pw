@@ -8,7 +8,7 @@
 
 Objects are always included. A member of an archive is taken only when it defines a symbol that something already included needs, and that is repeated until nothing new is wanted, so the order of the libraries on the command line does not matter. A strong definition beats a weak one; two strong definitions are an error; COMMON symbols are allocated in bss. Relocations of the kinds clang and mcc produce are applied: absolute, PC-relative, PLT, GOT-relative, and the local-exec thread-local offsets (the same formula that libgap's thread start-up uses).
 
-The linker defines `__tls_init_image`, `__tls_init_size`, `__tls_mem_size` and `__tls_align` for libgap, and `_end`, `_etext`, `_edata` and `__bss_start` if they are referenced. The output starts with its mode set to 755. It carries a section table and a symbol table so that objdump can read it, unless *-s* is given.
+The linker defines `__tls_init_image`, `__tls_init_size`, `__tls_mem_size` and `__tls_align` for libgap, and `_end`, `_etext`, `_edata` and `__bss_start` if they are referenced. The executable gets mode 755. It carries a section table and a symbol table so that objdump can read it, unless *-s* is given.
 
 # OPTIONS
 @ *-o* _FILE_
@@ -28,8 +28,9 @@ The linker defines `__tls_init_image`, `__tls_init_size`, `__tls_mem_size` and `
 0 on success, 1 if something could not be read, was defined twice, or was needed and not found. Every problem is listed before the linker gives up, with a remark from Marisa.
 
 # EXAMPLES
-    mld -o hello /ScarletDevilMansion/lib/crt0.o hello.o -lgap
-    mcc -c a.c b.c && mld -o prog /ScarletDevilMansion/lib/crt0.o a.o b.o -lkappa -lgap
+    L=/ScarletDevilMansion/lib
+    mld -o hello $L/crt0.o hello.o -lgap
+    mcc -c a.c b.c && mld -o prog $L/crt0.o a.o b.o -lkappa -lgap
 
 # SEE ALSO
 mcc(1), mar(1)

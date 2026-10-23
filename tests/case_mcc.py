@@ -169,27 +169,16 @@ def mcc_driver_options():
     prepare()
     out = U.OUT
     (out / "inc").mkdir(parents=True, exist_ok=True)
-    (out / "inc" / "extra.h").write_text("#define FROM_EXTRA 7
-int extra_value(void);
-")
-    (out / "pre.h").write_text("#define FROM_PRELUDE 11
-")
+    (out / "inc" / "extra.h").write_text("#define FROM_EXTRA 7\nint extra_value(void);\n")
+    (out / "pre.h").write_text("#define FROM_PRELUDE 11\n")
     (out / "opts.c").write_text(
-        "#include <extra.h>
-#ifdef GONE
-int gone = GONE;
-#endif
-"
-        "int answer = ANSWER + FROM_EXTRA + FROM_PRELUDE;
-#ifdef NAMED
-const char *name = NAME;
-#endif
-")
+        "#include <extra.h>\n#ifdef GONE\nint gone = GONE;\n#endif\n"
+        "int answer = ANSWER + FROM_EXTRA + FROM_PRELUDE;\n#ifdef NAMED\nconst char *name = NAME;\n#endif\n")
     rc, so, se = U.host("mcc", ["-E", "-DANSWER=30", "-DGONE=1", "-UGONE", "-DNAMED", '-DNAME="marisa"', "-I", "build/mcc-out/inc",
                                 "-include", "build/mcc-out/pre.h", "build/mcc-out/opts.c"])
     assert rc == 0, se
-    flat = " ".join(so.split())
-    assert "int answer = 30 + 7 + 11 ;" in flat and "gone" not in flat and 'const char *name = "marisa" ;' in flat, so
+    flat = " ".join(so.split()).replace(" ;", ";")
+    assert "int answer = 30 + 7 + 11;" in flat and "gone" not in flat and 'const char *name = "marisa";' in flat, so
     # -E -o writes the file instead of stdout
     rc, so, se = U.host("mcc", ["-E", "-I", "build/mcc-out/inc", "-DANSWER=1", "build/mcc-out/opts.c", "-o", "build/mcc-out/opts.i"])
     assert rc == 0 and so == "" and "int answer" in (out / "opts.i").read_text(), (rc, so, se)
@@ -197,7 +186,7 @@ const char *name = NAME;
     src = "tests/mcc/guest/hello.c"
     rc, so, se = U.host("mcc", ["-c", "-O2", "-Wall", "-g", "-std=c11", "-fPIC", src, "-o", "build/mcc-out/h.o"])
     assert rc == 0, se
-    assert (out / "h.o").read_bytes()[:4] == b"ELF"
+    assert (out / "h.o").read_bytes()[:4] == b"\x7fELF"
     # linking: -s strips, -M prints a map with main in it
     rc, so, se = U.host("mcc", [src, "-o", "build/mcc-out/h-sym"])
     assert rc == 0, se
@@ -207,7 +196,7 @@ const char *name = NAME;
     rc, so, se = U.host("mcc", [src, "-M", "-o", "build/mcc-out/h-map"])
     assert rc == 0 and re.search(r"^[0-9a-f]{16} main$", so, re.M) and re.search(r"^[0-9a-f]{16} _start$", so, re.M), so
     elf = (out / "h-sym").read_bytes()
-    assert elf[:4] == b"ELF" and elf[16:18] == b" " and elf[18:20] == b"> ", "not an x86-64 ET_EXEC"
+    assert elf[:4] == b"\x7fELF" and elf[16:18] == b"\x02\x00" and elf[18:20] == b"\x3e\x00", "not an x86-64 ET_EXEC"
     rc, so, se = U.host("mcc", ["--version"])
     assert rc == 0 and so.startswith("mcc ") and "Marisa" in so, so
     rc, so, se = U.host("mcc", ["-S", src])
@@ -217,19 +206,14 @@ const char *name = NAME;
     rc, so, se = U.host("mcc", ["-c", "build/mcc-out/h.o", "-o", "build/mcc-out/x.o"])
     assert rc == 1 and "not a C source file" in se, se
     # mld alone: the undefined reference is reported with the name and Marisa's remark
-    (out / "undef.c").write_text("int missing(void);
-int main(void) { return missing(); }
-")
+    (out / "undef.c").write_text("int missing(void);\nint main(void) { return missing(); }\n")
     rc, so, se = U.host("mcc", ["-c", "build/mcc-out/undef.c", "-o", "build/mcc-out/undef.o"])
     assert rc == 0, se
     rc, so, se = U.host("mcc", ["build/mcc-out/undef.o", "-o", "build/mcc-out/undef"])
     assert rc == 1 and "undefined reference to 'missing'" in se and "Marisa" in se, se
     # two definitions of a function
-    (out / "dup1.c").write_text("int twice(void) { return 1; }
-")
-    (out / "dup2.c").write_text("int twice(void) { return 2; }
-int main(void) { return twice(); }
-")
+    (out / "dup1.c").write_text("int twice(void) { return 1; }\n")
+    (out / "dup2.c").write_text("int twice(void) { return 2; }\nint main(void) { return twice(); }\n")
     rc, so, se = U.host("mcc", ["build/mcc-out/dup1.c", "build/mcc-out/dup2.c", "-o", "build/mcc-out/dup"])
     assert rc == 1 and "multiple definition of 'twice'" in se, se
 

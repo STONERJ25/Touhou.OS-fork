@@ -45,7 +45,8 @@ Options such as *-O2*, *-g*, *-Wall*, *-std=c11*, *-static*, *-pthread*, *-m64* 
 - Calls follow the System V AMD64 convention, so objects from clang link with mcc objects: arguments in registers, structs by value (up to 16 bytes in registers), variadic functions with a real `va_list`.
 - The preprocessor has `#include_next`, `#pragma once`, `__COUNTER__`, `__VA_OPT__`, `, ## __VA_ARGS__` and `__has_include`. The predefined names include `__x86_64__`, `__STDC_VERSION__` (201112L), `__TOUHOU__` and `__MCC__`.
 - `__builtin_va_*`, `__builtin_offsetof`, `__builtin_expect`, `__builtin_bswap*`, `__builtin_clz*`, `__builtin_ctz*`, `__builtin_popcount*`, `__builtin_thread_pointer`, `__atomic_*` and `__sync_*` are built in.
-- `__attribute__`, `asm` labels and `register` are parsed; only `packed`, `aligned` and `weak` have an effect. Inline assembly with a template that is not empty is not supported (an empty one, used as a barrier, is fine).
+- `__attribute__`, `asm` labels and `register` are parsed; only `packed`, `aligned` and `weak` have an effect.
+- Inline assembly uses the GNU syntax: outputs, inputs and clobbers, register, memory and immediate operands, the a/b/c/d/S/D constraints, matching operands and register variables (`register long r10 __asm__("r10")`). mcc has a small AT&T assembler built in for the integer instructions programs really use (mov, the ALU group, shifts, lea, push/pop, xchg, xadd, cmpxchg with lock, bsf/bsr/bswap/popcnt, setcc/cmovcc, jumps to numeric labels, rep movs/stos/lods/scas/cmps, syscall, cpuid, rdtsc, in/out). x87 and SSE instructions are not understood.
 - Not supported: variable-length arrays, complex numbers, `alloca`, computed goto, K&R function definitions.
 
 # FILES

@@ -48,6 +48,7 @@ Everything is one translation unit: `user/bin/mcc/main.c` includes the `.inc` fi
 | `pp.inc` | the preprocessor: Prosser's hide sets, `#include`/`#include_next`, `#if`, predefined macros, `-E` output |
 | `parse.inc`, `expr.inc` | declarations, struct layout, initializers, constant folding, expressions, statements, builtins, atomics |
 | `x86.inc` | output sections, relocations and the instruction encoder (`mov`, `lea`, ALU, SSE, jumps) |
+| `asm.inc` | inline assembly: constraint handling and the small AT&T assembler |
 | `gen.inc` | the code generator: AST to machine code, the System V calling convention, `va_arg`, atomics |
 | `obj.inc` | data emission and the ELF64 relocatable object writer |
 | `ld.inc` | `mld` |
@@ -96,8 +97,7 @@ wide ones, K&R-style calls to undeclared functions. The builtins are listed in `
 `bswap`, `clz/ctz/popcount`, `__atomic_*`, `__sync_*`...
 
 Not supported (a clear error, or documented ignoring): variable-length arrays, `_Complex`, computed `goto`, `alloca`, K&R
-function definitions, general inline assembly (see below), `-S` (there is no assembly text; use `llvm-objdump -d`), shared
-objects. `__attribute__` is parsed; `packed`, `aligned`, `weak` are honoured. Warnings do not exist.
+function definitions, x87/SSE inline assembly, `-S` (there is no assembly text; use `llvm-objdump -d`), shared objects. `__attribute__` is parsed; `packed`, `aligned`, `weak` are honoured. Warnings do not exist.
 
 ## Tests
 
@@ -114,6 +114,8 @@ objects. `__attribute__` is parsed; `packed`, `aligned`, `weak` are honoured. Wa
 | `mcc_selfhost` | QEMU | stage 2 (the compiler built on the host by the gcc-built stage 1), the guest's stage 2 (built by the clang-built `/bin/mcc`) and stage 3 (built by stage 2) are the same file; stage 3 compiles programs correctly |
 | `mcc_kappabox` | QEMU | all of kappabox (about 130 applets, 15,000 lines) compiled by mcc passes the 95-line shell test table; the same build also passes the awk, bc, dc, diff and patch suites |
 | `mld_relinks_clang` | QEMU | programs relinked by `mld` from clang's objects run like the originals |
+| `mcc_libgap` | QEMU | libgap itself (all of it but `math.c`, which uses x87, and `setjmp.asm`), compiled by mcc, links with `utest` compiled by mcc and passes the OS's own user-space suite (libc, fork/exec, signals, mmap, 22 thread sections) |
+| `mcc_driver_options` | host | `-D -U -I -include -E -o -c -s -M`, error exits, undefined and duplicate symbols |
 
 The expected output of the programs is the output of the same sources built by gcc against glibc (the corpus is portable C;
 `tools/mcc_lintest.sh` does that comparison in WSL), so `.out` files are independent of mcc.
@@ -144,10 +146,11 @@ src/mcc/        the source of the compiler
 
 ## Limits and how to resume
 
-- Inline assembly: only an empty template (a barrier) is accepted, anything else is an error at code generation (static inline
-  functions that are never used are never generated, so headers with asm are harmless). libgap's own sources (system call
-  wrappers, `rep movsb`, x87 maths) therefore still come from clang. A reasonable next step is a small AT&T assembler for the
-  instructions libgap uses (`syscall`, `rep movs/stos`, `ud2`, `mov %fs:0`) plus constraint handling.
+- Inline assembly: GNU extended asm works (`asm.inc`): operands in registers, memory or immediates, the `a b c d S D` constraints,
+  matching operands, named operands, register variables, numeric local labels, and a small AT&T assembler for the integer
+  instructions programs use (see `mcc(1)`). x87 and SSE instructions are not understood, so `user/libc/src/math.c` and the
+  calculator's engine still need clang; the rest of libgap is built by mcc in the `mcc_libgap` test. File-scope `asm` is
+  ignored with a warning.
 - Code quality: no register allocation, no constant propagation across statements; programs run perhaps 3 to 5 times slower than
   clang -O2 output. The obvious next steps are keeping locals in callee-saved registers and a peephole pass over the byte buffer.
 - Diagnostics stop at the first error; there are no warnings. The parser recovers from nothing.
