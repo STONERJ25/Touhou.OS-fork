@@ -78,6 +78,8 @@ class Qemu:
         self.esp = Path(esp) if esp else BUILD / "esp"
         self.name = name
         self.video = video
+        self.input_device = None        # QMP id of the keyboard to inject keys into (e.g. a usb-kbd); None = QEMU's default
+        self.mouse_device = None        # same for the mouse
         self.proc = None
         self.serial = ""
         self._pos = 0
@@ -286,11 +288,18 @@ class Qemu:
     def _key_event(self, qcode, down):
         return {"type": "key", "data": {"down": down, "key": {"type": "qcode", "data": qcode}}}
 
+    def _input(self, events, device=None):
+        """input-send-event; `device` is the id of a -device usb-kbd/usb-mouse to target (None: QEMU's default routing)."""
+        if device:
+            self.qmp("input-send-event", device=device, events=events)
+        else:
+            self.qmp("input-send-event", events=events)
+
     def key(self, qcode, shift=False, ctrl=False, alt=False, hold=0.03):
         mods = (["shift"] if shift else []) + (["ctrl"] if ctrl else []) + (["alt"] if alt else [])
-        self.qmp("input-send-event", events=[self._key_event(m, True) for m in mods] + [self._key_event(qcode, True)])
+        self._input([self._key_event(m, True) for m in mods] + [self._key_event(qcode, True)], self.input_device)
         time.sleep(hold)
-        self.qmp("input-send-event", events=[self._key_event(qcode, False)] + [self._key_event(m, False) for m in reversed(mods)])
+        self._input([self._key_event(qcode, False)] + [self._key_event(m, False) for m in reversed(mods)], self.input_device)
         time.sleep(hold)
 
     def type(self, text, delay=0.02):
@@ -303,12 +312,12 @@ class Qemu:
         self._serial_sock.sendall(text.encode("utf-8"))
 
     def mouse_move(self, dx, dy):
-        self.qmp("input-send-event", events=[
+        self._input([
             {"type": "rel", "data": {"axis": "x", "value": int(dx)}},
-            {"type": "rel", "data": {"axis": "y", "value": int(dy)}}])
+            {"type": "rel", "data": {"axis": "y", "value": int(dy)}}], device=self.mouse_device)
 
     def mouse_button(self, button="left", down=True):
-        self.qmp("input-send-event", events=[{"type": "btn", "data": {"down": down, "button": button}}])
+        self._input([{"type": "btn", "data": {"down": down, "button": button}}], device=self.mouse_device)
 
     def mouse_click(self, button="left"):
         self.mouse_button(button, True)
