@@ -163,7 +163,7 @@ typedef struct { const char *keys, *what; } Row;
 static const Row k_left[] = {
     { "FILE", NULL },
     { "Ctrl+N", "New page" }, { "Ctrl+Shift+N", "New window" }, { "Ctrl+O", "Open..." }, { "Ctrl+S", "Save" },
-    { "Ctrl+Shift+S", "Save As..." }, { "Ctrl+W", "Close the page" }, { "Ctrl+Q", "Quit" },
+    { "Ctrl+Shift+S", "Save As..." }, { "F5", "Reload from disk" }, { "Ctrl+W", "Close the page" }, { "Ctrl+Q", "Quit" },
     { "EDIT", NULL },
     { "Ctrl+Z", "Undo" }, { "Ctrl+Y", "Redo (Ctrl+Shift+Z)" }, { "Ctrl+X / C / V", "Cut, copy, paste" },
     { "Ctrl+A", "Select all" }, { "Ctrl+F", "Find" }, { "F3 / Shift+F3", "Next / previous match" },

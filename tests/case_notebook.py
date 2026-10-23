@@ -203,6 +203,25 @@ def notebook_line_endings():
         g.key("s", ctrl=True)
         vm.expect(r"nb: saved /tmp/bad.txt", timeout=10)
         expect_file(g, "/tmp/bad.txt", b"Xcaf\xe9 ok\n", "invalid UTF-8 byte kept")
+        g.key("q", ctrl=True)
+        vm.expect(r"nb: quit", timeout=10)
+
+        g.sh("printf 'a\\r\\nb\\nc\\r\\n' > /tmp/mixed.txt")           # mostly CRLF: the odd line ending is normalised
+        launch(vm, "/tmp/mixed.txt", ready=r"nb: open /tmp/mixed.txt lines=4 bytes=6 eol=CRLF")
+        g.type("X")
+        g.key("s", ctrl=True)
+        vm.expect(r"nb: saved /tmp/mixed.txt", timeout=10)
+        expect_file(g, "/tmp/mixed.txt", b"Xa\r\nb\r\nc\r\n", "mixed line endings become the majority style")
+        g.key("q", ctrl=True)
+        vm.expect(r"nb: quit", timeout=10)
+
+        g.sh("printf 'one\\rtwo\\r' > /tmp/mac.txt")                   # classic Mac line endings
+        launch(vm, "/tmp/mac.txt", ready=r"nb: open /tmp/mac.txt lines=3 bytes=8 eol=CR")
+        g.key("end", ctrl=True)
+        g.type("end")
+        g.key("s", ctrl=True)
+        vm.expect(r"nb: saved /tmp/mac.txt", timeout=10)
+        expect_file(g, "/tmp/mac.txt", b"one\rtwo\rend", "CR line endings preserved")
 
 
 @test
@@ -245,10 +264,10 @@ def notebook_menus_and_recent():
         g.key("ret")
         vm.expect(r"nb: saved /tmp/m2.txt", timeout=10)
         expect_file(g, "/tmp/m2.txt", b"menu text", "Save As from the menu")
-        file_menu(g, 204)                                # Close: nothing unsaved, so no question
+        file_menu(g, 226)                                # Close: nothing unsaved, so no question
         vm.expect(r"nb: msg Page closed", timeout=10)
         vm.expect(r"nb: title Notebook - untitled", timeout=10)
-        file_menu(g, 255)                                # the recent file list: entry 1
+        file_menu(g, 277)                                # the recent file list: entry 1
         vm.expect(r"nb: open /tmp/m2.txt lines=1 bytes=9", timeout=10)
         g.type("!")
         file_menu(g, 94)                                 # New: the page is modified, so it asks
@@ -264,7 +283,7 @@ def notebook_menus_and_recent():
         time.sleep(0.4)
         g.key("esc")
         time.sleep(0.5)
-        file_menu(g, 226)                                # Quit
+        file_menu(g, 248)                                # Quit
         vm.expect(r"nb: quit", timeout=10)
 
 
@@ -305,6 +324,54 @@ def notebook_confirm_dialogs():
             else:
                 vm.expect(r"nb: saved /tmp/b.txt", timeout=10)
                 expect_file(g, "/tmp/b.txt", b"xAAA\n", "Overwrite writes the page")
+        # "Save" in the unsaved-changes question goes through the same check, and quits only after the save really happened
+        g.type("y")
+        g.sh("sleep 2")
+        g.sh("echo ext2 > /tmp/b.txt")
+        for answer in ("esc", "ret"):
+            g.key("f4", alt=True)
+            vm.expect(r"nb: dialog Unsaved changes", timeout=10)
+            time.sleep(0.8)
+            g.key("ret")                                 # Save
+            vm.expect(r"nb: dialog changed-on-disk", timeout=10)
+            time.sleep(0.8)
+            g.key(answer)
+            if answer == "esc":
+                time.sleep(0.8)
+                expect_file(g, "/tmp/b.txt", b"ext2\n", "Cancel keeps what is on disk and the editor stays open")
+            else:
+                vm.expect(r"nb: saved /tmp/b.txt", timeout=10)
+                vm.expect(r"nb: quit", timeout=10)
+                expect_file(g, "/tmp/b.txt", b"xyAAA\n", "Overwrite, then quit")
+
+
+@test
+def notebook_reload():
+    """Reload from Disk (F5) picks up changes made elsewhere and asks before throwing away unsaved text."""
+    with session("t-notebook-reload") as (vm, g):
+        g.sh("echo one > /tmp/r.txt")
+        launch(vm, "/tmp/r.txt")
+        g.sh("echo two-lines > /tmp/r.txt")
+        g.sh("echo second >> /tmp/r.txt")
+        g.key("f5")
+        vm.expect(r"nb: open /tmp/r.txt lines=3 bytes=17", timeout=10)
+        g.type("X")
+        vm.expect(r"nb: title Notebook - \*r.txt", timeout=10)
+        g.key("f5")
+        vm.expect(r"nb: dialog reload", timeout=10)
+        time.sleep(0.8)
+        g.key("esc")                                     # Cancel: the page keeps its text
+        time.sleep(0.8)
+        g.key("s", ctrl=True)
+        vm.expect(r"nb: saved /tmp/r.txt", timeout=10)
+        expect_file(g, "/tmp/r.txt", b"Xtwo-lines\nsecond\n", "Cancel kept the typed text")
+        g.type("Y")
+        g.key("f5")
+        vm.expect(r"nb: dialog reload", timeout=10)
+        time.sleep(0.8)
+        g.key("ret")                                     # Reload
+        vm.expect(r"nb: open /tmp/r.txt lines=3 bytes=18", timeout=10)
+        vm.expect(r"nb: title Notebook - r.txt", timeout=10)
 
 
 @test
@@ -506,8 +573,15 @@ def notebook_context_menu():
     with session("t-notebook-ctx") as (vm, g):
         make_demo(g)
         launch(vm, "/tmp/demo.c")
-        g.right_click(44 + 200, 56 + 100)
-        vm.expect(r"nb: context menu", timeout=10)
+        for attempt in range(2):                         # a loaded machine can drop mouse packets: re-home the pointer once
+            g.right_click(44 + 200, 56 + 100)
+            try:
+                vm.expect(r"nb: context menu", timeout=8)
+                break
+            except TimeoutError:
+                if attempt:
+                    raise
+                g.home()
         time.sleep(0.5)
         g.shot("ctx")
         assert g.pixel_near(44 + 230, 56 + 106, (0xEC, 0xE6, 0xD6), tol=10), "no menu on screen"
@@ -581,6 +655,8 @@ def notebook_wrap_and_mouse():
         g.click(44 + 300, 56 + 36, count=3)              # triple click: the whole first line (one line = 255 chars + newline)
         vm.expect(r"nb: pos \d+ \d+ mod=0 lines=3 sel=\d{3}", timeout=10)
         g.shot("wrap")
+        g.click(44 + 25, 56 + 28 + 16 * 4 + 8)           # the number of line 2 in the gutter (line 1 takes four rows)
+        vm.expect(r"nb: pos 3 1 mod=0 lines=3 sel=12", timeout=10)      # "second line" and its line break
 
 
 @test
