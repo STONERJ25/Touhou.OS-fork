@@ -79,7 +79,8 @@ struct Mount {
     VNode *covered;         /* directory this is mounted on (referenced) */
     void *priv;
     char source[64];
-    u32 flags;
+    char opts[96];          /* comma-separated mount options, handed to the filesystem's mount() */
+    u32 flags;              /* MNT_* (abi.h) */
     u32 id;
 };
 
@@ -87,7 +88,12 @@ struct FsType {
     const char *name;
     int  (*mount)(const char *source, u32 flags, Mount *m);         /* fills m->root, m->priv */
     void (*unmount)(Mount *m);
+    int  (*statfs)(Mount *m, struct gstatfs *out);                  /* optional: fills f_type, f_bsize and the block/file counts */
+    int  (*sync)(Mount *m);                                         /* optional: write everything back to the device */
+    int  (*busy)(Mount *m);                                         /* optional: non-zero when the filesystem cannot be unmounted */
+    u32  flags;                                                     /* FS_* */
 };
+#define FS_FIXED_OWNER 1    /* uid/gid/mode come from the filesystem: the VFS must not stamp the creator on new nodes */
 
 typedef struct FileOps {
     ssize_t (*read)(File *f, void *buf, size_t n);
@@ -122,7 +128,11 @@ void   file_put(File *f);
 void   vfs_init(void);
 int    vfs_register_fs(const FsType *t);
 int    vfs_mount(const char *fstype, const char *source, const char *target, u32 flags);
+int    vfs_mount_opts(const char *fstype, const char *source, const char *target, u32 flags, const char *opts);
 int    vfs_umount(const char *target);
+int    vfs_sync_all(void);                                              /* flush every writable filesystem (sync(2), shutdown) */
+int    vfs_statfs(const char *path, VNode *cwd, const Cred *c, struct gstatfs *out);
+u32    vfs_mount_flags(int idx);                                        /* flags of the idx-th mount (same order as vfs_mount_list) */
 VNode *vfs_root(void);
 
 int    vfs_lookup(const char *path, VNode *cwd, const Cred *c, int flags, VNode **out);

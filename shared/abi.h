@@ -127,6 +127,27 @@ struct gstat {
     int64_t  st_ctime;
 };
 
+/* ---- mounts and filesystem statistics (SYS_mount / SYS_statfs) ---- */
+#define MNT_RDONLY  0x00000001          /* mount flags: read-only */
+#define MNT_OPTS    0x80000000          /* mount(): r8 points to a comma-separated option string ("uid=1000,fmask=0133") */
+
+/* statfs(path, &st): space and identity of the filesystem that holds `path`. Block counts are in units of f_bsize. */
+struct gstatfs {
+    uint64_t f_type;                    /* Linux-compatible magic (tmpfs 0x01021994, FAT 0x4d44, proc 0x9fa0), 0 = unknown */
+    uint64_t f_bsize;                   /* block size (the cluster size on FAT) */
+    uint64_t f_blocks;                  /* total blocks */
+    uint64_t f_bfree;                   /* free blocks */
+    uint64_t f_bavail;                  /* free blocks available to ordinary users */
+    uint64_t f_files;                   /* total file nodes, 0 = not tracked */
+    uint64_t f_ffree;                   /* free file nodes */
+    uint64_t f_namelen;                 /* longest file name */
+    uint64_t f_flags;                   /* MNT_* flags of the mount */
+    uint64_t f_fsid;                    /* mount id (st_dev of its files) */
+    char f_fstypename[16];              /* "tmpfs", "fat32", "fat16", "procfs", ... */
+    char f_mntfromname[64];             /* what was mounted ("/dev/vda2", "gensokyo") */
+    char f_mntonname[64];               /* where it is mounted */
+};
+
 #define GNAME_MAX 255
 struct gdirent {
     uint64_t d_ino;
