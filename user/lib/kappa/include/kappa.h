@@ -294,6 +294,10 @@ void k_focus_textfield(KUI *ui, const char *buf);                 /* give the fi
 /* Modal message box (blocking, own small window): returns the button index chosen (0-based) or -1 if closed. */
 int   k_messagebox(FairyDisplay *d, const char *title, const char *message, KIcon icon, const char *const *buttons, int nbuttons);
 
+/* ---------------------------------------------------------------- scenery */
+/* The default wallpaper (moon, bamboo, torii) rendered into any pixel buffer; used by the desktop and the login screen. */
+void k_scenery_night(uint32_t *px, int w, int h, int stride);
+
 /* ---------------------------------------------------------------- misc helpers */
 uint64_t k_now_ms(void);
 const char *k_basename(const char *path);

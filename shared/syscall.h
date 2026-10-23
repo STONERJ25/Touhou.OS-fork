@@ -15,6 +15,8 @@
 #define SYS_socketpair    76      /* (type, int sv[2]) */
 #define SYS_getgroups     77      /* (n, gid_t list[]) -> count; n == 0 only counts */
 #define SYS_setgroups     78      /* (n, gid_t list[]); root only */
+#define SYS_geteuid       79
+#define SYS_getegid       80      /* getuid/getgid return the real ids, these the effective ones */
 
 #define SYS_exit          0
 #define SYS_read          1

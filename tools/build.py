@@ -419,6 +419,11 @@ def build_user(nproc):
 
 # ------------------------------------------------------------------ initrd / esp
 
+# Programs that run with their owner's authority (setuid root) and files that only root may read.
+SPECIAL_MODES = {"bin/eiki": 0o4755, "bin/su": 0o4755, "bin/passwd": 0o4755, "Hakurei/etc/shadow": 0o600}
+EXTRA_LINKS = [("bin/sudo", "eiki")]
+
+
 def build_initrd(user_bins):
     print("[initrd]")
     out = BUILD / "initrd.img"
@@ -437,6 +442,7 @@ def build_initrd(user_bins):
                 items.append((p.relative_to(root).as_posix(), p))
     have = {a for a, _ in items}
     links = [(f"bin/{n}", "kappabox") for n in KAPPABOX_APPLETS if f"bin/{n}" not in have]
+    links += [(a, t) for a, t in EXTRA_LINKS if a not in have]
     stamp = out.with_name(out.name + ".cmd")
     sig = "\n".join(f"{a}:{p.stat().st_mtime_ns}:{p.stat().st_size}" for a, p in items) + "\n" + "\n".join(f"{a}>{t}" for a, t in links)
     if out.exists() and stamp.exists() and stamp.read_text() == sig:
@@ -448,7 +454,7 @@ def build_initrd(user_bins):
             ti.uid = ti.gid = 0
             ti.uname = ti.gname = ""
             ti.mtime = int(p.stat().st_mtime)
-            ti.mode = 0o755 if arc.startswith(("bin/", "sbin/")) else 0o644
+            ti.mode = SPECIAL_MODES.get(arc, 0o755 if arc.startswith(("bin/", "sbin/")) else 0o644)
             with open(p, "rb") as f:
                 tf.addfile(ti, f)
         for arc, target in links:

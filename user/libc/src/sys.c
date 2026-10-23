@@ -169,9 +169,9 @@ pid_t setsid(void) { return (pid_t)__ret(__sc0(SYS_setsid)); }
 int tcsetpgrp(int fd, pid_t pg) { return ioctl(fd, TIOCSPGRP, &pg); }
 pid_t tcgetpgrp(int fd) { int pg = 0; return ioctl(fd, TIOCGPGRP, &pg) < 0 ? -1 : pg; }
 uid_t getuid(void) { return (uid_t)__sc0(SYS_getuid); }
-uid_t geteuid(void) { return getuid(); }
+uid_t geteuid(void) { return (uid_t)__sc0(SYS_geteuid); }
 gid_t getgid(void) { return (gid_t)__sc0(SYS_getgid); }
-gid_t getegid(void) { return getgid(); }
+gid_t getegid(void) { return (gid_t)__sc0(SYS_getegid); }
 int setuid(uid_t u) { return (int)__ret(__sc1(SYS_setuid, (long)u)); }
 int setgid(gid_t g) { return (int)__ret(__sc1(SYS_setgid, (long)g)); }
 int execve(const char *p, char *const a[], char *const e[]) { return (int)__ret(__sc3(SYS_execve, (long)p, (long)a, (long)e)); }

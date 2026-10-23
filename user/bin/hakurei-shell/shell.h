@@ -36,8 +36,8 @@ typedef struct Shell {
 
 extern Shell G;
 
-/* wallpaper.c */
-void wallpaper_render(uint32_t *px, int w, int h, int stride);
+/* the wallpaper itself lives in libkappa (scenery.c) so the login screen can share it */
+#define wallpaper_render k_scenery_night
 
 /* panel.c */
 #define PANEL_H 36

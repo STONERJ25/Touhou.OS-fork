@@ -47,7 +47,8 @@ typedef struct Process {
     char name[32];
     char cwd_path[256];
     VNode *cwd;
-    Cred cred;
+    Cred cred;                      /* effective user and group (what permission checks use) */
+    u32 ruid, rgid;                 /* real user and group: who started the program (differs after a setuid exec) */
     u32 umask;
     ProcState state;
     int exit_status;                /* wait()-style status word */

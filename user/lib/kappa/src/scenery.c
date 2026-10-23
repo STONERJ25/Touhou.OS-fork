@@ -1,5 +1,5 @@
 /* The default wallpaper: a procedural Gensokyo night. Moon, stars, mountains, a torii on a hill and bamboo in the foreground. */
-#include "shell.h"
+#include <kappa.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -46,7 +46,7 @@ static void bamboo(KCanvas *cv, int x, int base, int height, int width, uint32_t
     kc_fill(cv, kr(x, base - height, width, 3), joint);
 }
 
-void wallpaper_render(uint32_t *px, int w, int h, int stride) {
+void k_scenery_night(uint32_t *px, int w, int h, int stride) {
     KCanvas cv;
     kc_init(&cv, px, w, h, stride);
     int horizon = h * 62 / 100;

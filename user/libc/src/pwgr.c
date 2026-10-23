@@ -6,7 +6,9 @@
 #include <string.h>
 #include "syscall_priv.h"
 
-static char g_line[512];
+/* separate buffers: a group lookup must not clobber a passwd result still in use (and vice versa) */
+static char g_pwline[512];
+static char g_grline[512];
 static struct passwd g_pw;
 static struct group g_gr;
 static char *g_members[33];
@@ -49,9 +51,9 @@ static struct group *parse_gr(char *line) {
 
 struct passwd *getpwent(void) {
     if (!g_pwf && !(g_pwf = fopen("/etc/passwd", "r"))) return NULL;
-    while (fgets(g_line, sizeof g_line, g_pwf)) {
-        if (g_line[0] == '#' || g_line[0] == '\n') continue;
-        struct passwd *p = parse_pw(g_line);
+    while (fgets(g_pwline, sizeof g_pwline, g_pwf)) {
+        if (g_pwline[0] == '#' || g_pwline[0] == '\n') continue;
+        struct passwd *p = parse_pw(g_pwline);
         if (p) return p;
     }
     return NULL;
@@ -61,17 +63,19 @@ void setpwent(void) { if (g_pwf) rewind(g_pwf); }
 void endpwent(void) { if (g_pwf) { fclose(g_pwf); g_pwf = NULL; } }
 
 struct passwd *getpwnam(const char *name) {
+    char want[128];
+    snprintf(want, sizeof want, "%s", name);        /* name may point into the previous result */
     FILE *f = fopen("/etc/passwd", "r");
     if (!f) return NULL;
     struct passwd *r = NULL;
-    while (fgets(g_line, sizeof g_line, f)) {
-        if (g_line[0] == '#' || g_line[0] == '\n') continue;
-        char copy[sizeof g_line];
-        strcpy(copy, g_line);
+    while (fgets(g_pwline, sizeof g_pwline, f)) {
+        if (g_pwline[0] == '#' || g_pwline[0] == '\n') continue;
+        char copy[sizeof g_pwline];
+        strcpy(copy, g_pwline);
         char *colon = strchr(copy, ':');
         if (!colon) continue;
         *colon = 0;
-        if (!strcmp(copy, name)) { r = parse_pw(g_line); break; }
+        if (!strcmp(copy, want)) { r = parse_pw(g_pwline); break; }
     }
     fclose(f);
     return r;
@@ -81,30 +85,32 @@ struct passwd *getpwuid(uid_t uid) {
     FILE *f = fopen("/etc/passwd", "r");
     if (!f) return NULL;
     struct passwd *r = NULL;
-    while (fgets(g_line, sizeof g_line, f)) {
-        if (g_line[0] == '#' || g_line[0] == '\n') continue;
-        char copy[sizeof g_line];
-        strcpy(copy, g_line);
+    while (fgets(g_pwline, sizeof g_pwline, f)) {
+        if (g_pwline[0] == '#' || g_pwline[0] == '\n') continue;
+        char copy[sizeof g_pwline];
+        strcpy(copy, g_pwline);
         char *fld[4];
         if (split(copy, fld, 4) < 3) continue;
-        if ((uid_t)atoi(fld[2]) == uid) { r = parse_pw(g_line); break; }
+        if ((uid_t)atoi(fld[2]) == uid) { r = parse_pw(g_pwline); break; }
     }
     fclose(f);
     return r;
 }
 
 struct group *getgrnam(const char *name) {
+    char want[128];
+    snprintf(want, sizeof want, "%s", name);
     FILE *f = fopen("/etc/group", "r");
     if (!f) return NULL;
     struct group *r = NULL;
-    while (fgets(g_line, sizeof g_line, f)) {
-        if (g_line[0] == '#' || g_line[0] == '\n') continue;
-        char copy[sizeof g_line];
-        strcpy(copy, g_line);
+    while (fgets(g_grline, sizeof g_grline, f)) {
+        if (g_grline[0] == '#' || g_grline[0] == '\n') continue;
+        char copy[sizeof g_grline];
+        strcpy(copy, g_grline);
         char *colon = strchr(copy, ':');
         if (!colon) continue;
         *colon = 0;
-        if (!strcmp(copy, name)) { r = parse_gr(g_line); break; }
+        if (!strcmp(copy, want)) { r = parse_gr(g_grline); break; }
     }
     fclose(f);
     return r;
@@ -114,13 +120,13 @@ struct group *getgrgid(gid_t gid) {
     FILE *f = fopen("/etc/group", "r");
     if (!f) return NULL;
     struct group *r = NULL;
-    while (fgets(g_line, sizeof g_line, f)) {
-        if (g_line[0] == '#' || g_line[0] == '\n') continue;
-        char copy[sizeof g_line];
-        strcpy(copy, g_line);
+    while (fgets(g_grline, sizeof g_grline, f)) {
+        if (g_grline[0] == '#' || g_grline[0] == '\n') continue;
+        char copy[sizeof g_grline];
+        strcpy(copy, g_grline);
         char *fld[4];
         if (split(copy, fld, 4) < 3) continue;
-        if ((gid_t)atoi(fld[2]) == gid) { r = parse_gr(g_line); break; }
+        if ((gid_t)atoi(fld[2]) == gid) { r = parse_gr(g_grline); break; }
     }
     fclose(f);
     return r;

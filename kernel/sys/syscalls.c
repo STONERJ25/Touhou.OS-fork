@@ -41,19 +41,24 @@ static long sys_fork(TrapFrame *tf) { return process_fork(tf); }
 
 static long sys_getpid(TrapFrame *tf) { (void)tf; return me()->pid; }
 static long sys_getppid(TrapFrame *tf) { (void)tf; return me()->ppid; }
-static long sys_getuid(TrapFrame *tf) { (void)tf; return me()->cred.uid; }
-static long sys_getgid(TrapFrame *tf) { (void)tf; return me()->cred.gid; }
+static long sys_getuid(TrapFrame *tf) { (void)tf; return me()->ruid; }
+static long sys_getgid(TrapFrame *tf) { (void)tf; return me()->rgid; }
 
+/* root (effective) sets real and effective ids at once; anyone else may only re-assert one of their own ids */
 static long sys_setuid(TrapFrame *tf) {
-    if (me()->cred.uid != 0) return -EPERM;
-    me()->cred.uid = (u32)A0(tf);
-    return 0;
+    Process *p = me();
+    u32 u = (u32)A0(tf);
+    if (p->cred.uid == 0) { p->cred.uid = p->ruid = u; return 0; }
+    if (u == p->ruid || u == p->cred.uid) { p->cred.uid = u; return 0; }
+    return -EPERM;
 }
 
 static long sys_setgid(TrapFrame *tf) {
-    if (me()->cred.uid != 0) return -EPERM;
-    me()->cred.gid = (u32)A0(tf);
-    return 0;
+    Process *p = me();
+    u32 g = (u32)A0(tf);
+    if (p->cred.uid == 0) { p->cred.gid = p->rgid = g; return 0; }
+    if (g == p->rgid || g == p->cred.gid) { p->cred.gid = g; return 0; }
+    return -EPERM;
 }
 
 static long sys_umask(TrapFrame *tf) {

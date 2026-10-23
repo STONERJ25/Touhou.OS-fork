@@ -24,7 +24,12 @@ static long sys_setgroups(TrapFrame *tf) {
     return 0;
 }
 
+static long sys_geteuid(TrapFrame *tf) { (void)tf; return current->proc->cred.uid; }
+static long sys_getegid(TrapFrame *tf) { (void)tf; return current->proc->cred.gid; }
+
 static void creds_init(void) {
+    syscall_register(SYS_geteuid, sys_geteuid);
+    syscall_register(SYS_getegid, sys_getegid);
     syscall_register(SYS_getgroups, sys_getgroups);
     syscall_register(SYS_setgroups, sys_setgroups);
 }

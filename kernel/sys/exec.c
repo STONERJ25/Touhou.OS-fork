@@ -161,12 +161,15 @@ int process_exec(Process *p, const char *path, char *const argv[], char *const e
     if (rc) { file_put(f); return rc; }
     u64 entry, sp, argv_u, envp_u;
     int argc;
+    u32 fmode = f->vn->mode, fuid = f->vn->uid, fgid = f->vn->gid;      /* for setuid/setgid programs */
     rc = load_elf(f, &nas, &entry);
     if (!rc) rc = build_stack(&nas, argv, envp, &sp, &argc, &argv_u, &envp_u);
     file_put(f);
     if (rc) { uvm_destroy(&nas); return rc; }
 
     /* Point of no return: swap address spaces. */
+    if (fmode & S_ISUID) p->cred.uid = fuid;                          /* the effective id becomes the file's owner; the real one stays */
+    if (fmode & S_ISGID) p->cred.gid = fgid;
     AddrSpace old = p->as;
     p->as = nas;
     current->pml4 = nas.pml4;
