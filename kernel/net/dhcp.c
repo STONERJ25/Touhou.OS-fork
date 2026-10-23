@@ -27,6 +27,7 @@ typedef struct Dhcp {
     u64  next_send, t1, expire, started;
     int  tries;
     bool resolv_dirty;
+    bool silence_logged;                /* "nobody answers" was said once; do not repeat it every minute */
 } Dhcp;
 
 static u32 g_dns[3];
@@ -98,6 +99,7 @@ static void dhcp_bind(NetDev *d, Dhcp *c) {
     d->flags |= NDF_DHCP;
     if (c->router) route_add(0, 0, c->router, d, 0);
     c->state = D_BOUND;
+    c->silence_logged = false;
     u64 now = net_now();
     u32 lease = c->lease_s ? c->lease_s : 3600;
     c->t1 = now + (u64)lease * 500;
@@ -187,6 +189,10 @@ void dhcp_tick(u64 now) {
         case D_REQUESTING:
             if (now < c->next_send) break;
             if (c->tries >= 6) {                                      /* nobody answers: try again in a minute */
+                if (!c->silence_logged) {
+                    c->silence_logged = true;
+                    klog("Yukari", "%s: no DHCP server answers (yet); the address stays unset and DHCP keeps trying in the background", d->name);
+                }
                 if (c->state == D_REQUESTING) c->state = D_SELECTING;
                 c->tries = 0;
                 c->next_send = now + 60000;

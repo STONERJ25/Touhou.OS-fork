@@ -163,6 +163,21 @@ static int tmp_symlink(VNode *dir, const char *name, const char *target, VNode *
     return 0;
 }
 
+/* A hard link: one more directory entry for the same node. Every entry owns one reference to it, nlink counts the entries. */
+static int tmp_link(VNode *dir, const char *name, VNode *node) {
+    TmpFs *fs = fs_of(dir);
+    mutex_lock(&fs->lock);
+    int rc = check_new_name(dir, name);
+    if (rc) { mutex_unlock(&fs->lock); return rc; }
+    if (S_ISDIR(node->mode)) { mutex_unlock(&fs->lock); return -EPERM; }
+    if (node->nlink >= 65000) { mutex_unlock(&fs->lock); return -EMLINK; }
+    vnode_get(node);
+    node->nlink++;
+    add_dirent(dir, name, node);
+    mutex_unlock(&fs->lock);
+    return 0;
+}
+
 static int tmp_unlink(VNode *dir, const char *name) {
     TmpFs *fs = fs_of(dir);
     mutex_lock(&fs->lock);
@@ -403,7 +418,7 @@ static void tmp_release(VNode *v) {
 static const VNodeOps tmp_ops = {
     .read = tmp_read, .write = tmp_write, .truncate = tmp_truncate, .mmap_phys = tmp_mmap_phys,
     .lookup = tmp_lookup, .create = tmp_create, .mkdir = tmp_mkdir, .symlink = tmp_symlink,
-    .unlink = tmp_unlink, .rmdir = tmp_rmdir, .rename = tmp_rename, .readdir = tmp_readdir,
+    .link = tmp_link, .unlink = tmp_unlink, .rmdir = tmp_rmdir, .rename = tmp_rename, .readdir = tmp_readdir,
     .readlink = tmp_readlink, .release = tmp_release,
 };
 

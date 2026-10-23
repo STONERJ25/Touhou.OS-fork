@@ -65,6 +65,8 @@ int getsockopt(int fd, int level, int name, void *val, socklen_t *len) {
 
 int getpeercred(int fd, struct gpeercred *cred) { return ioctl(fd, SOCK_PEERCRED, cred); }
 
+int gap_netctl(unsigned long cmd, void *arg) { return (int)__ret(__sc2(SYS_netctl, (long)cmd, (long)arg)); }
+
 /* select() on top of poll(): descriptors are limited to FD_SETSIZE (64), like the kernel's descriptor table. */
 int select(int nfds, fd_set *rd, fd_set *wr, fd_set *ex, struct timeval *tv) {
     struct gpollfd p[FD_SETSIZE];

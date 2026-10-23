@@ -1,0 +1,23 @@
+.page proc 5 the /proc filesystem: processes and the system
+
+# DESCRIPTION
+`/proc` is a read-only view of the kernel. Its files are made up when they are read. There is one directory per process, named by its process id, and `/proc/self` is the process that looks. Besides the numbers there are system-wide files (`meminfo`, `uptime`, `cpuinfo`, `mounts`, `tasks`, `loadavg`, `pci`, `partitions`, `interrupts`, `version`, `cmdline`) and, depending on the hardware, `usb`, `net/...` and others.
+
+# PROCESS FILES
+@ `/proc/PID/stat`
+    One line: pid, parent, process group, user, group, state, virtual KiB, resident KiB, CPU ticks, start time (ms after boot), name. The state is R (running), S (sleeping), T (stopped, see jobcontrol(7)) or Z (finished, not yet collected by its parent).
+@ `/proc/PID/status`
+    The same and more, as `Name:`, `State:`, `Pid:`, `PPid:`, `PGid:`, `Uid:`, `Gid:`, `VmSize:`, `VmRSS:`, `CpuTicks:`, `StartMs:`, `Cwd:`, `Threads:` and `Nice:` lines.
+@ `/proc/PID/cmdline`
+    The command line the program was started with.
+@ `/proc/PID/threads`
+    One line per thread: thread id (the first thread's id is the process id), state, CPU ticks, name.
+@ `/proc/PID/cwd`
+    A symbolic link to the working directory of the process.
+@ `/proc/PID/exe`
+    A symbolic link to the program the process is running, by the path it was started with.
+@ `/proc/PID/fd/`
+    A directory with one symbolic link per open file descriptor, named by the descriptor number. The target is the path the file was opened by, or `pipe:[N]`, `socket:[N]` or `anon_inode:[...]` for descriptors that have no path (both ends of a pipe show the same number). Opening the link opens the file again. Only the owner of the process and root may look in this directory.
+
+# SEE ALSO
+ps(1), jobcontrol(7), mount(8)

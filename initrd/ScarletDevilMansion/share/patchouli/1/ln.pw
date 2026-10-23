@@ -1,11 +1,17 @@
-.page ln 1 make symbolic links
+.page ln 1 make hard links and symbolic links
 
 # SYNOPSIS
+*ln* [*-f*] _TARGET_ _LINKNAME_
+*ln* [*-f*] _TARGET_ _DIRECTORY_
 *ln* *-s* [*-f*] _TARGET_ _LINKNAME_
 *ln* *-s* [*-f*] _TARGET_ _DIRECTORY_
 
 # DESCRIPTION
-`ln` creates a symbolic link called _LINKNAME_ that points at _TARGET_. If the second operand is an existing directory the link is created inside it, named after the target. The filesystem of this system has no hard links, so `-s` is required and `ln` without it explains why it cannot comply.
+`ln` gives a file a second name. Without `-s` it makes a hard link: _LINKNAME_ becomes another directory entry for the very same file, so a change made through either name shows through the other, and the file lives on until its last name is removed (`ls -l` and `stat` show the number of names). With `-s` it makes a symbolic link instead: a small file that holds the path _TARGET_.
+
+If the second operand is an existing directory the link is created inside it, named after the target.
+
+Hard links work inside one filesystem only (the root filesystem and `/tmp` are different ones), only for files and symbolic links and not for directories, and only on filesystems that support them: the in-memory ones do, FAT volumes do not. A symbolic link has none of these limits.
 
 # OPTIONS
 @ *-s*
@@ -14,11 +20,12 @@
     Remove an existing file called _LINKNAME_ first.
 
 # EXAMPLES
+    ln /tmp/report /tmp/report.bak
     ln -s /Hakurei/etc /tmp/etc-link
     ln -sf /bin/ls /tmp/dir
 
 # EXIT STATUS
-0, or 1 on failure.
+0, or 1 on failure (the message names the reason: another filesystem, a directory, an existing name).
 
 # SEE ALSO
 readlink(1), ls(1), realpath(1)

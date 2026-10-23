@@ -195,6 +195,112 @@ static void t_bulk(void) {
     close(l);
 }
 
+/* One process sends `total` pseudo-random bytes and a checksum; this one sleeps for `delay_ms` first (so the window fills up and
+ * closes), then reads everything. Returns 0 when it all arrived intact. */
+static int transfer(size_t total, unsigned delay_ms, long *elapsed) {
+    unsigned port;
+    int l = listener(5, &port);
+    if (l < 0) return 1;
+    pid_t pid = fork();
+    if (pid == 0) {
+        int c = dial(port);
+        if (c < 0) _exit(2);
+        static unsigned char chunk[8192];
+        unsigned seed = 99, sum = 0;
+        size_t sent = 0;
+        while (sent < total) {
+            size_t n = total - sent < sizeof chunk ? total - sent : sizeof chunk;
+            for (size_t i = 0; i < n; i++) { chunk[i] = (unsigned char)lcg(&seed); sum = sum * 31 + chunk[i]; }
+            if (write_full(c, chunk, n) < 0) _exit(3);
+            sent += n;
+        }
+        write_full(c, &sum, sizeof sum);
+        close(c);
+        _exit(0);
+    }
+    int a = accept(l, NULL, NULL);
+    if (a < 0) return 2;
+    usleep(delay_ms * 1000);
+    static unsigned char buf[8192];
+    unsigned sum = 0, theirs = 0;
+    size_t got = 0;
+    long t0 = gap_time_ms();
+    while (got < total) {
+        ssize_t r = read(a, buf, total - got < sizeof buf ? total - got : sizeof buf);
+        if (r <= 0) return 3;
+        for (ssize_t i = 0; i < r; i++) sum = sum * 31 + buf[i];
+        got += (size_t)r;
+    }
+    if (read_full(a, &theirs, sizeof theirs) < 0) return 4;
+    if (elapsed) *elapsed = gap_time_ms() - t0;
+    int st = 0;
+    waitpid(pid, &st, 0);
+    close(a);
+    close(l);
+    return (WIFEXITED(st) && WEXITSTATUS(st) == 0 && sum == theirs) ? 0 : 5;
+}
+
+static void t_stall(void) {
+    long ms = 0;
+    int r = transfer(700 * 1024, 1500, &ms);                    /* 700 KB > both 128 KiB rings: the window closes while we sleep */
+    CHECK(r == 0);
+    printf("  stall: the window closed and reopened, 700 KB intact in %ld ms\n", ms);
+}
+
+static void t_backlog(void) {
+    unsigned port;
+    int l = listener(2, &port);
+    CHECK(l >= 0);
+    int cs[5];
+    struct sockaddr_in a = lo_addr(port);
+    for (int i = 0; i < 5; i++) {
+        cs[i] = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+        int r = connect(cs[i], (struct sockaddr *)&a, sizeof a);
+        CHECK(r == 0 || errno == EINPROGRESS);
+    }
+    usleep(200000);
+    int up = 0;
+    for (int i = 0; i < 5; i++) {
+        struct pollfd p = { cs[i], POLLOUT, 0 };
+        if (poll(&p, 1, 0) == 1 && (p.revents & POLLOUT)) up++;
+    }
+    CHECK(up >= 1 && up <= 2);                                  /* the backlog of 2 holds back the other SYNs */
+    int accepted = 0;
+    long t0 = gap_time_ms();
+    while (accepted < 5 && gap_time_ms() - t0 < 90000) {        /* every accept() makes room for a retransmitted SYN */
+        struct pollfd p = { l, POLLIN, 0 };
+        if (poll(&p, 1, 1000) == 1) {
+            int x = accept(l, NULL, NULL);
+            if (x >= 0) { accepted++; close(x); }
+        }
+    }
+    CHECK(accepted == 5);
+    for (int i = 0; i < 5; i++) close(cs[i]);
+    close(l);
+}
+
+static void t_bcast(void) {
+    int rx = socket(AF_INET, SOCK_DGRAM, 0), tx = socket(AF_INET, SOCK_DGRAM, 0);
+    CHECK(rx >= 0 && tx >= 0);
+    struct sockaddr_in any = lo_addr(0);
+    any.sin_addr.s_addr = htonl(INADDR_ANY);
+    CHECK(bind(rx, (struct sockaddr *)&any, sizeof any) == 0);
+    socklen_t len = sizeof any;
+    CHECK(getsockname(rx, (struct sockaddr *)&any, &len) == 0);
+    struct sockaddr_in dst = any;
+    dst.sin_addr.s_addr = htonl(INADDR_BROADCAST);
+    CHECK(sendto(tx, "x", 1, 0, (struct sockaddr *)&dst, sizeof dst) < 0 && errno == EACCES);       /* SO_BROADCAST is off */
+    int one = 1;
+    CHECK(setsockopt(tx, SOL_SOCKET, SO_BROADCAST, &one, sizeof one) == 0);
+    CHECK(sendto(tx, "bc", 2, 0, (struct sockaddr *)&dst, sizeof dst) == 2);
+    char buf[8];
+    struct pollfd p = { rx, POLLIN, 0 };
+    CHECK(poll(&p, 1, 5000) == 1);
+    CHECK(recv(rx, buf, sizeof buf, 0) == 2 && !memcmp(buf, "bc", 2));
+    close(rx);
+    close(tx);
+}
+
 static void t_refused(void) {
     unsigned port;
     int l = listener(1, &port);
@@ -500,6 +606,7 @@ int main(int argc, char **argv) {
     static const Check checks[] = {
         { "udp", t_udp }, { "tcp", t_tcp }, { "bulk", t_bulk }, { "refused", t_refused }, { "nonblock", t_nonblock },
         { "close", t_close }, { "half", t_half }, { "many", t_many }, { "opts", t_opts }, { "ping", t_ping },
+        { "backlog", t_backlog }, { "bcast", t_bcast }, { "stall", t_stall },
     };
     static const Check only_on_request[] = { { "loss", t_loss }, { "fuzz", t_fuzz } };       /* both need root and say so on /proc/net */
     const char *want = argc > 1 ? argv[1] : NULL;

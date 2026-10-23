@@ -228,12 +228,12 @@ APPLET(ln) {
     for (; i < argc && argv[i][0] == '-' && argv[i][1]; i++)
         for (const char *o = argv[i] + 1; *o; o++) { if (*o == 's') sym = 1; else if (*o == 'f') force = 1; }
     if (argc - i < 2) { kb_error("missing file operand"); return 1; }
-    if (!sym) { kb_error("hard links are not supported by this filesystem (use -s)"); return 1; }
-    const char *target = argv[i], *link = argv[i + 1];
+    const char *target = argv[i], *name = argv[i + 1];
     char *l2 = NULL;
-    if (is_dir(link)) { char tmp[PATH_MAX]; strlcpy(tmp, target, sizeof tmp); l2 = kb_join(link, basename(tmp)); link = l2; }
-    if (force) unlink(link);
-    if (symlink(target, link) < 0) { kb_error("failed to create symbolic link '%s': %s", link, strerror(errno)); free(l2); return 1; }
+    if (is_dir(name)) { char tmp[PATH_MAX]; strlcpy(tmp, target, sizeof tmp); l2 = kb_join(name, basename(tmp)); name = l2; }
+    if (force) unlink(name);
+    int rc = sym ? symlink(target, name) : link(target, name);          /* hard links work on tmpfs (/tmp, /); other filesystems refuse */
+    if (rc < 0) { kb_error("failed to create %s link '%s': %s", sym ? "symbolic" : "hard", name, strerror(errno)); free(l2); return 1; }
     free(l2);
     return 0;
 }

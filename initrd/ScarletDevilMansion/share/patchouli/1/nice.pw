@@ -1,0 +1,25 @@
+.page nice 1 run a command with a different scheduling priority
+
+# SYNOPSIS
+*nice* [*-n* _INCREMENT_ | *-*_INCREMENT_ | *--*_INCREMENT_] [_COMMAND_ [_ARGUMENT_...]]
+
+# DESCRIPTION
+`nice` adds _INCREMENT_ (10 if none is given) to its own nice value and then runs _COMMAND_, which inherits it. A nice value runs from -20 (greedy) to 19 (polite) and starts at 0 for the programs a user starts. The kernel gives every thread a time slice that shrinks as the nice value grows, so a polite program that is busy gets a smaller share of the processor when others want it too, and none of it when the machine is otherwise idle. Without a command `nice` prints its current nice value.
+
+Only root may lower the nice value (a negative increment); anybody else who tries gets a warning (`cannot set niceness`) and the command runs unchanged. `-10` means plus ten and `--10` means minus ten, as in the older nice; `-n` takes the increment as a separate word.
+
+# OPTIONS
+@ *-n* _INCREMENT_
+    The amount to add to the nice value. Negative values need root.
+
+# EXIT STATUS
+The exit status of the command. 125 if `nice` itself failed (bad option), 126 if the command could not be run, 127 if it was not found.
+
+# EXAMPLES
+    nice
+    nice -n 5 nice
+    nice -10 make
+    nice --5 ps
+
+# SEE ALSO
+renice(1), ps(1), kill(1)

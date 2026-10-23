@@ -2,18 +2,32 @@
 
 # SYNOPSIS
 *mount*
-*mount* [*-t* _TYPE_] _SOURCE_ _TARGET_
+*mount* [*-t* _TYPE_] [*-o* _OPTIONS_] [*-r*] _SOURCE_ _TARGET_
 
 # DESCRIPTION
-Without arguments `mount` lists the mounted filesystems as `SOURCE on TARGET type TYPE`, from `/proc/mounts`. With a source and a target it asks the kernel to mount _SOURCE_ (a device name such as `vda1` or a label) on the directory _TARGET_. The type is `auto` unless given with `-t`.
+Without arguments `mount` lists the mounted filesystems as `SOURCE on TARGET type TYPE`, from `/proc/mounts`. With a source and a target it asks the kernel to mount _SOURCE_ (a device such as `/dev/sdb1`, the first partition of a USB stick, or `/dev/vda2`) on the directory _TARGET_. Only root may mount. The type is `fat32` for a `/dev/...` source unless given with `-t` (`fat32`, `vfat` and `fat16` are the same driver; `tmpfs` needs no device).
+
+The Human Village is mounted by the kernel itself: the one volume labelled HUMANVILLAGE, on an internal disk or on a USB stick, appears on `/HumanVillage` at boot or when the stick is plugged in. Nothing else is ever mounted by itself; a second stick is mounted by hand with this command.
+
+# OPTIONS
+@ *-t* _TYPE_
+    The filesystem type.
+@ *-o* _OPTIONS_
+    Comma-separated options for a FAT volume: `ro`, `rw`, `force` (mount a volume that was not unmounted cleanly read-write anyway; its dirty flag then stays), `sync`, `uid=N`, `gid=N`, `fmask=OCT`, `dmask=OCT`, `umask=OCT`, `userdirs` (a top-level directory named like a user belongs to that user), and `tzoffset=MINUTES`.
+@ *-r*
+    Read-only.
+
+FAT stores the time of a file as the local time of the machine that wrote it, without saying which. `tzoffset=MINUTES` says how many minutes east of UTC that clock is (`-300` for New York in winter, `540` for Tokyo). Unless the option is given, `mount` passes the current offset of its own time zone (see timezone(5)); the kernel applies it when it writes and reads times, so a file saved here at 12:04 shows 12:04 on the computer that reads the stick next.
 
 # EXAMPLES
     mount
     mount -t tmpfs scratch /mnt
-    mount vda1 /mnt
+    mount /dev/sdb1 /mnt
+    mount -o ro /dev/sdb1 /mnt
+    mount -o tzoffset=540 /dev/sdb1 /mnt
 
 # EXIT STATUS
 0, or 1 if the mount failed (the message includes the kernel's reason).
 
 # SEE ALSO
-umount(8), lsblk(1), dmesg(1)
+umount(8), lsblk(1), lsusb(1), dmesg(1), timezone(5)
