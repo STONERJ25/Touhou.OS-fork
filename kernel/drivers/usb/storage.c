@@ -22,12 +22,13 @@
  *   usbstorage=off          do not bind mass storage devices at all
  *   usbstorage.nosync       no SYNCHRONIZE CACHE after write requests
  *   usbstorage.rw16         use READ CAPACITY(16) and READ/WRITE(16) even for small devices
- *   usbstorage.stalltest    after bring-up send a command for a LUN that does not exist (QEMU stalls it) and check that recovery works
- *   usbstorage.selftest     run the validators against hand-made hostile device answers and log the verdict
+ *   usbstorage.selftest    run the validators against hand-made hostile device answers and log the verdict
  *   usbstorage.timeout=MS   every bulk wait (command, data, status) at most MS milliseconds (tests only; a timeout kills the device)
- *   usbstorage.fault=csw:N  treat the N-th status wrapper as corrupted (exercises reset recovery)
- *   usbstorage.fault=drop:N never send the N-th command wrapper (the device stays silent: exercises the timeout path)
- *   usbstorage.fault=notready:MS  every unit is taken to be "not ready" for its first MS milliseconds (a stick that takes its time)
+ *   usbstorage.fault=...    faults for the tests, several separated by commas:
+ *   csw:N                   treat the N-th status wrapper as corrupted (reset recovery)
+ *   stall:N                 send the N-th command wrapper with a damaged signature: the stick stalls the pipe (clear halt + reset recovery)
+ *   drop:N                  the N-th command gets no answer at all (waits out the status timeout, then the stick counts as hung)
+ *   notready:MS             every unit is taken to be "not ready" for its first MS milliseconds (a stick that takes its time)
  */
 #include "usb.h"
 #include "blk.h"
@@ -48,8 +49,8 @@
 #define T_CTRL           3000                   /* control requests (GET MAX LUN, reset recovery) */
 
 static u32 g_t_cbw = 3000, g_t_quick = 5000, g_t_csw = 5000, g_t_read = 15000, g_t_write = 30000, g_t_sync = 30000;
-static bool g_cfg_loaded, g_off, g_nosync, g_rw16, g_stalltest;
-static u32 g_fault_csw, g_fault_drop, g_fault_notready, g_csw_count, g_cbw_count;
+static bool g_cfg_loaded, g_off, g_nosync, g_rw16;
+static u32 g_fault_csw, g_fault_stall, g_fault_drop, g_fault_notready, g_csw_count, g_cbw_count, g_stall_count;
 
 /* ---------------------------------------------------------------- state */
 
@@ -256,17 +257,24 @@ static int msc_run(Msc *m, u8 lun, ScsiCmd *c) {
     cbw[13] = lun;
     cbw[14] = c->cdb_len;
     memcpy(cbw + 15, c->cdb, c->cdb_len);
+    if (g_fault_stall && ++g_stall_count == g_fault_stall) {
+        klog("Kappa", "usb-storage %s: fault injection: command wrapper %u goes out with a damaged signature", m->path, g_stall_count);
+        cbw[0] = 'X';                                                           /* QEMU's stick answers such a wrapper with a STALL */
+    }
     c->got = 0;
     c->residue = 0;
     c->csw_status = 0;
 
     int rc;
     if (g_fault_drop && ++g_cbw_count == g_fault_drop) {
-        klog("Kappa", "usb-storage %s: fault injection: command wrapper %u is never sent", m->path, g_cbw_count);
-        rc = 31;
-    } else {
-        rc = usb_bulk(dev, m->out, cbw, sizeof cbw, g_t_cbw);
+        /* A stick that has gone deaf (QEMU's would answer a missing wrapper with a STALL, which is a different path): wait out the
+         * status timeout like a transfer that never completes would, then behave as usb_bulk() does after one. */
+        klog("Kappa", "usb-storage %s: fault injection: command wrapper %u gets no answer", m->path, g_cbw_count);
+        usb_msleep(dev->hc, g_t_csw);
+        dev->broken = true;
+        return -ETIMEDOUT;
     }
+    rc = usb_bulk(dev, m->out, cbw, sizeof cbw, g_t_cbw);
     if (rc != (int)sizeof cbw) {
         if (rc == -EPIPE) {                                                     /* the device refused the wrapper: clear the stall and reset */
             usb_clear_halt(dev, m->out);
@@ -310,6 +318,13 @@ static int msc_run(Msc *m, u8 lun, ScsiCmd *c) {
     c->residue = get_le32(csw + 8);
     c->csw_status = csw[12];
     return c->csw_status == 0 ? MSC_OK : MSC_CHECK;
+}
+
+/* msc_run for commands that are safe to repeat: a transfer that went wrong and was cleaned up by reset recovery (-EIO) is tried again. */
+static int msc_run_retry(Msc *m, u8 lun, ScsiCmd *c, int tries) {
+    int rc = -EIO;
+    for (int i = 0; i < tries && rc == -EIO; i++) rc = msc_run(m, lun, c);
+    return rc;
 }
 
 /* REQUEST SENSE after a command failed with CHECK CONDITION. */
@@ -557,7 +572,7 @@ static int lun_capacity(Msc *m, MscLun *l, u64 *sectors, u32 *bsz) {
             c.cdb_len = 16;
             c.len = 32;
         }
-        int rc = msc_run(m, l->lun, &c);
+        int rc = msc_run_retry(m, l->lun, &c, 3);
         if (rc == MSC_CHECK) {
             Sense s;
             int sr = msc_sense(m, l->lun, &s);
@@ -592,21 +607,10 @@ static bool lun_write_protected(Msc *m, MscLun *l) {
     u8 cdb[6] = { 0x1A, 0, 0x3F, 0, 4, 0 };
     u8 buf[4] = { 0 };
     ScsiCmd c = { .cdb = cdb, .cdb_len = 6, .data = buf, .len = sizeof buf, .in = true, .t_data = g_t_quick };
-    int rc = msc_run(m, l->lun, &c);
+    int rc = msc_run_retry(m, l->lun, &c, 2);
     if (rc == MSC_CHECK) { Sense s; msc_sense(m, l->lun, &s); return false; }
     if (rc != MSC_OK || c.got < 4) return false;
     return (buf[2] & 0x80) != 0;
-}
-
-static void stall_selftest(Msc *m, MscLun *l) {
-    u8 cdb[6] = { 0 };
-    ScsiCmd c = { .cdb = cdb, .cdb_len = 6, .t_data = g_t_quick };
-    u32 before = m->resets;
-    int r1 = msc_run(m, 7, &c);                                                 /* a LUN that does not exist: the stick stalls the wrapper */
-    ScsiCmd c2 = { .cdb = cdb, .cdb_len = 6, .t_data = g_t_quick };
-    int r2 = msc_run(m, l->lun, &c2);
-    klog("Kappa", "usb-storage %s: stall test: a command for LUN 7 returned %d (%u reset recoveries), TEST UNIT READY afterwards returned %d", m->path, r1,
-         m->resets - before, r2);
 }
 
 static const char *size_text(u64 bytes, char *buf, size_t cap) {
@@ -637,8 +641,7 @@ static void lun_register(Msc *m, MscLun *l, u64 sectors, u32 bsz, bool wp) {
     char sz[24];
     klog("Kappa", "usb-storage %s lun %u: \"%s\", %s in %u-byte blocks, %s -- carried over the river as %s", m->path, l->lun, l->model[0] ? l->model : "(no name)",
          size_text(sectors * bsz, sz, sizeof sz), bsz, wp ? "write-protected, the kappa keep the sluice gate shut (read-only)" : "writable", bd->name);
-    if (g_stalltest) stall_selftest(m, l);
-    storage_disk_added(bd);                                                     /* the mount policy looks at it on a worker thread */
+    storage_disk_added(bd);                                                    /* the mount policy looks at it on a worker thread */
 }
 
 static void lun_step(Msc *m, MscLun *l) {
@@ -939,16 +942,24 @@ static void cfg_load(void) {
     }
     g_nosync = cmdline_flag("usbstorage.nosync");
     g_rw16 = cmdline_flag("usbstorage.rw16");
-    g_stalltest = cmdline_flag("usbstorage.stalltest");
     long t = cmdline_int("usbstorage.timeout", 0);
     if (t >= 100 && t <= 120000) g_t_cbw = g_t_quick = g_t_csw = g_t_read = g_t_write = g_t_sync = (u32)t;
-    if (cmdline_value("usbstorage.fault", v, sizeof v)) {
-        const char *colon = strchr(v, ':');
-        u32 n = 0;
-        for (const char *q = colon ? colon + 1 : ""; *q >= '0' && *q <= '9'; q++) n = n * 10 + (u32)(*q - '0');
-        if (!strncmp(v, "csw:", 4)) g_fault_csw = n;
-        else if (!strncmp(v, "drop:", 5)) g_fault_drop = n;
-        else if (!strncmp(v, "notready:", 9)) g_fault_notready = n;
+    char faults[64];
+    if (cmdline_value("usbstorage.fault", faults, sizeof faults)) {
+        for (const char *p = faults; *p;) {                                     /* "csw:40,stall:12" */
+            const char *colon = strchr(p, ':'), *comma = strchr(p, ',');
+            if (!colon) break;
+            u32 n = 0;
+            const char *q = colon + 1;
+            for (; *q >= '0' && *q <= '9'; q++) n = n * 10 + (u32)(*q - '0');
+            size_t klen = (size_t)(colon - p);
+            if (klen == 3 && !strncmp(p, "csw", 3)) g_fault_csw = n;
+            else if (klen == 5 && !strncmp(p, "stall", 5)) g_fault_stall = n;
+            else if (klen == 4 && !strncmp(p, "drop", 4)) g_fault_drop = n;
+            else if (klen == 8 && !strncmp(p, "notready", 8)) g_fault_notready = n;
+            p = comma && comma >= q ? comma + 1 : q;
+            if (p == q && *p) break;
+        }
     }
     if (cmdline_flag("usbstorage.selftest")) selftest();
 }

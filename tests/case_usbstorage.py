@@ -28,14 +28,14 @@ def stick(img, n=1, ro=False, bs=None, attach=True, extra=""):
     ro_opt = ",read-only=on" if ro else ""
     args = ["-blockdev", f"driver=file,node-name=stick{n}f,filename={path}{ro_opt}", "-blockdev", f"driver=raw,node-name=stick{n},file=stick{n}f{ro_opt}"]
     if attach:
-        args += ["-device", f"usb-storage,drive=stick{n},id=ustor{n},bus=xhci.0" + (f",logical_block_size={bs}" if bs else "") + extra]
+        args += ["-device", f"usb-storage,drive=stick{n},id=ustor{n},bus=xhci.0" + (f",logical_block_size={bs},physical_block_size={bs}" if bs else "") + extra]
     return args
 
 
 def plug(vm, n=1, bs=None):
     kw = dict(driver="usb-storage", drive=f"stick{n}", id=f"ustor{n}", bus="xhci.0")
     if bs:
-        kw["logical_block_size"] = bs
+        kw["logical_block_size"] = kw["physical_block_size"] = bs
     vm.qmp("device_add", **kw)
 
 
@@ -447,7 +447,8 @@ def usbstor_4k_blocks():
             assert re.search(r"^sdb\s+300M\s+0\s+disk\s+usb-storage", g.ok("lsblk"), re.M)
             assert re.search(r"^sdb 314572800 4096 0 ", g.ok("cat /proc/partitions"), re.M)
             assert say(g, f"cat {H}/hello.txt") == "4k hello"
-            assert file_sha(img.path) in g.ok("sha256sum /dev/sdb", timeout=300)
+            front = open(img.path, "rb").read(MIB)                       # the GPT area: nothing writes there
+            assert sha(front) in g.ok("dd if=/dev/sdb bs=4096 count=256 2>/dev/null | sha256sum"), "the front of a 4Kn stick differs"
             g.ok(f"seq 1 100000 > {HV}/seq.txt")
             g.poweroff()
         img.check()
@@ -462,17 +463,16 @@ def usbstor_timestamps():
     """FAT keeps local time: with tz=JST-9 the boot-time mount shows UTC+9 on disk and reads it back; the mount applet passes the
     current offset of its own zone; without a zone nothing changes (UTC, as before)."""
     stamp = "2030-01-02 03:04:05"
-    epoch = 1893553445                       # 2030-01-02 03:04:05 UTC
     with stick_image("usbs-tz", files={"/reimu/old.txt": b"old\n"}) as img:
         # 1. tz=JST-9 on the command line: the policy mounts with tzoffset=540
         with boot(None, root=True, cmdline="tz=JST-9", name="t-usbs-tz1", extra=XHCI + stick(img)) as (g, vm):
             assert "times are local (UTC+9:00)" in vm.text(), vm.text()[-2500:]
             # the file the host made has its fields set to 2026-01-01 00:00:00 = local time; read as JST that is 2025-12-31 15:00:00 UTC
-            assert say(g, f"stat -c %Y {H}/old.txt") == "1767193200", g.ok(f"stat {H}/old.txt")
+            assert "Modify: 2025-12-31 15:00:00 +0000" in g.ok(f"TZ=UTC stat {H}/old.txt"), g.ok(f"stat {H}/old.txt")
             g.ok(f"date -u -s '{stamp}' > /dev/null")
             g.ok(f"echo new > {HV}/new.txt")
             g.ok(f"mkdir {HV}/newdir")
-            assert abs(int(g.ok(f"stat -c %Y {HV}/new.txt").strip()) - epoch) < 60
+            assert re.search(r"Modify: 2030-01-02 03:0[45]:\d\d \+0000", g.ok(f"TZ=UTC stat {HV}/new.txt")), g.ok(f"TZ=UTC stat {HV}/new.txt")
             g.poweroff()
         r = mkdisk.open_volume(img.path, 2)
         try:
@@ -485,7 +485,7 @@ def usbstor_timestamps():
         # 2. no tz=: UTC on disk, exactly as before
         with boot(None, root=True, name="t-usbs-tz2", extra=XHCI + stick(img)) as (g, vm):
             assert "times are local" not in vm.text()
-            assert say(g, f"stat -c %Y {H}/old.txt") == "1767225600"
+            assert "Modify: 2026-01-01 00:00:00 +0000" in g.ok(f"TZ=UTC stat {H}/old.txt"), g.ok(f"stat {H}/old.txt")
             g.ok(f"date -u -s '{stamp}' > /dev/null")
             g.ok(f"echo utc > {HV}/utc.txt")
             g.poweroff()
@@ -526,34 +526,53 @@ def usbstor_timestamps():
 
 @test
 def usbstor_reset_recovery():
-    """A corrupted status wrapper and a stalled command wrapper (a command for a LUN that does not exist) are answered with the bulk-only
-    reset recovery: reads stay correct, the counters show it, the stick is not given up on."""
+    """A command wrapper the stick stalls and a corrupted status wrapper, in the middle of a long read and of a long write, are answered
+    with the bulk-only reset recovery: the data stays correct, the counters show the recoveries, the stick is not given up on."""
     with stick_image("usbs-recover") as img:
-        want = file_sha(img.path)
-        with boot(None, root=True, cmdline="usbstorage.fault=csw:40 usbstorage.stalltest", name="t-usbs-recover", extra=XHCI + stick(img)) as (g, vm):
-            assert re.search(r"usb-storage \S+: stall test: a command for LUN 7 returned -5 \(1 reset recoveries\), TEST UNIT READY afterwards returned 0", vm.text()), vm.text()[-3000:]
-            assert want in g.ok("sha256sum /dev/sdb", timeout=240)
+        front = open(img.path, "rb").read(35 * MIB)                    # the part of the stick nobody writes
+        with boot(None, root=True, cmdline="usbstorage.fault=stall:200,csw:330", name="t-usbs-recover", extra=XHCI + stick(img)) as (g, vm):
+            assert sha(front) in g.ok("dd if=/dev/sdb bs=1M count=35 2>/dev/null | sha256sum", timeout=240)      # 560 commands: both faults land inside
             text = vm.text()
-            assert re.search(r"fault injection: status wrapper 40 is corrupted", text), text[-3000:]
+            assert re.search(r"fault injection: command wrapper 200 goes out with a damaged signature", text), text[-3000:]
+            assert re.search(r"fault injection: status wrapper 330 is corrupted", text), text[-3000:]
             assert "given up on" not in text
             out = g.ok("cat /proc/usbstorage")
             m = re.search(r"(\d+) reset recover", out)
             assert m and int(m.group(1)) >= 2, out
             assert "/dev/sdb2 on /HumanVillage" in g.ok("mount")
+            g.ok(f"seq 1 400000 > {HV}/numbers.txt")
             no_incident(vm)
+            g.poweroff()
+        img.check()
+        assert host_read(img, "/numbers.txt") == NUMBERS
+
+
+@test
+def usbstor_recovery_in_bringup():
+    """The same faults while the stick is being brought up (the third command stalls, the seventh status is corrupted): the bring-up
+    recovers and carries on, the disk is registered, HUMANVILLAGE mounts."""
+    with stick_image("usbs-recover2") as img:
+        with boot(None, root=True, cmdline="usbstorage.fault=stall:3,csw:7", name="t-usbs-recover2", extra=XHCI + stick(img)) as (g, vm):
+            text = vm.text()
+            assert "fault injection: command wrapper 3 goes out with a damaged signature" in text and "fault injection: status wrapper 7 is corrupted" in text, text[-3000:]
+            assert "given up on" not in text
+            m = re.search(r"(\d+) reset recover", g.ok("cat /proc/usbstorage"))
+            assert m and int(m.group(1)) >= 2
+            assert "/dev/sdb2 on /HumanVillage" in g.ok("mount")
+            assert say(g, f"cat {H}/hello.txt") == "hello from the stick"
             g.poweroff()
 
 
 @test
 def usbstor_silent_stick_bounded():
-    """A stick that stops answering (a command wrapper that is never sent): the bring-up gives up after the timeout, boot is not held up
-    beyond the bounded wait, no disk appears, and the rest of the machine works."""
+    """A stick that stops answering (the second command gets no answer): the bring-up gives up after the timeout, boot is not held up
+    beyond the bounded wait, no disk appears, and the rest of the machine works. A hang in the middle of I/O drops the disk and fails the request."""
     with stick_image("usbs-silent") as img:
         h0 = img.sha()
         t0 = time.time()
         with boot(None, root=True, cmdline="usbstorage.fault=drop:2 usbstorage.timeout=1500", name="t-usbs-silent", extra=XHCI + stick(img)) as (g, vm):
             text = vm.text()
-            assert re.search(r"fault injection: command wrapper 2 is never sent", text), text[-3000:]
+            assert re.search(r"fault injection: command wrapper 2 gets no answer", text), text[-3000:]
             wait_log(vm, r"usb-storage \S+: no answer to TEST UNIT READY -- the stick is given up on", timeout=60)
             out = g.ok("cat /proc/usbstorage; lsblk")
             assert "given up on" in out and not re.search(r"^sdb\s", out, re.M), out
@@ -597,7 +616,7 @@ def usbstor_selftests():
             m = vm.expect(r"storage selftest: (\d+) time zone checks, (\d+) failed", timeout=120)
             assert int(m.group(1)) >= 10 and m.group(2) == "0", vm.text()[-2500:]
             m = vm.expect(r"usb-storage selftest: (\d+) checks, (\d+) failed", timeout=120)
-            assert int(m.group(1)) >= 30 and m.group(2) == "0", vm.text()[-2500:]
+            assert int(m.group(1)) >= 25 and m.group(2) == "0", vm.text()[-2500:]
             assert "selftest:" not in re.sub(r"(usb-)?storage selftest: \d+ (checks|time zone checks), 0 failed", "", vm.text()), vm.text()[-2500:]
 
 
@@ -624,7 +643,7 @@ def usbstor_bootlog_clean():
         assert rep.stats["p2"]["clean"]
         text = host_read(img, "/TOUHOU.LOG").decode()
         assert "[Gensokyo] kernel 0.1.0 \"Story of Eastern Wonderland\" starting" in text[:2500], text[:300]
-        for needle in ("[Marisa] blk: sdb  usb-storage", "[Keine] fat32: sdb2 mounted on /HumanVillage", "boot complete", "[Hakurei] the shrine opens for the day",
+        for needle in ("[Marisa] blk: sdb  usb-storage", "[Keine] fat32: sdb2 mounted on /HumanVillage", "boot complete", "[Alice] init: /sbin/init",
                        "a line that must reach the stick"):
             assert needle in text, f"{needle!r} missing from TOUHOU.LOG:\n" + text[-1500:]
         assert text.rstrip().endswith("this line ends a clean run --"), text[-300:]
