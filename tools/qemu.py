@@ -71,13 +71,15 @@ def char_to_key(ch):
 
 class Qemu:
     def __init__(self, cmdline="", mem="512M", display="none", disk=None, net=False, no_reboot=True,
-                 trace_int=False, extra=(), esp=None, name="vm", video=None, headless_serial=True):
+                 trace_int=False, extra=(), esp=None, name="vm", video=None, headless_serial=True,
+                 boot_image=None, boot_bus="usb"):
         self.cmdline, self.mem, self.display = cmdline, mem, display
         self.disk, self.net, self.no_reboot, self.trace_int = disk, net, no_reboot, trace_int
         self.extra = list(extra)
         self.esp = Path(esp) if esp else BUILD / "esp"
         self.name = name
         self.video = video
+        self.boot_image, self.boot_bus = boot_image, boot_bus    # boot from a disk image (as a PC would) instead of the fat: ESP directory
         self.input_device = None        # QMP id of the keyboard to inject keys into (e.g. a usb-kbd); None = QEMU's default
         self.mouse_device = None        # same for the mouse
         self.proc = None
@@ -102,12 +104,28 @@ class Qemu:
         (self.esp / "cmdline.txt").write_text(cmdline + "\n")
         return vars_copy
 
+    def _boot_drive_args(self):
+        """The firmware's boot disk: the ESP directory as a FAT drive, or a whole disk image on a USB stick, SATA, NVMe or virtio bus."""
+        if not self.boot_image:
+            return ["-drive", f"format=raw,file=fat:rw:{self.esp}"]
+        img = f"if=none,id=bootdisk,format=raw,file={self.boot_image}"
+        bus = self.boot_bus
+        if bus == "usb":
+            return ["-drive", img, "-device", "qemu-xhci,id=bootxhci", "-device", "usb-storage,bus=bootxhci.0,drive=bootdisk,bootindex=0"]
+        if bus == "sata":
+            return ["-drive", img, "-device", "ide-hd,drive=bootdisk,bootindex=0"]
+        if bus == "nvme":
+            return ["-drive", img, "-device", "nvme,drive=bootdisk,serial=bootnvme,bootindex=0"]
+        if bus == "virtio":
+            return ["-drive", img, "-device", "virtio-blk-pci,drive=bootdisk,bootindex=0"]
+        raise ValueError(f"unknown boot bus {bus!r}")
+
     def _args(self, vars_copy, serial_port, qmp_port):
         a = [str(QEMU),
              "-machine", "q35", "-cpu", "max", "-m", self.mem, "-smp", "1",
              "-drive", f"if=pflash,format=raw,unit=0,readonly=on,file={OVMF_CODE}",
              "-drive", f"if=pflash,format=raw,unit=1,file={vars_copy}",
-             "-drive", f"format=raw,file=fat:rw:{self.esp}",
+             *self._boot_drive_args(),
              "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
              "-d", "guest_errors,cpu_reset" + (",int" if self.trace_int else ""), "-D", str(self.log_path)]
         if self.disk:
