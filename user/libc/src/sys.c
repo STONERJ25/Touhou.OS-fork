@@ -506,37 +506,3 @@ void gap_log(const char *msg) { __sc1(SYS_debuglog, (long)msg); }
 long gap_time_ms(void) { return __sc0(SYS_gettime_ms); }
 int gap_getrandom(void *buf, unsigned long n) { return (int)__ret(__sc3(SYS_getrandom, (long)buf, (long)n, 0)); }
 
-/* getopt */
-char *optarg;
-int optind = 1, opterr = 1, optopt;
-
-int getopt(int argc, char *const argv[], const char *opts) {
-    static int pos;
-    if (optind >= argc || !argv[optind] || argv[optind][0] != '-' || !argv[optind][1]) return -1;
-    if (!strcmp(argv[optind], "--")) { optind++; return -1; }
-    if (!pos) pos = 1;
-    char c = argv[optind][pos];
-    const char *o = strchr(opts, c);
-    if (!o || c == ':') {
-        optopt = c;
-        if (opterr) fprintf(stderr, "%s: invalid option -- '%c'\n", argv[0], c);
-        if (!argv[optind][++pos]) { optind++; pos = 0; }
-        return '?';
-    }
-    if (o[1] == ':') {
-        if (argv[optind][pos + 1]) optarg = &argv[optind][pos + 1];
-        else if (optind + 1 < argc) optarg = argv[++optind];
-        else {
-            optopt = c;
-            if (opterr) fprintf(stderr, "%s: option requires an argument -- '%c'\n", argv[0], c);
-            optind++;
-            pos = 0;
-            return opts[0] == ':' ? ':' : '?';
-        }
-        optind++;
-        pos = 0;
-        return c;
-    }
-    if (!argv[optind][++pos]) { optind++; pos = 0; }
-    return c;
-}

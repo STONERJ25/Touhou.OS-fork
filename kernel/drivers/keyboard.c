@@ -267,9 +267,15 @@ static void i8042_irq(int irq, void *ctx) {
 }
 
 void keyboard_init(void) {
+    g_mouse.x = g_screen_w / 2;
+    g_mouse.y = g_screen_h / 2;
+    if (inb(KBD_STATUS) == 0xFF) {              /* floating bus: no i8042 here (USB-only machine) */
+        klog("Satori", "no PS/2 controller found; keyboard and mouse must come from USB");
+        return;
+    }
     ctl_cmd(0xAD);                              /* disable both ports while configuring */
     ctl_cmd(0xA7);
-    while (inb(KBD_STATUS) & 1) inb(KBD_DATA);  /* flush */
+    for (int i = 0; i < 64 && (inb(KBD_STATUS) & 1); i++) inb(KBD_DATA);  /* flush */
 
     ctl_cmd(0x20);
     int cfg = ctl_read();

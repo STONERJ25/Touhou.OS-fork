@@ -200,6 +200,7 @@ NORETURN void process_exit(int status) {
     p->children = NULL;
     p->exit_status = status;
     p->state = PROC_ZOMBIE;
+    p->task = NULL;                                 /* the Task is about to be reaped; zombies keep only their status */
     Process *parent = p->parent;
     irq_restore(f);
 

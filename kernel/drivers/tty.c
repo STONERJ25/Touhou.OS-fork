@@ -180,11 +180,17 @@ int tty_ioctl(Tty *t, unsigned long req, void *arg) {
     case TCGETS:
         memcpy(arg, &t->termios, sizeof t->termios);
         return 0;
-    case TCSETS: case TCSETSW: case TCSETSF:
+    case TCSETS: case TCSETSW: case TCSETSF: {
+        u64 f = irq_save();
+        u32 was_canon = t->termios.c_lflag & ICANON;
         memcpy(&t->termios, arg, sizeof t->termios);
+        /* Leaving canonical mode makes the half-typed line readable, as on Linux; otherwise it would be stranded here. */
+        if (was_canon && !(t->termios.c_lflag & ICANON)) commit_line(t);
+        irq_restore(f);
         if (req == TCSETSF) tty_flush_input(t);
         wq_wake_all(&t->rd_wq);
         return 0;
+    }
     case TIOCGWINSZ:
         memcpy(arg, &t->winsize, sizeof t->winsize);
         return 0;

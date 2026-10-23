@@ -444,10 +444,20 @@ static int parent_for_modify(const char *path, VNode *cwd, const Cred *c, VNode 
     return rc;
 }
 
+/* Like Linux, report EEXIST for a name that is already there before complaining about write access to its parent. */
+static int exists_check(const char *path, VNode *cwd, const Cred *c) {
+    VNode *v;
+    if (vfs_lookup(path, cwd, c, LOOKUP_NOFOLLOW, &v) != 0) return 0;
+    vnode_put(v);
+    return -EEXIST;
+}
+
 int vfs_mkdir(const char *path, u32 mode, const Cred *c, VNode *cwd) {
     VNode *dir, *nv = NULL;
     char name[GNAME_MAX + 1];
-    int rc = parent_for_modify(path, cwd, c, &dir, name);
+    int rc = exists_check(path, cwd, c);
+    if (rc) return rc;
+    rc = parent_for_modify(path, cwd, c, &dir, name);
     if (rc) return rc;
     if (!dir->ops->mkdir) { vnode_put(dir); return -EPERM; }
     mutex_lock(&g_ns);
@@ -506,7 +516,9 @@ int vfs_rename(const char *from, const char *to, const Cred *c, VNode *cwd) {
 int vfs_symlink(const char *target, const char *path, const Cred *c, VNode *cwd) {
     VNode *dir, *nv = NULL;
     char name[GNAME_MAX + 1];
-    int rc = parent_for_modify(path, cwd, c, &dir, name);
+    int rc = exists_check(path, cwd, c);
+    if (rc) return rc;
+    rc = parent_for_modify(path, cwd, c, &dir, name);
     if (rc) return rc;
     mutex_lock(&g_ns);
     rc = dir->ops->symlink ? dir->ops->symlink(dir, name, target, &nv) : -EPERM;

@@ -1,0 +1,16 @@
+# /etc/profile -- read by login shells
+export PATH=/bin:/sbin:/usr/bin
+export TERM=xterm
+export EDITOR=pnote
+export PAGER=patchouli-pager
+
+alias ll='ls -l'
+alias la='ls -la'
+alias l='ls -CF'
+alias ..='cd ..'
+alias grep='grep --color=auto'
+alias cls='clear'
+alias shutdown='poweroff'
+alias exorcise='kill -9'
+alias spellcards='ps'
+alias netherworld='ls /Netherworld'

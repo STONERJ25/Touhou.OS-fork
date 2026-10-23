@@ -41,7 +41,7 @@ def utest():
 @test
 def kshell_serial():
     """kshell over serial: themed directory tree, initrd unpack, tmpfs create/read, symlinks."""
-    with Qemu(cmdline="", name="t-kshell-serial") as vm:
+    with Qemu(cmdline="init=kshell", name="t-kshell-serial") as vm:
         vm.expect(r"kshell:# ", timeout=60)
         vm.send("ls /\n")
         vm.expect(r"Hakurei/.*HumanVillage/.*ScarletDevilMansion/.*YoukaiMountain/.*BambooForest/.*Netherworld/", timeout=10)
@@ -65,7 +65,7 @@ def kshell_serial():
 @test
 def kshell_keyboard():
     """PS/2 keyboard path: keys injected through QMP reach the console tty and the line editor."""
-    with Qemu(cmdline="", name="t-kshell-kbd") as vm:
+    with Qemu(cmdline="init=kshell", name="t-kshell-kbd") as vm:
         vm.expect(r"kshell:# ", timeout=60)
         vm.type("echo Reimu is on duty\n")
         vm.expect(r"Reimu is on duty", timeout=15)

@@ -125,6 +125,20 @@ class Qemu:
         return a + self.extra
 
     def start(self):
+        """Starts QEMU; retries if startup fails (a racing free port or a transient Windows hiccup)."""
+        last = None
+        for attempt in range(3):
+            try:
+                self.serial = ""
+                self._pos = 0
+                return self._start_once()
+            except RuntimeError as e:
+                last = e
+                self.stop()
+                time.sleep(0.5)
+        raise last
+
+    def _start_once(self):
         vars_copy = self._prepare()
         sp, qp = free_port(), free_port()
         args = self._args(vars_copy, sp, qp)

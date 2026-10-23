@@ -247,6 +247,7 @@ unsigned long strtoul(const char *s, char **end, int base) { return (unsigned lo
 long strtol(const char *s, char **end, int base) { return (long)strtoll(s, end, base); }
 int atoi(const char *s) { return (int)strtol(s, NULL, 10); }
 long atol(const char *s) { return strtol(s, NULL, 10); }
+long long atoll(const char *s) { return strtoll(s, NULL, 10); }
 
 double strtod(const char *s, char **end) {
     const char *p = s;

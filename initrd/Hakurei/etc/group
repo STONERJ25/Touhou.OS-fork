@@ -1,0 +1,5 @@
+root:x:0:root
+reimu:x:1000:reimu
+marisa:x:1001:marisa
+sakuya:x:1002:sakuya
+shrine:x:100:reimu,marisa,sakuya
