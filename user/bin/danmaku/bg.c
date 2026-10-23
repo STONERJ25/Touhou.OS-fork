@@ -7,7 +7,7 @@
 
 #define MAX_LAYER_ITEMS 40
 
-typedef struct LayerItem { int x, y0, spd16; const KSprite *spr; bool additive; bool spell_ok; } LayerItem;
+typedef struct LayerItem { int x, y0, spd16; const KSprite *spr; bool additive; bool spell_ok; bool soft; } LayerItem;
 
 typedef struct StageBg {
     KSprite *base, *dark;
@@ -32,7 +32,13 @@ static KSprite *own(StageBg *b, KSprite *s) {
 
 static void add_item(StageBg *b, int x, int y0, int spd16, const KSprite *spr, bool additive) {
     if (b->n >= MAX_LAYER_ITEMS) return;
-    b->items[b->n++] = (LayerItem){ x, y0, spd16, spr, additive, additive || spr->w <= 12 };   /* only glows and sparkles survive the darker spell backdrop */
+    b->items[b->n++] = (LayerItem){ x, y0, spd16, spr, additive, additive || spr->w <= 12, false };   /* only glows and sparkles survive the darker spell backdrop */
+}
+
+/* clouds and lanterns keep their soft translucent edges: they are blended instead of colour-keyed */
+static void add_soft(StageBg *b, int x, int y0, int spd16, const KSprite *spr) {
+    add_item(b, x, y0, spd16, spr, false);
+    if (b->n > 0) b->items[b->n - 1].soft = true;
 }
 
 /* draws a soft disc and repeats it a tile height above and below, so that the tile wraps vertically */
@@ -65,7 +71,7 @@ static KSprite *cloud_sprite(StageBg *b, int w, int h, uint32_t col, uint32_t ba
         ks_glow(s, x, y, rad * 1.6f, col, 230);
         ks_disc(s, x, y, rad * 0.7f, col, 120);
     }
-    ks_flatten(s, backdrop);
+    (void)backdrop;
     return own(b, s);
 }
 
@@ -89,7 +95,7 @@ static void build_stage1(void) {
     b->dark = darken(t, 0x701850, 105);
     for (int i = 0; i < 9; i++) {
         KSprite *c = cloud_sprite(b, 96 + (i % 3) * 24, 44, i & 1 ? 0xDCD4FF : 0xFFD8E8, 0x4A3C8C, (uint32_t)i + 1);
-        add_item(b, (int)(hash32((uint32_t)i * 53 + 5) % (BG_W - 40)), (int)(hash32((uint32_t)i * 29 + 9) % 600), 22 + (i % 3) * 5, c, false);
+        add_soft(b, (int)(hash32((uint32_t)i * 53 + 5) % (BG_W - 40)), (int)(hash32((uint32_t)i * 29 + 9) % 600), 22 + (i % 3) * 5, c);
     }
     KSprite *spark = own(b, ks_new(9, 9));
     ks_star(spark, 4.5f, 4.5f, 4.4f, 0.9f, 4, 0.f, 0xFFFFFF, 255);
@@ -159,7 +165,6 @@ static KSprite *paper_lantern(StageBg *b, uint32_t col, float k) {
     for (int i = -2; i <= 2; i++) ks_line(s, cx - 7.f * k, cy + (float)i * 4.f * k, cx + 7.f * k, cy + (float)i * 4.f * k, 0.9f * k, 0x7A2810, 160);
     ks_rect(s, cx - 3.5f * k, cy - 12.f * k, 7.f * k, 2.f * k, 0x3A1008, 255);
     ks_rect(s, cx - 3.5f * k, cy + 10.f * k, 7.f * k, 2.f * k, 0x3A1008, 255);
-    ks_flatten(s, 0x0C1A48);
     return own(b, s);
 }
 
@@ -188,7 +193,7 @@ static void build_stage3(void) {
     static const uint32_t LC[4] = { 0xF28A30, 0xF2603C, 0xF2B040, 0xE8507C };
     for (int i = 0; i < 12; i++) {
         KSprite *l = paper_lantern(b, LC[i % 4], 0.8f + (float)(i % 3) * 0.2f);
-        add_item(b, (int)(hash32((uint32_t)i * 53 + 5) % (BG_W - 30)), (int)(hash32((uint32_t)i * 29 + 9) % 600), 34 + (i % 4) * 7, l, false);
+        add_soft(b, (int)(hash32((uint32_t)i * 53 + 5) % (BG_W - 30)), (int)(hash32((uint32_t)i * 29 + 9) % 600), 34 + (i % 4) * 7, l);
     }
     KSprite *ring = own(b, ks_new(34, 12));
     ks_fill(ring, 0x000000);
@@ -242,6 +247,7 @@ void bg_draw(KCanvas *cv, int ox, int oy, int stage, bool spell, int tint, int s
             int yy = pass ? y - span : y;
             if (yy + sprh < 0 || yy > PFH) continue;
             if (it->additive) ks_blit_add(cv, PFX + it->x + ox, PFY + yy + oy, it->spr);
+            else if (it->soft) ks_blit(cv, PFX + it->x + ox, PFY + yy + oy, it->spr);
             else ks_blit_key(cv, PFX + it->x + ox, PFY + yy + oy, it->spr);
         }
     }
