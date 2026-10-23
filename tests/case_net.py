@@ -127,9 +127,9 @@ def net_names_local():
 
 # ------------------------------------------------------------------------------------------------------------ the cards
 
-def nic_case(model, label, driver):
+def nic_case(model, label, driver, cmdline=""):
     def run():
-        with Guest("t-net-" + label, net=model) as g:
+        with Guest("t-net-" + label, net=model, cmdline=cmdline) as g:
             out, rc = g.run("ifconfig eth0")
             assert re.search(r"\(Ethernet\)  " + driver + "\n", out), out
             assert "inet 10.0.2.15  netmask 255.255.255.0  broadcast 10.0.2.255" in out and "UP,BROADCAST,RUNNING" in out, out
@@ -153,6 +153,7 @@ nic_case("virtio-net-pci,disable-legacy=on", "virtio_modern", "virtio-net")
 nic_case("e1000", "e1000", "e1000")
 nic_case("e1000e", "e1000e", "e1000e")
 nic_case("rtl8139", "rtl8139", "rtl8139")
+nic_case("e1000e", "e1000e_pch", r"e1000e\(pch\)", cmdline="e1000.pch")      # QEMU's 82574L driven down the PCH code path (ME, PHY semaphore, errata)
 
 
 # ------------------------------------------------------------------------------------------------------------ host-side servers
