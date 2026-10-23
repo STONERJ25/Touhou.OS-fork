@@ -121,6 +121,18 @@ gapsh (or any shell) owns the terminal's job control; the kernel only provides t
 8. A shell running inside a pty needs nothing special: the terminal emulator makes the shell a session leader on the slave
    (`setsid`, `open`), which is what the kernel uses as the terminal's session.
 
+### Where gapsh stands (at the time of writing, `user/bin/gapsh/`)
+
+Already right: `main.c` ignores `SIGTSTP`/`SIGTTIN`/`SIGTTOU` when interactive, makes the shell its own group leader and
+takes the terminal; `exec.c` puts every job in its own group (`setpgid` on both sides), hands it the terminal with
+`tcsetpgrp(0, pgid)` and takes it back, and `reset_signals()` restores the default dispositions in the child before `exec`.
+What is missing: nothing waits with `WUNTRACED`, so a stopped foreground job (Ctrl-Z, `kill -STOP`, a background
+read) leaves the shell waiting for ever. The call sites to change are `job_wait_fg` (`waitpid(-1, &status, 0)`),
+the foreground simple command (`waitpid(pid, &status, 0)` after `tcsetpgrp(0, pid)`), the two pipeline waits and the
+`wait` builtin's neighbours in `builtins.c`; `jobs_reap` should add `WUNTRACED | WCONTINUED`; `jobs` prints only `Running`
+and needs `Stopped`; there is no `bg`, and `fg` has no `SIGCONT`. Until then, Ctrl-Z in a text console freezes the job and the
+prompt (the stopped job can still be killed from another terminal with `kill -9`: `SIGKILL` wakes it).
+
 Things a shell author may trip over: a pipeline's processes can report their stops in any order, a job is stopped when its
 processes are stopped, not when the first one is; `waitpid(pid, ..., WUNTRACED)` for an already collected stop returns 0
 with `WNOHANG` (stops are reported once); `fg` on a job that exited between the prompt and the command finds no process
