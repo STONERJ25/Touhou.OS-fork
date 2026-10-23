@@ -196,7 +196,8 @@ Other things worth knowing:
   the NVMe controller is disabled before its queues are replaced. **Known gap, outside these files:** the loader hands the firmware's
   `EfiBootServicesData` memory to the allocator as free RAM (`boot/main.c`), and the drivers only run in `kmain` after `pci_init`; between
   `ExitBootServices` and `ahci_init` / `nvme_init`, a controller the firmware left running could still write a FIS or completion into pages that
-  were already reused (only if the device sends something unsolicited; EDK2's NVMe and AHCI drivers leave nothing outstanding). Closing it needs
+  were already reused (only if the device sends something unsolicited, such as an NVMe asynchronous event; reference firmware is not known to
+  leave anything outstanding, but the Dell firmware is an unknown). Closing it needs
   an earlier quiesce step (clear bus mastering of class 01 devices right after `ExitBootServices`, or keep those regions reserved until the drivers ran).
 * Link power management is left off on purpose (`IPM = 3`, `ALPE` cleared). NVMe power states (APST) are not touched; the drive stays in
   whatever state the firmware left it (usually fully on).
