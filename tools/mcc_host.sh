@@ -4,7 +4,7 @@
 set -e
 cd "$(dirname "$0")/.."
 mkdir -p build/host
-gcc -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-unused-but-set-variable "$@" \
+gcc -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-unused-but-set-variable -Wno-missing-field-initializers "$@" \
     -o build/host/mcc user/bin/mcc/main.c
 cp -f build/host/mcc build/host/mld
 cp -f build/host/mcc build/host/mar
