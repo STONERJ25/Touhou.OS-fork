@@ -21,6 +21,7 @@ static void err(const char *fmt, ...) {
     va_end(ap);
     msg_err = 1;
     ex_error = 1;
+    ta_flush();
 }
 
 static const char *skipws(const char *s) { while (*s == ' ' || *s == '\t') s++; return s; }

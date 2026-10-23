@@ -336,12 +336,15 @@ int cur_start_line(void) { return (int)cur.l; }
 int put_reg(int regname, int after, int cnt, int gmode) {
     Reg *rg = reg_get(regname);
     if (!rg || !rg->s) { set_err("E353: Nothing in register %c", regname ? regname : '"'); return 0; }
+    return put_text(rg->s, rg->len, rg->type, after, cnt, gmode);
+}
+
+/* Puts text of the given type ('c', 'l', 'b') after or before the cursor, cnt times. */
+int put_text(const char *src, size_t len, int type, int after, int cnt, int gmode) {
     if (cnt < 1) cnt = 1;
-    char *text = malloc(rg->len + 1);
+    char *text = malloc(len + 1);
     if (!text) pt_oom();
-    memcpy(text, rg->s, rg->len);
-    size_t len = rg->len;
-    int type = rg->type;
+    memcpy(text, src, len);
     if (type == 'l') {
         long at = after ? cur.l + 1 : cur.l;
         long first = at;
@@ -1279,36 +1282,40 @@ void normal_command(void) {
                 Reg *rg = reg_get(reg);
                 if (!rg) { set_err("E353: Nothing in register %c", reg ? reg : '"'); dot_end(0); return; }
                 char *saved = malloc(rg->len + 1);
+                if (!saved) pt_oom();
                 memcpy(saved, rg->s, rg->len);
                 size_t slen = rg->len;
                 int stype = rg->type;
                 size_t n;
                 char *t = range_text(&r, &n);
-                int endsline = r.type == 'c' && r.b.c >= (int)L[imin(r.b.l, nl - 1)].len;
-                int single_line_whole = r.type == 'l' && r.a.l == 0 && r.b.l == nl - 1;
+                int vtype = r.type;
+                long old_nl = nl;
                 range_delete(&r);
-                if (op == 'p') reg_set(0, t, n, r.type, 1);
+                if (op == 'p') reg_set(0, t, n, vtype, 1);
                 free(t);
                 cmd_is_change = 1;
-                Reg tmp = { saved, slen, stype };
-                (void)tmp;
-                reg_set('_' + 1000 > 0 ? 0x7f : 0, saved, slen, stype, 0);       /* park the text in a scratch register */
-                if (r.type == 'l') {
-                    cur.l = imin(r.a.l, nl - 1);
-                    if (single_line_whole && nl == 1 && L[0].len == 0 && stype == 'l') { put_reg(0x7f, 0, n1, 0); ln_delete(nl - 1, 1); cur.l = 0; cur.c = 0; }
-                    else if (r.a.l >= nl) put_reg(0x7f, 1, n1, 0);
-                    else put_reg(0x7f, 0, n1, 0);
-                    if (stype != 'l') { }
+                if (vtype == 'l') {
+                    int all_gone = r.a.l == 0 && r.b.l == old_nl - 1;
+                    if (stype == 'l') {
+                        if (all_gone) { cur.l = 0; cur.c = 0; put_text(saved, slen, stype, 0, n1, 0); ln_delete(nl - 1, 1); }
+                        else if (r.a.l >= nl) { cur.l = nl - 1; put_text(saved, slen, stype, 1, n1, 0); }
+                        else { cur.l = r.a.l; put_text(saved, slen, stype, 0, n1, 0); }
+                    } else {
+                        long at = all_gone ? 0 : (r.a.l >= nl ? nl : r.a.l);
+                        if (all_gone) { cur.l = 0; cur.c = 0; }
+                        else { ln_insert(at, "", 0); cur.l = at; cur.c = 0; }
+                        put_text(saved, slen, stype, 0, n1, 0);
+                    }
                 } else {
                     cur = r.a;
-                    if (r.type == 'c' && stype == 'l') {      /* linewise text into a charwise selection: split the line */
+                    if (stype == 'l') {                  /* linewise text into a charwise selection: it gets its own lines */
                         text_insert(cur, "\n", 1);
-                        put_reg(0x7f, 0, n1, 0);
+                        cur.c = 0;
+                        put_text(saved, slen, stype, 1, n1, 0);
                     } else {
-                        fix_cursor_end();
-                        int after = endsline && L[cur.l].len > 0 && r.a.c >= (int)L[cur.l].len;
-                        if (after) { cur.c = last_c(cur.l); put_reg(0x7f, 1, n1, 0); }
-                        else { if (cur.c >= (int)L[cur.l].len && L[cur.l].len) { cur.c = last_c(cur.l); put_reg(0x7f, 1, n1, 0); } else put_reg(0x7f, 0, n1, 0); }
+                        int at_eol = r.a.c >= (int)L[r.a.l].len && L[r.a.l].len > 0;
+                        if (at_eol) { cur.c = last_c(cur.l); put_text(saved, slen, stype, 1, n1, 0); }
+                        else { cur.c = r.a.c; put_text(saved, slen, stype, 0, n1, 0); }
                     }
                 }
                 free(saved);
@@ -1437,6 +1444,7 @@ void normal_command(void) {
     case 'U': undo_line_restore(); break;
     case '.':
         dot_end(0);
+        if (!dot_available()) { beep(); return; }
         in_dot_replay++;
         undo_nest++;
         dot_replay(count);

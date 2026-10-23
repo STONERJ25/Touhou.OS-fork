@@ -25,6 +25,9 @@ static void ta_reserve(int extra) {
 
 int ta_len(void) { return ta_n; }
 
+/* An error cancels macros, mappings and :normal keys that are still waiting. */
+void ta_flush(void) { ta_n = 0; }
+
 void ta_push(const int *keys, int n) {
     ta_reserve(n);
     for (int i = n - 1; i >= 0; i--) taq[ta_n++] = keys[i];
@@ -167,6 +170,7 @@ void macro_stop(void) {
 }
 
 int dot_set(int on) { int old = dot_on; dot_on = on; return old; }
+int dot_available(void) { return dotkn > 0; }
 
 void dot_push(int k) {
     if (!dot_on) return;

@@ -55,7 +55,7 @@ int main(int argc, char **argv) {
     for (; i < argc; i++) {
         const char *a = argv[i];
         if (!strcmp(a, "--")) { i++; break; }
-        if (a[0] == '+' && a[1] != 0 || !strcmp(a, "+")) {
+        if ((a[0] == '+' && a[1] != 0) || !strcmp(a, "+")) {
             if (nstartup < 32) {
                 char *cmd = malloc(strlen(a) + 8);
                 if (a[1] == 0) strcpy(cmd, "$");

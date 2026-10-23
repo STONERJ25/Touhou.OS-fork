@@ -13,7 +13,7 @@ static int leftcol;                                      /* first display column
 typedef struct { uint32_t cp; unsigned char attr; } Cell;
 enum { A_REV = 1, A_HL = 2, A_CTL = 4, A_CURLINE = 8, A_MATCH = 16 };
 
-void beep(void) {}
+void beep(void) { ta_flush(); }
 void force_repaint(void) { pts_invalidate(&scr); }
 
 void set_msg(const char *fmt, ...) {
@@ -30,6 +30,7 @@ void set_err(const char *fmt, ...) {
     vsnprintf(msg, sizeof msg, fmt, ap);
     va_end(ap);
     msg_err = 1;
+    ta_flush();
 }
 
 static void on_winch(int sig) { (void)sig; }
@@ -270,7 +271,7 @@ static const char *mode_name(void) {
     return "NORMAL";
 }
 
-static void put_text(PtRow *r, const char *s, int maxw) {
+static void put_row(PtRow *r, const char *s, int maxw) {
     pr_str(r, s, maxw);
 }
 
@@ -355,11 +356,11 @@ void redraw(void) {
         int lw = (int)pt_u8_count(left.p, left.len);
         int rw = (int)right.len;
         if (lw + rw > cols) { lw = cols - rw > 0 ? cols - rw : 0; }
-        put_text(r, left.p, lw);
+        put_row(r, left.p, lw);
         int pad = cols - r->w - rw;
         if (pad < 0) pad = 0;
         pr_spaces(r, pad);
-        put_text(r, right.p, cols - r->w);
+        put_row(r, right.p, cols - r->w);
         pb_adds(&r->b, "\x1b[0m");
         pb_free(&left);
         pb_free(&right);
@@ -376,17 +377,17 @@ void redraw(void) {
             size_t skip = total > (size_t)maxw ? total - (size_t)maxw : 0;
             size_t before = pt_u8_count(cmdline_text.p ? cmdline_text.p : "", (size_t)cmdline_pos);
             size_t start = pt_u8_skip(cmdline_text.p ? cmdline_text.p : "", cmdline_text.len, skip);
-            put_text(r, cmdline_text.p ? cmdline_text.p + start : "", maxw);
+            put_row(r, cmdline_text.p ? cmdline_text.p + start : "", maxw);
             crow = rows - 1;
             ccol = (int)strlen(cmdline_prompt) + (int)(before > skip ? before - skip : 0);
         } else if (msg[0]) {
             if (msg_err) pb_adds(&r->b, "\x1b[31;1m");
-            put_text(r, msg, cols - 1);
+            put_row(r, msg, cols - 1);
             if (msg_err) pb_adds(&r->b, "\x1b[0m");
         } else if (o.showmode && (mode == M_INSERT || mode == M_REPLACE || vis_mode)) {
             char tmp[40];
             snprintf(tmp, sizeof tmp, "-- %s --", mode_name());
-            put_text(r, tmp, cols - 1);
+            put_row(r, tmp, cols - 1);
         }
     }
     if (rows < 3 && crow < 0) crow = rows - 1;
