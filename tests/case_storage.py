@@ -489,6 +489,7 @@ def storage_label_discovery_and_isolation():
         with boot(img, name="t-storage-mbr") as (g, vm):
             assert re.search(r"\[Keine\] fat32: vda2 mounted on /HumanVillage", klog(vm)), klog(vm)[-1200:]
             assert g.ok(f"cat {H}/readme.txt").strip() == "found by label"
+            assert re.search(r"^vda2\s+\S+\s+0\s+part\s+HUMANVILLAG\s", g.ok("lsblk"), re.M)           # the FAT label is shown
             g.ok(f"dd if=/dev/urandom of={H}/x.bin bs=1k count=700 2>/dev/null; mkdir {H}/d; sync")
             g.poweroff()
         img.check()
@@ -591,6 +592,7 @@ def storage_df_and_statfs():
             total, used, avail = df_row(g, HV)
             assert total > 90000 and used < 4000 and used + avail == total, (total, used, avail)
             assert total * 1024 < 100 * MIB
+            assert re.search(r"^/dev/vda1\s+\d+\s+\d+\s+\d+\s+\d+%\s+/HumanVillage$", g.ok("df -k"), re.M)
             h = g.ok(f"df -h {H}")
             assert re.search(r"/dev/vda1\s+\d+\.?\d*M\s+\S+\s+\d+\.?\d*M\s+\d+%\s+/HumanVillage", h), h
             assert re.search(r"^/dev/vda1\s+\S+\s+\S+\s+\S+\s+\S+\s+/HumanVillage", g.ok(f"df -P {H}"), re.M)
@@ -918,11 +920,10 @@ def storage_random_stress():
 @test
 def storage_periodic_flush():
     """Without any sync the flusher thread writes the data back within a few seconds and marks the volume clean."""
-    import time
     with Image("periodic", 64 * MIB, [hv_part()]) as img:
         with boot(img, name="t-storage-periodic") as (g, vm):
             g.ok(f"echo written-without-sync > {H}/p.txt; dd if=/dev/urandom of={H}/p.bin bs=1k count=200 2>/dev/null")
-            time.sleep(7.5)                                         # more than the flush age (3 s) plus the tick (1 s)
+            g.ok("sleep 7")                                         # guest time: more than the flush age (3 s) plus the tick (1 s)
             try:
                 vm.qmp("quit")                                      # pull the plug: no sync, no poweroff
             except Exception:                                       # noqa: BLE001
@@ -943,7 +944,8 @@ def storage_unclean_power_loss():
         with boot(img, name="t-storage-loss") as (g, vm):
             g.ok(f"echo new > {H}/new.txt")
             try:
-                vm.qmp("quit")                                      # well inside the 3 s flush age
+                vm.qmp("stop")                                      # freeze the guest first: no flush thread can sneak in
+                vm.qmp("quit")
             except Exception:                                       # noqa: BLE001
                 pass
             vm.proc.wait(timeout=20)

@@ -132,7 +132,7 @@ struct FatVol {
     bool free_known;
     u32 alloc_cursor;
     /* state */
-    bool ro, forced, was_dirty, media_dirty, sync_mode, dying;
+    bool ro, forced, was_dirty, media_dirty, sync_mode, dying, label_set;
     int io_error;
     char label[12];
     u64 last_op_ms, err_logged_ms;
@@ -166,7 +166,6 @@ int  fc_zero(FatVol *v, u64 off, size_t n, int cls);
 int  fc_flush(FatVol *v);
 int  fc_read_ra(FatVol *v, u64 off, void *buf, size_t n, u32 ra);    /* ra: pages to read ahead on a miss */
 const u8 *fc_peek(FatVol *v, u64 off, size_t *avail, int *err);      /* pointer into a cached page, valid until the next cache call */
-int  fc_dev_read(FatVol *v, u64 off, void *buf, size_t n);    /* uncached, aligned to the device sector */
 
 /* ---- fat_chain.c ---- */
 bool fat_valid_cluster(const FatVol *v, u32 c);
@@ -188,7 +187,6 @@ int  chain_prepare(FatNode *n);
 int  chain_fill(FatNode *n);
 int  chain_grow(FatNode *n, u32 count);
 int  chain_shrink(FatNode *n, u32 keep);
-u32  chain_clusters(const FatNode *n);
 
 /* ---- fat_name.c ---- */
 u32  fatn_fold(u32 cp);
@@ -220,7 +218,6 @@ void fatd_tree_free(FatNode *n);
 u32  fatd_dirsize(FatNode *d);
 int  fatd_write_dots(FatVol *v, u32 cluster, u32 parent_cluster, u64 now);
 int  fatd_set_dotdot(FatNode *d, u32 parent_cluster);
-bool fatd_is_empty(FatNode *d);
 
 /* shared helpers implemented in fat32.c */
 u32  fat_node_mode(const FatNode *n);

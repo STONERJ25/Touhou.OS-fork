@@ -115,6 +115,7 @@ static BlockDev *find_humanvillage(const char **how) {
         if (!candidate) continue;
         char label[16];
         if (!probe_fat_label(d, label) || !label_is_humanvillage(label)) continue;
+        if (!d->label[0]) strlcpy(d->label, label, sizeof d->label);       /* lsblk and blk_find_label() know it from now on */
         if (!found) { found = d; *how = "FAT volume label"; }
         else klog("Keine", "ignoring a second HUMANVILLAGE volume on %s", d->name);
     }

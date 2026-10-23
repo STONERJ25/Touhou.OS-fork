@@ -530,9 +530,9 @@ static ssize_t fat_read(VNode *vn, File *f, void *buf, size_t n, u64 off) {
 
 static ssize_t file_write_locked(FatNode *nd, const void *buf, size_t n, u64 off) {
     FatVol *v = nd->vol;
+    if (nd->flags & (FN_DAMAGED | FN_NOWRITE)) return -EIO;
     int rc = vol_begin_write(v);
     if (rc) return rc;
-    if (nd->flags & FN_DAMAGED) return -EIO;
     if (off >= FAT_MAX_FILE) return -EFBIG;
     if (n > FAT_MAX_FILE - off) n = (size_t)(FAT_MAX_FILE - off);
     rc = chain_prepare(nd);
@@ -980,6 +980,10 @@ static int fat_mount(const char *source, u32 flags, Mount *m) {
     m->root = rv;
     m->priv = v;
     v->last_op_ms = uptime_ms();
+    if (!dev->label[0] && v->label[0]) {                         /* let lsblk and blk_find_label() see the volume label */
+        strlcpy(dev->label, v->label, sizeof dev->label);
+        v->label_set = true;
+    }
 
     mutex_lock(&g_vols_lock);
     g_vols[slot] = v;
@@ -1000,11 +1004,12 @@ static void fat_unmount(Mount *m) {
     mutex_unlock(&g_vols_lock);
 
     mutex_lock(&v->lock);
+    if (v->orphans) vol_reap(v);                                 /* free the clusters of files unlinked while open */
     v->dying = true;
-    if (v->orphans) vol_reap(v);
     int rc = vol_sync(v, true);
     if (rc) klog("Keine", "%s: %s: could not write everything back to the device (%d) -- run a file system check", v->fstype, v->dev->name, rc);
     else if (!v->ro) klog("Keine", "%s: %s unmounted cleanly", v->fstype, v->dev->name);
+    if (v->label_set) v->dev->label[0] = 0;
     if (m->root) m->root->priv = NULL;                          /* the mount's own reference is dropped by the VFS afterwards */
     v->root->vn = NULL;
     fatd_tree_free(v->root);

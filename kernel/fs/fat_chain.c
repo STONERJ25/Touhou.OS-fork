@@ -350,10 +350,6 @@ int chain_map(FatNode *n, u64 byte_off, u32 ahead_bytes, u64 *disk_off, u64 *ava
     return 0;
 }
 
-u32 chain_clusters(const FatNode *n) {
-    return n->known;                    /* exact once FN_CHAIN_OK is set */
-}
-
 /* Walks a directory's chain to its end. No FAT directory can exceed 2 MiB, which bounds the walk (and a looping chain). */
 int chain_fill(FatNode *n) {
     if (n->flags & FN_CHAIN_OK) return 0;

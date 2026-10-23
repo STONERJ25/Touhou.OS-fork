@@ -119,8 +119,6 @@ static int dev_io(FatVol *v, bool write, u64 off, void *buf, size_t n) {
     return rc;
 }
 
-int fc_dev_read(FatVol *v, u64 off, void *buf, size_t n) { return dev_io(v, false, off, buf, n); }
-
 /* Reads up to `maxpages` consecutive missing pages starting at `key` with one request. */
 static int load_run(FatVol *v, u64 key, u32 maxpages) {
     u64 total_pages = (v->vol_bytes + FAT_PAGE - 1) / FAT_PAGE;

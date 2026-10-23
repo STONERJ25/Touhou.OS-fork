@@ -608,8 +608,3 @@ int fatd_set_dotdot(FatNode *d, u32 parent_cluster) {
     e[26] = (u8)parent_cluster; e[27] = (u8)(parent_cluster >> 8);
     return fc_write(v, off, e, sizeof e, FPC_META);
 }
-
-/* Reads the directory's contents without loading nodes: true if it has no entries besides "." and "..". */
-bool fatd_is_empty(FatNode *d) {
-    return d->dir && d->dir->count == 0;
-}
