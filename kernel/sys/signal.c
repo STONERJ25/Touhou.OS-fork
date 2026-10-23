@@ -193,6 +193,19 @@ void signal_pgrp(int pgid, int sig) {
     process_for_each(pgrp_cb, &a);
 }
 
+/* tcsetpgrp made `pgid` the foreground group of a terminal. Members that stopped because they wanted that terminal (SIGTTIN, SIGTTOU)
+ * have what they were waiting for, so they go on by themselves. A shell that hands the terminal over a little late (its child was
+ * already running and reached the first read or tcsetattr) would otherwise leave the child stopped for ever, and a shell that does
+ * send SIGCONT as well (fg) loses nothing: SIGCONT to a running process does nothing. A deviation from POSIX, see JOBCONTROL.md. */
+static void granted_cb(Process *p, void *ctx) {
+    if (p->pgid == *(int *)ctx && p->state == PROC_RUNNING && p->stopped && (p->stop_sig == SIGTTIN || p->stop_sig == SIGTTOU))
+        process_continue(p);
+}
+
+void pgrp_terminal_granted(int pgid) {
+    if (pgid > 0) process_for_each(granted_cb, &pgid);
+}
+
 /* Called with the frame that is about to return to user mode. */
 void signal_deliver(TrapFrame *tf) {
     Task *t = current;

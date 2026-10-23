@@ -388,12 +388,13 @@ static int term_seen_before(Term *t, const char *needle, size_t upto) {     /* .
 
 static void term_send(Term *t, const char *s) { write(t->mfd, s, strlen(s)); }
 
-enum { M_CTRLZ, M_BGREAD, M_BGREAD_IGN, M_TOSTOP, M_TOSTOP_IGN, M_BGTCSET, M_ORPHAN_EIO };
+enum { M_CTRLZ, M_BGREAD, M_BGREAD_IGN, M_TOSTOP, M_TOSTOP_IGN, M_BGTCSET, M_ORPHAN_EIO, M_LATE_FG };
 
 static void job_body(int mode) {
     char buf[256];
     switch (mode) {
     case M_CTRLZ:
+    case M_LATE_FG:
         for (;;) {
             ssize_t n = read(0, buf, sizeof buf);
             if (n <= 0) { dprintf(1, "jobeof\n"); _exit(7); }
@@ -462,9 +463,16 @@ static void pty_shell(const char *spath, int mode) {
         job_body(mode);
     }
     setpgid(pid, pid);
-    if (mode == M_CTRLZ) tcsetpgrp(0, pid);                 /* the job gets the terminal; the others run in the background */
-    dprintf(1, "RUN\n");
     int st;
+    if (mode == M_CTRLZ) tcsetpgrp(0, pid);                 /* the job gets the terminal; the others run in the background */
+    if (mode == M_LATE_FG) {                                /* a shell that hands the terminal over late: the job reads first */
+        nap(400);
+        pid_t r = waitpid(pid, &st, WUNTRACED | WNOHANG);
+        if (r == pid && WIFSTOPPED(st)) dprintf(1, "EARLY STOP sig=%d\n", WSTOPSIG(st));
+        else dprintf(1, "NO EARLY STOP r=%d\n", (int)r);
+        tcsetpgrp(0, pid);                                  /* no SIGCONT: being in front is all the job was waiting for */
+    }
+    dprintf(1, "RUN\n");
     for (;;) {
         pid_t r = waitpid(pid, &st, WUNTRACED | WCONTINUED);
         if (r < 0) { if (errno == EINTR) continue; dprintf(1, "WAITERR %d\n", errno); _exit(91); }
@@ -575,6 +583,22 @@ static void test_background_io(void) {
 
     sh = start_shell(&t, M_ORPHAN_EIO);
     CHECK(term_expect(&t, "ORPHAN READ=-1 errno=5", 10000));    /* an orphaned group gets EIO instead of SIGTTIN */
+    finish_shell(&t, sh);
+}
+
+static void test_late_foreground(void) {
+    SECTION("terminals: a job that reads before the shell has handed it the terminal stops, and goes on when it gets it");
+    Term t;
+    /* Shells fork the job and give it the terminal afterwards; if the job runs first it is a background process for a moment.
+     * It stops (SIGTTIN) and tcsetpgrp, which makes its group the foreground group, must be enough to wake it: no SIGCONT. */
+    pid_t sh = start_shell(&t, M_LATE_FG);
+    CHECK(term_expect(&t, "EARLY STOP sig=21", 10000));
+    CHECK(term_expect(&t, "CONTINUED", 10000));
+    term_send(&t, "hi\n");
+    CHECK(term_expect(&t, "job:hi", 10000));
+    term_send(&t, "\x04");
+    CHECK(term_expect(&t, "DONE code=7", 10000));
+    CHECK(!term_seen(&t, "NO EARLY STOP"));
     finish_shell(&t, sh);
 }
 
@@ -905,6 +929,7 @@ int main(void) {
     test_applets();
     test_ctrl_z();
     test_background_io();
+    test_late_foreground();
     test_orphaned_group();
     test_nice();
     test_links();

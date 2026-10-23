@@ -16,6 +16,7 @@ SECTIONS = [
     "kill -STOP / -CONT / -TSTP through the kappabox applet and the shell builtin; ps shows T",
     "terminals: Ctrl-Z stops the foreground job, the shell gets the terminal back, fg continues it",
     "terminals: background read (SIGTTIN), TOSTOP writes and tcsetattr (SIGTTOU), EIO for ignored or orphaned",
+    "terminals: a job that reads before the shell has handed it the terminal stops, and goes on when it gets it",
     "orphaned process groups: SIGHUP then SIGCONT for stopped members, stop signals dropped",
     "priorities: setpriority, getpriority, nice, renice, inheritance, and a polite process gets less CPU",
     "hard links: link(), st_nlink, one inode, unlink one name, the ln applet, errors",

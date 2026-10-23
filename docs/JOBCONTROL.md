@@ -78,6 +78,12 @@ terminal has a foreground group that still has members (otherwise nobody is a ba
 * `TOSTOP` is `0x20` in `c_lflag` (`<termios.h>` pulls it in from `abi.h`).
 * A process outside the terminal's session is never held up by its rules (daemons that inherited the console's descriptors
   keep writing).
+* **A late hand-over is harmless.** `tcsetpgrp(fd, pgid)` also continues the members of `pgid` that are stopped by `SIGTTIN`
+  or `SIGTTOU` (a stop for any other reason is left alone). A shell forks a job and gives it the terminal *afterwards*; when
+  the job gets to run first and reaches its first `read` or `tcsetattr` before that, it is a background process for a
+  moment, so it stops, and nobody has a reason to send it `SIGCONT`. This is not in POSIX (and `fg` still sends `SIGCONT`,
+  which then finds a running process and does nothing); it only closes a race that would otherwise hang the shell. The
+  clean way to avoid the race is in item 3 of the next section.
 
 ## /proc and ps
 
@@ -98,12 +104,16 @@ gapsh (or any shell) owns the terminal's job control; the kernel only provides t
    child: `setpgid(0, pgid)`; the first process of a pipeline is the group leader, `pgid = its pid`, the others join it) so
    that the group exists whichever side runs first. In the child, **before `exec`**, put the signals back to the default:
    `SIGINT`, `SIGQUIT`, `SIGTSTP`, `SIGTTIN`, `SIGTTOU`, `SIGCHLD` (an ignored signal stays ignored across `exec`).
-3. **A foreground job** gets the terminal: `tcsetpgrp(0, pgid)` (also in the child before `exec` if you want to be safe
-   against the race with the shell's reads). The shell then waits with `waitpid(-pgid, &st, WUNTRACED)` for each process of
-   the job: a stopped word means the job is stopped (`WSTOPSIG` says why: 20 is Ctrl-Z, 19 `kill -STOP`, 21 wanted input, 22
-   wanted to write). When the job has finished or stopped, take the terminal back with `tcsetpgrp(0, shell_pgid)`, restore
-   the shell's own terminal settings (save the job's with `tcgetattr` when it stops, so `fg` can restore them) and print
-   `[N]+  Stopped  command` (or `Done`/`Exit N`/`Terminated`) before the next prompt.
+3. **A foreground job** gets the terminal: `tcsetpgrp(0, pgid)` in the parent *and* in the child (in the first process of
+   the job, right after its `setpgid` and while `SIGTTOU` is still ignored, before `reset_signals` and `exec`). The parent's
+   call alone leaves a gap: after `fork` the child may run first, and a pager or editor that reaches its first `tcsetattr`
+   or `read` inside the gap is a background process, so it gets `SIGTTOU`/`SIGTTIN` and stops. The kernel releases such a
+   job when the parent's `tcsetpgrp` arrives (see "Terminals"), but a shell should not depend on that. The shell then waits
+   with `waitpid(-pgid, &st, WUNTRACED)` for each process of the job: a stopped word means the job is stopped (`WSTOPSIG`
+   says why: 20 is Ctrl-Z, 19 `kill -STOP`, 21 wanted input, 22 wanted to write). When the job has finished or stopped,
+   take the terminal back with `tcsetpgrp(0, shell_pgid)`, restore the shell's own terminal settings (save the job's with
+   `tcgetattr` when it stops, so `fg` can restore them) and print `[N]+  Stopped  command` (or `Done`/`Exit N`/`Terminated`)
+   before the next prompt.
 4. **`fg %N`**: print the command, `tcsetpgrp(0, job_pgid)`, restore the job's saved settings if it was stopped,
    `kill(-job_pgid, SIGCONT)`, then wait as in 3. **`bg %N`**: `kill(-job_pgid, SIGCONT)`, mark it running, print
    `[N]+ command &`; the terminal stays with the shell. A background job that wants the terminal stops itself with
@@ -131,7 +141,9 @@ read) leaves the shell waiting for ever. The call sites to change are `job_wait_
 the foreground simple command (`waitpid(pid, &status, 0)` after `tcsetpgrp(0, pid)`), the two pipeline waits and the
 `wait` builtin's neighbours in `builtins.c`; `jobs_reap` should add `WUNTRACED | WCONTINUED`; `jobs` prints only `Running`
 and needs `Stopped`; there is no `bg`, and `fg` has no `SIGCONT`. Until then, Ctrl-Z in a text console freezes the job and the
-prompt (the stopped job can still be killed from another terminal with `kill -9`: `SIGKILL` wakes it).
+prompt (the stopped job can still be killed from another terminal with `kill -9`: `SIGKILL` wakes it). Also missing is the
+child's own `tcsetpgrp` of item 3 (`run_simple` and the first stage in `run_pipeline` only call it in the parent); the
+kernel's rule that `tcsetpgrp` releases a job stopped for the terminal makes that harmless for now.
 
 Things a shell author may trip over: a pipeline's processes can report their stops in any order, a job is stopped when its
 processes are stopped, not when the first one is; `waitpid(pid, ..., WUNTRACED)` for an already collected stop returns 0
@@ -188,7 +200,8 @@ vulnerable copy of `su` alive after the owner replaced it.
 and `SA_NOCLDSTOP`, killing a stopped process, stop signals that are ignored, caught, blocked and discarded by `SIGCONT`,
 `SIGCONT` with a handler or blocked, `kill -STOP/-CONT/-TSTP` through the kappabox applet and `ps` showing `T`, Ctrl-Z
 through a pty (the stopped job does not take the shell's next line, `fg` continues it, ^D ends it), background read
-(`SIGTTIN`, `EIO` when ignored), `TOSTOP` writes, background `tcsetattr`, an orphaned group reading (`EIO`), the orphaned
+(`SIGTTIN`, `EIO` when ignored), `TOSTOP` writes, background `tcsetattr`, a job that reads before its shell has handed it the
+terminal (it stops, and `tcsetpgrp` alone releases it), an orphaned group reading (`EIO`), the orphaned
 group rule (`SIGHUP` + `SIGCONT` for a stopped member, nothing without one, `SIGTSTP` dropped, `SIGSTOP` kept), nice values
 (`setpriority`/`getpriority`/`nice`, clamping, `EACCES`/`EPERM`, inheritance, `renice`, `ps -l`, `PRIO_PGRP`, and the CPU
 share of a polite process), hard links (counts, shared data, unlink of one name, an unlinked open file, the applet, the
@@ -204,4 +217,7 @@ The manual pages are checked by `python tests/run_all.py manual` (`nice(1)`, `re
   `setpgid` does not check sessions or `exec` state.
 * Stopping is generated at `kill` time; a signal that is already pending when the process is stopped by another signal is
   delivered after the continue.
+* `tcsetpgrp` continues members of the new foreground group that were stopped by `SIGTTIN` or `SIGTTOU` (POSIX leaves them
+  stopped until `SIGCONT`); see "Terminals". It does not look at which terminal caused the stop, so a job stopped by
+  `kill -TTIN` is released the same way.
 * A stopped process still counts for `exit_group` races: a group exit or an `execve` wakes parked threads and they leave.

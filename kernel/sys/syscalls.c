@@ -159,6 +159,7 @@ static long sys_setsid(TrapFrame *tf) {
 
 static long sys_tcsetpgrp(TrapFrame *tf) {
     tty_console()->fg_pgid = (int)A0(tf);   /* legacy: libgap now uses ioctl(TIOCSPGRP) on the descriptor */
+    pgrp_terminal_granted(tty_console()->fg_pgid);
     return 0;
 }
 
