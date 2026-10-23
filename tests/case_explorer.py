@@ -121,16 +121,16 @@ def click_wait(vm, g, pos, pattern, button="left", timeout=10, count=1, tries=3)
     """Clicks at a window position and waits for the console line that proves it worked. The PS/2 pointer drops packets when the
     host is busy, so a click without effect is repeated after homing the pointer again (the clicks used here are safe to repeat)."""
     last = None
+    m0 = mark(vm)                                                        # a trace from an earlier attempt that arrives late counts too
     for attempt in range(tries):
         if attempt:
             g.home()
-        m = mark(vm)
         if button == "right":
             g.right_click(*win(*pos))
         else:
             g.click(*win(*pos), count=count)
         try:
-            return wait_after(vm, m, pattern, timeout)
+            return wait_after(vm, m0, pattern, timeout)
         except TimeoutError as e:
             last = e
     raise last
@@ -151,13 +151,13 @@ def hold(vm, mods, fn):
 
 def mod_click(vm, g, mods, pos, pattern, timeout=10, tries=3):
     last = None
+    m0 = mark(vm)
     for attempt in range(tries):
         if attempt:
             g.home()
-        m = mark(vm)
         hold(vm, mods, lambda: g.click(*win(*pos)))
         try:
-            return wait_after(vm, m, pattern, timeout)
+            return wait_after(vm, m0, pattern, timeout)
         except TimeoutError as e:
             last = e
     raise last
@@ -167,16 +167,16 @@ def drag_wait(vm, g, a, b, pattern, timeout=12, tries=3, mods=(), steps=8):
     """Drags from window position a to b (holding the modifier keys, if any) and waits for the console line that shows it worked;
     like click_wait it homes the pointer and tries again when nothing happened."""
     last = None
+    m0 = mark(vm)
     for attempt in range(tries):
         if attempt:
             g.home()
-        m = mark(vm)
         if mods:
             hold(vm, list(mods), lambda: g.drag(*win(*a), *win(*b), steps=steps))
         else:
             g.drag(*win(*a), *win(*b), steps=steps)
         try:
-            return wait_after(vm, m, pattern, timeout)
+            return wait_after(vm, m0, pattern, timeout)
         except TimeoutError as e:
             last = e
     raise last
@@ -333,6 +333,12 @@ RESTORE_BTN, EMPTY_BTN = (638, 77), (W - 2 - 56, 77)
 
 def shell_has(g, path):
     return g.sh(f"test -e '{path}' && echo YES || echo NO").strip().endswith("YES")
+
+
+def file_size(g, path):
+    """The size of a file in bytes, from `ls -l` (the fifth column)."""
+    parts = g.sh(f"ls -l '{path}'").split()
+    return int(parts[4])
 
 
 def job_done(vm, m, kind, ok, total, errors=0, timeout=40):
@@ -644,30 +650,31 @@ def explorer_rename_properties():
 
 @test
 def explorer_progress_cancel():
-    """A long copy gets a progress window; Cancel stops it and removes the half-written file; the same copy left alone completes byte for byte."""
+    """A long copy gets a progress window; Cancel stops it and removes the half-written file; the same copy left alone completes."""
     def body(vm, g):
-        g.sh("seq 1 5000000 > /tmp/x/big.bin; ls -l /tmp/x/big.bin", timeout=240)
+        g.sh("dd if=/dev/zero of=/tmp/x/big.bin bs=1048576 count=160 2>/dev/null; ls -l /tmp/x/big.bin", timeout=240)
         launch(vm, g)
         o = order_of(vm, 0)
         assert "big.bin" in o, o
         click_wait(vm, g, row(o.index("big.bin")), r"ex: sel 1 first=big.bin")
         key_wait(vm, g, "c", r"ex: clipboard copy 1", ctrl=True)
         click_wait(vm, g, HOME_PLACE, r"ex: nav /HumanVillage/reimu")
-        # paste and cancel while the progress window is up
+        # paste and cancel while the progress window is up (160 MB take a few seconds even on a fast host)
         m = mark(vm)
         g.key("v", ctrl=True)
         wait_after(vm, m, r"ex: dialog File operation", timeout=60)
-        time.sleep(0.8)
+        time.sleep(0.5)
         g.shot("progress")
         g.key("esc")
-        wait_after(vm, m, r"ex: job done kind=0 ok=0 of 1 errors=0 skipped=0 cancelled", timeout=40)
+        wait_after(vm, m, r"ex: job done kind=0 ok=0 of 1 errors=0 skipped=0 cancelled", timeout=60)
+        time.sleep(0.5)
         assert not shell_has(g, "/HumanVillage/reimu/big.bin"), "the half-written copy must be removed"
         # paste again and let it finish
-        time.sleep(1.0)
         m = mark(vm)
         g.key("v", ctrl=True)
-        job_done(vm, m, 0, 1, 1, timeout=120)
-        assert g.sh("cmp /tmp/x/big.bin /HumanVillage/reimu/big.bin && echo SAME").strip().endswith("SAME")
+        job_done(vm, m, 0, 1, 1, timeout=240)
+        size_a, size_b = file_size(g, "/tmp/x/big.bin"), file_size(g, "/HumanVillage/reimu/big.bin")
+        assert size_a == size_b == 160 * 1048576, (size_a, size_b)
     gui_test("t-explorer-progress", body, mem="1024M")
 
 

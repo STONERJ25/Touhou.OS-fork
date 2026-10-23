@@ -101,7 +101,7 @@ freed the moment it ends.
 `python tests/run_all.py explorer` (QEMU names `t-explorer-*`, about six minutes): `explorer_selftest` (123 checks of paths, formats,
 model, and the whole engine including `/tmp` against the home folder as two volumes), `explorer_navigate_sort`,
 `explorer_select_keys`, `explorer_netherworld`, `explorer_copy_move` (also a conflict question and the error list), `explorer_drag_drop`,
-`explorer_rename_properties`, `explorer_progress_cancel` (a 39 MB copy, cancelled and then completed), `explorer_big_folder` (3000
+`explorer_rename_properties`, `explorer_progress_cancel` (a 160 MB copy, cancelled and then completed), `explorer_big_folder` (3000
 files) and `explorer_open_apps`. The GUI tests read `ex:` lines from the console (`EXPLORER_TRACE=1`), look at the file system through
 the shell and at pixels, take their coordinates from the layout constants documented at the top of `tests/case_explorer.py`, repeat a
 click or drag whose effect does not show up (the pointer drops packets on a busy host), and run once more on a fresh VM before failing.
