@@ -43,7 +43,7 @@ A syntax error is reported as `(standard_in) 1: syntax error` (with the file nam
     echo 'scale=20; sqrt(2)' | bc
     echo 'obase=16; 255' | bc
     bc -l -e 'scale=50; 4*a(1)'
-    echo 'define f(n) { if (n < 2) return 1; return n * f(n - 1) }; f(30)' | bc
+    echo 'define f(n){if(n<2)return 1;return n*f(n-1)};f(30)' | bc
 
 # SEE ALSO
 expr(1)
