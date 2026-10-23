@@ -162,6 +162,17 @@ def audio_no_device():
 
 
 @test
+def audio_hda_graph():
+    """The HDA output planner picks the right pins, mixers, selectors and converters in invented Realtek-style codecs."""
+    with Qemu(cmdline="text", name="t-audio-graph") as vm:
+        vm.expect(test_shell.PROMPT, timeout=90)
+        out, rc = sh(vm, "hdatest")
+        assert rc == 0 and re.search(r"\d+ checks, 0 failed", out), out
+        for fixture in ("qemu hda-output", "alc662-like desktop", "alc255-like desktop", "alc255-like, internal speaker"):
+            assert fixture in out, f"{fixture!r} missing from:\n{out}"
+
+
+@test
 def audio_ac97_tone():
     """AC'97 fallback: a card without HDA works through the same /dev/audio, at the right pitch and level."""
     with Qemu(cmdline="text", name="t-audio-ac97", audio="ac97") as vm:

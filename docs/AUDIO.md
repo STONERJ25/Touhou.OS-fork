@@ -78,34 +78,64 @@ second, and the only stale sound it could ever repeat is what is still in the ri
 
 ## Intel HDA
 
-`kernel/drivers/audio/hda.c`. Polled; there are no interrupts and no MSI.
+Two files. `kernel/drivers/audio/hda.c` talks to the hardware; `hda_graph.c` / `hda_graph.h` is pure logic that decides
+from the codec's widget graph which pins to drive and how (it has no hardware or kernel calls, which is what lets
+`hdatest` run it against made-up codecs, see Tests). Polled; there are no interrupts and no MSI.
 
-1. PCI class 0x0403. Memory and bus master enabled; on Intel, traffic class 0 and snooped DMA (what Linux does).
-2. Controller reset, wait for the codec bits in `STATESTS`, CORB/RIRB set up (256 entries when the controller allows it).
-   The response flag in `RIRBSTS` is acknowledged after every command (QEMU stops reading commands until it is).
-3. For each codec: the audio function group is powered to D0, then every widget is read: type, capabilities, connection
-   list (short and long form, ranges), pin capabilities, pin default configuration, amplifier capabilities (with the
-   function group's values where the widget does not override them).
-4. Output pins are the ones the BIOS declared as line out, speaker or headphone and that are not "not connected". For each
-   a path pin <- (mixers, selectors) <- DAC is found by depth-first search, preferring a DAC no other pin uses. If the BIOS
-   declared nothing, any output-capable pin with a path is used (with a log line).
-5. Along every path: widgets that have power control go to D0, selectors and multi-input pins are pointed at the path,
-   mixer inputs other than the path's are muted, output amplifiers are unmuted at their 0 dB step, the pin is enabled
-   (`OUT_EN`, plus `HP_EN` on headphone drive capable pins) and its EAPD is switched on.
-6. One output stream, tag 1, 48 kHz 16-bit stereo, over a 256 KiB ring described by 16 buffer descriptors. All DACs used
-   by any enabled path listen to the same stream.
-7. Jack sensing (`GET_PIN_SENSE`, polled four times a second while playing): headphones plugged in silence the speaker
-   and the rear line out; a plugged line out silences the speaker. Pins without presence detect count as plugged.
+**Controller.** PCI class 0x0403; memory space and bus master are enabled (`pci_enable`), and on Intel the traffic class
+select (config 0x44) is cleared and the no-snoop bit (0x78 bit 11) turned off, as Linux does. The link is reset
+(`GCTL.CRST` low, at most 100 ms, 2 ms pause, high, at most 200 ms, 2 ms) and `STATESTS` is polled for up to a second for
+codecs to announce themselves; if none does, the reset is done once more. CORB and RIRB sizes come from the capability
+bits (256, 16 or 2 entries), the base address registers get the upper 32 bits only if `GCAP.OK64` is set (all DMA memory
+is below 4 GiB anyway), the read pointer reset handshake is done, and the response-count flag in `RIRBSTS` is acknowledged
+after every command (QEMU stops reading commands until it is). If the rings do not answer, the first command is retried
+through the immediate command registers (`ICOI/IRII/ICIS`) and those are used from then on. Three commands in a row without
+an answer mark the codec dead: the driver logs one line and gives up, so a missing or unpowered codec (the HDMI codec on a
+machine without a graphics driver, say) costs a fraction of a second and never hangs the boot. The stream position is read
+from LPIB; the DMA position buffer is switched on as well and takes over if LPIB stands still while the buffer moves.
 
-Failure is quiet: if a codec stops answering, if there is no analog output (an HDMI-only codec), or if the controller
-will not reset, the driver logs one `[Nitori]` line and `/dev/audio` does not appear. Nothing is ever played on a pin the
-BIOS marked unused, and the default master volume is moderate.
+**Codec.** For each present codec the audio function group is taken to D0 (polling the actual power state) and every widget
+is read into an `HdaGraph`: type and capabilities, connection list (short and long form, ranges), pin capabilities and
+default configuration, amplifier capabilities and PCM rates/sizes (the function group's values where the widget has no
+override of its own). `hda_plan_outputs()` then chooses:
 
-What has **not** been done: vendor specific coefficient programming (Realtek `COEF` tweaks some laptops need), GPIO
-controlled external amplifiers, digital (S/PDIF, HDMI) outputs, input streams (recording), power saving of idle widgets.
-The path logic follows the specification and Linux's generic parser, but it has only ever run against QEMU's simple
-codec. If the Dell's front or rear jack stays silent, `cat /proc/audio` lists the codec, each pin with its configuration
-word, whether a jack is sensed, the path chosen, and `dmesg | grep Nitori` shows what the driver decided.
+* Output pins: output capable, not marked "no physical connection", and declared by the BIOS as line out, speaker or
+  headphone. Of the line-out pins that share a default association (a 5.1 board's green, black and orange jacks) only
+  the one with the lowest sequence number is driven; the others would repeat the stereo signal. If the BIOS declared no
+  output at all, one pin of the device type "other" is tried, and `/proc/audio` says it is a guess.
+* For each pin a path pin <- mixers/selectors <- converter by depth-first search (at most 10 widgets deep, cycles and
+  dangling connections are skipped; pins are never stepping stones). The converter must be analog (not an S/PDIF/HDMI
+  converter) and able to do 16-bit 48 kHz PCM; one nobody else uses is preferred, and a selector (or a pin with several
+  sources) is never asked to pick two different inputs for two pins. Several pins may end up sharing a converter when the
+  graph leaves no choice; every converter that carries the stream listens to the same stream tag.
+
+`hda.c` then powers every widget on the paths (D0, polled), closes all inputs of every mixer on a path, selects the
+connections (`SET_CONNECT_SEL` on selectors and multi-input pins) and opens exactly the mixer/selector inputs the paths
+need (two pins may share a mixer: one path must not close the input the other uses), unmutes every output amplifier at its
+0 dB step, and switches the pins on (`OUT_EN`, plus `HP_EN` on headphone-drive capable headphone pins, plus EAPD where the
+pin has it). One output stream (tag 1, 48 kHz 16-bit stereo) loops over a 256 KiB ring described by 16 buffer descriptors;
+the converter format is read back after it is set and a mismatch is logged.
+
+**Jacks.** Pins that can sense a jack (presence detect, a jack or jack-and-fixed connection) are polled four times a second
+while sound plays. `hda_plan_automute()`: headphones plugged in switch the speaker and the line out off, a plugged line out
+switches the speaker off, pins that cannot sense count as plugged, and if that would leave every pin off they are all
+switched on (a silent machine because jack sensing is broken is worse than sound on an empty jack).
+
+**Failure is quiet and loud enough to diagnose.** A codec that stops answering, has no analog output, or a controller that
+will not reset gives one `[Nitori]` log line and no `/dev/audio`. `cat /proc/audio` prints the controller (streams, DMA width,
+command path, position source), the codec ids, every chosen pin with its configuration word, jack state and path, and every
+other pin with its configuration and capabilities; with that and `dmesg | grep Nitori` a silent jack on the real machine
+can be diagnosed without a debugger.
+
+**Not verified, not done.** Everything above ran only against QEMU's `hda-output` / `hda-duplex` (one converter, one pin);
+the Realtek-style trees in `hdatest` are invented, not recorded from a real machine, so they show that the planner copes
+with those shapes (mixers that add converters and input pins, selectors in front of pins, bidirectional pins, a digital
+converter, jack associations), not that it is right for the Dell's ALC3xxx. Never exercised: the immediate-command path
+(QEMU's rings always work), a controller with fewer than 256 ring entries, LPIB vs. position buffer disagreement, a real
+multi-codec machine, jack sensing and the auto-mute switch-over, EAPD, headphone amp enable. Not implemented: vendor
+specific coefficient programming (Realtek `COEF` tweaks some laptops and the headset-mode jacks need), GPIO controlled
+external amplifiers, digital outputs (S/PDIF, HDMI), input streams (recording), powering down idle widgets, more than
+two channels. The Intel PCI quirks above are from memory of Linux's `hda_intel.c`, not tested on a Kaby Lake PCH.
 
 ## Tests
 
@@ -130,7 +160,10 @@ Covered so far (all on QEMU's `hda-output`; `python tests/run_all.py audio_`):
 * `audio_no_device` -- no sound card: no `/dev/audio`, no `/proc/audio`, no `[Nitori]` log line, and `beep`, `play`
   and `volume` say "no sound device" with status 1; `beep -o file.wav` still works.
 
-Also `audio_ac97_tone` (the AC'97 path with a 22050 Hz 8-bit client as well).
+Also `audio_ac97_tone` (the AC'97 path with a 22050 Hz 8-bit client as well), and `audio_hda_graph`, which boots the guest and
+runs `hdatest` (source `tests/host/hdatest.c`, built as the guest program `user/bin/hdatest`; the Windows host has no C
+library headers to build it natively): 62 checks of the output planner on twelve codec descriptions, most of them invented
+Realtek-style trees (desktop and laptop shapes, a shared selector, loops, HDMI-only, a converter without 48 kHz, ...).
 
 Not covered yet: `hda-duplex`, the Jukebox, the system sounds in the desktop, the real Dell.
 
