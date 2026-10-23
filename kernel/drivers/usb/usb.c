@@ -720,6 +720,7 @@ typedef struct UsbJob {
 } UsbJob;
 
 static UsbJob *g_job_head, *g_job_tail;
+static Semaphore g_kick;                                /* posted by usb_call(); usbd's idle sleep (1 ms at most) ends early on it */
 static Task *g_usbd_task;
 static volatile bool g_usbd_up;
 
@@ -735,6 +736,7 @@ int usb_call(int (*fn)(void *arg), void *arg) {
     if (g_job_tail) g_job_tail->next = &job; else g_job_head = &job;
     g_job_tail = &job;
     irq_restore(f);
+    sem_post(&g_kick);                                  /* wake usbd now instead of at its next 1 ms tick: block requests are latency bound */
     sem_wait(&job.done);                                /* usbd's sem_post is its last access to the job */
     return job.result;
 }
@@ -842,7 +844,7 @@ static void usbd_main(void *arg) {
                 }
             }
         }
-        task_sleep_ms(1);
+        sem_wait_timeout(&g_kick, 1);                       /* the 1 ms poll tick, or sooner when a block request is waiting */
     }
 }
 
@@ -872,6 +874,7 @@ void usb_init(void) {
             }
         return;
     }
+    sem_init(&g_kick, 0);
     procfs_register("usb", gen_usb);
     procfs_register("usbstat", gen_usbstat);
     procfs_register("usbstorage", msc_describe);

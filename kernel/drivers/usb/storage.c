@@ -29,6 +29,7 @@
  *   stall:N                 send the N-th command wrapper with a damaged signature: the stick stalls the pipe (clear halt + reset recovery)
  *   drop:N                  the N-th command gets no answer at all (waits out the status timeout, then the stick counts as hung)
  *   notready:MS             every unit is taken to be "not ready" for its first MS milliseconds (a stick that takes its time)
+ *   maxlun:N                GET MAX LUN is taken to have answered N (QEMU's sticks always say 0, so several LUNs need this)
  */
 #include "usb.h"
 #include "blk.h"
@@ -50,7 +51,7 @@
 
 static u32 g_t_cbw = 3000, g_t_quick = 5000, g_t_csw = 5000, g_t_read = 15000, g_t_write = 30000, g_t_sync = 30000;
 static bool g_cfg_loaded, g_off, g_nosync, g_rw16;
-static u32 g_fault_csw, g_fault_stall, g_fault_drop, g_fault_notready, g_csw_count, g_cbw_count, g_stall_count;
+static u32 g_fault_csw, g_fault_stall, g_fault_drop, g_fault_notready, g_fault_maxlun, g_csw_count, g_cbw_count, g_stall_count;
 
 /* ---------------------------------------------------------------- state */
 
@@ -469,7 +470,7 @@ static int msc_io_one(MscLun *l, BlockDev *bd, u64 lba, u32 count, void *buf, bo
                 klog("Kappa", "usb-storage %s lun %u: the medium was taken out of %s", m->path, l->lun, bd->name);
                 lun_drop(l, LS_NOMEDIA, "medium removed");
                 recount();
-                return -ENXIO;
+                return -ENODEV;                                                 /* (what the libc can name; Linux would say "no medium found") */
             case SA_CHANGED:
                 klog("Kappa", "usb-storage %s lun %u: the medium was changed under %s (unit attention): the disk is dropped and probed again", m->path, l->lun, bd->name);
                 lun_drop(l, LS_START, "medium changed");
@@ -485,11 +486,11 @@ static int msc_io_one(MscLun *l, BlockDev *bd, u64 lba, u32 count, void *buf, bo
                 return -EIO;
             }
         }
-        if (fatal_rc(rc)) {                                                     /* timeout or unplugged: nothing more can be done for this stick */
-            if (rc == -ETIMEDOUT) msc_died(m, write ? "a write timed out" : "a read timed out");
-            return rc == -ETIMEDOUT ? -EIO : -ENODEV;
+        if (rc == -ETIMEDOUT) { msc_died(m, write ? "a write timed out" : "a read timed out"); return -EIO; }
+        if (rc == -ENODEV) {                                                    /* unplugged mid-transfer, or the reset recovery failed (it said so) */
+            msc_died(m, "the stick stopped answering or was pulled out");
+            return -ENODEV;
         }
-        if (rc == -ENODEV) return -ENODEV;                                      /* reset recovery failed: msc_garbage already said so */
         l->errors++;                                                            /* -EIO: recovery ran, ask again */
     }
     return -EIO;
@@ -519,10 +520,14 @@ static int msc_sync_one(MscLun *l, BlockDev *bd) {
             return -EIO;
         }
         if (rc == -ETIMEDOUT) { msc_died(m, "SYNCHRONIZE CACHE timed out"); return -EIO; }
-        if (rc == -ENODEV) return -ENODEV;
+        if (rc == -ENODEV) { msc_died(m, "the stick stopped answering or was pulled out"); return -ENODEV; }
         l->errors++;
     }
-    return -EIO;
+    /* The transfer itself went wrong twice (reset recovery ran each time): a stick that cannot do this one command is not asked again. The
+     * data was written; only the promise that it left the stick's cache is missing, so the write is not failed for it. */
+    klog("Kappa", "usb-storage %s: SYNCHRONIZE CACHE does not work on this stick; writes are no longer followed by one", m->path);
+    l->no_sync = true;
+    return 0;
 }
 
 /* ---------------------------------------------------------------- bring-up of one LUN */
@@ -690,6 +695,7 @@ static void lun_step(Msc *m, MscLun *l) {
             break;
         }
         if (r == RDY_WAIT) {
+            if (l->state == LS_NOMEDIA) { l->state = LS_WAIT; l->started_at = now; }      /* a medium went in and is spinning up: the clock for "not ready" starts now */
             if (now - l->started_at > READY_TIMEOUT_MS) {
                 klog("Kappa", "usb-storage %s lun %u: \"%s\" did not become ready within %d seconds -- given up on", m->path, l->lun, l->model, READY_TIMEOUT_MS / 1000);
                 lun_drop(l, LS_FAILED, "did not become ready");
@@ -776,6 +782,7 @@ static int msc_probe(UsbDevice *dev, UsbInterface *intf) {
         if (dev->broken || rc == -ENODEV || rc == -ETIMEDOUT) return -ENODEV;
         maxlun = 0;                                                             /* a stall means "one LUN" (the specification allows it) */
     }
+    if (g_fault_maxlun) maxlun = (u8)g_fault_maxlun;                            /* test aid: QEMU's stick always says "one LUN" */
     unsigned nlun = (unsigned)maxlun + 1;
     if (maxlun > 15) {                                                          /* more than the protocol can address: the stick lies */
         klog("Kappa", "usb-storage %s: GET MAX LUN answered %u (the limit is 15) -- taken to mean one LUN", dev->path, maxlun);
@@ -826,7 +833,7 @@ static void msc_disconnect(UsbDevice *dev, UsbInterface *intf) {
         if (l->state != LS_GONE) lun_drop(l, LS_GONE, "unplugged");
     }
     recount();
-    if (had_disk) klog("Kappa", "usb-storage %s: the stick was pulled out -- whatever was not written to it is lost, and its disks are gone from /dev", m->path);
+    if (had_disk || m->ever_online) klog("Kappa", "usb-storage %s: the stick was pulled out -- whatever was not written to it is lost, and its disks are gone from /dev", m->path);
     else usb_dbg("usb %s: mass storage device gone", m->path);
     if (!m->ever_online) {                                                      /* no BlockDev points into it: safe to free */
         for (Msc **pp = &g_msc; *pp; pp = &(*pp)->next)
@@ -957,6 +964,7 @@ static void cfg_load(void) {
             else if (klen == 5 && !strncmp(p, "stall", 5)) g_fault_stall = n;
             else if (klen == 4 && !strncmp(p, "drop", 4)) g_fault_drop = n;
             else if (klen == 8 && !strncmp(p, "notready", 8)) g_fault_notready = n;
+            else if (klen == 6 && !strncmp(p, "maxlun", 6)) g_fault_maxlun = n;
             p = comma && comma >= q ? comma + 1 : q;
             if (p == q && *p) break;
         }

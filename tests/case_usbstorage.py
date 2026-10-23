@@ -434,6 +434,78 @@ def usbstor_internal_disk_wins():
         assert s.sha() == hs0
 
 
+@test
+def usbstor_removable_media():
+    """A card reader: the medium is taken out (the disk and its partitions vanish, the unit is asked every two seconds), put back (the
+    disk is registered again), and swapped for another one under an online disk (unit attention: dropped and probed again)."""
+    data_parts = [dict(name="DATA", kind="fat32", size="rest", label="MYSTUFF", files={"/photos/a.jpg": b"jpeg" * 1000})]
+    with Image("usbs-rm-a", 100 * MIB, data_parts) as a, Image("usbs-rm-b", 50 * MIB, data_parts) as b:
+        front = open(a.path, "rb").read(MIB)
+        extra = XHCI + stick(a, n=1, attach=False) + stick(b, n=2, attach=False) + [
+            "-device", "usb-bot,id=bot1,bus=xhci.0", "-device", "scsi-hd,bus=bot1.0,drive=stick1,id=hd1,removable=on,scsi-id=0,lun=0"]
+        with boot(None, root=True, name="t-usbs-removable", extra=extra) as (g, vm):
+            assert re.search(r"^sdb\s+100M\s+0\s+disk\s+usb-storage", g.ok("lsblk"), re.M)
+            assert sha(front) in g.ok("dd if=/dev/sdb bs=1M count=1 2>/dev/null | sha256sum")
+            # the medium is taken out
+            mark = len(vm.text())
+            vm.qmp("eject", id="hd1", force=True)
+            out, _ = g.run("dd if=/dev/sdb of=/dev/null bs=512 count=1 2>&1")
+            assert re.search(r"No such device or address|Input/output error|No such device", out), out
+            wait_log(vm, r"usb-storage \S+ lun 0: the medium was taken out of sdb", timeout=60, since=mark)
+            wait_log(vm, r"blk: sdb removed together with sdb1", timeout=30, since=mark)
+            out = g.ok("lsblk; cat /proc/usbstorage")
+            assert not re.search(r"^sdb\s", out, re.M) and "no medium" in out, out
+            # it comes back (the unit is polled every two seconds)
+            mark = len(vm.text())
+            vm.qmp("blockdev-change-medium", id="hd1", filename=str(a.path), format="raw")
+            wait_log(vm, r"usb-storage \S+ lun 0: \"QEMU QEMU HARDDISK\", 100 MiB in 512-byte blocks, writable -- carried over the river as sdb", timeout=90, since=mark)
+            out = g.ok("lsblk")
+            assert re.search(r"^sdb\s+100M\s+0\s+disk", out, re.M) and re.search(r"^sdb1\s+\S+\s+0\s+part\s+DATA", out, re.M), out
+            assert sha(front) in g.ok("dd if=/dev/sdb bs=1M count=1 2>/dev/null | sha256sum")
+            # another medium goes in under an online disk: the next request notices (unit attention), the disk is registered afresh
+            mark = len(vm.text())
+            vm.qmp("blockdev-change-medium", id="hd1", filename=str(b.path), format="raw")
+            g.run("dd if=/dev/sdb of=/dev/null bs=512 count=1 2>&1")
+            wait_log(vm, r"usb-storage \S+ lun 0: the medium was changed under sdb", timeout=60, since=mark)
+            wait_log(vm, r"usb-storage \S+ lun 0: \"QEMU QEMU HARDDISK\", 50 MiB in 512-byte blocks, writable -- carried over the river as sdb", timeout=90, since=mark)
+            assert re.search(r"^sdb\s+50M\s+0\s+disk", g.ok("lsblk"), re.M)
+            no_incident(vm)
+            g.ok("sync")
+            g.poweroff()
+        assert a.sha() == a.sha() and file_sha(a.path) == a.sha()
+
+
+@test
+def usbstor_empty_lun_slots():
+    """GET MAX LUN says 2 (QEMU's stick has one real LUN, and cannot present more: usb-bot hangs the firmware with two): the three slots
+    are brought up independently, LUN 0 becomes sdb and is mounted, the empty slots are skipped without a fuss."""
+    with stick_image("usbs-lun0") as a:
+        with boot(None, root=True, cmdline="usbstorage.fault=maxlun:2", name="t-usbs-luns", extra=XHCI + stick(a)) as (g, vm):
+            out = g.ok("lsblk")
+            assert re.search(r"^sdb\s+100M\s+0\s+disk\s+usb-storage", out, re.M) and not re.search(r"^sdc\s", out, re.M), out
+            out = g.ok("cat /proc/usbstorage")
+            assert "3 LUNs" in out and re.search(r"lun 0: online .* sdb 204800 x 512 rw", out), out
+            assert len(re.findall(r"lun [12]: given up \(no device at this LUN\)", out)) == 2, out
+            assert "/dev/sdb2 on /HumanVillage" in g.ok("mount")
+            no_incident(vm)
+            g.poweroff()
+        a.check()
+
+
+@test
+def usbstor_driver_off():
+    """usbstorage=off: the stick is listed by lsusb without a driver, no disk appears, nothing is mounted or written."""
+    with stick_image("usbs-off") as img:
+        h0 = img.sha()
+        with boot(None, root=True, cmdline="usbstorage=off", name="t-usbs-off", extra=XHCI + stick(img)) as (g, vm):
+            wait_log(vm, r"usb 1-\d+: new \S+ device 46f4:0001", timeout=60)
+            assert "usb-storage: disabled on the kernel command line (usbstorage=off)" in vm.text()
+            assert re.search(r"If 0: class 08/06/50, 2 endpoints, driver none", g.ok("lsusb"))
+            assert "sdb" not in g.ok("cat /proc/partitions") and "HumanVillage" not in g.ok("mount")
+            g.poweroff()
+        assert img.sha() == h0
+
+
 # ---------------------------------------------------------------------------------------------------------------------
 # block size, time stamps
 
