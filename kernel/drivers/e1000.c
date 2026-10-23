@@ -333,8 +333,8 @@ static void e_probe(PciDev *p, int kind, bool ulp, const char *name) {
     udelay(10000);
     if (e->pch) {
         wr(e, R_CTRLEXT, rr(e, R_CTRLEXT) | CTRLEXT_DRV_LOAD);     /* "a driver owns this card now" */
-        if (e->ulp) pch_leave_ulp(e, "eth");
-        pch_phy_check(e, "eth");
+        if (e->ulp) pch_leave_ulp(e, name);
+        pch_phy_check(e, name);
         (void)rr(e, R_ICR);
     } else {                                                       /* a global reset gives a known starting point on the QEMU models */
         wr(e, R_CTRL, rr(e, R_CTRL) | CTRL_RST);
