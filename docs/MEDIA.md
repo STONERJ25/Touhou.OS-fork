@@ -76,24 +76,28 @@ large photograph is decoded in full (a 24 megapixel 4:2:0 JPEG needs about 36 MB
 * `zip [-rjqv0-9] ARCHIVE FILE... [-x PAT...]`, `unzip [-ltpoqn] [-d DIR] ARCHIVE [MEMBER...]`: store and deflate, directories, symlinks, Unix modes,
   DOS time plus the UTC timestamp extension; bounds-checked reading with CRC and size verification; no zip64, encryption or spanning. `zip` refuses
   to add to an existing archive.
-* `imginfo [-s] FILE...`: format, size, alpha, frames, bytes; `-s` adds the CRC-32 of the decoded pixels (red, green, blue, alpha bytes in reading order).
+* `imginfo [-s] [-t] FILE...`: format, size, alpha, frames, bytes; `-s` adds the CRC-32 of the decoded pixels (red, green, blue, alpha bytes in reading order),
+  `-t` the time the decoding took in milliseconds.
 * `convert [-resize WxH | -fit WxH | -scale N] [-rotate 90|180|270] [-flip] [-flop] [-level N] [-background RRGGBB] IN OUT`: PNG, BMP or PPM out.
 * `wallpaper [-m cover|fit|center|tile|stretch] IMAGE`, `wallpaper -c`, `wallpaper`: see below.
 * `screenshot [-d SECONDS] [FILE]`: see below.
 
 `SYS_utimes` (82): `utimes(path, struct gtimespec times[2] or NULL, flags)` with `UTIME_NOW` / `UTIME_OMIT` in `tv_nsec` like `utimensat()`. The caller
-must own the file (or be root); "now" for both only needs write permission. It sets the vnode's `atime`/`mtime`; a filesystem that stores times on disk
-should write them from the vnode when it flushes. libgap: `utime()`, `utimes()`, `lutimes()` in `<utime.h>`.
+must own the file (or be root); "now" for both only needs write permission. It sets the vnode's `atime`/`mtime` and then calls the filesystem's optional
+`VNodeOps.settimes(vnode, atime, mtime)` hook, which a filesystem that keeps its own copy of the times must implement: the FAT driver does (the times go into
+its node and the directory entry, at FAT's resolution of two seconds for the modification time), tmpfs needs nothing. libgap: `utime()`, `utimes()`,
+`lutimes()` in `<utime.h>`.
 
 ## The Gensokyo Gallery (`gallery`)
 
 Start menu: "Gensokyo Gallery" (Programs). `gallery [FILE | FOLDER]`: opens the picture (and walks the pictures of its folder, sorted by name with numbers
-compared as numbers) or the first picture of the folder; with nothing it opens `~/Pictures` if there is one, and Ctrl+O opens any other. The Explorer
+compared as numbers) or the first picture of the folder; with nothing it opens the newest picture in `~/Pictures` if there is one (screenshots are named by
+date, so that is the latest one), and Ctrl+O opens any other. The Explorer
 (not merged yet) should start it with `execv("/bin/gallery", {"gallery", path, NULL})`; there is no file-type association table in the system yet.
 
 * Navigation: Left/Right, PageUp/PageDown, Backspace/Space, Home/End (wraps around). Zoom: `+`/`-`, the wheel around the pointer, `0`/`F` fit
   (shrinks, never enlarges), `1` 100%, `2`..`4` 200% to 400%; double-click toggles fit and 100%; dragging pans. `R`/`L` rotate, `H`/`V` flip (the file is never
-  changed). `F5`/`S` slideshow (`--slideshow SECONDS`, Esc stops it). `W` makes the picture the wallpaper. `I` shows details. Menu bar and toolbar do the
+  changed). `F5`/`S` slideshow (`--slideshow SECONDS`, Esc stops it). `W` makes the picture the wallpaper (with the placement chosen before, `cover` at first). `I` shows details. Menu bar and toolbar do the
   same; the status bar shows name, size, format, bytes, position in the folder and zoom.
 * Animated GIFs play with their own delays. Transparent pictures sit on a checkerboard. A picture that cannot be decoded is explained in the window and the status bar
   (and in the `--trace` log) and the next one can still be opened. Big files show a "Loading..." frame first.
@@ -107,6 +111,8 @@ compared as numbers) or the first picture of the folder; with nothing it opens `
 every second and redraws when either changes; `hakurei-lock` uses the same setting, and the login screen (nobody is signed in) uses `/etc/hakurei/wallpaper`
 if it exists. When nothing is configured, or the picture cannot be read, the procedural night scene (`k_scenery_night`) is drawn, so a missing file never
 leaves a black desktop. The picture is decoded once, scaled to the screen size (area average when shrinking), and the original freed.
+Three ways to set it: the `wallpaper` command, "Set as wallpaper" in the Gallery (`W`), and the Control Panel's Appearance pane ("Wallpaper": choose a picture
+with the file dialog, a radio button per mode, "Night scene" to go back).
 
 ## Screenshots
 
@@ -134,17 +140,19 @@ cache between frames (one `k_image_thumbnail` per idle iteration), because decod
 
 * `python tests/run_all.py media` runs the guest tests (`tests/case_media.py`; the host makes every test file with Pillow, `zlib`, `tarfile`, `zipfile` and the hand-written
   encoders in `tests/imgdata.py`, and puts them in a copy of the initrd; results come back as base64 over the serial console):
-  * `media_decoders`: 85 pictures (every PNG colour type and depth, plain and Adam7, with and without tRNS, specified independently of the decoder; JPEG in every sampling,
-    baseline and progressive, gray, EXIF orientations; GIF static, transparent, interlaced and animated; BMP including RLE8 and 565 top-down; PNM P1 to P6 and 16-bit; TGA raw
-    and RLE). `imginfo -s` must agree with the reference on format, size, alpha, frame count and the CRC of the pixels.
+  * `media_decoders`: 101 pictures (every PNG colour type and depth, plain and Adam7, with and without tRNS, specified independently of the decoder; JPEG in every sampling
+    (4:4:4, 4:2:2, 4:2:0 from Pillow; 4:4:0, 4:1:1, 4:1:0 and mixed layouts from the small encoder in `tests/jpegenc.py`), with restart markers, baseline and progressive, gray,
+    pictures only one to five pixels wide, EXIF orientations; GIF static, transparent, interlaced and animated; BMP including RLE4, RLE8 and 565 top-down; PNM P1 to P6 and 16-bit;
+    TGA raw and RLE). `imginfo -s` must agree with the reference on format, size, alpha, frame count and the CRC of the pixels.
   * `media_encoders`: `convert` writes PNG (levels 0, 1, 6, 9), BMP, PPM, rotates, flips and scales; Pillow reads every result and finds the expected pixels.
-  * `media_hostile_files`: 152 truncated, bit-flipped and absurd files; `imginfo` must answer 0 or 1 for each, and the kernel log must not gain a fault.
+  * `media_hostile_files`: about 150 truncated, bit-flipped and absurd files; `imginfo` must answer 0 or 1 for each, and the kernel log must not gain a fault.
   * `media_archives`: tar (GNU, pax, ustar), tgz, zip, gzip made on the host unpack in the guest with the right bytes, modes, times and symlinks; archives made in the guest are
     read by `tarfile`, `zipfile` and `gzip`; corrupt and truncated archives are refused.
+  * `media_utimes_fat`: `tar -x` and `unzip` restore times on a FAT volume (a disk image from `tools/mkdisk.py`); the independent FAT checker reads them back from the image.
   * `media_thumbnails`, `media_gallery` (opens, walks a folder, zooms, rotates, flips, plays a GIF, runs a slideshow, sets the wallpaper, reports a broken file), `media_screenshot`
-    (Ctrl+F12, the `screenshot` command, every wallpaper mode).
+    (Ctrl+F12, the `screenshot` command, every wallpaper mode), `media_panel_wallpaper` (the Control Panel's placement buttons, "Night scene" and the file dialog).
 * `tests/host/imgtest.py` (Linux or WSL with gcc, AddressSanitizer and Pillow; not part of `run_all.py`) builds libimg with `-fsanitize=address,undefined` and compares it with Pillow on
-  thousands of files; `ONLY=fuzz FUZZ_N=6000 FUZZ_SEED=7 python3 tests/host/imgtest.py` is the long hostile-input run (every mutation of the 90-odd corpus files must be decoded or refused cleanly).
+  thousands of files; `ONLY=fuzz FUZZ_N=6000 FUZZ_SEED=7 python3 tests/host/imgtest.py` is the long hostile-input run (every mutation of the 100-odd corpus files must be decoded or refused cleanly).
   `tests/host/ztest.py` does the same for libz against Python's `zlib` and `gzip` (0 failures: 11 inputs x levels 0, 1, 3, 6, 9 x raw, zlib, gzip x three buffer sizes, Python-made streams,
   450 corrupted streams).
 

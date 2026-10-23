@@ -1,5 +1,9 @@
 /* The System, Display, Devices, Power and Appearance panes. */
 #include "panel.h"
+#include <kappa_media.h>
+#include <img.h>
+#include <limits.h>
+#include <sys/stat.h>
 #include <fcntl.h>
 #include <gensokyo.h>
 #include <stdio.h>
@@ -316,6 +320,61 @@ static void clock_toggled(void) {
     }
 }
 
+/* ~/.config/hakurei/wallpaper (see kappa_media.h): the picture behind the windows; hakurei-shell notices a change within a second. */
+static KWallConfig g_wall;
+static bool g_wall_have, g_wall_loaded;
+static char g_wall_note[200];
+
+static void wall_save(const char *path, KWallMode mode) {
+    int rc = k_wallpaper_set(path, mode);
+    if (rc) snprintf(g_wall_note, sizeof g_wall_note, "Could not save the wallpaper setting: %s", strerror(-rc));
+    else if (path) snprintf(g_wall_note, sizeof g_wall_note, "Wallpaper set (%s). The desktop changes it within a moment.", k_wall_mode_name(mode));
+    else snprintf(g_wall_note, sizeof g_wall_note, "The wallpaper is Reimu's night scene again.");
+    g_wall_loaded = false;
+    trace("kappa-panel: wallpaper %s %s", path ? path : "(none)", k_wall_mode_name(mode));
+}
+
+static void wall_chosen(const char *path, void *user) {
+    (void)user;
+    if (!path) return;
+    ImgInfo info;
+    int r = img_probe_file(path, &info);
+    if (r) { snprintf(g_wall_note, sizeof g_wall_note, "%s: %s", path, img_strerror(r)); return; }
+    char full[PATH_MAX];
+    if (!realpath(path, full)) snprintf(full, sizeof full, "%s", path);
+    KWallConfig old;
+    wall_save(full, k_wallpaper_config(&old) ? old.mode : KW_COVER);
+}
+
+/* Three rows: the picture, the two buttons, the five placements, then the last result. Returns the y below the group. */
+static int wallpaper_group(KUI *ui, KRect b, int y) {
+    KCanvas *cv = &ui->cv;
+    const int gh = 136;
+    if (!g_wall_loaded) { g_wall_have = k_wallpaper_config(&g_wall); g_wall_loaded = true; }
+    k_group(ui, kr(b.x + 6, y, b.w - 12, gh), "Wallpaper");
+    char line[700];
+    snprintf(line, sizeof line, "Picture: %s", g_wall_have ? g_wall.path : "the built-in night scene");
+    kc_text_in(cv, kr(b.x + 24, y + 22, b.w - 48, 18), line, ui->theme->text, KA_LEFT);
+    if (k_button(ui, kr(b.x + 24, y + 46, 150, 26), "Choose picture...")) {
+        char start[600];
+        const char *home = getenv("HOME");
+        snprintf(start, sizeof start, "%s/Pictures", home ? home : "");
+        struct stat st;
+        if (!home || stat(start, &st) < 0) snprintf(start, sizeof start, "%s", home ? home : "/");
+        k_file_dialog(P.app, 0, "Choose a wallpaper", start, NULL, wall_chosen, NULL);
+    }
+    if (k_button(ui, kr(b.x + 182, y + 46, 150, 26), "Night scene") && g_wall_have) wall_save(NULL, KW_COVER);
+    int mode = g_wall_have ? (int)g_wall.mode : (int)KW_COVER, x = b.x + 24 + kc_text_width("Placement:") + 14;
+    kc_text(cv, b.x + 24, y + 83, "Placement:", ui->theme->text_dim);
+    static const char *const labels[] = { "Cover", "Fit", "Center", "Tile", "Stretch" };
+    for (int i = 0; i < 5; i++) {
+        if (k_radio(ui, x, y + 83, labels[i], &mode, i) && g_wall_have && mode != (int)g_wall.mode) wall_save(g_wall.path, (KWallMode)mode);
+        x += kc_text_width(labels[i]) + 42;
+    }
+    if (g_wall_note[0]) draw_wrapped(ui, b.x + 24, y + 108, b.w - 48, g_wall_note, ui->theme->accent_dark);
+    return y + gh;
+}
+
 void pane_appearance(KUI *ui, KRect pane) {
     KCanvas *cv = &ui->cv;
     draw_heading(ui, pane, KI_SKETCH, "Appearance", "How HakureiDE looks, and the clock");
@@ -327,6 +386,21 @@ void pane_appearance(KUI *ui, KRect pane) {
         P.conf_loaded = true;
     }
     int x = b.x + 12, y = b.y + 8;
+    y = wallpaper_group(ui, b, y) + 8;                                            /* the settings come first; the theme description may be cut off in a small window */
+
+    int gh = 128;
+    k_group(ui, kr(b.x + 6, y, b.w - 12, gh), "Clock");
+    bool before = P.clock24;
+    k_checkbox(ui, b.x + 24, y + 26, "Show the time in 24-hour format (14:30 instead of 2:30 PM)", &P.clock24);
+    if (P.clock24 != before) clock_toggled();
+    char path[300] = "", line[420];
+    conf_path(path, sizeof path);
+    snprintf(line, sizeof line, "Kept in %s as clock24=%d. Sakuya's Pocket Watch follows this at once; the desktop panel will adopt it later.",
+             path[0] ? path : "~/.config/hakurei.conf", P.clock24 ? 1 : 0);
+    int th = draw_wrapped(ui, b.x + 24, y + 50, b.w - 48, line, ui->theme->text_dim);
+    if (P.conf_note[0]) draw_wrapped(ui, b.x + 24, y + 54 + th, b.w - 48, P.conf_note, ui->theme->accent_dark);
+    y += gh + 14;
+
     kc_text_bold(cv, x, y, "Theme: Shrine", ui->theme->accent_dark);
     y += 22;
     y += draw_wrapped(ui, x, y, b.w - 24, "Washi paper windows, shrine red accents, night blue panels. Hover over a colour to see where it is used.", ui->theme->text_dim) + 6;
@@ -345,19 +419,7 @@ void pane_appearance(KUI *ui, KRect pane) {
         if (k_hover(ui, cell)) k_tooltip_text(ui, k_palette[i].role);
     }
     y += ((int)(sizeof k_palette / sizeof k_palette[0]) + cols - 1) / cols * 40 + 6;
-    y += draw_wrapped(ui, x, y, b.w - 24,
-                      "Text is an 8x16 bitmap font drawn without smoothing. Changing themes is not possible yet; this page only "
-                      "describes the one that is installed.", ui->theme->text_dim) + 14;
-
-    int gh = 128;
-    k_group(ui, kr(b.x + 6, y, b.w - 12, gh), "Clock");
-    bool before = P.clock24;
-    k_checkbox(ui, b.x + 24, y + 26, "Show the time in 24-hour format (14:30 instead of 2:30 PM)", &P.clock24);
-    if (P.clock24 != before) clock_toggled();
-    char path[300] = "", line[420];
-    conf_path(path, sizeof path);
-    snprintf(line, sizeof line, "Kept in %s as clock24=%d. Sakuya's Pocket Watch follows this at once; the desktop panel will adopt it later.",
-             path[0] ? path : "~/.config/hakurei.conf", P.clock24 ? 1 : 0);
-    int th = draw_wrapped(ui, b.x + 24, y + 50, b.w - 48, line, ui->theme->text_dim);
-    if (P.conf_note[0]) draw_wrapped(ui, b.x + 24, y + 54 + th, b.w - 48, P.conf_note, ui->theme->accent_dark);
+    draw_wrapped(ui, x, y, b.w - 24,
+                 "Text is an 8x16 bitmap font drawn without smoothing. Changing themes is not possible yet; this page only "
+                 "describes the one that is installed.", ui->theme->text_dim);
 }

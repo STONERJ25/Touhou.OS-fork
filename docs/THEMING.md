@@ -26,7 +26,7 @@ All art is original or procedurally generated. No assets are extracted from the 
 | Yuyuko | out of memory, trash | hungry; the Netherworld takes deleted files |
 | Fairies | compositor / window server | three fairies of light hold the pixels |
 | Patchouli | documentation (`patchouli` command, man pages) | the library |
-| Aya | Bunbunmaru News | the reporter |
+| Aya | Bunbunmaru News, screenshots (`[aya] Aya took a photo of the screen`) | the reporter and her camera |
 
 ## Versions
 

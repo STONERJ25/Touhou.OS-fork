@@ -47,14 +47,21 @@ static uint32_t pixel_crc(const Image *im) {
     return crc;
 }
 
+static unsigned long now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (unsigned long)ts.tv_sec * 1000UL + (unsigned long)ts.tv_nsec / 1000000UL;
+}
+
 APPLET(imginfo) {
-    int sum = 0, c, rc = 0;
+    int sum = 0, timing = 0, c, rc = 0;
     optind = 1;
-    while ((c = getopt(argc, argv, "s")) != -1) {
+    while ((c = getopt(argc, argv, "st")) != -1) {
         if (c == 's') sum = 1;
-        else { fprintf(stderr, "usage: imginfo [-s] FILE...\n"); return 2; }
+        else if (c == 't') timing = 1;
+        else { fprintf(stderr, "usage: imginfo [-s] [-t] FILE...\n"); return 2; }
     }
-    if (optind >= argc) { fprintf(stderr, "usage: imginfo [-s] FILE...\n"); return 2; }
+    if (optind >= argc) { fprintf(stderr, "usage: imginfo [-s] [-t] FILE...\n"); return 2; }
     for (int i = optind; i < argc; i++) {
         uint8_t *data;
         size_t len;
@@ -64,11 +71,14 @@ APPLET(imginfo) {
         if (r) { printf("%s: error: %s\n", argv[i], img_strerror(r)); rc = 1; free(data); continue; }
         printf("%s: %s %dx%d %s %d frame%s, %zu bytes", argv[i], img_format_name(info.format), info.width, info.height,
                info.has_alpha ? "alpha" : "opaque", info.frames, info.frames == 1 ? "" : "s", len);
-        if (sum) {
+        if (sum || timing) {
             Image im;
+            unsigned long t0 = now_ms();
             r = img_decode(data, len, &im);
+            unsigned long took = now_ms() - t0;
             if (r) { printf(", error: %s\n", img_strerror(r)); rc = 1; free(data); continue; }
-            printf(", crc32 %08x", pixel_crc(&im));
+            if (sum) printf(", crc32 %08x", pixel_crc(&im));
+            if (timing) printf(", decoded in %lu ms", took);
             img_free(&im);
         }
         putchar('\n');

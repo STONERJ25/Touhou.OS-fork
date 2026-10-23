@@ -363,7 +363,7 @@ static int make_parents(const char *path) {
         *s = 0;
         struct stat st;
         if (lstat(tmp, &st) == 0) {
-            if (S_ISLNK(st.st_mode)) { *s = '/'; return -1; }
+            if (S_ISLNK(st.st_mode)) { *s = '/'; errno = 0; return -1; }       /* errno 0: the caller says "refusing to extract through a symbolic link" */
             if (!S_ISDIR(st.st_mode)) { *s = '/'; errno = ENOTDIR; return -1; }
         } else if (mkdir(tmp, 0777 & ~g_umask) < 0 && errno != EEXIST) { *s = '/'; return -1; }
         *s = '/';

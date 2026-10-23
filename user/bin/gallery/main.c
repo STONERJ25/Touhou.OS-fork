@@ -68,6 +68,7 @@ typedef struct {
     uint64_t next_slide_ms;
     /* misc */
     bool info, trace;
+    int tick_ms;
     char status[240];
     uint64_t status_until;
     int menu_was_open;
@@ -457,7 +458,8 @@ static void cmd_flip(int horizontal) {
 
 static void cmd_wallpaper(void) {
     if (!G.have || !G.path[0]) return;
-    int rc = k_wallpaper_set(G.path, KW_COVER);
+    KWallConfig old;
+    int rc = k_wallpaper_set(G.path, k_wallpaper_config(&old) ? old.mode : KW_COVER);       /* keep the placement the user chose */
     if (rc) say("Could not set the wallpaper: %s", strerror(-rc));
     else say("Wallpaper: %s (the desktop changes it within a moment)", G.name);
     trace("wallpaper %s", G.path);
@@ -715,10 +717,9 @@ static void advance_timers(KUI *ui) {
         G.next_slide_ms = now + (uint64_t)G.slide_secs * 1000;
         cmd_goto(G.cur + 1);
     }
-    if (G.anim || G.slideshow) {
-        kapp_set_tick(G.app, G.anim ? 20 : 250);
-        ui->redraw_soon = true;
-    } else kapp_set_tick(G.app, 1000);
+    int want = G.anim ? 20 : G.slideshow ? 250 : 1000;               /* kapp_set_tick restarts the interval, so only call it when it changes */
+    if (want != G.tick_ms) { G.tick_ms = want; kapp_set_tick(G.app, want); }
+    if (G.anim || G.slideshow) ui->redraw_soon = true;
 }
 
 static void draw(KApp *app, KUI *ui, void *user) {
@@ -814,11 +815,17 @@ int main(int argc, char **argv) {
     G.app = app;
     kapp_set_draw(app, draw, NULL);
     kapp_set_minsize(app, 520, 340);
+    G.tick_ms = 1000;
     kapp_set_tick(app, 1000);
     if (target) open_target(target);
-    else {
+    else {                                                           /* from the menu: the newest picture in ~/Pictures (screenshots are named by date) */
         const char *home = getenv("HOME");
-        if (home) { char p[600]; snprintf(p, sizeof p, "%s/Pictures", home); struct stat st; if (stat(p, &st) == 0 && S_ISDIR(st.st_mode)) scan_dir(p); }
+        if (home) {
+            char p[600];
+            snprintf(p, sizeof p, "%s/Pictures", home);
+            struct stat st;
+            if (stat(p, &st) == 0 && S_ISDIR(st.st_mode)) { scan_dir(p); if (G.nnames > 0) open_index(G.nnames - 1); }
+        }
     }
     if (G.slideshow) G.next_slide_ms = k_now_ms() + (uint64_t)G.slide_secs * 1000;
     set_title();

@@ -70,7 +70,8 @@ Mouse** (a picture of the keyboard that lights up pressed keys, the last key wit
 area with button, wheel and double-click counters; this pane takes every key so you can test them), **Devices** (disks, PCI,
 USB), **Users** (accounts, groups, and **Change password...** which opens a terminal that runs `passwd` when `/bin/passwd`
 exists; `KAPPA_PASSWD` can point it elsewhere), **Power** (Shut down and Restart, each after a confirmation, with a `sync`
-first; `--dry-run` only prints what would happen) and **Appearance** (the theme palette, and the 12 / 24 hour clock).
+first; `--dry-run` only prints what would happen) and **Appearance** (the theme palette, the 12 / 24 hour clock, and the **Wallpaper**: a picture
+from the file dialog, one of five fit modes, or Reimu's night scene again; see [MEDIA.md](MEDIA.md)).
 * `kappa-panel --pane NAME`, `--trace`, `--devices`, `--conf get KEY`, `--conf set KEY VALUE`.
 
 ### `~/.config/hakurei.conf`
@@ -112,3 +113,9 @@ follows the window width.
 * `tests/case_apps.py`: `apps_cli` (engines and parsers through the text modes) and `apps_windows` (all five windows driven
   with the keyboard on a desktop boot, judged by their `--trace` lines and by pixels). Screenshots of the final state are
   saved as `build/t-apps-<app>.png`.
+
+## Gensokyo Gallery: `gallery`
+
+The picture viewer (PNG, JPEG, GIF with animation, BMP, PNM, TGA): `gallery [FILE | FOLDER]`, start menu entry "Gensokyo Gallery". It walks the pictures of a
+folder with the arrow keys, zooms with the wheel, pans by dragging, rotates, flips, runs slideshows and sets the wallpaper. Everything about it, the
+libraries it stands on (libimg, libz) and its tests is in [MEDIA.md](MEDIA.md); `tests/case_media.py` drives it on a desktop boot (`media_gallery`).
