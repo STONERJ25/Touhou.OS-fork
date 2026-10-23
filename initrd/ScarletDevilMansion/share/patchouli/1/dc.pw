@@ -1,0 +1,69 @@
+.page dc 1 reverse-Polish desk calculator
+
+# SYNOPSIS
+*dc* [*-V*] [*-e* _EXPR_] [*-f* _FILE_] [_FILE_...]
+
+# DESCRIPTION
+`dc` is a stack machine: numbers are pushed on a stack and commands take their operands from it. Numbers have any number of digits; `k` sets how many digits after the point division, multiplication, square roots and powers keep. The expressions and files named on the command line are run in the order given; with none, commands are read from standard input, a line at a time.
+
+A number is written with digits, an optional point, and `_` in front for a negative one (`_5`); in input bases above 10 the digits `A` to `F` are used (capital letters only, small letters are commands). Output is in base `o`; for a base above 16 each digit is written as a space and a decimal number. Long numbers are broken into lines of 69 characters followed by a backslash (`DC_LINE_LENGTH` or `BC_LINE_LENGTH` changes the width, 0 means never break). A string is text in square brackets, which may nest.
+
+# COMMANDS
+@ *+ - * / % ^*
+    Pop two numbers and push the sum, difference, product, quotient, remainder or power (the first one pushed is the left operand). `/` and `^` keep `k` digits; `%` is the remainder of the integer quotient.
+@ *~*
+    Pop two numbers; push the integer quotient and then the remainder.
+@ *|*
+    Pop a modulus, an exponent and a base (integers) and push base to the exponent modulo the modulus.
+@ *v*
+    Replace the top number by its square root, to `k` digits.
+@ *p*, *n*, *P*, *f*
+    `p` prints the top of the stack and a newline; `n` pops and prints it without a newline; `P` pops and prints a string as it is, or a number as bytes (base 256); `f` prints the whole stack, top first.
+@ *c*, *d*, *r*, *R*
+    Clear the stack; duplicate the top; swap the top two; drop the top.
+@ *z*, *Z*, *X*
+    Push the stack depth; replace the top by its number of digits (characters for a string); replace the top by its number of digits after the point.
+@ *k*, *K*, *i*, *I*, *o*, *O*
+    Set (pop) or push the scale `k`, the input base `i` (2 to 16) and the output base `o`.
+@ *s*_r_, *l*_r_
+    Pop the top into register _r_ (any single character), or push a copy of what _r_ holds (0 when it has never been set).
+@ *S*_r_, *L*_r_
+    Push the top onto the stack kept in register _r_, or pop that stack back onto the main one.
+@ *:*_r_, *;*_r_
+    `:` pops an index and then a value and stores the value at that index of the array of register _r_; `;` pops an index and pushes the element.
+@ *x*
+    Pop a string and run it as commands (a number is just pushed back). A macro called as the last thing a macro does reuses its frame, so a loop can recurse without limit.
+@ *>*_r_, *<*_r_, *=*_r_, *!>*_r_, *!<*_r_, *!=*_r_
+    Pop two numbers and run the macro in register _r_ if the top one is greater, smaller, equal, not greater, not smaller or not equal compared with the one below it.
+@ *?*
+    Read a line from standard input and run it.
+@ *q*, *Q*
+    `q` leaves the running macro and the one that called it (at the top level it ends the program); `Q` pops a number _n_ >= 1 and leaves _n_ levels.
+@ *a*
+    Replace the top by a one character string: the character with that code, or the first character of a string.
+@ *!* _COMMAND_
+    Run the rest of the line with the shell. `#` starts a comment that lasts to the end of the line.
+
+# OPTIONS
+@ *-e* _EXPR_, *--expression*=_EXPR_
+    Run _EXPR_ as commands. May be repeated.
+@ *-f* _FILE_, *--file*=_FILE_
+    Run the commands in _FILE_ (`-` is standard input).
+@ *-V*, *--version*
+    Print the version.
+
+# ERRORS
+A command that cannot work, such as `+` with fewer than two numbers on the stack, prints `dc: stack empty` (or `dc: division by zero`, `dc: non-numeric value`, `dc: Q command requires a number >= 1`, ...) on standard error, leaves the stack as it was, and the next command runs.
+
+# EXIT STATUS
+0, also after such an error; 1 when a file cannot be opened or an option is not known.
+
+# EXAMPLES
+    echo '2 3 ^ p' | dc
+    dc -e '10 k 2 v p'
+    echo '16 o 255 p' | dc
+    echo '5 [d1-d1<f*]sf lfx p' | dc
+    echo '[dn1-d0<a]sa 5 lax' | dc
+
+# SEE ALSO
+bc(1), expr(1)

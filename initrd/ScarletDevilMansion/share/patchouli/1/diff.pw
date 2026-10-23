@@ -1,0 +1,62 @@
+.page diff 1 compare files line by line
+
+# SYNOPSIS
+*diff* [*-uc*] [*-U* _N_] [*-C* _N_] [*-qrNsa*] [*-bwiB*] [*-x* _PAT_] [*--label* _TEXT_] _FILE1_ _FILE2_
+
+# DESCRIPTION
+`diff` shows how to turn _FILE1_ into _FILE2_. The result is a shortest list of changes (found with Myers' algorithm, the one GNU diff uses), so it stays small and quick even for big files that differ in a few places. Two files that are completely different still give a correct, if not always the smallest, answer. The output can be fed to `patch`.
+
+If both operands are directories, the files with the same name in both are compared, in order of name; a name that is in only one directory is reported as `Only in DIR: NAME`, and a subdirectory in both as `Common subdirectories: A and B` (use `-r` to go into it). Each file diff found this way is preceded by a line `diff OPTIONS A/NAME B/NAME`. If only one operand is a directory, the file is compared with the file of the same name in the directory. A file operand of `-` is standard input.
+
+The default output is the normal format: `2c2`, `5a6,7` or `9d8` (change, add, delete, with the line numbers of the first file on the left and of the second on the right), then the lines, `<` for the first file and `>` for the second. With `-u` and `-c` the hunks show some lines of context, and each file is introduced by a header with its name and modification time.
+
+A file that contains a NUL byte is binary: `diff` only says `Binary files A and B differ`, unless `-a` is given. If the last line of a file has no newline at its end, the output says `\ No newline at end of file` after it.
+
+# OPTIONS
+@ *-u*, *-U* _N_, *--unified*[=_N_]
+    Unified format with _N_ lines of context (3 by default). A hunk starts with `@@ -FIRST,COUNT +FIRST,COUNT @@` and its lines begin with a space (unchanged), `-` (only in the first file) or `+` (only in the second).
+@ *-c*, *-C* _N_, *--context*[=_N_]
+    Context format with _N_ lines of context (3 by default). Lines are marked `!` (changed), `-` (deleted) or `+` (added).
+@ *--normal*
+    The normal format (this is the default).
+@ *-q*, *--brief*
+    Only say `Files A and B differ`; do not show the differences.
+@ *-s*, *--report-identical-files*
+    Say `Files A and B are identical` when they are.
+@ *-r*, *--recursive*
+    Compare subdirectories too.
+@ *-N*, *--new-file*
+    A file that is in only one directory is compared with an empty file instead of being reported as `Only in`.
+@ *-a*, *--text*
+    Treat all files as text, also if they contain NUL bytes.
+@ *-b*, *--ignore-space-change*
+    Ignore trailing white space, and treat any run of white space as one blank.
+@ *-w*, *--ignore-all-space*
+    Ignore white space completely when comparing lines.
+@ *-i*, *--ignore-case*
+    Do not tell upper case from lower case.
+@ *-B*, *--ignore-blank-lines*
+    Do not report changes that only add or remove blank lines.
+@ *--strip-trailing-cr*
+    Remove a carriage return before the newline of each line, so files with CR LF line ends compare equal to LF ones.
+@ *-x*, *--exclude*=_PATTERN_
+    When comparing directories, skip names that match the shell pattern _PATTERN_ (may be repeated).
+@ *-L*, *--label*=_TEXT_
+    Use _TEXT_ instead of the file name and time in the `-u` and `-c` headers (give it twice, once for each file).
+@ *-d*, *--minimal*
+    Always search for the smallest possible diff; slower on very different files.
+
+The options `-H`, `-T` and `-t` are accepted and ignored.
+
+# EXAMPLES
+    diff old.txt new.txt
+    diff -u old.c new.c > fix.patch
+    diff -ruN a b
+    diff -q /Hakurei/etc /tmp/etc-backup
+    diff -w -B before.txt after.txt
+
+# EXIT STATUS
+0 when the files are the same, 1 when they differ, 2 when something went wrong (a file that cannot be read, a bad option).
+
+# SEE ALSO
+patch(1), cmp(1), comm(1)
