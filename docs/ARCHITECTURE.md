@@ -55,6 +55,9 @@ Everything a PCI driver needs already exists; look at `kernel/include/pci.h`, `b
 - **Entry points:** `kmain()` calls the weak functions `virtio_blk_init`, `ahci_init`, `nvme_init`, `storage_mount_boot_volumes`
   and `usb_init` (defaults in `kernel/drivers/driver_stubs.c`). A driver just defines the strong function in its own file,
   so adding a driver never edits `main.c`. New `.c` files anywhere under `kernel/` are picked up by `tools/build.py`.
+  Devices that appear later than that (USB sticks: the bus is enumerated by the `usbd` thread seconds after `kmain` got here) announce
+  their disks with `storage_disk_added()`, and `kmain` calls `usb_wait_settled(8000)` right before the first session starts so that a stick's
+  HUMANVILLAGE volume is mounted before login (bounded; returns at once without USB).
 - **No interrupts, poll instead.** Interrupt routing (IOAPIC, `_PRT`, MSI) is the most fragile part of real PCs and
   QEMU hides most of it, so drivers poll from a kernel thread (`task_create_detached` + `task_sleep_ms(1)`), or spin with
   a timeout for short synchronous operations. At 1 kHz this is invisible in CPU usage and behaves the same everywhere.

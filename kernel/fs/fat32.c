@@ -18,6 +18,7 @@
 #include "cpu.h"
 #include "irq.h"
 #include "ktime.h"
+#include "bootlog.h"
 
 #define FLUSH_AGE_MS 3000
 #define MSDOS_SUPER_MAGIC 0x4d44
@@ -1013,6 +1014,7 @@ static int fat_mount(const char *source, u32 flags, Mount *m) {
 static void fat_unmount(Mount *m) {
     FatVol *v = m->priv;
     if (!v) return;
+    bootlog_unmounted(m->target);
     mutex_lock(&g_vols_lock);
     for (int i = 0; i < FAT_MAX_VOLS; i++) if (g_vols[i] == v) g_vols[i] = NULL;
     mutex_unlock(&g_vols_lock);

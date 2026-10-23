@@ -4,7 +4,11 @@
 *lsusb*
 
 # DESCRIPTION
-`lsusb` prints `/proc/usb`, the list of USB devices the kernel has enumerated. If the kernel has no USB support it says `no USB subsystem (no /proc/usb)` and exits with status 1.
+`lsusb` prints `/proc/usb`, the list of USB devices the kernel has enumerated: one line per device with its port, vendor and product ids, name, speed and the driver that took it (`hid-keyboard`, `hid-mouse`, `hub`, `usb-storage`, or `none`), and one indented line per interface. A USB stick shows `driver usb-storage`; a device that speaks only UAS (interface protocol 62) shows `driver none` and is not used.
+
+For what the mass storage driver makes of a stick (its state, its disk name, error counters), read `/proc/usbstorage`.
+
+If the kernel has no USB support it says `no USB subsystem (no /proc/usb)` and exits with status 1.
 
 # SEE ALSO
-lspci(1), dmesg(1)
+lspci(1), lsblk(1), dmesg(1)

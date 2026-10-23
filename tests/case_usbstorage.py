@@ -13,8 +13,15 @@ import time
 from pathlib import Path
 
 import mkdisk
-from case_storage import (Image, Guest, boot, hv_part, decoy_esp, file_sha, sha, MIB, WORK, HV, H, ROOT_PROMPT, USER_PROMPT)
+import case_storage
+from case_storage import (Image, Guest, hv_part, decoy_esp, file_sha, sha, MIB, WORK, HV, H, ROOT_PROMPT, USER_PROMPT)
 from harness import test, Qemu, BUILD
+
+
+def boot(*args, **kw):
+    """case_storage.boot with the kernel log kept on the stick (the storage tests switch that off; these tests are about it)."""
+    kw.setdefault("bootlog", True)
+    return case_storage.boot(*args, **kw)
 
 ROOT = Path(__file__).resolve().parent.parent
 XHCI = ["-device", "qemu-xhci,id=xhci"]
@@ -249,6 +256,30 @@ def usbstor_hotplug_idle():
 
 
 @test
+def usbstor_behind_a_hub():
+    """A stick behind a (full-speed) hub: enumerated, mounted, written; pulling the hub out takes the stick with it, and the disks vanish
+    without a crash (the disconnect arrives from the hub driver, not from the stick's own port)."""
+    with stick_image("usbs-hub", files={"/reimu/hello.txt": b"hello from the stick\n"}) as img:
+        extra = XHCI + ["-device", "usb-hub,id=hub1,bus=xhci.0,port=1"] + stick(img, attach=False) + [
+            "-device", "usb-storage,drive=stick1,id=ustor1,bus=xhci.0,port=1.1"]
+        with boot(None, root=True, name="t-usbs-hub", extra=extra) as (g, vm):
+            wait_log(vm, r"usb-storage 1-1\.1 lun 0: .* carried over the river as sdb", timeout=120)
+            out = g.ok("lsusb; lsblk")
+            assert re.search(r"Port \d+\.1: ID 46f4:0001 .*full-speed.*driver usb-storage", out), out
+            assert re.search(r"^sdb\s+100M\s+0\s+disk\s+usb-storage", out, re.M), out
+            assert "/dev/sdb2 on /HumanVillage" in g.ok("mount")
+            assert say(g, f"cat {H}/hello.txt") == "hello from the stick"
+            g.ok(f"seq 1 20000 > {HV}/behind.txt; sync")
+            mark = len(vm.text())
+            vm.qmp("device_del", id="hub1")                                # the hub and everything behind it
+            wait_log(vm, r"blk: sdb removed together with sdb1, sdb2", timeout=90, since=mark)
+            wait_log(vm, r"usb-storage 1-1\.1: the stick was pulled out", timeout=30, since=mark)
+            assert "sdb" not in g.ok("cat /proc/partitions")
+            no_incident(vm)
+            assert say(g, "echo alive") == "alive"
+
+
+@test
 def usbstor_unplug_during_io():
     """Pulling the stick out while a long read is running: the reader fails (no hang, no panic), the disks vanish, the system carries on."""
     with stick_image("usbs-io", size=300 * MIB) as img:
@@ -441,6 +472,7 @@ def usbstor_removable_media():
     data_parts = [dict(name="DATA", kind="fat32", size="rest", label="MYSTUFF", files={"/photos/a.jpg": b"jpeg" * 1000})]
     with Image("usbs-rm-a", 100 * MIB, data_parts) as a, Image("usbs-rm-b", 50 * MIB, data_parts) as b:
         front = open(a.path, "rb").read(MIB)
+        ha0, hb0 = a.sha(), b.sha()
         extra = XHCI + stick(a, n=1, attach=False) + stick(b, n=2, attach=False) + [
             "-device", "usb-bot,id=bot1,bus=xhci.0", "-device", "scsi-hd,bus=bot1.0,drive=stick1,id=hd1,removable=on,scsi-id=0,lun=0"]
         with boot(None, root=True, name="t-usbs-removable", extra=extra) as (g, vm):
@@ -472,7 +504,7 @@ def usbstor_removable_media():
             no_incident(vm)
             g.ok("sync")
             g.poweroff()
-        assert a.sha() == a.sha() and file_sha(a.path) == a.sha()
+        assert a.sha() == ha0 and b.sha() == hb0, "a card reader's media were written to"
 
 
 @test
@@ -654,6 +686,23 @@ def usbstor_silent_stick_bounded():
             assert say(g, "echo alive") == "alive"
             g.poweroff()
         assert img.sha() == h0
+
+
+@test
+def usbstor_sync_hang():
+    """A stick that hangs on SYNCHRONIZE CACHE but answers everything else is not given up on: one reset, it is not asked to sync again,
+    and the volume keeps working (writes still land)."""
+    with stick_image("usbs-synchang") as img:
+        with boot(None, root=True, cmdline="usbstorage.fault=syncdrop:2 usbstorage.timeout=4000", name="t-usbs-synchang", extra=XHCI + stick(img)) as (g, vm):
+            wait_log(vm, r"usb-storage \S+: SYNCHRONIZE CACHE hung the stick; it answered again after a reset and will not be asked to sync any more", timeout=90)
+            assert "given up on" not in vm.text(), vm.text()[-2500:]
+            out = g.ok("cat /proc/usbstorage")
+            assert re.search(r"lun 0: online", out) and re.search(r"1 reset recover", out), out
+            g.ok(f"seq 1 400000 > {HV}/numbers.txt")
+            no_incident(vm)
+            g.poweroff()
+        img.check()
+        assert host_read(img, "/numbers.txt") == NUMBERS
 
 
 @test

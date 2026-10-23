@@ -5,6 +5,7 @@
  *   usb.c    core: port events, enumeration, descriptors, device tree, /proc/usb
  *   hub.c    class driver for USB 2 and USB 3 hubs
  *   hid.c    class driver for HID keyboards and mice -> input_key() / input_mouse()
+ *   storage.c class driver for bulk-only mass storage (sticks, card readers) -> the block layer (sda, sdb, ...)
  *
  * Everything runs in ONE kernel thread ("usbd") that polls at 1 kHz; there are no interrupts and no locks, so a driver
  * never has to think about concurrency. Every wait has a timeout. A misbehaving controller is declared dead (one klog
@@ -256,9 +257,10 @@ extern bool g_usb_hidreport;        /* usb=hidreport: parse report descriptors e
 int usb_control(UsbDevice *dev, u8 rtype, u8 req, u16 value, u16 index, void *buf, u16 len, u32 timeout_ms);
 int usb_get_descriptor(UsbDevice *dev, u8 type, u8 index, u16 lang, void *buf, u16 len);
 int usb_int_start(UsbDevice *dev, UsbEndpoint *ep, UsbIntCb cb, void *ctx);
-/* Bulk endpoints (not needed by the hub and HID drivers; here for a future mass-storage driver). Endpoints must first be handed to
- * the controller with usb_add_endpoints(). usb_bulk() moves up to 64 KiB and returns the byte count or -errno; after -EPIPE the
- * halt must be cleared with usb_clear_halt(). */
+/* Bulk endpoints (used by the mass storage driver, storage.c; the hub and HID drivers only need interrupt endpoints). Endpoints must
+ * first be handed to the controller with usb_add_endpoints() (the core does that for every bulk endpoint of a bound interface).
+ * usb_bulk() moves up to 64 KiB and returns the byte count or -errno; after -EPIPE the halt must be cleared with usb_clear_halt().
+ * -ETIMEDOUT, and -ENODEV for a device on a root port that was unplugged during the transfer, mark the device `broken`. */
 /* Thread rule: the whole stack (usb_control, usb_bulk, ...) belongs to the usbd thread and has no locks. Class driver probe /
  * disconnect functions and interrupt callbacks already run there. Anything else (a block device read, a syscall) must wrap its USB
  * work in a function and run it with usb_call(): fn(arg) executes in the usbd thread, the caller sleeps until it returns. */

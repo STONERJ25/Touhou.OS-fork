@@ -14,8 +14,11 @@ builds and checks disk images. Without such a disk nothing changes: the homes li
                 fat_name.c UTF-8/UTF-16, 8.3 names, LFN checksums, case folding
                 fat_cache.c write-back page cache with ordered flush
  policy         mountpolicy.c   what is mounted, where, and what is never touched
- block layer    blk.c           /dev/vda, vda1, ... (GPT/MBR scan), /proc/partitions
+ block layer    blk.c           /dev/vda, vda1, ... (GPT/MBR scan), /proc/partitions, hot-unplug
  driver         virtio_blk.c    legacy I/O-port and modern MMIO transports, polled
+                ahci.c nvme.c   SATA and NVMe (docs/BLOCKDEVICES.md)
+                usb/storage.c   USB sticks, card readers, enclosures: sdb, sdc, ... (docs/USB.md)
+ bootlog        bootlog.c       the kernel log kept on the HUMANVILLAGE volume (docs/REAL_HARDWARE.md)
 ```
 
 ## Layout of a TouhouOS disk
@@ -41,11 +44,39 @@ partition name has room for the full text. The mount policy accepts both spellin
    (`tests/case_storage.py` compares checksums of whole images and of single partitions).
 3. When nothing matches, boot continues with the in-RAM tmpfs home directories exactly as today.
 4. After a successful mount `/HumanVillage/reimu`, `marisa` and `sakuya` are created if missing.
-5. The command line word `nohumanvillage` skips all of this. The policy runs once, before USB is initialised; a driver that discovers
-   disks later may call `storage_mount_boot_volumes()` again (it does nothing when `/HumanVillage` is already a mount point),
-   or root mounts by hand: `mount -t fat32 -o userdirs /dev/sdb1 /HumanVillage`.
+5. The command line word `nohumanvillage` skips all of this. The policy runs once at boot for the disks that exist by then (virtio,
+   SATA, NVMe), and again for every disk that appears later (USB sticks) through `storage_disk_added()`, see "Sticks" below; or root
+   mounts by hand: `mount -t fat32 -o userdirs /dev/sdb2 /HumanVillage`.
 6. Writes to a device happen only through (a) a FAT volume that was selected by the policy or by `mount`, and (b) root
    writing `/dev/<disk>` by hand. Nothing else in the kernel writes to a block device.
+7. **Which volume wins when several are labelled HUMANVILLAGE: the first one found.** Internal disks are looked at at boot, before the
+   USB bus has even been enumerated, so an internal HUMANVILLAGE volume (a virtio disk in QEMU, a SATA or NVMe partition) is mounted
+   and a stick's is left alone with a log line (`sdb2 holds a HUMANVILLAGE volume too (partition label), but /HumanVillage already lives on
+   /dev/vda2: the first one found wins, this one is left alone`). Without an internal one the first stick to become ready wins, and the
+   second stick's volume is ignored the same way. Within one pass, a GPT partition *name* beats a FAT volume *label*, and device order
+   decides between equals.
+
+### Sticks (USB)
+
+USB enumeration finishes seconds after the kernel starts, long after the boot-time call, so there are two extra pieces:
+
+* **Hot-plug hook.** When the mass storage driver has registered a stick's disk (and its partitions), it calls
+  `storage_disk_added(disk)`. That starts a worker thread (`hv-automount`; the mount reads the stick through the very thread that
+  announces it, and holds the VFS namespace lock, so it must not run there), which runs the same policy: nothing is mounted on
+  `/HumanVillage` yet -> mount the first HUMANVILLAGE volume found; else only say so if this disk has one too. A disk without the label
+  is logged (`sdb has no HUMANVILLAGE volume: nothing to mount from it`) and otherwise left strictly alone.
+* **Boot waits for USB** (`usb_wait_settled(8000)` just before the first session starts, see USB.md): with a stick present the volume is
+  mounted before login, normally 0.4-1 s after the controller came up; the wait is bounded at 8 s and skipped without USB, so a stick that
+  is slow or absent never holds up boot. A stick that becomes ready after the wait is mounted by the hook later, while sessions run: new
+  processes see the stick's `/HumanVillage`, old ones keep the tmpfs homes they had.
+
+A pulled stick leaves its mount behind (nothing can be written back; reads of what was never cached fail with `ENODEV`): the FAT driver
+logs `fat32: sdb2 vanished while it was mounted on /HumanVillage ...` once, `umount` drops the mount without a write-back, and the next
+stick is mounted by the hook. While the stale mount is still there a new stick is *not* mounted (the log says `... /HumanVillage is
+still mounted on /dev/sdb2, whose stick was pulled out: umount it (or reboot) ...`).
+
+An unclean pull leaves the volume flagged dirty, so the next mount is read-only (the policy never uses `-o force`; see "Safety design").
+That is the price of the flag protocol on a medium people unplug; eject (`umount`, `poweroff`, `sync`) before pulling.
 
 Decisions are logged with `klog("Keine", ...)`, one line per mounted volume:
 
@@ -75,6 +106,7 @@ mounted rather than losing data).
 | `fmask=OCT`, `dmask=OCT`, `umask=OCT` | permission bits to remove; defaults `fmask=0133`, `dmask=0022` give files 0644, directories 0755 |
 | `userdirs` | a top-level directory named like a user, and everything below it, belongs to that user (see below) |
 | `usermap=name:uid:gid/name:uid:gid` | the user table for `userdirs`; the `mount` applet fills it from `/etc/passwd`, the boot mount uses reimu, marisa, sakuya |
+| `tzoffset=MINUTES` | FAT stores *local* time; the volume's clock is this many minutes east of UTC (`-300` for EST, `540` for JST; range +-1440). Default 0: UTC, as before. The `mount` applet adds the current offset of its own time zone (summer time included) to FAT mounts unless the option is given; the boot-time mount derives it from the standard offset of the `tz=` command line word (`tz=EST5EDT,M3.2.0,M11.1.0` -> `-300`; summer time rules are not applied) and passes nothing when there is no `tz=` |
 | `defaults`, `noatime`, `relatime`, `nodev`, `nosuid`, `noexec`, `exec`, `suid`, `dev`, `auto`, `noauto`, `user`, `async`, `quiet`, `utf8` | accepted and ignored |
 
 Any other option fails the mount. The option string reaches the kernel through the fifth argument of `SYS_mount`
@@ -125,8 +157,12 @@ Any other option fails the mount. The option string reaches the kernel through t
 * Files are limited to 4 GiB - 1 (`EFBIG`); a directory to 65 536 entries (2 MiB); the FAT16 root directory to its fixed
   512 (or whatever the volume says) entries - it fills up with `ENOSPC` and recovers after a delete.
 * No symlinks, hard links, FIFOs or device nodes; no execute bits unless you mount with a different `fmask`.
-* Timestamps have 2 s resolution, are interpreted as UTC, and are clamped to 1980..2107. Access times are not updated.
-  A directory's own modification time is not persisted.
+* Timestamps have 2 s resolution and are clamped to 1980..2107. Access times are not updated. A directory's own modification time is
+  not persisted. FAT has no time zone field: Windows, Linux (without `tz=`) and most cameras read the stored fields as *local* time. With
+  `-o tzoffset=MINUTES` the driver adds the offset when it writes and subtracts it when it reads, so a file saved at 12:04 JST on the
+  stick shows 12:04 in Windows, and a file saved there at 09:30 local shows as 00:30 UTC here. Without the option (a mount made by hand
+  in UTC, a boot without `tz=`) the fields are UTC, exactly as before. The offset is one fixed number per mount: files saved in summer
+  and winter differ by an hour from what a DST-aware reader computes, which is how FAT has always behaved on non-DST-aware systems.
 * Sparse files do not exist: seeking past the end and writing, or growing with `truncate`, really allocates zeros. The
   bytes between the old end and the new data always read as zero (stale cluster contents are never exposed).
 * The allocator prefers contiguous runs: a new file starts in a free run of at least 64 clusters when one exists, and
@@ -207,15 +243,19 @@ kernel logs `fat32: vda2 mounted on /HumanVillage` and creates `reimu`, `marisa`
   may offer to fix it; that is harmless. HUMANVILLAGE is an ordinary FAT32 volume: Windows, Linux and macOS can open it to copy
   files in and out (eject it safely first, otherwise TouhouOS finds the dirty flag and mounts it read-only). TouhouOS mounts
   only that volume, wherever it sits, and nothing else on the machine.
-* Reading a stick from TouhouOS needs a USB mass-storage driver (not part of this work). Such a driver registers its disks with
-  the block layer and then calls `storage_mount_boot_volumes()`; the call at boot happens before USB is initialised, and a
-  second call is harmless.
+* The stick the OS booted from is a disk inside the OS too (USB mass storage, see USB.md): `sda` or `sdb` with `sdX1` (the ESP, never
+  mounted) and `sdX2` (HUMANVILLAGE, mounted on `/HumanVillage`), so the homes persist. `blk.ro` does not apply to a stick (it is for the
+  internal disks); a write-protected stick is read-only by its own switch. Once the volume is mounted read-write the kernel log is kept
+  on it as `TOUHOU.LOG` (and `TOUHOU.PRV` for the boot before): see REAL_HARDWARE.md.
 
 The checker is deliberately independent of the kernel (it shares no code with it), and a self-test makes sure it notices
 loops, holes, leaked clusters, FAT mirror mismatches, wrong LFN checksums, wrong FSInfo and broken GPT CRCs. Images written
 by the kernel were also mounted read-only with Linux's vfat driver and compared with `diff -r`.
 
 ## Tests
+
+`python tests/run_all.py usbstor` runs the tests of HUMANVILLAGE on a USB stick (`tests/case_usbstorage.py`, listed in USB.md): automount
+before the first session, persistence over two boots, hot-plug, the first-found rule, time stamps, the kernel log on the stick.
 
 `python tests/run_all.py storage` (about five minutes) - see `tests/case_storage.py`. `/bin/fstest` (user/bin/fstest.c) is a
 system-call level checker that the tests run inside the guest (errno values, open-then-unlink, renames over files and

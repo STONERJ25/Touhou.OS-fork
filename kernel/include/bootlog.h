@@ -11,6 +11,10 @@
 /* The mount policy calls this after it mounted the volume. `rw` is false for a read-only (or dirty-mounted) volume: nothing is written then. */
 void bootlog_volume_mounted(const char *mountpoint, bool rw);
 
+/* A FAT volume is being unmounted from `target` (called from fat_unmount with the VFS namespace locked: it only flips a flag). If it is
+ * the Human Village the log stops there, so a later write cannot land in the tmpfs directory that is left behind, or on another volume. */
+void bootlog_unmounted(const char *target);
+
 /* Poweroff / reboot (before the final vfs_sync_all): writes what is pending plus a closing line. Does nothing when no log is being kept.
  * The panic path has no hook on purpose: every block driver here sleeps and waits for interrupts and for the USB thread, which a panic
  * (interrupts off, scheduler gone) cannot offer, so a write from there could only hang the machine in the middle of its last message.

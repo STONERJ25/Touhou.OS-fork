@@ -28,6 +28,7 @@
  *   csw:N                   treat the N-th status wrapper as corrupted (reset recovery)
  *   stall:N                 send the N-th command wrapper with a damaged signature: the stick stalls the pipe (clear halt + reset recovery)
  *   drop:N                  the N-th command gets no answer at all (waits out the status timeout, then the stick counts as hung)
+ *   syncdrop:N              the same for the N-th SYNCHRONIZE CACHE (the volume must survive a stick that hangs on that command)
  *   notready:MS             every unit is taken to be "not ready" for its first MS milliseconds (a stick that takes its time)
  *   maxlun:N                GET MAX LUN is taken to have answered N (QEMU's sticks always say 0, so several LUNs need this)
  */
@@ -51,7 +52,7 @@
 
 static u32 g_t_cbw = 3000, g_t_quick = 5000, g_t_csw = 5000, g_t_read = 15000, g_t_write = 30000, g_t_sync = 30000;
 static bool g_cfg_loaded, g_off, g_nosync, g_rw16;
-static u32 g_fault_csw, g_fault_stall, g_fault_drop, g_fault_notready, g_fault_maxlun, g_csw_count, g_cbw_count, g_stall_count;
+static u32 g_fault_csw, g_fault_stall, g_fault_drop, g_fault_syncdrop, g_fault_notready, g_fault_maxlun, g_csw_count, g_cbw_count, g_stall_count, g_sync_count;
 
 /* ---------------------------------------------------------------- state */
 
@@ -65,7 +66,11 @@ typedef struct MscLun {
     u8   lun;
     u8   state;
     u8   ptype;                                 /* SCSI peripheral device type */
-    bool removable, wp, use16, no_sync, announced;
+    bool removable, wp, use16, no_sync;
+    bool registering;                           /* inside blk_register_sd (its partition scan reads through us, with the block layer's lock held) */
+    bool drop_pending;                          /* lun_drop() was asked for meanwhile: it cannot unregister from in there, it is done afterwards */
+    u8   drop_to;
+    char drop_why[72];
     u64  next_at, started_at;                   /* uptime_ms() */
     u64  sectors;
     u32  bsz;
@@ -267,10 +272,10 @@ static int msc_run(Msc *m, u8 lun, ScsiCmd *c) {
     c->csw_status = 0;
 
     int rc;
-    if (g_fault_drop && ++g_cbw_count == g_fault_drop) {
+    if ((g_fault_drop && ++g_cbw_count == g_fault_drop) || (g_fault_syncdrop && c->cdb[0] == 0x35 && ++g_sync_count == g_fault_syncdrop)) {
         /* A stick that has gone deaf (QEMU's would answer a missing wrapper with a STALL, which is a different path): wait out the
          * status timeout like a transfer that never completes would, then behave as usb_bulk() does after one. */
-        klog("Kappa", "usb-storage %s: fault injection: command wrapper %u gets no answer", m->path, g_cbw_count);
+        klog("Kappa", "usb-storage %s: fault injection: command wrapper %u gets no answer (opcode %02x)", m->path, g_cbw_count, c->cdb[0]);
         usb_msleep(dev->hc, g_t_csw);
         dev->broken = true;
         return -ETIMEDOUT;
@@ -407,6 +412,12 @@ static int msc_blk_write(BlockDev *d, u64 lba, u32 count, const void *buf) {
 
 /* A unit that lost its medium, or got a different one, or died: take its disk away. Mounted filesystems see -ENODEV from now on. */
 static void lun_drop(MscLun *l, LunState to, const char *why) {
+    if (l->registering) {                                                       /* blk_unregister would wait for the lock blk_register_sd holds */
+        l->drop_pending = true;
+        l->drop_to = (u8)to;
+        strlcpy(l->drop_why, why ? why : "", sizeof l->drop_why);
+        return;
+    }
     if (l->bd) {
         BlockDev *bd = l->bd;
         l->bd = NULL;                                                           /* in-flight requests compare against this and give up */
@@ -519,7 +530,19 @@ static int msc_sync_one(MscLun *l, BlockDev *bd) {
             l->errors++;
             return -EIO;
         }
-        if (rc == -ETIMEDOUT) { msc_died(m, "SYNCHRONIZE CACHE timed out"); return -EIO; }
+        if (rc == -ETIMEDOUT) {
+            /* Some bridges hang on this one command and answer everything else. The data is on its way to the flash either way, so the
+             * volume is not given up for it: one reset recovery (the core has marked the device broken after the timeout; the endpoint
+             * was already stopped and re-pointed), and if the stick answers again it is simply not asked to sync any more. */
+            if (m->dev) m->dev->broken = false;
+            if (msc_reset_recovery(m) == 0) {
+                klog("Kappa", "usb-storage %s: SYNCHRONIZE CACHE hung the stick; it answered again after a reset and will not be asked to sync any more", m->path);
+                l->no_sync = true;
+                return 0;
+            }
+            msc_died(m, "SYNCHRONIZE CACHE timed out and the reset recovery failed");
+            return -EIO;
+        }
         if (rc == -ENODEV) { msc_died(m, "the stick stopped answering or was pulled out"); return -ENODEV; }
         l->errors++;
     }
@@ -642,7 +665,15 @@ static void lun_register(Msc *m, MscLun *l, u64 sectors, u32 bsz, bool wp) {
     l->bd = bd;                                                                 /* set first: the partition scan below reads through it */
     l->state = LS_ONLINE;
     m->ever_online = true;
+    l->registering = true;
     blk_register_sd(bd);                                                        /* names it, scans GPT/MBR (reads through msc_blk_read) */
+    l->registering = false;
+    if (l->drop_pending) {                                                      /* the stick died or lost its medium while the partitions were being read */
+        l->drop_pending = false;
+        lun_drop(l, (LunState)l->drop_to, l->drop_why);
+        recount();
+        return;
+    }
     char sz[24];
     klog("Kappa", "usb-storage %s lun %u: \"%s\", %s in %u-byte blocks, %s -- carried over the river as %s", m->path, l->lun, l->model[0] ? l->model : "(no name)",
          size_text(sectors * bsz, sz, sizeof sz), bsz, wp ? "write-protected, the kappa keep the sluice gate shut (read-only)" : "writable", bd->name);
@@ -963,6 +994,7 @@ static void cfg_load(void) {
             if (klen == 3 && !strncmp(p, "csw", 3)) g_fault_csw = n;
             else if (klen == 5 && !strncmp(p, "stall", 5)) g_fault_stall = n;
             else if (klen == 4 && !strncmp(p, "drop", 4)) g_fault_drop = n;
+            else if (klen == 8 && !strncmp(p, "syncdrop", 8)) g_fault_syncdrop = n;
             else if (klen == 8 && !strncmp(p, "notready", 8)) g_fault_notready = n;
             else if (klen == 6 && !strncmp(p, "maxlun", 6)) g_fault_maxlun = n;
             p = comma && comma >= q ? comma + 1 : q;

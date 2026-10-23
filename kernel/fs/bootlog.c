@@ -58,6 +58,28 @@ static int write_all(File *f, const char *p, size_t n) {
     return 0;
 }
 
+/* The ring holds what the console received, escape sequences included; a file read in a text editor on another computer wants plain text.
+ * Cursor positioning (the banner is drawn with it) becomes a line break, every other escape sequence and every control character except
+ * tab and newline goes. Works in place (the result is never longer); returns the new length. Records end where escape sequences end,
+ * so one never straddles the chunk boundary. */
+static size_t plain_text(char *buf, size_t n) {
+    size_t o = 0;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)buf[i];
+        if (c == 0x1B && i + 1 < n && buf[i + 1] == '[') {
+            size_t j = i + 2;
+            while (j < n && ((buf[j] >= '0' && buf[j] <= '9') || buf[j] == ';' || buf[j] == '?')) j++;
+            if (j < n) {
+                if ((buf[j] == 'H' || buf[j] == 'f') && o && buf[o - 1] != '\n') buf[o++] = '\n';
+                i = j;
+                continue;
+            }
+        }
+        if (c == '\n' || c == '\t' || c >= 0x20) buf[o++] = (char)c;
+    }
+    return o;
+}
+
 /* Puts the lines the file does not have yet into TOUHOU.LOG (appending), or starts the file over with what the ring holds
  * (start_over, or when the file would grow past MAX_FILE). `trailer` is a line that exists only in the file. Caller holds g_lock. */
 static int flush_log(bool start_over, const char *trailer) {
@@ -74,6 +96,7 @@ static int flush_log(bool start_over, const char *trailer) {
     if (!buf) return -ENOMEM;
     u64 off = from;
     size_t got = want ? klog_read_clamped(&off, buf, want) : 0;
+    size_t text = plain_text(buf, got);                                  /* what goes into the file; `got` still counts ring bytes */
     char head[128];
     head[0] = 0;
     if (start_over && g_sent > 0)
@@ -84,7 +107,7 @@ static int flush_log(bool start_over, const char *trailer) {
     int rc = vfs_open(LOG_PATH, O_WRONLY | O_CREAT | (start_over ? O_TRUNC : O_APPEND), 0644, NULL, NULL, &f);
     if (rc == 0) {
         rc = write_all(f, head, strlen(head));
-        if (!rc) rc = write_all(f, buf, got);
+        if (!rc) rc = write_all(f, buf, text);
         if (!rc && trailer) rc = write_all(f, trailer, strlen(trailer));
         u64 size = f->vn->size;
         file_put(f);
@@ -159,6 +182,12 @@ void bootlog_volume_mounted(const char *mountpoint, bool rw) {
         }
     }
     mutex_unlock(&g_lock);
+}
+
+void bootlog_unmounted(const char *target) {
+    if (!g_active || strcmp(target, "/HumanVillage")) return;
+    g_active = false;                                                   /* no lock: the namespace is locked here and the writer thread needs it */
+    klog("Keine", "bootlog: /HumanVillage is being unmounted: TOUHOU.LOG stops here (it is on the stick, up to the last write)");
 }
 
 void bootlog_shutdown(void) {

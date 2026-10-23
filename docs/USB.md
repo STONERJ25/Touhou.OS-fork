@@ -5,9 +5,11 @@ Kaby Lake desktop whose only keyboard controller is the PCH xHCI, `8086:a12f`). 
 verified against QEMU's two xHCI models (`qemu-xhci`, `nec-usb-xhci`) with 29 scripted tests in `tests/case_usb.py`.
 
 Scope: xHCI host controller, enumeration, hubs (USB 2 with transaction translators, USB 3), HID boot keyboards and mice
-(plus report-descriptor driven mice and keyboards), bulk transfers as a primitive. Not covered: EHCI/OHCI/UHCI (the old
-companion controllers), isochronous transfers, mass storage / audio / any class driver beyond hub and HID, USB 3 power
-management (U1/U2/LPM), suspend/resume, remote wakeup.
+(plus report-descriptor driven mice and keyboards), bulk transfers, and the **bulk-only mass storage class driver**
+(sticks, card readers and enclosures become `sda`, `sdb`, ... in the block layer; see "Mass storage" below). Not covered:
+EHCI/OHCI/UHCI (the old companion controllers), isochronous transfers, UAS (USB Attached SCSI) and the other mass storage
+protocols (CBI, ATAPI-style subclasses), audio and any class driver beyond hub, HID and mass storage, USB 3 power management
+(U1/U2/LPM), suspend/resume, remote wakeup.
 
 ## Layers
 
@@ -18,7 +20,9 @@ kernel/drivers/usb/xhci.c       host controller driver (the only UsbHc implement
 kernel/drivers/usb/usb.c        core: usbd thread, port events, enumeration, descriptors, device tree, /proc/usb
 kernel/drivers/usb/hub.c        hub class driver (USB 2 and USB 3 hubs)
 kernel/drivers/usb/hid.c        HID class driver: keyboards and mice -> input_key() / input_mouse()
-tests/case_usb.py               the tests
+kernel/drivers/usb/storage.c    mass storage class driver (bulk-only transport + SCSI) -> block layer, /proc/usbstorage
+tests/case_usb.py               the tests of the bus, hubs, HID
+tests/case_usbstorage.py        the tests of the mass storage driver and of HUMANVILLAGE on a stick
 ```
 
 `usb_init()` (strong version of the weak stub in `driver_stubs.c`, called by `kmain` after PCI/storage init) only looks for
@@ -39,7 +43,15 @@ delayed by an enumeration in progress. Callbacks (HID report handlers) run insid
 transfers; the only deferred work is keyboard LED writes (`hid_service`) and endpoint error recovery (`xhci_service`).
 
 Other threads never call into the stack directly: `usb_call(fn, arg)` runs `fn(arg)` in the usbd thread between two polling rounds
-and the caller sleeps until it is done (see "Writing another class driver" below).
+and the caller sleeps until it is done (see "Writing another class driver" below). `usb_call` also wakes usbd at once, so its idle
+1 ms sleep does not add a tick of latency to every block request.
+
+**Boot rendezvous.** `kmain` calls `usb_wait_settled(8000)` right before it starts the first session. It returns at once when there
+is no xHCI controller (or `usb=off`, or the controller failed), and when nothing was plugged in when the controller came up. Otherwise it
+waits until the bus is quiet: every controller started, no port left to examine, no enumeration in progress, no mass storage unit still
+getting ready, the automount of a stick's HUMANVILLAGE volume finished, and nothing new for 150 ms (hub ports report late). The wait
+is bounded at 8 s whatever happens (`[Kappa] usb: still busy after 8000 ms ...` in the log); a stick that needs longer is mounted by the
+hot-plug path when it is ready, after the session has started. A normal boot with a keyboard, a mouse and a stick pays 0.4-1 s.
 
 Every wait has a timeout: commands 5 s (Linux's value), control transfers 2.5-3 s, port resets 1.5 s (warm 4 s), BIOS hand-off 1 s,
 HCRST 2 s. If the controller itself stops answering (all-ones register reads, `HSE`/`HCE`, unexpected halt, command ring that cannot be
@@ -119,6 +131,9 @@ their children first), Disable Slot, free contexts and rings, remove from the tr
 * A stalled or failed control transfer halts the control endpoint: Reset Endpoint, then Set TR Dequeue Pointer to the current enqueue
   position, so the next transfer starts clean (`usb=stalltest` provokes this on every device).
 * A control transfer or bulk transfer that times out additionally gets Stop Endpoint first; the device is then marked `broken`.
+* A bulk transfer to a device on a **root port** also ends the moment the port stops reporting a connection (`-ENODEV`, device marked
+  `broken`): QEMU drops the transfers of an unplugged device without completing them, and a pulled stick should not hold up every
+  request for the full timeout. Devices behind a hub still wait for the timeout (asking the hub needs the control pipe).
 * A command that times out aborts the command ring (`CRCR.CA`), waits for `CRR` to clear, moves the dequeue pointer past the stuck
   command and carries on. If the ring does not stop, the controller is declared dead.
 * Interrupt endpoints that report errors are recovered from the thread (never from inside event processing): up to four tries,
@@ -161,9 +176,75 @@ their children first), Disable Slot, free contexts and rings, remove from the tr
 * **LEDs**: Num Lock starts on (matching the input layer), Caps Lock follows `keyboard_modifiers()`, Scroll Lock toggles. The SET_REPORT
   is sent from the thread's housekeeping step, not from the report callback; a keyboard that stalls it is not asked again.
 
+## Mass storage (storage.c)
+
+A stick, a card reader or a USB enclosure that speaks SCSI over the **bulk-only transport** (interface class 8, subclass 6, protocol
+0x50) becomes a disk in the block layer: `sdb`, `sdc`, ... (`driver "usb-storage"` in `/proc/partitions` and `lsblk`, model
+`VENDOR PRODUCT` from INQUIRY), with `sdb1`, `sdb2` for the partitions the GPT/MBR scan finds. Names come from the pool the SATA driver
+uses (`blk_register_sd`: the first free letter), so a stick plugged in after boot never collides with a disk and a pulled stick gives its
+letter back. UAS (protocol 0x62), CBI and the ATAPI-style subclasses are ignored with one log line (a UAS-capable stick also offers the
+bulk-only interface as alternate setting 0, which is what gets driven). `usbstorage=off` leaves all of it alone.
+
+```
+[Kappa] usb-storage 1-1: 46f4:0001, bulk-only transport, 1 LUN -- the kappa are sizing the stick up
+[Marisa] blk: sdb  usb-storage  100 MiB, 512-byte sectors  QEMU QEMU HARDDISK
+[Marisa] blk: sdb1  34 MiB  start 2048  label TOUHOUOS-ESP
+[Marisa] blk: sdb2  64 MiB  start 71680  label HUMANVILLAGE
+[Kappa] usb-storage 1-1 lun 0: "QEMU QEMU HARDDISK", 100 MiB in 512-byte blocks, writable -- carried over the river as sdb
+[Keine] fat32: sdb2 mounted on /HumanVillage, 64 MiB, 1024-byte clusters, label 'HUMANVILLAG', home directories per user
+[Keine] the Human Village keeps its records on the stick now (sdb2, found by partition label): the homes persist from here on
+```
+
+**Bring-up is a state machine, not a blocking probe.** `probe` only asks GET MAX LUN and records the LUNs; then, one SCSI command per
+usbd round and LUN (so hubs and keyboards keep being served while a stick spins up), each LUN goes through
+`START` (INQUIRY: type 0x00/0x0E/0x07 is a disk, a qualifier or type 0x1F means "no device at this LUN", anything else is logged and
+ignored) -> `WAIT` (TEST UNIT READY; on CHECK CONDITION REQUEST SENSE decides: "becoming ready" and unit attention are tried again every
+250 ms for at most 20 s, "medium not present" goes to `NOMEDIA`, a unit that does not implement the command is taken as ready) ->
+READ CAPACITY(10) (and (16) when the last LBA is 0xFFFFFFFF) -> MODE SENSE(6) for the write-protect bit -> `ONLINE`
+(`blk_register_sd`, then the mount policy hears about it, see STORAGE.md). `NOMEDIA` (a card reader without a card) asks again every two
+seconds. `/proc/usbstorage` shows each LUN's state:
+
+```
+usb-storage 1-1: 46f4:0001 bulk-only, 1 LUN, 0 reset recoveries
+  lun 0: online "QEMU QEMU HARDDISK" sdb 204800 x 512 rw  reads 9 writes 10 syncs 17 errors 0
+```
+
+**I/O.** `BlockDev.read/write/flush` run on arbitrary threads and go through `usb_call`; each hand-over is one SCSI command of at most
+64 KiB (one bulk transfer), so a 4 MiB filesystem request is 64 hand-overs and usbd serves its other work in between. READ/WRITE(10) is
+used until a request needs 64-bit LBAs or 32-bit counts (or the unit's capacity needed READ CAPACITY(16); `usbstorage.rw16` forces the
+16-byte forms for testing). **Write policy** is the one of the SATA and NVMe drivers: every write request is followed by one
+SYNCHRONIZE CACHE(10); a stick that answers ILLEGAL REQUEST (or fails the transfer twice) is not asked again, and the write is not failed
+for it. `blk.ro` does *not* apply to sticks (it is for the internal disks); a stick follows its own write-protect switch, and a
+DATA PROTECT answer to a write switches the disk to read-only on the spot.
+
+**Everything the device says is checked.** CSW: signature, tag, status byte (0 or 1; 2 is a phase error), residue not larger than the
+request, and for a "good" read that exactly the requested bytes arrived. Sense data: only the fixed (70h/71h) and descriptor (72h/73h)
+formats are believed, anything else is a plain failure. Capacity: block size zero, not a power of two, or other than 512/4096 ->
+the LUN is ignored with the reason in the log; `last LBA + 1` overflowing or more than a pebibyte -> ignored. GET MAX LUN above 15 is taken
+to mean one LUN, more than 8 LUNs use the first 8. A wrapper the stick will not take, a stalled data or status stage, a bad CSW: **bulk-only
+reset recovery** (class request 0xFF, then CLEAR_FEATURE(HALT) on bulk-in and bulk-out) and one more try, up to three per request; if the
+recovery itself fails, or a transfer times out (5 s for commands, 15 s for reads, 30 s for writes and SYNCHRONIZE CACHE), the stick is
+"given up on": its disks are unregistered, every later request returns `-ENODEV`, nothing else is sent to it. `usbstorage.selftest` runs
+the validators against hand-made hostile answers (29 checks).
+
+**Removable media.** A request that finds "medium not present" drops the disk (`-ENODEV` to the caller, the partitions go with it) and the
+unit is polled until a medium returns; "unit attention: medium may have changed" (06/28) drops the disk too and probes the unit again from
+the start, so data is never written to a different medium than the one a filesystem was mounted on. A mounted volume on a dropped disk
+keeps failing with `-ENODEV` until it is unmounted.
+
+**Hot-unplug.** `disconnect` unregisters the disks (`blk_unregister`: the `/dev` nodes, `/proc/partitions` entries and partitions go; the
+`BlockDev` structs stay allocated because nothing counts who still holds a pointer: a few hundred bytes per unplugged stick) and marks the
+device gone, so requests that were queued behind the disconnect fail with `-ENODEV` instead of touching freed memory. A transfer that is in
+flight on a root port ends as soon as the port reports the disconnect; behind a hub it ends at its timeout. The FAT volume mounted from a
+pulled stick logs one line (`fat32: sdb2 vanished while it was mounted ...`), keeps returning errors, and `umount` drops it without a
+write-back (the volume stays flagged dirty).
+
+Nothing in the driver writes on its own: WRITE(10/16) and SYNCHRONIZE CACHE exist only on the path of `BlockDev.write` / `flush`, i.e.
+for a filesystem the policy or `mount` mounted, or for root writing the `/dev` node. The partition scan only reads.
+
 ## Files in /proc
 
-`/proc/usb` (what `lsusb` prints), one line per device, interface lines indented (an example, not this machine's real port counts):
+`/proc/usbstorage` is described above. `/proc/usb` (what `lsusb` prints), one line per device, interface lines indented (an example, not this machine's real port counts):
 
 ```
 Bus 1: xHCI 8086:a12f at 00:14.0, v1.00, 26 ports (16 usb2, 10 usb3), 32 slots, 32-byte contexts
@@ -188,7 +269,13 @@ Bus 1 Port 7.2: ID 0627:0001 QEMU QEMU USB Keyboard, full-speed, class 00, drive
 | `usb=debug` | verbose log lines with timestamps (port events, enumeration steps, command failures) |
 | `usb=hidreport` | debug + parse report descriptors even for boot interfaces (exercises the descriptor-driven paths) |
 | `usb=stalltest` | debug + send a request every device must STALL and verify the control pipe recovers |
-| `usb=bulktest` | SCSI INQUIRY / READ CAPACITY / 64 KiB READ(10) on any bulk-only mass storage device (read only, no disk is registered) |
+| `usb=bulktest` | SCSI INQUIRY / READ CAPACITY / 64 KiB READ(10) on any bulk-only mass storage device (read only, no disk is registered; the mass storage driver stays unbound while it is set) |
+| `usbstorage=off` | do not bind mass storage devices (sticks are listed by `lsusb` with `driver none`) |
+| `usbstorage.nosync` | no SYNCHRONIZE CACHE after write requests |
+| `usbstorage.rw16` | READ CAPACITY(16) and READ/WRITE(16) even for small devices |
+| `usbstorage.selftest` | run the validators against hand-made hostile device answers; one log line with the verdict |
+| `usbstorage.timeout=MS` | every bulk wait at most MS ms (tests; a timeout gives the stick up) |
+| `usbstorage.fault=csw:N,stall:N,drop:N,notready:MS,maxlun:N` | fault injection for the tests, several separated by commas: the N-th status wrapper is corrupted / the N-th command wrapper stalls the pipe / the N-th command gets no answer / every unit is "not ready" for MS ms / GET MAX LUN answers N |
 | `usb=parsertest` | run the HID report descriptor parser and decoders against built-in descriptors at boot (one log line with the result) |
 | `usbfault=ctl:N`, `usbfault=cmd:N` | never ring the doorbell for the Nth control transfer / command (counted from boot; the start-up No-Op is command 1) |
 | `usbring=N` | use only N (16..256) entries of every ring, so cycle-bit / link TRB wrap-around happens after N-1 TRBs; `USB_RING=16 python tests/run_all.py usb_` runs the whole USB suite that way |
@@ -264,15 +351,28 @@ full-speed devices (control endpoint size correction); a SuperSpeed device; bulk
 declined; report-descriptor mode; STALL recovery; control transfer and command timeouts; the NEC xHCI model; an xHCI with nothing
 attached; no xHCI at all (PS/2 only); `usb=off`.
 
+The mass storage tests (`python tests/run_all.py usbstor`, 25 tests, about 25 minutes) boot QEMU with `-device qemu-xhci` and
+`-device usb-storage` sticks built by `tools/mkdisk.py` (they use `-blockdev` nodes, because QEMU deletes an `-drive if=none` backend
+when its device is unplugged) and cover: model, size, partitions and the `lsblk` / `/proc/partitions` / `/proc/usbstorage` / `lsusb` rows;
+whole-device, partition and unaligned reads against the host's checksums; HUMANVILLAGE mounted before the first session; persistence
+across two boots and the image fsck after each poweroff; a write-protected stick; hot-plug after boot (mounted by the hook), unplug while
+idle and during a long read, plugging it in again, the dirty flag after a pull; four hostile sticks (blank, garbage GPT, wild GPT, lying
+MBR) that must stay untouched; a UAS device that is ignored; two sticks with the same label (the first wins); a stick without the label;
+an internal disk that wins over a stick; 4096-byte blocks; FAT time stamps with `tz=`, without, and through `mount`; stalls and
+corrupted status wrappers during a read, a write and the bring-up; a stick that never answers; a stick that needs 12 s (and one that
+needs 30 s); card-reader behaviour (medium removed, inserted, swapped); empty LUN slots; `usbstorage=off`; the validators' self test; the
+kernel log on the stick (clean run, rotation, killed machine, read-only / dirty / `bootlog=off`); and the `mkimage` stick booted through
+OVMF twice.
+
 Harness notes: QMP `input-send-event` with a `device` argument names a *display*, and QEMU 11 aborts on any other id, so
 `Qemu._input` no longer forwards it. Default routing already works: a usb-kbd becomes the default keyboard when it is created or
 plugged, and the guest's polling activates a usb-mouse (`Qemu.select_mouse("HID")` forces it through the monitor's `mouse_set`).
 A guest USB keyboard that nothing polls swallows injected keys, which is why the `usb=off` test attaches only a mouse.
 
-## Writing another class driver (for example USB mass storage -> block layer)
+## Writing another class driver (the recipe that `storage.c` follows)
 
 A class driver is a `UsbDriver` (`usb.h`): `match`, `probe`, `disconnect`, `label`. Add it to `g_drivers[]` at the top of `usb.c`
-(the only edit outside the driver's own file). For mass storage:
+(the only edit outside the driver's own file; a periodic hook like `msc_service()` is one more line in the usbd loop). For mass storage:
 
 1. `match(dev, intf)`: interface class 8, subclass 6 (SCSI), protocol 0x50 (bulk-only transport), one bulk-IN and one bulk-OUT
    endpoint in `intf->ep[]`. Look at descriptors only; no traffic. If `match` says yes the core configures **all bulk and interrupt-IN
@@ -282,14 +382,19 @@ A class driver is a `UsbDriver` (`usb.h`): `match`, `probe`, `disconnect`, `labe
    `usb_bulk(dev, ep, buf, len, timeout_ms)` moves up to 64 KiB per call and returns the byte count or -errno; `-EPIPE` is a stall:
    call `usb_clear_halt(dev, ep)` (the controller side was already reset) and read the CSW. `msc_command()` in `usb.c` (the
    `usb=bulktest` self test) is a complete CBW / data / CSW exchange to copy from.
-3. Register the disk: allocate a `BlockDev` (`blk.h`), set `read`/`write`/`flush`, `blk_register()`.
+3. Register the disk: allocate a `BlockDev` (`blk.h`), set `read`/`write`/`flush`, `blk_register_sd()` (SCSI-style names) or
+   `blk_register()`. Do slow device bring-up (waiting for "ready") from a service hook, not inside `probe`, or the next device on the
+   bus waits for it.
 4. **Thread rule.** The block layer calls `read`/`write` from arbitrary tasks, while the whole USB stack belongs to the usbd thread and
    has no locks. Wrap each request in a function and run it with `usb_call(fn, arg)`: it executes in the usbd thread between two polling
    rounds and the caller sleeps until it returns (a request can therefore wait behind an enumeration for a few seconds in the worst
    case). Inside `probe`, `disconnect` and interrupt callbacks you are already in the usbd thread and may call the API directly (callbacks
    must not start control or bulk transfers).
 5. `disconnect(dev, intf)`: runs when the device is unplugged; stop accepting requests (fail them with -ENODEV) before returning,
-   because the endpoints and the slot are freed right after. `blk.h` has no unregister call yet.
+   because the endpoints and the slot are freed right after. Take the disks away with `blk_unregister()` (requests that are already
+   queued behind the disconnect must find a flag that says "gone", not a freed `UsbDevice`: keep the driver state allocated while a
+   `BlockDev` points at it) and never take a lock that a thread waiting for a `usb_call` may hold (a filesystem's, the VFS namespace's):
+   usbd would wait for that thread, which waits for usbd. That is also why the automount of a new stick runs on a worker thread.
 
 ## Limitations and risks
 
@@ -303,3 +408,12 @@ A class driver is a `UsbDriver` (`usb.h`): `match`, `probe`, `disconnect`, `labe
 * Control transfers are limited to 4096 bytes; configuration descriptors beyond 4096 bytes are truncated; at most 16 interfaces and
   8 endpoints per interface are recorded; at most 4 controllers.
 * Devices whose setup fails four times are ignored until replugged. A device that times out once is marked broken and ignored.
+* Mass storage: only SCSI over the bulk-only transport (no UAS, so no stream-based throughput; a UAS stick is driven through its
+  bulk-only alternate setting, which is slower but works). Not tested against hardware, and QEMU shapes what was tested: its sticks have
+  one LUN (`usb-bot` with a second LUN hangs the OVMF firmware before the kernel starts, so several real LUNs are exercised only through
+  the empty-slot path, `usbstorage.fault=maxlun:2`), never NAK for long, and answer a missing command wrapper with a STALL. Timeouts are
+  fatal for the stick (the core marks a device `broken` after one), so a very slow flash chip that takes more than 15 s for 64 KiB would
+  be given up on; the timeouts are generous on purpose. After a bulk-only reset the xHCI data toggle is only reset by Reset Endpoint when a
+  stall preceded it (QEMU does not model toggles; a real device that needs a reset without any stall may see a toggle mismatch).
+* `disconnect` cannot release the `BlockDev` structs of a stick that had disks (see above); a machine that is plugged and unplugged
+  thousands of times loses a few hundred KiB.
