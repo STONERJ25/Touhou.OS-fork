@@ -12,7 +12,7 @@ disk it never touches.
 ## 1. Build the stick
 
 ```powershell
-python tools/mkimage.py                    # builds everything, writes build/touhou-os.img (1 GiB)
+python tools/mkimage.py --zip              # builds everything, writes build/touhou-os.img (1 GiB) and build/touhou-os.img.zip (7 MB)
 ```
 
 The image is a GPT disk: a 64 MiB FAT32 *EFI System Partition* (`EFI/BOOT/BOOTX64.EFI`, `kernel.elf`, `initrd.img`,
@@ -21,8 +21,8 @@ The image is a GPT disk: a 64 MiB FAT32 *EFI System Partition* (`EFI/BOOT/BOOTX6
 
 Write it to a USB stick (everything on the stick is replaced; double-check the drive letter):
 
-- **Rufus**: pick the stick, "Select" the `.img` file, and when asked choose **DD Image mode**.
-- **balenaEtcher**: "Flash from file", pick the stick.
+- **Rufus**: pick the stick, "Select" the `.img` (or the `.zip`) file, and when asked choose **DD Image mode**.
+- **balenaEtcher**: "Flash from file", pick the `.img` or the `.zip`, then the stick.
 - **Linux/macOS**: `sudo dd if=touhou-os.img of=/dev/sdX bs=4M status=progress` (and `sync`).
 
 Disk tools may offer to "repair" the backup GPT header because the image is smaller than the stick; that is harmless.
@@ -60,7 +60,8 @@ Photograph the screen if the machine dies before a shell exists; the last lines 
 ## 4. The command line (`cmdline.txt` on the ESP)
 
 Edit it on any computer (the ESP is an ordinary FAT32 volume) or give `tools/mkimage.py --cmdline`. The default is
-`video=native blk.ro`.
+`video=native blk.ro`; the image prepared for this machine's owner also has `tz=EST5EDT,M3.2.0,M11.1.0` (US Eastern time). If the
+clock is hours off on the first boot, the PC's clock chip holds local time (Windows does that): add `rtc=local`.
 
 | Word | Meaning |
 |------|---------|
