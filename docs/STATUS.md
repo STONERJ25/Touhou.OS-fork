@@ -28,7 +28,7 @@ Running on a real PC: [REAL_HARDWARE.md](REAL_HARDWARE.md).
 | Drivers | PCI, virtio-blk, AHCI (SATA), NVMe, xHCI USB with hubs and HID keyboards/mice, PS/2 keyboard + mouse, serial, framebuffer, network cards (virtio-net, e1000, e1000e), sound (Intel HDA, AC'97); all polled | [BLOCKDEVICES](BLOCKDEVICES.md), [USB](USB.md), [NETWORK](NETWORK.md), [AUDIO](AUDIO.md) |
 | Network | ARP, IPv4, ICMP, UDP, TCP (loopback and real NICs), BSD sockets, DHCP client, `/proc/net`; tools, DNS and the Realtek cards are still being written | [NETWORK](NETWORK.md) |
 | Audio | `/dev/audio` with a software mixer, HDA and AC'97 drivers, libaudio (WAV, tones, system sounds), `beep`, `play`, `volume`; the chiptune engine, Jukebox and songs are still being written | [AUDIO](AUDIO.md) |
-| Threads | kernel threads (`thread_create`, futex, per-thread signals), complete pthreads in libgap (mutexes, condition variables, rwlocks, barriers, semaphores, TLS, cancellation), C11 `<threads.h>` | [THREADS](THREADS.md) |
+| Threads | kernel threads (`thread_create`, futex, per-thread signals), complete pthreads in libgap (mutexes, condition variables, rwlocks, barriers, semaphores, TLS, cancellation), C11 `<threads.h>`; priorities (`nice`, `renice`), hard links on tmpfs, `/proc/<pid>/fd`, the stopped process state | [THREADS](THREADS.md), [JOBCONTROL](JOBCONTROL.md) |
 | Archives | `libz` (inflate/deflate), `gzip`/`gunzip`/`zcat`, `tar`, `zip`/`unzip`, `utimes()`; image decoders are still being written | [MEDIA](MEDIA.md) |
 | Power and time | ACPI soft-off, reset register, polled power button; POSIX time zones, settable clock, `hwclock`, `rtc=local` | [POWER_AND_TIME](POWER_AND_TIME.md) |
 | Accounts | users and groups, setuid exec, salted password hashes, `login`, `su`, `sudo` (`eiki`), `passwd`, `adduser`/`deluser`, sticky `/tmp`, a seat group for the desktop and the power button | [ACCOUNTS](ACCOUNTS.md) |
@@ -42,5 +42,5 @@ Running on a real PC: [REAL_HARDWARE.md](REAL_HARDWARE.md).
 - Nothing is persistent unless a HUMANVILLAGE volume is mounted: `/etc` and the homes live in RAM and are rebuilt at boot.
 - No USB mass storage yet, so a USB stick cannot be read or written from inside the OS (being written, see NEXT); no image decoders yet.
 - Nothing has run on the real target PC; [HARDWARE_AUDIT](HARDWARE_AUDIT.md) (when it exists) lists what is unverified.
-- Job control (Ctrl-Z, `fg`/`bg`) needs a stopped process state in the kernel, which does not exist yet.
+- Job control: the kernel side exists (stopped state, Ctrl-Z, `waitpid` with WUNTRACED, orphaned groups; [JOBCONTROL](JOBCONTROL.md)), but gapsh does not use it yet (`jobs`, `fg`, `bg` are being written), so for now Ctrl-Z freezes the foreground job and the shell prompt along with it.
 - The local agent log (`docs/AI_SUMMARY.md`, gitignored) has the newest development notes.
