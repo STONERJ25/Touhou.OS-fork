@@ -142,6 +142,33 @@ static void process_queue(KUI *ui) {
     g_nq = 0;
 }
 
+/* While a tool is being dragged and the pointer is outside the view, the view scrolls that way (so a selection or a
+ * shape can be dragged past the edge of the window); a timer keeps it going while the pointer holds still. */
+static bool g_scroll_tick;
+
+static void autoscroll(KUI *ui) {
+    int dx = 0, dy = 0;
+    if (tools_dragging() && (ui->buttons & 3)) {
+        if (ui->mx < S.view.x) dx = ui->mx - S.view.x - 4;
+        else if (ui->mx >= S.view.x + S.view.w) dx = ui->mx - (S.view.x + S.view.w) + 4;
+        if (ui->my < S.view.y) dy = ui->my - S.view.y - 4;
+        else if (ui->my >= S.view.y + S.view.h) dy = ui->my - (S.view.y + S.view.h) + 4;
+        dx = sk_clamp(dx, -32, 32);
+        dy = sk_clamp(dy, -32, 32);
+    }
+    if (dx || dy) {
+        int sx = S.scroll_x, sy = S.scroll_y;
+        S.scroll_x += dx;
+        S.scroll_y += dy;
+        position();
+        if (S.scroll_x != sx || S.scroll_y != sy) tools_pointer_move(ui, ui->mx, ui->my, ui->mods);   /* the picture moved under the pointer */
+        if (!g_scroll_tick) { kapp_set_tick(S.app, 30); g_scroll_tick = true; }
+    } else if (g_scroll_tick) {
+        g_scroll_tick = false;
+        if (!tools_dragging()) kapp_set_tick(S.app, 0);
+    }
+}
+
 /* ---------------------------------------------------------------- scrollbars */
 
 static void hscrollbar(KUI *ui, KRect r, int *offset, int content, int view) {
@@ -242,6 +269,7 @@ void canvas_frame(KUI *ui, KRect frame) {
     geometry(frame);
     position();
     process_queue(ui);
+    autoscroll(ui);
 
     bool over = ui->mouse_inside && !ui->menu_open && kr_contains(S.view, ui->mx, ui->my);
     g_mx = ui->mx;
