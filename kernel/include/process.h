@@ -37,6 +37,7 @@ typedef struct AddrSpace {
     Vma *vmas;
     u64 brk_start, brk;
     u64 mmap_next;
+    Mutex lock;                     /* guards vmas and the page tables below pml4 against the process's other threads */
 } AddrSpace;
 
 typedef enum { PROC_RUNNING, PROC_ZOMBIE } ProcState;

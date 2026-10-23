@@ -174,7 +174,11 @@ int process_fork(TrapFrame *tf) {
     irq_restore(fl);
 
     int rc = uvm_new(&c->as);
-    if (!rc) rc = uvm_clone(&c->as, &par->as);
+    if (!rc) {
+        mutex_lock(&par->as.lock);                  /* a sibling thread must not change the mappings while they are copied */
+        rc = uvm_clone(&c->as, &par->as);
+        mutex_unlock(&par->as.lock);
+    }
     if (rc) {
         for (int i = 0; i < MAX_FD; i++) if (c->fds[i]) file_put(c->fds[i]);
         if (c->cwd) vnode_put(c->cwd);

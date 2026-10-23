@@ -16,6 +16,7 @@ int uvm_new(AddrSpace *as) {
     as->pml4 = vmm_new_user_pml4();
     if (!as->pml4) return -ENOMEM;
     as->mmap_next = USER_MMAP_BASE;
+    mutex_init(&as->lock);
     return 0;
 }
 
@@ -178,12 +179,29 @@ void uvm_destroy(AddrSpace *as) {
     as->pml4 = 0;
 }
 
+static bool uvm_fault_locked(AddrSpace *as, TrapFrame *tf, u64 addr);
+
+/* Demand paging. Another thread may be in the middle of mmap/munmap: wait for it (a fault taken with interrupts on may sleep). */
 bool uvm_fault(AddrSpace *as, TrapFrame *tf, u64 addr) {
     if (!as->pml4 || addr >= USER_TOP) return false;
+    if (!mutex_trylock(&as->lock)) {
+        if (!(tf->rflags & RFLAGS_IF)) return false;        /* interrupted code that could not be preempted: cannot wait either */
+        sti();
+        mutex_lock(&as->lock);
+        cli();
+    }
+    bool ok = uvm_fault_locked(as, tf, addr);
+    mutex_unlock(&as->lock);
+    return ok;
+}
+
+static bool uvm_fault_locked(AddrSpace *as, TrapFrame *tf, u64 addr) {
+    if (!as->pml4) return false;                            /* the process was torn down while we waited */
     Vma *v = vma_find(as, addr);
     if (!v || (v->flags & VMA_IO)) return false;
     u64 err = tf->error;
     if (err & 1) return false;                              /* present page: a real protection violation */
+    if (vmm_translate(as->pml4, addr, NULL)) return true;   /* another thread mapped it while we waited: just retry */
     if ((err & 2) && !(v->prot & PROT_WRITE)) return false;
     if ((err & 16) && !(v->prot & PROT_EXEC)) return false;
     if (!(v->prot & (PROT_READ | PROT_WRITE | PROT_EXEC))) return false;

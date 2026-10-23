@@ -429,7 +429,18 @@ static long sys_chdir(TrapFrame *tf) {
         rc = vfs_lookup(path, p->cwd, &p->cred, LOOKUP_DIR, &v);
         if (rc == 0 && (rc = vfs_access(v, &p->cred, X_OK)) != 0) vnode_put(v);
         if (rc == 0) {
-            if (p->cwd) vnode_put(p->cwd);
+            /* Another thread may be resolving a relative path against the old directory right now, so a threaded process keeps
+             * the old reference in a small ring and drops the oldest one instead (everything is released at exit). */
+            VNode *old = p->cwd;
+            if (old && p->nthreads > 1) {
+                u64 f = irq_save();
+                VNode *drop = p->old_cwd[0];
+                for (unsigned i = 0; i + 1 < ARRAY_SIZE(p->old_cwd); i++) p->old_cwd[i] = p->old_cwd[i + 1];
+                p->old_cwd[ARRAY_SIZE(p->old_cwd) - 1] = old;
+                irq_restore(f);
+                old = drop;
+            }
+            if (old) vnode_put(old);
             p->cwd = v;
             char norm[256];
             path_normalize(p->cwd_path, path, norm, sizeof norm);
@@ -554,7 +565,7 @@ static long sys_poll(TrapFrame *tf) {
 
 /* ------------------------------------------------------------------ memory */
 
-static long sys_brk(TrapFrame *tf) {
+static long do_brk(TrapFrame *tf) {
     AddrSpace *as = &me()->as;
     u64 want = A0(tf);
     if (want == 0 || want < as->brk_start || want > as->brk_start + (1UL << 30)) return (long)as->brk;
@@ -568,7 +579,7 @@ static long sys_brk(TrapFrame *tf) {
     return (long)want;
 }
 
-static long sys_mmap(TrapFrame *tf) {
+static long do_mmap(TrapFrame *tf) {
     AddrSpace *as = &me()->as;
     u64 addr = A0(tf), len = A1(tf);
     u32 prot = (u32)A2(tf);
@@ -628,17 +639,33 @@ static long sys_mmap(TrapFrame *tf) {
     return (long)addr;
 }
 
-static long sys_munmap(TrapFrame *tf) {
+static long do_munmap(TrapFrame *tf) {
     u64 addr = A0(tf), len = ALIGN_UP(A1(tf), PAGE_SIZE);
     if (addr & (PAGE_SIZE - 1) || !len) return -EINVAL;
     return uvm_unmap(&me()->as, addr, len);
 }
 
-static long sys_mprotect(TrapFrame *tf) {
+static long do_mprotect(TrapFrame *tf) {
     u64 addr = A0(tf), len = ALIGN_UP(A1(tf), PAGE_SIZE);
     if (addr & (PAGE_SIZE - 1)) return -EINVAL;
     return uvm_protect(&me()->as, addr, len, (u32)A2(tf));
 }
+
+/* The mappings of a process are shared by all its threads: every call that changes them (and fork's copy, and the page
+ * fault handler) holds the address space lock, a sleeping mutex, for its whole duration. */
+#define MM_LOCKED(name, impl)                                  \
+    static long name(TrapFrame *tf) {                          \
+        AddrSpace *as = &me()->as;                             \
+        mutex_lock(&as->lock);                                 \
+        long r = impl(tf);                                     \
+        mutex_unlock(&as->lock);                               \
+        return r;                                              \
+    }
+
+MM_LOCKED(sys_brk, do_brk)
+MM_LOCKED(sys_mmap, do_mmap)
+MM_LOCKED(sys_munmap, do_munmap)
+MM_LOCKED(sys_mprotect, do_mprotect)
 
 /* ------------------------------------------------------------------ system */
 
