@@ -205,6 +205,9 @@ Read against AHCI 1.3.1 and NVMe 1.4 and Linux's `libahci`/`nvme-pci`. **No defe
 5. On the desktop: `cat /tmp/fairyd.stat` in a terminal; compose and flush microseconds per frame, and the flush speed.
 6. If the machine resets by itself a few seconds after the picture appears: suspect memory the firmware still used (L5/C4 should have made that
    impossible) or an unhandled interrupt source (C10).
+7. If the screen was not photographed in time (or the machine froze): pull the stick and read `TOUHOU.LOG` (this boot) and `TOUHOU.PRV` (the boot
+   before) in the root of its big partition on another computer, see [REAL_HARDWARE.md](REAL_HARDWARE.md). They hold the same lines as the screen,
+   the audit lines above included, up to about five seconds before the end; a file without the "clean run" line at its end belongs to a boot that did not finish.
 
 ## Tests
 
