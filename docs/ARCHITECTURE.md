@@ -87,6 +87,9 @@ A `Process` (`kernel/include/process.h`) owns the address space, descriptors, cw
 user `Task` (`kernel/include/task.h`) is one thread inside it, with its own kernel stack, FS base (TLS), signal mask and
 thread id. System calls 106-115 are the thread calls and the futex that user space builds every lock on; the pthread library is
 `user/libc/src/pthread.c`. Design, ABI, locking rules, limits and the list of what is missing: [THREADS.md](THREADS.md).
+Stopping and continuing processes (`SIGSTOP`/`SIGCONT`, `waitpid(WUNTRACED)`, Ctrl-Z and the terminal rules for background
+jobs), nice values and the scheduler's time slices, hard links and `/proc/<pid>/fd`, `cwd`, `exe` are in
+[JOBCONTROL.md](JOBCONTROL.md), which also says what a shell has to do on top of it.
 
 ## Testing
 
