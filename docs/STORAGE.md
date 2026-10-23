@@ -66,7 +66,7 @@ USB enumeration finishes seconds after the kernel starts, long after the boot-ti
   `/HumanVillage` yet -> mount the first HUMANVILLAGE volume found; else only say so if this disk has one too. A disk without the label
   is logged (`sdb has no HUMANVILLAGE volume: nothing to mount from it`) and otherwise left strictly alone.
 * **Boot waits for USB** (`usb_wait_settled(8000)` just before the first session starts, see USB.md): with a stick present the volume is
-  mounted before login, normally 0.4-1 s after the controller came up; the wait is bounded at 8 s and skipped without USB, so a stick that
+  mounted before login, normally about a second after the controller came up; the wait is bounded at 8 s and skipped without USB, so a stick that
   is slow or absent never holds up boot. A stick that becomes ready after the wait is mounted by the hook later, while sessions run: new
   processes see the stick's `/HumanVillage`, old ones keep the tmpfs homes they had.
 

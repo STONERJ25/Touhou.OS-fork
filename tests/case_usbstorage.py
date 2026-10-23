@@ -263,7 +263,9 @@ def usbstor_behind_a_hub():
         extra = XHCI + ["-device", "usb-hub,id=hub1,bus=xhci.0,port=1"] + stick(img, attach=False) + [
             "-device", "usb-storage,drive=stick1,id=ustor1,bus=xhci.0,port=1.1"]
         with boot(None, root=True, name="t-usbs-hub", extra=extra) as (g, vm):
-            wait_log(vm, r"usb-storage 1-1\.1 lun 0: .* carried over the river as sdb", timeout=120)
+            # (QEMU's port=1 is a pair of root ports: a full-speed hub lands on the USB2 half, which the guest numbers 5, so no "1-1" here)
+            m = wait_log(vm, r"usb-storage (1-\d+)\.1 lun 0: .* carried over the river as sdb", timeout=120)
+            behind = m.group(1)
             out = g.ok("lsusb; lsblk")
             assert re.search(r"Port \d+\.1: ID 46f4:0001 .*full-speed.*driver usb-storage", out), out
             assert re.search(r"^sdb\s+100M\s+0\s+disk\s+usb-storage", out, re.M), out
@@ -273,7 +275,7 @@ def usbstor_behind_a_hub():
             mark = len(vm.text())
             vm.qmp("device_del", id="hub1")                                # the hub and everything behind it
             wait_log(vm, r"blk: sdb removed together with sdb1, sdb2", timeout=90, since=mark)
-            wait_log(vm, r"usb-storage 1-1\.1: the stick was pulled out", timeout=30, since=mark)
+            wait_log(vm, re.escape(f"usb-storage {behind}.1: the stick was pulled out"), timeout=30, since=mark)
             assert "sdb" not in g.ok("cat /proc/partitions")
             no_incident(vm)
             assert say(g, "echo alive") == "alive"

@@ -691,7 +691,11 @@ static void lun_step(Msc *m, MscLun *l) {
         ScsiCmd c = { .cdb = cdb, .cdb_len = 6, .data = buf, .len = sizeof buf, .in = true, .t_data = g_t_quick };
         int rc = msc_run(m, l->lun, &c);
         if (rc == MSC_OK) rc = inquiry_parse(buf, c.got, l);
-        else if (rc == MSC_CHECK) { Sense s; msc_sense(m, l->lun, &s); rc = (s.valid && s.key == 0x6) ? -EAGAIN : INQ_ABSENT; }
+        else if (rc == MSC_CHECK) {                                             /* "illegal request" is how a slot without a unit answers; anything else may pass */
+            Sense s;
+            msc_sense(m, l->lun, &s);
+            rc = (s.valid && s.key == 0x5) ? INQ_ABSENT : -EAGAIN;
+        }
         if (rc == INQ_OK) {
             l->state = LS_WAIT;
             l->started_at = now;

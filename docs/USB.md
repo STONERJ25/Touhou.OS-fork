@@ -51,7 +51,8 @@ is no xHCI controller (or `usb=off`, or the controller failed), and when nothing
 waits until the bus is quiet: every controller started, no port left to examine, no enumeration in progress, no mass storage unit still
 getting ready, the automount of a stick's HUMANVILLAGE volume finished, and nothing new for 150 ms (hub ports report late). The wait
 is bounded at 8 s whatever happens (`[Kappa] usb: still busy after 8000 ms ...` in the log); a stick that needs longer is mounted by the
-hot-plug path when it is ready, after the session has started. A normal boot with a keyboard, a mouse and a stick pays 0.4-1 s.
+hot-plug path when it is ready, after the session has started. A normal boot with a keyboard, a mouse and a stick pays about a second
+(400 ms of it is a pause between configuring a stick and the first command: many cheap sticks lock up when spoken to at once; Linux waits 1 s).
 
 Every wait has a timeout: commands 5 s (Linux's value), control transfers 2.5-3 s, port resets 1.5 s (warm 4 s), BIOS hand-off 1 s,
 HCRST 2 s. If the controller itself stops answering (all-ones register reads, `HSE`/`HCE`, unexpected halt, command ring that cannot be
@@ -195,8 +196,9 @@ bulk-only interface as alternate setting 0, which is what gets driven). `usbstor
 [Keine] the Human Village keeps its records on the stick now (sdb2, found by partition label): the homes persist from here on
 ```
 
-**Bring-up is a state machine, not a blocking probe.** `probe` only asks GET MAX LUN and records the LUNs; then, one SCSI command per
-usbd round and LUN (so hubs and keyboards keep being served while a stick spins up), each LUN goes through
+**Bring-up is a state machine, not a blocking probe.** `probe` only asks GET MAX LUN and records the LUNs; then, 400 ms later (many cheap
+sticks lock up when they are spoken to the moment they are configured) and one SCSI command per usbd round and LUN (so hubs and keyboards
+keep being served while a stick spins up), each LUN goes through
 `START` (INQUIRY: type 0x00/0x0E/0x07 is a disk, a qualifier or type 0x1F means "no device at this LUN", anything else is logged and
 ignored) -> `WAIT` (TEST UNIT READY; on CHECK CONDITION REQUEST SENSE decides: "becoming ready" and unit attention are tried again every
 250 ms for at most 20 s, "medium not present" goes to `NOMEDIA`, a unit that does not implement the command is taken as ready) ->
@@ -213,8 +215,8 @@ usb-storage 1-1: 46f4:0001 bulk-only, 1 LUN, 0 reset recoveries
 64 KiB (one bulk transfer), so a 4 MiB filesystem request is 64 hand-overs and usbd serves its other work in between. READ/WRITE(10) is
 used until a request needs 64-bit LBAs or 32-bit counts (or the unit's capacity needed READ CAPACITY(16); `usbstorage.rw16` forces the
 16-byte forms for testing). **Write policy** is the one of the SATA and NVMe drivers: every write request is followed by one
-SYNCHRONIZE CACHE(10); a stick that answers ILLEGAL REQUEST (or fails the transfer twice) is not asked again, and the write is not failed
-for it. `blk.ro` does *not* apply to sticks (it is for the internal disks); a stick follows its own write-protect switch, and a
+SYNCHRONIZE CACHE(10); a stick that answers ILLEGAL REQUEST, fails the transfer twice, or hangs on it (some bridges do: it gets one bulk-only
+reset, and if it answers again the volume is kept) is not asked again, and the write is not failed for it. `blk.ro` does *not* apply to sticks (it is for the internal disks); a stick follows its own write-protect switch, and a
 DATA PROTECT answer to a write switches the disk to read-only on the spot.
 
 **Everything the device says is checked.** CSW: signature, tag, status byte (0 or 1; 2 is a phase error), residue not larger than the
@@ -275,7 +277,7 @@ Bus 1 Port 7.2: ID 0627:0001 QEMU QEMU USB Keyboard, full-speed, class 00, drive
 | `usbstorage.rw16` | READ CAPACITY(16) and READ/WRITE(16) even for small devices |
 | `usbstorage.selftest` | run the validators against hand-made hostile device answers; one log line with the verdict |
 | `usbstorage.timeout=MS` | every bulk wait at most MS ms (tests; a timeout gives the stick up) |
-| `usbstorage.fault=csw:N,stall:N,drop:N,notready:MS,maxlun:N` | fault injection for the tests, several separated by commas: the N-th status wrapper is corrupted / the N-th command wrapper stalls the pipe / the N-th command gets no answer / every unit is "not ready" for MS ms / GET MAX LUN answers N |
+| `usbstorage.fault=csw:N,stall:N,drop:N,syncdrop:N,notready:MS,maxlun:N` | fault injection for the tests, several separated by commas: the N-th status wrapper is corrupted / the N-th command wrapper stalls the pipe / the N-th command gets no answer / the N-th SYNCHRONIZE CACHE gets no answer / every unit is "not ready" for MS ms / GET MAX LUN answers N |
 | `usb=parsertest` | run the HID report descriptor parser and decoders against built-in descriptors at boot (one log line with the result) |
 | `usbfault=ctl:N`, `usbfault=cmd:N` | never ring the doorbell for the Nth control transfer / command (counted from boot; the start-up No-Op is command 1) |
 | `usbring=N` | use only N (16..256) entries of every ring, so cycle-bit / link TRB wrap-around happens after N-1 TRBs; `USB_RING=16 python tests/run_all.py usb_` runs the whole USB suite that way |
@@ -351,12 +353,12 @@ full-speed devices (control endpoint size correction); a SuperSpeed device; bulk
 declined; report-descriptor mode; STALL recovery; control transfer and command timeouts; the NEC xHCI model; an xHCI with nothing
 attached; no xHCI at all (PS/2 only); `usb=off`.
 
-The mass storage tests (`python tests/run_all.py usbstor`, 25 tests, about 25 minutes) boot QEMU with `-device qemu-xhci` and
+The mass storage tests (`python tests/run_all.py usbstor`, 26 tests, about 12 minutes on a busy machine) boot QEMU with `-device qemu-xhci` and
 `-device usb-storage` sticks built by `tools/mkdisk.py` (they use `-blockdev` nodes, because QEMU deletes an `-drive if=none` backend
 when its device is unplugged) and cover: model, size, partitions and the `lsblk` / `/proc/partitions` / `/proc/usbstorage` / `lsusb` rows;
 whole-device, partition and unaligned reads against the host's checksums; HUMANVILLAGE mounted before the first session; persistence
 across two boots and the image fsck after each poweroff; a write-protected stick; hot-plug after boot (mounted by the hook), unplug while
-idle and during a long read, plugging it in again, the dirty flag after a pull; four hostile sticks (blank, garbage GPT, wild GPT, lying
+idle and during a long read, plugging it in again, the dirty flag after a pull; a stick behind a hub that is pulled out with the hub; four hostile sticks (blank, garbage GPT, wild GPT, lying
 MBR) that must stay untouched; a UAS device that is ignored; two sticks with the same label (the first wins); a stick without the label;
 an internal disk that wins over a stick; 4096-byte blocks; FAT time stamps with `tz=`, without, and through `mount`; stalls and
 corrupted status wrappers during a read, a write and the bring-up; a stick that never answers; a stick that needs 12 s (and one that
@@ -368,6 +370,20 @@ Harness notes: QMP `input-send-event` with a `device` argument names a *display*
 `Qemu._input` no longer forwards it. Default routing already works: a usb-kbd becomes the default keyboard when it is created or
 plugged, and the guest's polling activates a usb-mouse (`Qemu.select_mouse("HID")` forces it through the monitor's `mouse_set`).
 A guest USB keyboard that nothing polls swallows injected keys, which is why the `usb=off` test attaches only a mouse.
+
+Harness notes for the mass storage tests (found the hard way):
+
+* OVMF reads and *writes* the sticks before the kernel starts: a GPT whose primary copy is bad but whose backup is good is repaired by the
+  firmware, so the "corrupt table" images damage both copies. A test that compares a stick's bytes afterwards must expect that and keep
+  the damage unrepairable.
+* QEMU deletes an `-drive if=none` backend when its `usb-storage` device is unplugged; the tests use `-blockdev` nodes so that a stick can be
+  plugged in again. `logical_block_size=4096` needs `physical_block_size=4096` too.
+* QEMU's `usb-storage`/`usb-bot` has one LUN (GET MAX LUN is always 0; a second `scsi-hd` LUN on `usb-bot` hangs the firmware), answers a
+  command for a LUN that does not exist with CHECK CONDITION, a wrapper with a bad signature with a STALL, and never NAKs forever; the
+  card-reader tests use `usb-bot` + `scsi-hd,removable=on` with the QMP commands `eject` and `blockdev-change-medium`.
+* The console interleaves kernel log lines with a command's output at unlucky moments: compare with `say()` (log lines removed), not `g.ok()`.
+* The same stick gets `sdb` or `sdc` depending on the order the sticks are brought up (oldest first, so the port order); tests that attach
+  two sticks look the letters up instead of assuming them.
 
 ## Writing another class driver (the recipe that `storage.c` follows)
 
@@ -417,3 +433,7 @@ A class driver is a `UsbDriver` (`usb.h`): `match`, `probe`, `disconnect`, `labe
   stall preceded it (QEMU does not model toggles; a real device that needs a reset without any stall may see a toggle mismatch).
 * `disconnect` cannot release the `BlockDev` structs of a stick that had disks (see above); a machine that is plugged and unplugged
   thousands of times loses a few hundred KiB.
+* Boot is bounded (`usb_wait_settled`, 8 s), but the HUMANVILLAGE mount itself is not: `vfs_mount_opts` holds the VFS namespace lock while the
+  FAT driver reads the volume (boot sector, FSInfo, a scan of a small FAT), so a stick that answers every single command just below the
+  timeout (hostile, or dying) makes that mount slow, and path lookups -- including the start of the first session -- wait for it. Every
+  individual wait is bounded, the sum is not; an ordinary slow stick reads the few hundred KiB the mount needs in well under a second.
