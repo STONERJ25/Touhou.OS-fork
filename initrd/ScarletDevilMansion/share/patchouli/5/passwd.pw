@@ -7,13 +7,13 @@
 
 The password field holds `x`: the real (hashed) passwords are in shadow(5), which only root can read. The gecos field is the full name. The shell is started by login(1), su(1) and init(8).
 
-The shipped file:
+The shipped file (the full name on the last line is shortened to fit this page):
 
     root:x:0:0:Yukari Yakumo:/root:/bin/gapsh
     reimu:x:1000:1000:Reimu Hakurei:/HumanVillage/reimu:/bin/gapsh
     marisa:x:1001:1001:Marisa Kirisame:/HumanVillage/marisa:/bin/gapsh
     sakuya:x:1002:1002:Sakuya Izayoi:/HumanVillage/sakuya:/bin/gapsh
-    sumireko:x:1003:1003:Sumireko Usami:/HumanVillage/sumireko:/bin/gapsh
+    sumireko:x:1003:1003:S. Usami:/HumanVillage/sumireko:/bin/gapsh
 
 Accounts from uid 1000 up with a real shell appear on the login screen, if they have a seat (see group(5)). `adduser` and `deluser` edit this file; the tools that show names for numbers (`ls -l`, `id`, `ps`, `stat`) read it when they run, and gapsh reads it for `~user`.
 

@@ -7,7 +7,8 @@
 # DESCRIPTION
 `sudo` is another name for `eiki`, the judge. It runs _COMMAND_ as `root` (or as _USER_) if sudoers(5) allows the caller to; it is installed setuid root. If the rule asks for a password, the caller's own is asked for, three tries. Anyone not on the list is turned away with the traditional answer, and the refusal is written to the kernel log under the tag `Eiki`:
 
-    reimu is not in the sudoers file. This incident will be reported to Eiki.
+    reimu is not in the sudoers file.
+    This incident will be reported to Eiki.
 
 `SUDO_USER` is set to the name of the caller.
 
