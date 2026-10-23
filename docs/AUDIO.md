@@ -18,7 +18,7 @@ The sound system belongs to the Kappa/Nitori hardware crowd (kernel log tag `Nit
 |---|---|
 | Audio core: `/dev/audio`, mixer, per-stream and master volume, mute, soft limiter, `/proc/audio`, underruns are silence | done, tested in QEMU |
 | Intel HDA driver (CORB/RIRB polled, codec graph parse, path selection, unmute, EAPD, stream, jack auto-mute) | done, tested in QEMU with `hda-output` only; **never run on real hardware** |
-| AC'97 driver | not written yet |
+| AC'97 driver (polled, circular descriptor list) | done, tested in QEMU (`AC97`); never run on real hardware |
 | libaudio: device, WAV reader/writer, tone and noise generators, system sounds | done |
 | libaudio: chiptune synthesizer / sequencer and the procedural tracks | not written yet |
 | `beep`, `play` (`-g MS` keeps the stream open between files), `volume` | done |
@@ -129,4 +129,6 @@ Covered so far (all on QEMU's `hda-output`; `python tests/run_all.py audio_`):
 * `audio_no_device` -- no sound card: no `/dev/audio`, no `/proc/audio`, no `[Nitori]` log line, and `beep`, `play`
   and `volume` say "no sound device" with status 1; `beep -o file.wav` still works.
 
-Not covered yet: AC'97, `hda-duplex`, the Jukebox, the system sounds in the desktop, the real Dell.
+Also `audio_ac97_tone` (the AC'97 path with a 22050 Hz 8-bit client as well).
+
+Not covered yet: `hda-duplex`, the Jukebox, the system sounds in the desktop, the real Dell.

@@ -521,6 +521,8 @@ void audio_get_master(u32 *left, u32 *right, bool *mute) {
     if (mute) *mute = g.muted;
 }
 
+bool audio_registered(void) { return g.be != NULL; }
+
 int audio_register(AudioBackend *b) {
     if (g.be) return -EBUSY;
     if (!b || !b->ring || !b->start || !b->position || (b->ring_frames & (b->ring_frames - 1)) || b->ring_frames < 4096) return -EINVAL;

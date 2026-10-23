@@ -159,3 +159,25 @@ def audio_no_device():
         assert rc == 0 and "x.wav" in out, out
         out, rc = sh(vm, "dmesg | grep -c 'Nitori'")
         assert out.strip() == "0", out
+
+
+@test
+def audio_ac97_tone():
+    """AC'97 fallback: a card without HDA works through the same /dev/audio, at the right pitch and level."""
+    with Qemu(cmdline="text", name="t-audio-ac97", audio="ac97") as vm:
+        vm.expect(test_shell.PROMPT, timeout=90)
+        out, rc = sh(vm, "cat /proc/audio")
+        assert rc == 0 and "AC'97" in out, out
+        out, rc = sh(vm, "volume 100 && beep -f 523 -l 1500 -a 50")
+        assert rc == 0, out
+        out, rc = sh(vm, "sleep 1; beep -r 22050 -c 1 -b 8 -f 880 -l 1200 -a 40")
+        assert rc == 0, out
+        rate, x = capture(vm)
+    segs = at.segments(x, rate, merge_ms=400)
+    assert len(segs) == 2, f"expected two sounds, found {segs}"
+    for (a, b), want, level in zip(segs, (523, 880), (0.5, 0.4)):
+        tone = at.trimmed(x[a:b], rate)
+        f = at.dominant_freq(tone, rate)
+        assert abs(f - want) < want * 0.01 + 2, f"expected {want} Hz, heard {f:.1f} Hz"
+        assert abs(at.peak(tone) - level) < 0.07, f"{want} Hz: peak {at.peak(tone):.2f}, expected {level}"
+        assert float(abs(tone[1:] - tone[:-1]).max()) < 0.2, "the output has a jump in it"

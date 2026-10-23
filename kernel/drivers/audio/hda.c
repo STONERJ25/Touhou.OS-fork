@@ -601,7 +601,7 @@ static bool hda_probe(PciDev *d) {
 }
 
 static void hda_init(void) {
-    if (cmdline_flag("noaudio")) return;
+    if (cmdline_flag("noaudio") || audio_registered()) return;
     for (PciDev *d = pci_find_class(0x04, 0x03, -1, NULL); d; d = pci_find_class(0x04, 0x03, -1, d)) {
         klog("Nitori", "hda %02x:%02x.%x %04x:%04x: looking for a codec", d->bus, d->dev, d->fn, d->vendor, d->device);
         if (hda_probe(d)) return;

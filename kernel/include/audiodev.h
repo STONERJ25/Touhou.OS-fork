@@ -36,4 +36,7 @@ int audio_register(AudioBackend *b);
 /* Software volume applied to every stream (0..100 each side), exposed so drivers can log it. */
 void audio_get_master(u32 *left, u32 *right, bool *mute);
 
+/* True once some backend has registered; a second sound driver should not bother probing. */
+bool audio_registered(void);
+
 #endif
