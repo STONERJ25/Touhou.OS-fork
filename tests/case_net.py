@@ -152,6 +152,7 @@ nic_case("virtio-net-pci", "virtio", r"virtio-net\(l\)")
 nic_case("virtio-net-pci,disable-legacy=on", "virtio_modern", "virtio-net")
 nic_case("e1000", "e1000", "e1000")
 nic_case("e1000e", "e1000e", "e1000e")
+nic_case("rtl8139", "rtl8139", "rtl8139")
 
 
 # ------------------------------------------------------------------------------------------------------------ host-side servers
