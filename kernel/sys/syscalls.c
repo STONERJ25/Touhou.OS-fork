@@ -137,7 +137,9 @@ static long sys_setpgid(TrapFrame *tf) {
     Process *t = pid ? process_by_pid(pid) : me();
     if (!t) return -ESRCH;
     if (t != me() && t->ppid != me()->pid) return -EPERM;
+    int old_pgid = t->pgid;
     t->pgid = pg ? pg : t->pid;
+    if (old_pgid != t->pgid) pgrp_check_orphaned(old_pgid);        /* leaving may have orphaned the old group (job control) */
     return 0;
 }
 
@@ -148,7 +150,9 @@ static long sys_getpgid(TrapFrame *tf) {
 
 static long sys_setsid(TrapFrame *tf) {
     (void)tf;
+    int old_pgid = me()->pgid;
     me()->sid = me()->pgid = me()->pid;
+    if (old_pgid != me()->pgid) pgrp_check_orphaned(old_pgid);
     me()->ctty = NULL;                      /* a new session starts without a controlling terminal */
     return me()->sid;
 }

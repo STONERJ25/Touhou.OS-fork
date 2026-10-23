@@ -200,11 +200,21 @@ struct gdirent {
 #define SIGCANCEL 31            /* reserved for pthread_cancel: sticky, never runs a handler; see docs/THREADS.md */
 #define NSIG     32
 
-#define WNOHANG 1
-#define WIFEXITED(s)   (((s) & 0x7f) == 0)
-#define WEXITSTATUS(s) (((s) >> 8) & 0xff)
-#define WIFSIGNALED(s) (((s) & 0x7f) != 0)
-#define WTERMSIG(s)    ((s) & 0x7f)
+/* waitpid options and the status word (docs/JOBCONTROL.md): exited = code << 8; killed = signal number; stopped = signal << 8 | 0x7f;
+ * continued = 0xffff. */
+#define WNOHANG    1
+#define WUNTRACED  2            /* also report children that stopped (SIGSTOP, SIGTSTP, SIGTTIN, SIGTTOU) */
+#define WCONTINUED 8            /* also report children that SIGCONT resumed */
+#define WIFEXITED(s)    (((s) & 0x7f) == 0)
+#define WEXITSTATUS(s)  (((s) >> 8) & 0xff)
+#define WIFSIGNALED(s)  ((((s) & 0x7f) != 0) && (((s) & 0x7f) != 0x7f))
+#define WTERMSIG(s)     ((s) & 0x7f)
+#define WIFSTOPPED(s)   (((s) & 0xff) == 0x7f)
+#define WSTOPSIG(s)     (((s) >> 8) & 0xff)
+#define WIFCONTINUED(s) ((s) == 0xffff)
+
+/* sigaction flags the kernel looks at */
+#define SA_NOCLDSTOP 0x1        /* SIGCHLD for a child that stops or continues is not wanted (it still dies noisily) */
 
 /* ---- mmap ---- */
 #define PROT_NONE  0
@@ -265,6 +275,7 @@ struct gtermios {
 #define ECHO   0x04
 #define ECHOE  0x08
 #define ECHOK  0x10
+#define TOSTOP 0x20             /* a background process that writes to its terminal gets SIGTTOU */
 #define VINTR  0
 #define VQUIT  1
 #define VERASE 2
