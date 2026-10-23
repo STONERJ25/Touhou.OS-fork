@@ -12,6 +12,7 @@ int g_drop_place = -1;
 static struct {
     bool pending;                       /* a press on an entry is down; it may turn into a drag */
     bool defer;                         /* a click on one of several selected entries collapses the selection on release */
+    bool ctrl_off;                      /* a Ctrl+click on a selected entry removes it on release (unless it became a drag) */
     bool dragging;
     int idx, px, py;
     int drop_idx;
@@ -41,7 +42,7 @@ static struct {
 } G;
 
 static const struct { int col; int w; const char *title; } k_cols[5] = {
-    { COL_SIZE, 84, "Size" }, { COL_MTIME, 132, "Modified" }, { COL_TYPE, 124, "Type" }, { COL_PERM, 96, "Permissions" },
+    { COL_SIZE, 84, "Size" }, { COL_MTIME, 148, "Modified" }, { COL_TYPE, 124, "Type" }, { COL_PERM, 108, "Permissions" },
     { COL_OWNER, 72, "Owner" },
 };
 
@@ -181,6 +182,7 @@ void view_reset(void) {
 
 bool view_renaming(void) { return V.ren; }
 bool view_dragging(void) { return V.dragging; }
+bool view_busy(void) { return V.pending || V.band || V.dragging || V.ren; }          /* a mouse gesture or an edit is in progress */
 void view_cancel_drag(void) { V.dragging = V.pending = false; g_drop_place = -1; }
 void view_cancel_rename(void) { V.ren = false; }
 void view_typeahead_clear(void) { V.ta[0] = 0; }
@@ -214,6 +216,19 @@ void view_start_rename(int idx, bool is_new) {
     strlcpy(V.ren_orig, e->name, sizeof V.ren_orig);
     view_set_cursor(idx, false);
     ex_trace("rename start %s", e->name);
+}
+
+/* The entries were replaced (a refresh): drop indexes kept for gestures, find an inline rename again by name. */
+void view_model_changed(void) {
+    V.idx = V.drop_idx = V.last_click_idx = -1;
+    V.pending = V.dragging = V.band = false;
+    free(V.base);
+    V.base = NULL;
+    if (V.ren) {
+        int i = model_find(&X.m, V.ren_orig);
+        if (i < 0) V.ren = false;
+        else V.ren_idx = i;
+    }
 }
 
 /* Remember the selection (by name) before a rescan and put it back afterwards. */
@@ -429,10 +444,16 @@ static void on_press(KUI *ui, int hit) {
             ex_open_entry(X.m.shown[hit]);
             return;
         }
-        if (ctrl) {
-            X.m.shown[hit]->sel = !X.m.shown[hit]->sel;
+        if (ctrl) {                                                     /* adds to the selection; an already selected one is toggled off on release unless dragged */
+            Entry *e = X.m.shown[hit];
+            V.ctrl_off = e->sel;
+            e->sel = true;
             X.anchor = X.cursor = hit;
-            V.pending = false;
+            V.pending = true;
+            V.defer = false;
+            V.idx = hit;
+            V.px = ui->mx;
+            V.py = ui->my;
             return;
         }
         if (shift) {
@@ -671,6 +692,8 @@ void view_draw(KUI *ui, KRect r, bool blocked) {
                 V.dragging = false;
                 g_drop_place = -1;
             } else if (V.pending && V.defer) collapse_to(V.idx);
+            else if (V.pending && V.ctrl_off && V.idx >= 0 && V.idx < X.m.nshown) X.m.shown[V.idx]->sel = false;
+            V.ctrl_off = false;
             if (V.band) { V.band = false; free(V.base); V.base = NULL; ex_trace("band done"); }
             V.pending = false;
         }

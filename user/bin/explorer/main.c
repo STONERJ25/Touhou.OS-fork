@@ -40,6 +40,7 @@ static Menu g_menus[5];
 static int g_ctx_place = -1;
 
 static uint32_t field_id(const char *buf) { return (uint32_t)(uintptr_t)buf * 2654435761u | 1; }     /* the id k_textfield derives */
+static void trace_order(void);
 
 /* ---------------------------------------------------------------- messages */
 
@@ -303,6 +304,7 @@ static void on_scan_done(void) {
     }
     update_free();
     ex_trace("dir %s items=%d hidden=%d", X.m.path, X.m.nshown, X.m.nhidden);
+    trace_order();
 }
 
 static void report(const char *title, const char *what, const char *path, int err) {
@@ -311,6 +313,8 @@ static void report(const char *title, const char *what, const char *path, int er
     else snprintf(msg, sizeof msg, "%s\n%s", what, path);
     dlg_message(title, msg, KI_ERROR);
 }
+
+static void abort_refresh(void);
 
 static bool open_folder(const char *abs, const char *select_name, int scroll, bool loud) {
     struct stat st;
@@ -326,6 +330,7 @@ static bool open_folder(const char *abs, const char *select_name, int scroll, bo
         if (loud) report("Cannot open the folder", "This folder cannot be read:", abs, X.m.err);
         return false;
     }
+    abort_refresh();
     view_reset();
     PEND.restore_sel = false;
     PEND.scroll = scroll;
@@ -387,13 +392,50 @@ static void go_up(void) {
     ex_navigate(parent, child);
 }
 
+/* Reading the folder again happens in a second model that replaces the first when it is complete: nothing flickers, the scroll
+ * position stays, and a click that lands meanwhile is not lost. */
+static Model g_rm;
+static bool g_refreshing;
+
+static void abort_refresh(void) {
+    if (g_refreshing) model_abort(&g_rm);
+    g_refreshing = false;
+}
+
+static void finish_refresh(void) {
+    view_save_selection();
+    Model old = X.m;
+    g_rm.sort_col = old.sort_col;                                       /* settings changed while it was being read */
+    g_rm.sort_desc = old.sort_desc;
+    g_rm.show_hidden = old.show_hidden;
+    X.m = g_rm;
+    g_rm = old;
+    model_clear(&g_rm);
+    model_refilter(&X.m);
+    view_model_changed();
+    on_scan_done();
+}
+
 void ex_refresh(const char *select_name) {
     char path[EX_PATH];
     snprintf(path, sizeof path, "%s", X.m.path);
+    int scroll = X.scroll;
+    if (!X.m.scanning) {                                                /* the usual case: read it again in the background */
+        abort_refresh();
+        g_rm.sort_col = X.m.sort_col;
+        g_rm.sort_desc = X.m.sort_desc;
+        g_rm.show_hidden = X.m.show_hidden;
+        if (model_open(&g_rm, path)) {
+            g_refreshing = true;
+            PEND.restore_sel = true;
+            PEND.scroll = -1;
+            snprintf(PEND.select, sizeof PEND.select, "%s", select_name ? select_name : "");
+            return;
+        }
+    }
     view_save_selection();
     view_cancel_drag();
     view_cancel_rename();
-    int scroll = X.scroll;
     if (!model_open(&X.m, path)) {                                      /* the folder is gone: show the nearest one that is not */
         char up[EX_PATH];
         snprintf(up, sizeof up, "%s", path);
@@ -414,7 +456,7 @@ void ex_refresh(const char *select_name) {
 }
 
 static void auto_refresh(void) {
-    if (X.m.scanning || X.modal || view_renaming() || view_dragging() || ctx_is_open() || (X.ui && X.ui->menu_open)) return;
+    if (X.m.scanning || g_refreshing || X.modal || view_busy() || ctx_is_open() || (X.ui && X.ui->menu_open) || jobs_busy()) return;
     struct stat st;
     if (stat(X.m.path, &st) != 0) { ex_refresh(NULL); return; }
     time_t now = time(NULL);
@@ -751,6 +793,7 @@ void ex_set_sort(int col) {
     if (cur) for (int i = 0; i < X.m.nshown; i++) if (X.m.shown[i] == cur) X.cursor = X.anchor = i;
     if (X.cursor >= 0) view_scroll_to(X.cursor);
     ex_trace("sort %d desc=%d", X.m.sort_col, X.m.sort_desc ? 1 : 0);
+    trace_order();
     prefs_save();
 }
 
@@ -863,6 +906,7 @@ void ex_action(int act) {
         X.cursor = X.anchor = -1;
         if (cur) for (int i = 0; i < X.m.nshown; i++) if (X.m.shown[i] == cur) X.cursor = X.anchor = i;
         ex_trace("hidden %d items=%d", X.m.show_hidden ? 1 : 0, X.m.nshown);
+        trace_order();
         prefs_save();
         break;
     }
@@ -1242,8 +1286,8 @@ static void draw_banner(KUI *ui) {
     char t[160];
     int n = trash_count();
     snprintf(t, sizeof t, "The Netherworld holds %d item%s. Restore puts them back.", n, n == 1 ? "" : "s");
-    kc_text_in(cv, kr(b.x + 32, b.y, b.w - 32 - 250, b.h), t, th->text, KA_LEFT);
-    KRect re = kr(b.x + b.w - 244, b.y + 3, 90, 24), em = kr(b.x + b.w - 148, b.y + 3, 142, 24);
+    kc_text_in(cv, kr(b.x + 32, b.y, b.w - 32 - 212, b.h), t, th->text, KA_LEFT);
+    KRect re = kr(b.x + b.w - 208, b.y + 3, 96, 24), em = kr(b.x + b.w - 106, b.y + 3, 100, 24);
     if (k_button(ui, re, "Restore")) ex_action(A_RESTORE);
     if (k_button(ui, em, "Empty it")) ex_action(A_EMPTY);
 }
@@ -1292,12 +1336,26 @@ static void draw_status(KUI *ui, int W, int H) {
 
 static void trace_selection(void) {
     if (!g_trace) return;
+    static char last_first[EX_NAME];
     int ns = model_sel_count(&X.m, NULL);
-    if (ns != g_last_nsel) {
+    int f = first_selected();
+    const char *first = f >= 0 ? X.m.shown[f]->name : "";
+    if (ns != g_last_nsel || strcmp(first, last_first)) {
         g_last_nsel = ns;
-        int f = first_selected();
-        ex_trace("sel %d%s%s", ns, f >= 0 ? " first=" : "", f >= 0 ? X.m.shown[f]->name : "");
+        snprintf(last_first, sizeof last_first, "%s", first);
+        ex_trace("sel %d%s%s", ns, f >= 0 ? " first=" : "", first);
     }
+}
+
+/* The names in the order they are shown (the first dozen): tests read the sort order from this. */
+static void trace_order(void) {
+    if (!g_trace) return;
+    char buf[300];
+    int pos = 0;
+    buf[0] = 0;
+    for (int i = 0; i < X.m.nshown && i < 14 && pos < (int)sizeof buf - 40; i++)
+        pos += snprintf(buf + pos, sizeof buf - (size_t)pos, "%s%s", i ? "|" : "", X.m.shown[i]->name);
+    ex_trace("order %s", buf);
 }
 
 static void draw(KApp *app, KUI *ui, void *user) {
@@ -1320,6 +1378,10 @@ static void draw(KApp *app, KUI *ui, void *user) {
     bool more = false;
     if (X.m.scanning) {
         if (model_scan_step(&X.m, 20)) on_scan_done();
+        else more = true;
+    }
+    if (g_refreshing) {
+        if (model_scan_step(&g_rm, 15)) { g_refreshing = false; finish_refresh(); }
         else more = true;
     }
     if (jobs_busy()) {

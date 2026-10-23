@@ -81,6 +81,7 @@ typedef struct Model {
 
 void model_init(Model *m);
 void model_clear(Model *m);
+void model_abort(Model *m);                               /* stops a scan and forgets its entries */
 bool model_open(Model *m, const char *abs_path);          /* starts a scan; false (and m->err) if the folder cannot be read */
 bool model_scan_step(Model *m, int budget_ms);            /* true when the scan has finished */
 void model_refilter(Model *m);                            /* rebuilds `shown` (hidden files) and sorts */
@@ -275,6 +276,7 @@ void view_scroll_to(int idx);
 void view_set_cursor(int idx, bool extend);
 void view_start_rename(int idx, bool is_new);
 bool view_renaming(void);
+bool view_busy(void);
 void view_cancel_rename(void);
 void view_cancel_drag(void);
 bool view_dragging(void);
@@ -282,6 +284,7 @@ void view_ghost(KUI *ui);                                  /* drawn last, over e
 int  view_entry_at(int mx, int my);                        /* index of the entry under a window position or -1 */
 void view_save_selection(void);                            /* before a rescan */
 void view_restore_selection(const char *select_name);      /* after it */
+void view_model_changed(void);                             /* the entries were replaced: indexes kept by the view are stale */
 void view_typeahead_clear(void);
 const char *view_typeahead(void);
 void view_context(KUI *ui, int mx, int my, int hit);      /* main.c: builds the context menu for what was right-clicked */

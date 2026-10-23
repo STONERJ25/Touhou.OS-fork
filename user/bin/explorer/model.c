@@ -65,6 +65,13 @@ void model_clear(Model *m) {
     m->nall = m->nshown = m->nhidden = 0;
 }
 
+void model_abort(Model *m) {
+    if (m->dp) closedir(m->dp);
+    m->dp = NULL;
+    m->scanning = false;
+    model_clear(m);
+}
+
 static bool grow(Model *m) {
     if (m->nall < m->cap) return true;
     int ncap = m->cap ? m->cap * 2 : 128;
