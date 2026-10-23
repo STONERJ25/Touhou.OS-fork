@@ -301,6 +301,53 @@ def build_libc(nproc):
     return crt0, lib
 
 
+LIB_ORDER = ["kappa", "fairy"]          # link order: a library may depend on the ones after it (and on libgap, always last)
+LIB_EXTRA_SOURCES = {"kappa": ["shared/font8x16.c", "shared/yinyang.c"]}
+
+
+def user_lib_includes():
+    base = ROOT / "user" / "lib"
+    return [p / "include" for p in sorted(base.iterdir()) if (p / "include").is_dir()] if base.exists() else []
+
+
+def build_userlibs(nproc):
+    """Static libraries under user/lib/<name>/{include,src}: built to build/lib/lib<name>.a, linked into every program."""
+    base = ROOT / "user" / "lib"
+    if not base.exists():
+        return []
+    names = sorted(p.name for p in base.iterdir() if p.is_dir())
+    names.sort(key=lambda n: (LIB_ORDER.index(n) if n in LIB_ORDER else len(LIB_ORDER), n))
+    inc = []
+    for p in user_lib_includes():
+        inc += ["-I", str(p)]
+    groups, all_jobs = [], []
+    for n in names:
+        csrc = sources(base / n, ["src/**/*.c"]) + [ROOT / s for s in LIB_EXTRA_SOURCES.get(n, [])]
+        if not csrc:
+            continue
+        jobs = [c_job(s, f"userlib/{n}", USER_CFLAGS + inc) for s in csrc]
+        groups.append((n, jobs))
+        all_jobs += jobs
+    if not all_jobs:
+        return []
+    print("[userlibs]")
+    build_jobs(all_jobs, nproc)
+    libs = []
+    for n, jobs in groups:
+        objs = [j.obj for j in jobs]
+        lib = BUILD / "lib" / f"lib{n}.a"
+        cmd = [LLVM_AR, "rcs", str(lib), *[str(o) for o in objs]]
+        if needs_build(lib, None, cmd, objs):
+            lib.parent.mkdir(parents=True, exist_ok=True)
+            if lib.exists():
+                lib.unlink()
+            print(f"  AR   {rel(lib)}")
+            run(cmd, f"ar lib{n}")
+            lib.with_name(lib.name + ".cmd").write_text("\n".join(cmd))
+        libs.append(lib)
+    return libs
+
+
 KAPPABOX_APPLETS = []
 
 
@@ -330,6 +377,10 @@ def generate_applet_table(srcs):
 def build_user(nproc):
     """Builds every program under user/bin (-> /bin) and user/sbin (-> /sbin). Returns [(install_dir, path)]."""
     crt0, lib = build_libc(nproc)
+    userlibs = build_userlibs(nproc)
+    lib_inc = []
+    for p in user_lib_includes():
+        lib_inc += ["-I", str(p)]
     script = ROOT / "user" / "user.ld"
     outputs = []
     all_jobs = []
@@ -347,7 +398,7 @@ def build_user(nproc):
                     continue
                 if name == "kappabox":
                     srcs.append(generate_applet_table(srcs))
-            jobs = [c_job(s, f"user/{kind}/{name}", USER_CFLAGS + ["-I", str(e if e.is_dir() else e.parent)]) for s in srcs]
+            jobs = [c_job(s, f"user/{kind}/{name}", USER_CFLAGS + lib_inc + ["-I", str(e if e.is_dir() else e.parent)]) for s in srcs]
             progs.append((kind, name, jobs))
             all_jobs += jobs
     if not progs:
@@ -357,10 +408,10 @@ def build_user(nproc):
     for kind, name, jobs in progs:
         out = BUILD / "user" / kind / name
         cmd = [LD_LLD, "-nostdlib", "-static", "-z", "max-page-size=4096", "-z", "noexecstack",
-               "-T", str(script), "-o", str(out), *map(str, crt0), *[str(j.obj) for j in jobs]]
+               "-T", str(script), "-o", str(out), *map(str, crt0), *[str(j.obj) for j in jobs], *map(str, userlibs)]
         if lib:
             cmd.append(str(lib))
-        ins = [j.obj for j in jobs] + crt0 + ([lib] if lib else []) + [script]
+        ins = [j.obj for j in jobs] + crt0 + userlibs + ([lib] if lib else []) + [script]
         link(out, cmd, ins, f"link {kind}/{name}")
         outputs.append((kind, out))
     return outputs

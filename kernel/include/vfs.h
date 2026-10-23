@@ -21,8 +21,12 @@ typedef struct Mount Mount;
 typedef struct File File;
 typedef struct FsType FsType;
 
+#define NGROUPS_MAX 16
+
 typedef struct Cred {
     u32 uid, gid;
+    u32 ngroups;                    /* supplementary groups */
+    u32 groups[NGROUPS_MAX];
 } Cred;
 
 typedef struct DirEntry {
@@ -160,6 +164,8 @@ int    vfs_pipe(File **rd, File **wr);
 /* ---- device nodes ---- */
 int    devfs_register(const char *path, u32 mode, const VNodeOps *ops, void *priv, u64 rdev);   /* "tty", "input/events" */
 int    devfs_unregister(const char *path);
+int    devfs_chown(const char *path, u32 uid, u32 gid);
+#define GID_SHRINE 100              /* group "shrine": the people allowed to run the desktop (display and input devices) */
 VNode *devfs_root(void);
 
 /* ---- concrete filesystems ---- */

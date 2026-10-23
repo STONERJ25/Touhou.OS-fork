@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <sys/wait.h>
+#include <grp.h>
 #include <gensokyo.h>
 
 static int cmdline_has(const char *word) {
@@ -28,6 +29,7 @@ static pid_t spawn_shell(const char *user, int uid, int gid, const char *home) {
     setpgid(0, 0);
     tcsetpgrp(0, getpid());
     signal(SIGINT, SIG_DFL);
+    if (uid) initgroups(user, (gid_t)gid);
     if (gid) setgid((gid_t)gid);
     if (uid) setuid((uid_t)uid);
     chdir(home);

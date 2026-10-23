@@ -82,6 +82,7 @@ static void fbdev_init(void) {
     vnode_put(dir);
     if (rc == 0) {
         node->size = fb_bytes();
+        node->gid = GID_SHRINE;
         vnode_put(node);
         klog("Fairies", "/dev/fb0: %ux%u, %s, ready for the window server", g_fb.width, g_fb.height, g_fb.swap_rb ? "RGBX" : "BGRX");
     }

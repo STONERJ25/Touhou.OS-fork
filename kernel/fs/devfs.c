@@ -46,6 +46,37 @@ int devfs_register(const char *path, u32 mode, const VNodeOps *ops, void *priv, 
     return rc;
 }
 
+/* Sets owner and group of a registered node (the display and input devices belong to the "shrine" group). */
+int devfs_chown(const char *path, u32 uid, u32 gid) {
+    if (!g_devfs_root) return -ENODEV;
+    VNode *dir = g_devfs_root;
+    vnode_get(dir);
+    char comp[GNAME_MAX + 1];
+    const char *p = path;
+    for (;;) {
+        const char *slash = strchr(p, '/');
+        size_t n = slash ? (size_t)(slash - p) : strlen(p);
+        if (n == 0 || n > GNAME_MAX) { vnode_put(dir); return -EINVAL; }
+        memcpy(comp, p, n);
+        comp[n] = 0;
+        if (!slash) break;
+        VNode *sub = NULL;
+        int rc = dir->ops->lookup(dir, comp, &sub);
+        vnode_put(dir);
+        if (rc) return rc;
+        dir = sub;
+        p = slash + 1;
+    }
+    VNode *v = NULL;
+    int rc = dir->ops->lookup(dir, comp, &v);
+    vnode_put(dir);
+    if (rc) return rc;
+    v->uid = uid;
+    v->gid = gid;
+    vnode_put(v);
+    return 0;
+}
+
 /* Removes a node created by devfs_register (used for pseudo-terminal slaves, which come and go). */
 int devfs_unregister(const char *path) {
     if (!g_devfs_root) return -ENODEV;

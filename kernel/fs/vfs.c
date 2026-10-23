@@ -69,7 +69,9 @@ int vfs_access(VNode *v, const Cred *c, int mask) {
         if ((mask & X_OK) && !S_ISDIR(mode) && !(mode & 0111)) return -EACCES;
         return 0;
     }
-    u32 bits = (c->uid == v->uid) ? (mode >> 6) : (c->gid == v->gid) ? (mode >> 3) : mode;
+    bool in_group = c->gid == v->gid;
+    for (u32 i = 0; i < c->ngroups && !in_group; i++) in_group = c->groups[i] == v->gid;
+    u32 bits = (c->uid == v->uid) ? (mode >> 6) : in_group ? (mode >> 3) : mode;
     return ((u32)mask & ~bits & 7) ? -EACCES : 0;
 }
 

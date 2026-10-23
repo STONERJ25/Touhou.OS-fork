@@ -90,7 +90,9 @@ void input_kill_grabber(void) {
 static const VNodeOps input_ops = { .read = input_read, .poll = input_poll_node, .ioctl = input_ioctl, .opened = input_opened, .closed = input_closed };
 
 static void inputdev_init(void) {
-    if (devfs_register("input/events", S_IFCHR | 0660, &input_ops, NULL, 0x0D40) == 0)
+    if (devfs_register("input/events", S_IFCHR | 0660, &input_ops, NULL, 0x0D40) == 0) {
+        devfs_chown("input/events", 0, GID_SHRINE);
         klog("Satori", "/dev/input/events: keyboard and mouse events (Ctrl+Alt+Backspace takes the screen back)");
+    }
 }
 INITCALL(inputdev_init);
