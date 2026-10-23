@@ -167,6 +167,10 @@ int process_exec(Process *p, const char *path, char *const argv[], char *const e
     file_put(f);
     if (rc) { uvm_destroy(&nas); return rc; }
 
+    /* The other threads of the process die first, and we wait until each has left the kernel: a thread asleep in read() holds
+     * references and buffers that its syscall frees on the way out, and none may still touch the old address space. */
+    if (!thread_kill_others(p)) { uvm_destroy(&nas); thread_leave(); }
+
     /* Point of no return: swap address spaces. */
     if (fmode & S_ISUID) p->cred.uid = fuid;                          /* the effective id becomes the file's owner; the real one stays */
     if (fmode & S_ISGID) p->cred.gid = fgid;
@@ -181,6 +185,10 @@ int process_exec(Process *p, const char *path, char *const argv[], char *const e
     for (int s = 0; s < NSIG; s++)
         if (p->sigact[s].handler != SIG_IGN) memset(&p->sigact[s], 0, sizeof p->sigact[s]);
     p->sig_pending = 0;
+    current->sig_pending = 0;
+    current->utid = p->pid;                                           /* the survivor of a threaded process becomes its first thread */
+    current->clear_tid = 0;
+    task_set_fs_base(current, 0);                                     /* the new program sets up its own TLS */
     strlcpy(p->name, base_name(argv && argv[0] ? argv[0] : path), sizeof p->name);
     p->cmdline[0] = 0;
     for (int i = 0; argv && argv[i]; i++) {

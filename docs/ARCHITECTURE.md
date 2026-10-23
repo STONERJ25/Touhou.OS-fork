@@ -74,6 +74,13 @@ Everything a PCI driver needs already exists; look at `kernel/include/pci.h`, `b
 - **Safety:** never write to a disk or partition on your own initiative. Only the explicit mount path and `/dev` writes by root
   may modify storage.
 
+## Processes and threads
+
+A `Process` (`kernel/include/process.h`) owns the address space, descriptors, cwd, credentials and signal dispositions; each
+user `Task` (`kernel/include/task.h`) is one thread inside it, with its own kernel stack, FS base (TLS), signal mask and
+thread id. System calls 106-115 are the thread calls and the futex that user space builds every lock on; the pthread library is
+`user/libc/src/pthread.c`. Design, ABI, locking rules, limits and the list of what is missing: [THREADS.md](THREADS.md).
+
 ## Testing
 
 `python tools/build.py` builds everything into `build/`; `python tests/run_all.py [name-filter]` runs the whole suite in QEMU

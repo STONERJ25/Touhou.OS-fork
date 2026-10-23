@@ -71,9 +71,12 @@ typedef struct { char *b; size_t cap, n; } Sink;
 static void task_line(Task *t, void *ctx) {
     Sink *s = ctx;
     static const char *const st[] = { "ready", "running", "blocked", "sleeping", "zombie" };
-    if (s->n + 100 < s->cap)
-        s->n += (size_t)snprintf(s->b + s->n, s->cap - s->n, "%4d %-9s %-16s ticks=%lu\n", t->tid, st[t->state], t->name,
+    if (s->n + 120 < s->cap) {
+        s->n += (size_t)snprintf(s->b + s->n, s->cap - s->n, "%4d %-9s %-16s ticks=%lu", t->tid, st[t->state], t->name,
                                  (unsigned long)t->cpu_ticks);
+        if (t->tgid) s->n += (size_t)snprintf(s->b + s->n, s->cap - s->n, " pid=%d tid=%d", t->tgid, t->utid);   /* user threads */
+        s->b[s->n++] = '\n';
+    }
 }
 
 static size_t gen_tasks(char *b, size_t cap) {
@@ -113,8 +116,8 @@ typedef struct {
     int which;
 } PidFile;
 
-enum { PF_STAT, PF_STATUS, PF_CMDLINE, PF_COUNT };
-static const char *const g_pidfile_names[PF_COUNT] = { "stat", "status", "cmdline" };
+enum { PF_STAT, PF_STATUS, PF_CMDLINE, PF_THREADS, PF_COUNT };
+static const char *const g_pidfile_names[PF_COUNT] = { "stat", "status", "cmdline", "threads" };
 
 static u64 resident_pages(Process *p, u64 *total) {
     u64 rss = 0, vm = 0;
@@ -140,7 +143,8 @@ static size_t gen_pidfile(const PidFile *pf, char *b, size_t cap) {
     const char *state = st[p->state == PROC_ZOMBIE];
     if (p->state == PROC_RUNNING && p->task && p->task->state == TASK_SLEEPING) state = "S";
     else if (p->state == PROC_RUNNING && p->task && p->task->state == TASK_BLOCKED) state = "S";
-    u64 ticks = (p->state == PROC_RUNNING && p->task) ? p->task->cpu_ticks : 0;
+    u64 ticks = 0;                                      /* CPU time of the whole process: every thread counts */
+    if (p->state == PROC_RUNNING) for (Task *t = p->threads; t; t = t->thread_next) ticks += t->cpu_ticks;
     u64 vm = 0, rss = 0;
     if (p->state == PROC_RUNNING) rss = resident_pages(p, &vm);
     size_t n = 0;
@@ -153,12 +157,19 @@ static size_t gen_pidfile(const PidFile *pf, char *b, size_t cap) {
     case PF_STATUS:
         n = (size_t)snprintf(b, cap,
             "Name:\t%s\nState:\t%s\nPid:\t%d\nPPid:\t%d\nPGid:\t%d\nUid:\t%u\nGid:\t%u\nVmSize:\t%lu kB\nVmRSS:\t%lu kB\n"
-            "CpuTicks:\t%lu\nStartMs:\t%lu\nCwd:\t%s\n",
+            "CpuTicks:\t%lu\nStartMs:\t%lu\nCwd:\t%s\nThreads:\t%d\n",
             p->name, state, p->pid, p->ppid, p->pgid, p->cred.uid, p->cred.gid, (unsigned long)(vm * 4),
-            (unsigned long)(rss * 4), (unsigned long)ticks, (unsigned long)p->start_ms, p->cwd_path);
+            (unsigned long)(rss * 4), (unsigned long)ticks, (unsigned long)p->start_ms, p->cwd_path, p->nthreads);
         break;
     case PF_CMDLINE:
         n = (size_t)snprintf(b, cap, "%s\n", p->cmdline[0] ? p->cmdline : p->name);
+        break;
+    case PF_THREADS:                                    /* one line per thread: tid, state (R ready/running, S asleep), ticks, name */
+        for (Task *t = p->threads; t && n + 80 < cap; t = t->thread_next)
+            n += (size_t)snprintf(b + n, cap - n, "%d %s %lu %s\n", t->utid,
+                                  (t->state == TASK_SLEEPING || t->state == TASK_BLOCKED) ? "S" : "R",
+                                  (unsigned long)t->cpu_ticks, t->name);
+        if (!n) n = (size_t)snprintf(b, cap, "%d Z 0 %s\n", p->pid, p->name);     /* a zombie has no threads left; the process itself is listed */
         break;
     }
     irq_restore(f);
@@ -189,9 +200,9 @@ static ssize_t proc_read(VNode *v, File *f, void *buf, size_t n, u64 off) {
 
 static ssize_t pidfile_read(VNode *v, File *f, void *buf, size_t n, u64 off) {
     (void)f;
-    char *tmp = kmalloc(4096);
+    char *tmp = kmalloc(16384);
     if (!tmp) return -ENOMEM;
-    size_t len = gen_pidfile(v->priv, tmp, 4096);
+    size_t len = gen_pidfile(v->priv, tmp, 16384);
     ssize_t r = len ? slice_read(tmp, len, buf, n, off) : -ESRCH;
     kfree(tmp);
     return r;

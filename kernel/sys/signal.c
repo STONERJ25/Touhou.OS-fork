@@ -1,4 +1,7 @@
-/* Signals: pending/blocked sets, default actions, user handlers via a frame on the user stack. */
+/* Signals: pending/blocked sets, default actions, user handlers via a frame on the user stack.
+ * The mask and the thread-directed pending set belong to the thread (Task); dispositions and the process-directed pending
+ * set belong to the Process. A process-directed signal is taken by whichever thread that does not block it passes through
+ * signal_deliver first; signal_send wakes one such thread (the running one if it qualifies) so a sleeping syscall returns. */
 #include "process.h"
 #include "kernel.h"
 #include "cpu.h"
@@ -19,8 +22,27 @@ static bool ignored(Process *p, int sig) {
     return h == SIG_IGN || (h == SIG_DFL && default_ignored(sig));
 }
 
+/* A group exit or an exec in another thread wants this thread gone (it leaves at its next trip through signal_deliver). */
+bool thread_must_die(Task *t) {
+    Process *p = t->proc;
+    return p && (p->exiting || (p->execing && p->execing != t));
+}
+
+/* Does the calling thread have something to do on the way out of the kernel? Blocking calls ask this before they sleep. */
 bool signal_pending_now(Process *p) {
-    return (p->sig_pending & ~p->sig_blocked) != 0;
+    Task *t = current;
+    (void)p;
+    if (!t->proc) return false;
+    u32 pend = (t->sig_pending | t->proc->sig_pending) & ~t->sig_blocked;
+    if (t->ignore_cancel) pend &= ~(1U << SIGCANCEL);
+    return thread_must_die(t) || pend != 0;
+}
+
+/* pthread_cancel's request is a sticky thread-directed SIGCANCEL: it never runs a handler (signal_deliver leaves it alone),
+ * it makes interruptible waits return, and syscall_dispatch then reports -ECANCELED instead of -EINTR. Blocking the signal
+ * is how a thread disables cancellation. */
+bool signal_cancel_pending(Task *t) {
+    return (t->sig_pending & (1U << SIGCANCEL)) && !(t->sig_blocked & (1U << SIGCANCEL));
 }
 
 void signal_send(Process *p, int sig) {
@@ -28,16 +50,35 @@ void signal_send(Process *p, int sig) {
     if (sig != SIGKILL && ignored(p, sig)) return;
     u64 f = irq_save();
     p->sig_pending |= 1U << sig;
+    Task *target = NULL;
+    for (Task *t = p->threads; t; t = t->thread_next) {
+        if (t->sigwait_set & (1U << sig)) { target = t; break; }       /* somebody is waiting for exactly this signal */
+        if (t->sig_blocked & (1U << sig)) continue;
+        if (!target) target = t;
+        if (t == current) target = t;                   /* the running thread picks it up on its way back to user mode */
+    }
     irq_restore(f);
-    if (p->task && !(p->sig_blocked & (1U << sig))) task_interrupt(p->task);
+    if (target) task_interrupt(target);
 }
 
+void signal_send_thread(Task *t, int sig) {
+    Process *p = t->proc;
+    if (!p || sig <= 0 || sig >= NSIG || p->state == PROC_ZOMBIE) return;
+    if (sig != SIGKILL && ignored(p, sig)) return;
+    u64 f = irq_save();
+    t->sig_pending |= 1U << sig;
+    irq_restore(f);
+    if (!(t->sig_blocked & (1U << sig)) || (t->sigwait_set & (1U << sig))) task_interrupt(t);
+}
+
+/* A synchronous fault of the calling thread: the signal is aimed at that thread, with the default action. */
 void signal_force(Process *p, int sig) {
     if (sig <= 0 || sig >= NSIG) return;
+    Task *t = current;
     p->sigact[sig].handler = SIG_DFL;
-    p->sig_blocked &= ~(1U << sig);
+    t->sig_blocked &= ~(1U << sig);
     u64 f = irq_save();
-    p->sig_pending |= 1U << sig;
+    t->sig_pending |= 1U << sig;
     irq_restore(f);
 }
 
@@ -57,27 +98,35 @@ void signal_pgrp(int pgid, int sig) {
 
 /* Called with the frame that is about to return to user mode. */
 void signal_deliver(TrapFrame *tf) {
-    Process *p = current->proc;
+    Task *t = current;
+    Process *p = t->proc;
     if (!p || (tf->cs & 3) != 3) return;
+    if (thread_must_die(t)) thread_leave();
 
     for (;;) {
-        u32 pend = p->sig_pending & (~p->sig_blocked | (1U << SIGKILL));
-        if (!pend) return;
-        int sig = __builtin_ctz(pend);
-        p->sig_pending &= ~(1U << sig);
+        u64 f = irq_save();
+        u32 pend = (t->sig_pending | p->sig_pending) & (~t->sig_blocked | (1U << SIGKILL)) & ~(1U << SIGCANCEL);
+        int sig = pend ? __builtin_ctz(pend) : 0;
+        if (pend) { t->sig_pending &= ~(1U << sig); p->sig_pending &= ~(1U << sig); }
+        irq_restore(f);
+        if (!pend) {
+            if (t->saved_mask_valid) { t->sig_blocked = t->saved_mask; t->saved_mask_valid = false; }   /* sigsuspend ended without a handler */
+            return;
+        }
         struct gsigaction *act = &p->sigact[sig];
 
         if (act->handler == SIG_IGN || (act->handler == SIG_DFL && default_ignored(sig))) continue;
         if (act->handler == SIG_DFL) {
             klog("Eiki", "'%s' (pid %d) was exorcised by signal %d", p->name, p->pid, sig);
-            process_exit(sig);
+            process_exit(sig);                              /* the default action ends the whole process, not one thread */
         }
 
         /* Build the handler frame below the user's stack pointer (skipping the 128-byte red zone). */
         SigFrame fr;
         fr.restorer = act->restorer;
         fr.saved = *tf;
-        fr.saved_mask = p->sig_blocked;
+        fr.saved_mask = t->saved_mask_valid ? t->saved_mask : t->sig_blocked;     /* after sigsuspend the handler returns to the old mask */
+        t->saved_mask_valid = false;
         fr.signo = (u32)sig;
         u64 sp = ((tf->rsp - 128 - sizeof fr) & ~0xFUL) - 8;
         if (copy_to_user((void *)sp, &fr, sizeof fr)) {
@@ -89,7 +138,7 @@ void signal_deliver(TrapFrame *tf) {
         tf->rdi = (u64)sig;
         tf->rsi = tf->rdx = 0;
         tf->rax = 0;
-        p->sig_blocked |= act->mask | (1U << sig);
+        t->sig_blocked |= (u32)act->mask | (1U << sig);
         return;
     }
 }
@@ -97,11 +146,10 @@ void signal_deliver(TrapFrame *tf) {
 long sys_sigreturn_impl(TrapFrame *tf) {
     SigFrame fr;
     if (copy_from_user(&fr, (void *)(tf->rsp - 8), sizeof fr)) process_exit(SIGSEGV);
-    Process *p = current->proc;
     *tf = fr.saved;
     tf->cs = USER_CS;                   /* never trust the saved selectors: stay in ring 3 */
     tf->ss = USER_DS;
     tf->rflags = (tf->rflags & 0xDD5) | RFLAGS_IF | 2;
-    p->sig_blocked = fr.saved_mask & ~((1U << SIGKILL) | (1U << SIGSTOP));
+    current->sig_blocked = fr.saved_mask & ~((1U << SIGKILL) | (1U << SIGSTOP));
     return (long)tf->rax;
 }

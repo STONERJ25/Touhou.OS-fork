@@ -37,6 +37,7 @@ typedef struct AddrSpace {
     Vma *vmas;
     u64 brk_start, brk;
     u64 mmap_next;
+    Mutex lock;                     /* guards vmas and the page tables below pml4 against the process's other threads */
 } AddrSpace;
 
 typedef enum { PROC_RUNNING, PROC_ZOMBIE } ProcState;
@@ -58,15 +59,20 @@ typedef struct Process {
     File *fds[MAX_FD];
     u8 fd_flags[MAX_FD];
 
-    Task *task;
+    Task *task;                     /* a live thread of the process (the oldest one); NULL once the process is a zombie */
+    Task *threads;                  /* every live thread, linked through Task.thread_next (guarded by irq_save) */
+    int nthreads;                   /* live threads */
+    bool exiting;                   /* exit_group / fatal signal in progress: every thread must leave */
+    Task *execing;                  /* the thread running execve: all others must leave, then it carries on alone */
+    WaitQueue thread_wq;            /* execve sleeps here until the other threads are gone */
     struct Process *parent;
     struct Process *children;       /* singly linked through `sibling` */
     struct Process *sibling;
     struct Process *all_next;
     WaitQueue wait_wq;              /* the parent blocks here in waitpid */
+    VNode *old_cwd[8];              /* directories left by chdir, released at exit: another thread may still be resolving a path against one */
 
-    u32 sig_pending;
-    u32 sig_blocked;
+    u32 sig_pending;                /* process-directed signals not yet taken by a thread (per-thread masks live in Task) */
     struct gsigaction sigact[NSIG];
 
     u64 start_ms;
@@ -89,6 +95,7 @@ int      process_count(void);
 /* descriptors */
 int      fd_install(Process *p, File *f, int minfd, int flags);        /* takes over the File reference */
 File    *fd_get(Process *p, int fd);                                    /* borrowed reference */
+File    *fd_get_ref(Process *p, int fd);                                /* owned reference (file_put it): safe against a close in another thread */
 int      fd_close(Process *p, int fd);
 
 /* user address space */
@@ -112,12 +119,23 @@ int  copy_to_user(void *dst, const void *src, size_t n);
 int  strncpy_from_user(char *dst, const char *src, size_t max);        /* length, or -EFAULT / -ENAMETOOLONG */
 int  clear_user(void *dst, size_t n);
 
+/* threads (kernel/sys/thread.c) */
+int      process_alloc_id(void);                                        /* next pid / tid (one number space) */
+NORETURN void thread_leave(void);                                       /* the calling thread ends; the last one out finishes the process */
+bool     thread_must_die(Task *t);                                      /* a group exit or an exec elsewhere wants this thread gone */
+bool     thread_kill_others(Process *p);                                /* execve: all other threads gone (false: this one must leave) */
+int      thread_count(void);                                            /* user threads in the whole system */
+void     thread_unlink(Process *p, Task *t);                            /* irq off; see task.c */
+void     futex_wake_all_at(u64 uaddr);                                  /* wake every waiter on a user word of the current address space */
+
 /* signals */
-void signal_send(Process *p, int sig);
+void signal_send(Process *p, int sig);                                  /* process-directed: any thread that does not block it */
+void signal_send_thread(Task *t, int sig);                              /* thread-directed (tgkill, raise) */
 void signal_force(Process *p, int sig);                                 /* synchronous faults: cannot be ignored or blocked */
 void signal_pgrp(int pgid, int sig);
 void signal_deliver(TrapFrame *tf);                                     /* on the way back to user mode */
-bool signal_pending_now(Process *p);
+bool signal_pending_now(Process *p);                                    /* the calling thread has a deliverable signal (or must die) */
+bool signal_cancel_pending(Task *t);                                    /* pthread_cancel is waiting for this thread to reach a cancellation point */
 long sys_sigreturn_impl(TrapFrame *tf);
 
 /* syscall plumbing */
@@ -136,6 +154,9 @@ void syscall_dispatch(TrapFrame *tf);
 void enter_user(TrapFrame *tf);                                         /* never returns */
 void fork_child_start(void);
 Task *task_create_fork(const char *name, const TrapFrame *tf, Process *proc);
+/* Like task_create_fork, but the new thread also gets its start-up state (TLS, tid word, signal mask, tid) before it can run,
+ * and is linked into proc->threads. A forked child's first thread and every pthread come through here. */
+Task *task_create_thread(const char *name, const TrapFrame *tf, Process *proc, const ThreadInit *ti);
 Task *task_create_user(const char *name, void (*entry)(void *), void *arg, Process *proc);
 extern u64 g_syscall_kstack;
 

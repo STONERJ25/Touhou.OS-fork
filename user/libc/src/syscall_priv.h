@@ -40,9 +40,14 @@ static inline long __sc6(long n, long a, long b, long c, long d, long e, long f)
     return r;
 }
 
+/* A thread that has been cancelled (pthread_cancel) and then blocks in the kernel gets -ECANCELED: every wrapper that goes
+ * through __ret is therefore a cancellation point, and the thread exits here instead of returning. */
+void __cancel_exit(void) __attribute__((noreturn));
+
 /* Kernel returns -errno in [-4095, -1]. */
 static inline long __ret(long r) {
     if ((unsigned long)r > (unsigned long)-4096L) {
+        if (r == -ECANCELED) __cancel_exit();
         errno = (int)-r;
         return -1;
     }
