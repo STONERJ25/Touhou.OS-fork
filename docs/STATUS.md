@@ -28,11 +28,12 @@ Running on a real PC: [REAL_HARDWARE.md](REAL_HARDWARE.md).
 | Power and time | ACPI soft-off, reset register, polled power button; POSIX time zones, settable clock, `hwclock`, `rtc=local` | [POWER_AND_TIME](POWER_AND_TIME.md) |
 | Accounts | users and groups, setuid exec, salted password hashes, `login`, `su`, `sudo` (`eiki`), `passwd`, `adduser`/`deluser`, sticky `/tmp`, a seat group for the desktop and the power button | [ACCOUNTS](ACCOUNTS.md) |
 | Userland | libgap (C library with regex, getopt, sockets, ptys, crypto, time zones), gapsh (POSIX-style shell), kappabox (~120 applets), pnote editor, pager, manual pages for everything (`man`), omikuji and friends | [TOOLS](TOOLS.md) |
+| Applications | Ran's Calculator, Sakuya's Pocket Watch, Spell Manager (task manager), Kappa Control Panel, Bunbunmaru News, a danmaku shooter, Minesweeper (fairies under the grass), Snake; the Explorer, Notebook and Sketchbook are still on branches | [APPS](APPS.md), [GAMES](GAMES.md) |
 | Window system | Fairies server (compositor, decorations, damage tracking, clipboard), Kappa toolkit (immediate-mode widgets, dialogs, icons), HakureiDE desktop (wallpaper, panel, start menu, task list, terminal), login screen, screen lock | [DESKTOP](DESKTOP.md) |
 
 ## Known issues / next
 
 - Only one CPU is used (the other cores are idle); everything is polled.
 - Nothing is persistent unless a HUMANVILLAGE volume is mounted: `/etc` and the homes live in RAM and are rebuilt at boot.
-- No network, audio or USB mass storage yet (see ROADMAP).
+- No network, audio, threads or USB mass storage yet, and the Explorer/Notebook/Sketchbook apps are unmerged (see ROADMAP and NEXT).
 - The local agent log (`docs/AI_SUMMARY.md`, gitignored) has the newest development notes.
