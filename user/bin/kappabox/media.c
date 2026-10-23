@@ -8,6 +8,8 @@
 /* ---------------------------------------------------------------- imginfo */
 
 static int read_whole(const char *path, uint8_t **data, size_t *len) {
+    struct stat st;
+    if (stat(path, &st) == 0 && !S_ISREG(st.st_mode)) { errno = EINVAL; return -1; }     /* a FIFO with no writer would block the open for ever */
     int fd = open(path, O_RDONLY);
     if (fd < 0) return -1;
     size_t cap = 65536, n = 0;

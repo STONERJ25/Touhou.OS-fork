@@ -187,9 +187,10 @@ static const Image *current_image(void) {
 }
 
 static int read_file(const char *path, uint8_t **data, size_t *len) {
+    struct stat st;
+    if (stat(path, &st) < 0 || !S_ISREG(st.st_mode)) return IMG_E_IO;       /* before open(): a FIFO with no writer would block the window for ever */
     int fd = open(path, O_RDONLY);
     if (fd < 0) return IMG_E_IO;
-    struct stat st;
     if (fstat(fd, &st) < 0 || !S_ISREG(st.st_mode)) { close(fd); return IMG_E_IO; }
     if (st.st_size > (long long)IMG_MAX_FILE) { close(fd); return IMG_E_TOOBIG; }
     size_t cap = (size_t)st.st_size + 1, n = 0;

@@ -99,7 +99,13 @@ int img_decode(const void *data, size_t len, Image *out) {
 }
 
 /* Reads a whole file (at most limit bytes). */
+static int regular_file(const char *path) {                 /* stat before open: opening a FIFO with no writer would wait for ever */
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISREG(st.st_mode);
+}
+
 static int read_file(const char *path, size_t limit, uint8_t **data, size_t *len) {
+    if (!regular_file(path)) return IMG_E_IO;
     int fd = open(path, O_RDONLY);
     if (fd < 0) return IMG_E_IO;
     struct stat st;
@@ -140,6 +146,7 @@ int img_load(const char *path, Image *out) {
 
 int img_probe_file(const char *path, ImgInfo *info) {
     memset(info, 0, sizeof *info);
+    if (!regular_file(path)) return IMG_E_IO;
     int fd = open(path, O_RDONLY);
     if (fd < 0) return IMG_E_IO;
     /* headers are small, but PNG may need to see tRNS and BMP/JPEG markers: read generously */

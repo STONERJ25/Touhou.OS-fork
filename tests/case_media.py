@@ -266,6 +266,8 @@ def media_hostile_files():
         assert codes.get(1, 0) > 20, f"expected many files to be refused: {codes}"
         text, rc = test_shell.run(vm, "imginfo -s /media/fuzz/manyscans.jpg; echo st=$?")
         assert "error" in text and "st=1" in text, f"a JPEG with 200 scans must be refused: {text}"
+        text, rc = test_shell.run(vm, "imginfo -s /dev/zero /dev/null /dev/console /dev/tty; echo st=$?", timeout=60)       # not regular files: refused at once, not read
+        assert text.count("error") == 4 and "st=1" in text, f"devices are not pictures: {text}"
         print(f"\n     {len(out)} hostile files: {codes.get(0, 0)} decoded without complaint, {codes.get(1, 0)} refused, 0 crashes")
 
 
