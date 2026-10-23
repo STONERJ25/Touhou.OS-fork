@@ -289,11 +289,20 @@ class Qemu:
         return {"type": "key", "data": {"down": down, "key": {"type": "qcode", "data": qcode}}}
 
     def _input(self, events, device=None):
-        """input-send-event; `device` is the id of a -device usb-kbd/usb-mouse to target (None: QEMU's default routing)."""
-        if device:
-            self.qmp("input-send-event", device=device, events=events)
-        else:
-            self.qmp("input-send-event", events=events)
+        """input-send-event. `device` is accepted for compatibility but NOT forwarded: QEMU's `device` argument names a *display*
+        device (a console), not an input device, and QEMU 11 aborts on any id that is not a display ("Property
+        'qemu-fixed-text-console.device' not found"). Default routing already does the right thing for USB input: a usb-kbd becomes
+        the default keyboard when it is plugged in, and a usb-mouse the default mouse once the guest starts polling it (check
+        with select_mouse() / query-mice)."""
+        self.qmp("input-send-event", events=events)
+
+    def select_mouse(self, name):
+        """Makes the mouse whose QEMU name contains `name` ("HID", "PS/2") the one that receives injected motion and buttons."""
+        for m in self.qmp("query-mice"):
+            if name.lower() in m["name"].lower():
+                self.qmp("human-monitor-command", **{"command-line": f"mouse_set {m['index']}"})
+                return m["index"]
+        raise RuntimeError(f"no mouse matching {name!r}")
 
     def key(self, qcode, shift=False, ctrl=False, alt=False, hold=0.03):
         mods = (["shift"] if shift else []) + (["ctrl"] if ctrl else []) + (["alt"] if alt else [])
