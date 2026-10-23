@@ -140,8 +140,10 @@ class Guest:
 
 
 @contextlib.contextmanager
-def boot(image=None, root=False, cmdline="", name="t-storage", extra=(), mem="512M"):
-    cl = ("text " + cmdline + (" user=root" if root else "")).strip()          # text: these tests type into the console shell, not the desktop
+def boot(image=None, root=False, cmdline="", name="t-storage", extra=(), mem="512M", bootlog=False):
+    # text: these tests type into the console shell, not the desktop. bootlog=off: the kernel keeps its log as TOUHOU.LOG on a writable
+    # HUMANVILLAGE volume (docs/REAL_HARDWARE.md), which would change the byte-for-byte comparisons of these tests; case_usbstorage.py wants it.
+    cl = ("text " + ("" if bootlog else "bootlog=off ") + cmdline + (" user=root" if root else "")).strip()
     disk = image.path if image is not None else None
     with Qemu(cmdline=cl, disk=disk, name=name, extra=list(extra), mem=mem) as vm:
         vm.expect(ROOT_PROMPT if root else USER_PROMPT, timeout=90)

@@ -67,6 +67,10 @@ Prompt: `reimu@gensokyo ~ $`. See [ACCOUNTS.md](ACCOUNTS.md).
 - `init` logs in the voice of the shrine: `the shrine opens for the day`, `reimu left the shrine; the gate closes behind them`.
 - The window server's last resort (Ctrl+Alt+Backspace) opens the text door instead of handing out a shell.
 - Out of memory: `Yuyuko is hungry.`
+- USB sticks are carried by Nitori's kappa (hardware, tag `Kappa`): `usb-storage 1-2: ... the kappa are sizing the stick up`, `... carried
+  over the river as sdb`, a write-protected stick is "the kappa keep the sluice gate shut (read-only)"; the volume belongs to Keine
+  (`the Human Village keeps its records on the stick now`, `... vanished while it was mounted`); the kernel log on the stick is
+  "Shikieiki's ledger, readable on any other computer". The block layer's own lines (`blk: sdb removed ...`) stay Marisa's.
 - `rm` -> Netherworld, `shutdown` -> "Yukari opens a gap...", `fortune`/`omikuji` -> shrine fortune slips, `saisen` -> offering box.
 - The Explorer: Delete sends things to the Netherworld (with a note of where they came from), an empty Netherworld says `Yuyuko is
   hungry.`, deleting for good or emptying asks whether Yuyuko may eat it, an empty folder shows `Nothing here but the wind`, and

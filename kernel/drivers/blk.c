@@ -35,18 +35,23 @@ BlockDev *blk_find_label(const char *label) {
 
 int blk_read(BlockDev *d, u64 lba, u32 count, void *buf) {
     if (!count) return 0;
+    if (d->removed) return -ENODEV;
     if (lba >= d->sectors || lba + count > d->sectors) return -EINVAL;
     return d->read ? d->read(d, lba, count, buf) : -ENODEV;
 }
 
 int blk_write(BlockDev *d, u64 lba, u32 count, const void *buf) {
     if (!count) return 0;
+    if (d->removed) return -ENODEV;
     if (d->readonly) return -EROFS;
     if (lba >= d->sectors || lba + count > d->sectors) return -EINVAL;
     return d->write ? d->write(d, lba, count, buf) : -ENODEV;
 }
 
-int blk_flush(BlockDev *d) { return d->flush ? d->flush(d) : 0; }
+int blk_flush(BlockDev *d) {
+    if (d->removed) return -ENODEV;
+    return d->flush ? d->flush(d) : 0;
+}
 
 /* Partitions are thin wrappers that offset into their parent. */
 static int part_read(BlockDev *d, u64 lba, u32 count, void *buf) { return blk_read(d->parent, d->part_start + lba, count, buf); }
@@ -209,10 +214,9 @@ static void scan_mbr(BlockDev *d) {
     kfree(buf);
 }
 
-int blk_register(BlockDev *d) {
-    lock_init_once();
-    mutex_lock(&g_lock);
+static int register_locked(BlockDev *d) {
     d->dev_index = g_next_index++;
+    d->removed = false;
     d->next = NULL;
     if (g_tail) g_tail->next = d; else g_head = d;
     g_tail = d;
@@ -220,8 +224,72 @@ int blk_register(BlockDev *d) {
     klog("Marisa", "blk: %s  %s  %lu MiB, %u-byte sectors%s%s%s", d->name, d->driver, (unsigned long)(d->sectors * d->sector_size >> 20), d->sector_size,
          d->readonly ? ", read-only" : "", d->model[0] ? "  " : "", d->model);
     if (!d->parent && !scan_gpt(d)) scan_mbr(d);
-    mutex_unlock(&g_lock);
     return 0;
+}
+
+int blk_register(BlockDev *d) {
+    lock_init_once();
+    mutex_lock(&g_lock);
+    int rc = register_locked(d);
+    mutex_unlock(&g_lock);
+    return rc;
+}
+
+/* "sda" .. "sdz", "sdaa" .. : the Linux scheme for the n-th SCSI-style disk. */
+static void sd_name_of(char *out, size_t cap, int index) {
+    char letters[8];
+    int n = 0;
+    for (int i = index; n < 6; i = i / 26 - 1) {
+        letters[n++] = (char)('a' + i % 26);
+        if (i < 26) break;
+    }
+    size_t o = 0;
+    if (cap < 4) return;
+    out[o++] = 's'; out[o++] = 'd';
+    while (n && o + 1 < cap) out[o++] = letters[--n];
+    out[o] = 0;
+}
+
+/* The first name of sda, sdb, ... that no registered disk uses. SATA ports (boot time) and USB sticks (whenever they show up) draw from
+ * the same pool, so a stick plugged in after boot never collides with a disk and a removed stick gives its letter back. */
+int blk_register_sd(BlockDev *d) {
+    lock_init_once();
+    mutex_lock(&g_lock);
+    for (int i = 0; i < 18278; i++) {                      /* sda .. zzz */
+        sd_name_of(d->name, sizeof d->name, i);
+        if (!blk_find(d->name)) break;
+    }
+    int rc = register_locked(d);
+    mutex_unlock(&g_lock);
+    return rc;
+}
+
+void blk_unregister(BlockDev *d) {
+    if (!d || d->removed) return;
+    lock_init_once();
+    mutex_lock(&g_lock);
+    d->removed = true;
+    char names[80] = "";
+    BlockDev **pp = &g_head;
+    BlockDev *last = NULL;
+    while (*pp) {
+        BlockDev *x = *pp;
+        if (x == d || x->parent == d) {
+            *pp = x->next;                                 /* x->next stays as it was, so a reader standing on x walks on safely */
+            x->removed = true;
+            devfs_unregister(x->name);
+            if (x != d && strlen(names) + strlen(x->name) + 2 < sizeof names) {
+                if (names[0]) strlcat(names, ", ", sizeof names);
+                strlcat(names, x->name, sizeof names);
+            }
+            continue;
+        }
+        last = x;
+        pp = &x->next;
+    }
+    g_tail = last;
+    mutex_unlock(&g_lock);
+    klog("Marisa", "blk: %s removed%s%s%s", d->name, names[0] ? " together with " : "", names, names[0] ? " (the device is gone; requests now fail with ENODEV)" : "");
 }
 
 size_t blk_describe(char *buf, size_t cap) {

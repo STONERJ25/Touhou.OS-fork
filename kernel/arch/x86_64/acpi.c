@@ -14,6 +14,7 @@
 #include "cpu.h"
 #include "mm.h"
 #include "vfs.h"
+#include "bootlog.h"
 #include "initcall.h"
 #include "input.h"
 #include "task.h"
@@ -245,6 +246,8 @@ static void power_button_pressed(void) {
         return;
     }
     klog("Gensokyo", "no desktop is running: powering off");
+    bootlog_shutdown();                                         /* the records first: a stick pulled after this finds its volume clean */
+    vfs_sync_all();
     machine_poweroff();
 }
 

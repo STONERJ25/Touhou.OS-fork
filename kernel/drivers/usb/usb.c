@@ -15,6 +15,7 @@
 #include "cpu.h"
 #include "irq.h"
 #include "vfs.h"
+#include "blk.h"
 #include "abi.h"
 
 #define CTRL_TIMEOUT      2500
@@ -34,7 +35,16 @@ static const char *g_step = "?";
 
 extern const UsbDriver usb_hub_driver;
 extern const UsbDriver usb_hid_driver;
-static const UsbDriver *const g_drivers[] = { &usb_hub_driver, &usb_hid_driver };
+static const UsbDriver *const g_drivers[] = { &usb_hub_driver, &usb_hid_driver, &usb_storage_driver };
+
+bool usb_bulktest_enabled(void) { return g_usb_bulktest; }
+
+/* Boot rendezvous state (see usb_wait_settled). Written by the usbd thread, read by whoever waits. */
+static volatile bool g_usbd_started;        /* every controller's start() has returned (or failed) */
+static volatile bool g_usb_expect;          /* something was plugged in when the controllers came up */
+static volatile int  g_usb_busy;            /* usbd is handling port changes or jobs right now */
+static volatile u64  g_usb_last_active;     /* uptime_ms() of the last round in which usbd had anything to do */
+#define SETTLE_QUIET_MS 150                /* how long the bus has to stay idle before it counts as settled */
 
 /* ---------------------------------------------------------------- small helpers */
 
@@ -710,6 +720,7 @@ typedef struct UsbJob {
 } UsbJob;
 
 static UsbJob *g_job_head, *g_job_tail;
+static Semaphore g_kick;                                /* posted by usb_call(); usbd's idle sleep (1 ms at most) ends early on it */
 static Task *g_usbd_task;
 static volatile bool g_usbd_up;
 
@@ -725,6 +736,7 @@ int usb_call(int (*fn)(void *arg), void *arg) {
     if (g_job_tail) g_job_tail->next = &job; else g_job_head = &job;
     g_job_tail = &job;
     irq_restore(f);
+    sem_post(&g_kick);                                  /* wake usbd now instead of at its next 1 ms tick: block requests are latency bound */
     sem_wait(&job.done);                                /* usbd's sem_post is its last access to the job */
     return job.result;
 }
@@ -739,6 +751,39 @@ static void run_jobs(bool refuse) {
         j->result = refuse ? -ENODEV : j->fn(j->arg);
         sem_post(&j->done);
     }
+}
+
+static bool hubs_have_pending(void) {
+    for (UsbHub *h = g_hubs; h; h = h->next)
+        if (h->any_pending && !h->dead && !h->hc->dead) return true;
+    return false;
+}
+
+/* ---------------------------------------------------------------- boot rendezvous */
+
+/* Nothing left to do on the bus? Reads only variables that usbd publishes (never the hub or device lists, which usbd changes under
+ * its feet). A bus with nothing plugged in at start-up counts as settled the moment the controllers are up. */
+static bool usb_settled_now(void) {
+    if (!g_usbd_started) return false;                      /* controllers still resetting */
+    if (!g_usbd_up || !g_usb_expect) return true;           /* no working controller, or an empty bus */
+    if (g_usb_busy || g_job_head) return false;             /* a port change, an enumeration or a block request is in progress */
+    if (msc_busy() || storage_automount_busy()) return false;   /* a stick is still getting ready / its HUMANVILLAGE volume is being mounted */
+    return uptime_ms() - g_usb_last_active >= SETTLE_QUIET_MS;  /* and nothing new arrived for a moment (hub ports report late) */
+}
+
+bool usb_wait_settled(u32 max_ms) {
+    if (!g_nhc) return true;                                /* usb=off, or no xHCI controller at all */
+    u64 t0 = uptime_ms();
+    while (!usb_settled_now()) {
+        if (uptime_ms() - t0 >= max_ms) {
+            klog("Kappa", "usb: still busy after %u ms (a stick that is slow to get ready?): boot goes on, the bus is watched in the background", max_ms);
+            return false;
+        }
+        task_sleep_ms(5);
+    }
+    u64 waited = uptime_ms() - t0;
+    if (g_usb_expect && g_usbd_up) klog("Kappa", "usb: the bus settled after %lu ms", (unsigned long)waited);
+    return true;
 }
 
 static void usbd_main(void *arg) {
@@ -759,6 +804,10 @@ static void usbd_main(void *arg) {
         alive++;
     }
     proc_update();
+    for (int i = 0; i < g_nhc; i++)
+        if (!g_hcs[i]->failed && g_hcs[i]->root.any_pending) g_usb_expect = true;     /* start() queued every port that had something attached */
+    g_usb_last_active = uptime_ms();
+    g_usbd_started = true;
     if (!alive) return;                                     /* nothing to poll */
 
     g_usbd_up = true;
@@ -772,9 +821,14 @@ static void usbd_main(void *arg) {
             if (hc->dead) continue;
             hc->ops->service(hc);
         }
+        bool work = hubs_have_pending() || g_job_head != NULL;
+        if (work) g_usb_busy = 1;                           /* set before the flags that show the work are cleared, so a waiter never sees a gap */
         service_hubs();
         hid_service();
+        msc_service();
         run_jobs(false);
+        if (work || msc_busy()) g_usb_last_active = uptime_ms();
+        g_usb_busy = 0;
         if (!hinted && uptime_ms() > 8000) {
             /* One line for whoever is staring at a machine whose keyboard does not work: what the controllers see on their ports. */
             hinted = true;
@@ -790,7 +844,7 @@ static void usbd_main(void *arg) {
                 }
             }
         }
-        task_sleep_ms(1);
+        sem_wait_timeout(&g_kick, 1);                       /* the 1 ms poll tick, or sooner when a block request is waiting */
     }
 }
 
@@ -820,8 +874,10 @@ void usb_init(void) {
             }
         return;
     }
+    sem_init(&g_kick, 0);
     procfs_register("usb", gen_usb);
     procfs_register("usbstat", gen_usbstat);
+    procfs_register("usbstorage", msc_describe);
     snprintf(g_proc, sizeof g_proc, "USB starting...\n");
     g_proc_len = strlen(g_proc);
     if (!task_create_detached("usbd", usbd_main, NULL)) klog("Kappa", "usb: cannot start the usbd thread");

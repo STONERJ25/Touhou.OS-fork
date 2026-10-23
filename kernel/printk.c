@@ -25,6 +25,19 @@ size_t klog_read(u64 off, void *buf, size_t n) {
     return got;
 }
 
+/* Like klog_read(), but a reader that was too slow is told: *off is moved up to the oldest byte still in the ring (the caller can see
+ * how much was overwritten by comparing it with what it passed in). Returns the bytes copied; *off is left at the start of them. */
+size_t klog_read_clamped(u64 *off, void *buf, size_t n) {
+    u64 f = irq_save();
+    u64 start = g_klog_total > KLOG_SIZE ? g_klog_total - KLOG_SIZE : 0;
+    if (*off < start) *off = start;
+    u64 pos = *off;
+    size_t got = 0;
+    while (got < n && pos < g_klog_total) ((char *)buf)[got++] = g_klog[pos++ % KLOG_SIZE];
+    irq_restore(f);
+    return got;
+}
+
 /* ---- raw console: screen + serial, not logged ---- */
 void console_write(const char *s, size_t n) {
     u64 f = irq_save();
