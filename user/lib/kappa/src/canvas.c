@@ -290,6 +290,15 @@ int kc_glyph(KCanvas *c, int x, int y, uint32_t cp, uint32_t fg, int scale) {
     KRect box = kr(x, y, FONT_W * scale, FONT_H * scale);
     if (kr_empty(kr_intersect(box, c->clip))) return FONT_W * scale;
     const unsigned char *g = font8x16_glyph(cp);
+    if (scale == 1 && x >= c->clip.x && y >= c->clip.y && x + FONT_W <= c->clip.x + c->clip.w && y + FONT_H <= c->clip.y + c->clip.h) {
+        uint32_t *row = c->px + (size_t)y * c->stride + x;           /* fast path: the whole cell is visible */
+        for (int r = 0; r < FONT_H; r++, row += c->stride) {
+            unsigned bits = g[r];
+            if (!bits) continue;
+            for (int col = 0; col < FONT_W; col++) if (bits & (0x80u >> col)) row[col] = fg;
+        }
+        return FONT_W;
+    }
     for (int row = 0; row < FONT_H; row++) {
         unsigned bits = g[row];
         if (!bits) continue;

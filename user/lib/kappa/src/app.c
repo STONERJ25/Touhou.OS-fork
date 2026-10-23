@@ -1,4 +1,4 @@
-/* KApp: window, back buffer, event loop; turns window-system events into KUI input. */
+/* KApp / KWin: windows, back buffers, the event loop; turns window-system events into KUI input. */
 #include <kappa.h>
 #include <poll.h>
 #include <time.h>
@@ -8,18 +8,30 @@
 #include <unistd.h>
 
 #define MAX_WATCH 8
+#define MAX_WINDOWS 12
 
-struct KApp {
-    FairyDisplay *d;
+struct KWin {
+    KApp *app;
     FairyWindow *win;
     KUI ui;
     uint32_t *back;
     int bw, bh;
     KDrawFn draw;
     void *user;
+    bool dirty, popup, dead;
+    unsigned cursor;
+    void (*on_close)(KWin *, void *);
+    void *close_user;
+};
+
+struct KApp {
+    FairyDisplay *d;
+    KWin *wins[MAX_WINDOWS];
+    int nwins;
+    KWin *main;
     int tick_ms;
     uint64_t last_tick;
-    bool dirty, quit;
+    bool quit;
     int code;
     struct { int fd; KFdFn fn; void *user; } watch[MAX_WATCH];
     int nwatch;
@@ -33,7 +45,6 @@ struct KApp {
     int last_click_x, last_click_y;
     char clip[1025];
     size_t cliplen;
-    unsigned cursor;
 };
 
 uint64_t k_now_ms(void) {
@@ -47,12 +58,64 @@ const char *k_basename(const char *path) {
     return s && s[1] ? s + 1 : path;
 }
 
-static void resize_back(KApp *a, int w, int h) {
-    free(a->back);
-    a->back = calloc((size_t)w * (size_t)h, 4);
-    a->bw = w;
-    a->bh = h;
+/* ---------------------------------------------------------------- windows */
+
+static void resize_back(KWin *w, int nw, int nh) {
+    free(w->back);
+    w->back = calloc((size_t)nw * (size_t)nh, 4);
+    w->bw = nw;
+    w->bh = nh;
 }
+
+static KWin *kwin_create(KApp *a, int x, int y, int w, int h, const char *title, unsigned flags, KDrawFn draw, void *user, bool popup) {
+    if (a->nwins >= MAX_WINDOWS) return NULL;
+    KWin *kw = calloc(1, sizeof *kw);
+    if (!kw) return NULL;
+    kw->win = fairy_window_create_at(a->d, x, y, w, h, title, flags, a->main ? a->main->win : NULL);
+    if (!kw->win) { free(kw); return NULL; }
+    kw->app = a;
+    kw->popup = popup;
+    kw->draw = draw;
+    kw->user = user;
+    int cw, ch, stride;
+    fairy_window_pixels(kw->win, &cw, &ch, &stride);
+    resize_back(kw, cw, ch);
+    kw->ui.theme = &k_theme_shrine;
+    kw->ui.app = a;
+    kw->ui.window = kw;
+    kw->ui.has_focus = !popup;
+    kw->ui.caret_ms = k_now_ms();
+    kw->dirty = true;
+    fairy_window_set_user(kw->win, kw);
+    a->wins[a->nwins++] = kw;
+    return kw;
+}
+
+KWin *kwin_new(KApp *a, int x, int y, int w, int h, const char *title, unsigned flags, KDrawFn draw, void *user) {
+    return kwin_create(a, x, y, w, h, title, flags, draw, user, (flags & FW_POPUP) != 0);
+}
+
+void kwin_set_close_handler(KWin *w, void (*fn)(KWin *, void *), void *user) { w->on_close = fn; w->close_user = user; }
+void kwin_redraw(KWin *w) { if (w) w->dirty = true; }
+void kwin_close(KWin *w) { if (w) w->dead = true; }
+KUI *kwin_ui(KWin *w) { return &w->ui; }
+int kwin_width(KWin *w) { return w->bw; }
+int kwin_height(KWin *w) { return w->bh; }
+FairyWindow *kwin_fairy(KWin *w) { return w->win; }
+void kwin_move(KWin *w, int x, int y, int cw, int ch) { fairy_window_move(w->win, x, y, cw, ch); }
+void kwin_set_title(KWin *w, const char *t) { fairy_window_set_title(w->win, t); }
+
+static void kwin_destroy(KWin *w) {
+    KApp *a = w->app;
+    for (int i = 0; i < a->nwins; i++)
+        if (a->wins[i] == w) { memmove(&a->wins[i], &a->wins[i + 1], (size_t)(a->nwins - i - 1) * sizeof(KWin *)); a->nwins--; break; }
+    if (w == a->main) a->main = NULL;
+    fairy_window_destroy(w->win);
+    free(w->back);
+    free(w);
+}
+
+static KApp *kapp_open(FairyDisplay *d, const char *title, int x, int y, int w, int h, unsigned flags);
 
 KApp *kapp_new_at(const char *title, int x, int y, int w, int h, unsigned flags) {
     FairyDisplay *d = fairy_connect(title);
@@ -60,43 +123,52 @@ KApp *kapp_new_at(const char *title, int x, int y, int w, int h, unsigned flags)
         fprintf(stderr, "%s: no window server answered (is fairyd running?)\n", title);
         return NULL;
     }
+    return kapp_open(d, title, x, y, w, h, flags);
+}
+
+/* A window as large as the screen (desktop, fullscreen games). */
+KApp *kapp_new_screen(const char *title, unsigned flags) {
+    FairyDisplay *d = fairy_connect(title);
+    if (!d) {
+        fprintf(stderr, "%s: no window server answered (is fairyd running?)\n", title);
+        return NULL;
+    }
+    int w, h;
+    fairy_screen_size(d, &w, &h);
+    return kapp_open(d, title, 0, 0, w, h, flags);
+}
+
+static KApp *kapp_open(FairyDisplay *d, const char *title, int x, int y, int w, int h, unsigned flags) {
     KApp *a = calloc(1, sizeof *a);
     if (!a) { fairy_disconnect(d); return NULL; }
     a->d = d;
-    a->win = fairy_window_create_at(d, x, y, w, h, title, flags, NULL);
-    if (!a->win) { fairy_disconnect(d); free(a); return NULL; }
-    a->bw = a->bh = 0;
-    /* The server may have given us a different content size than we asked for; adopt it. */
-    int cw, ch, stride;
-    fairy_window_pixels(a->win, &cw, &ch, &stride);
-    resize_back(a, cw, ch);
-    a->ui.theme = &k_theme_shrine;
-    a->ui.app = a;
-    a->ui.mouse_inside = false;
-    a->ui.has_focus = true;
-    a->ui.caret_ms = k_now_ms();
-    a->dirty = true;
+    a->main = kwin_create(a, x, y, w, h, title, flags, NULL, NULL, false);
+    if (!a->main) { fairy_disconnect(d); free(a); return NULL; }
     return a;
 }
 
 KApp *kapp_new(const char *title, int w, int h, unsigned flags) { return kapp_new_at(title, -1, -1, w, h, flags); }
 
-void kapp_set_draw(KApp *a, KDrawFn fn, void *user) { a->draw = fn; a->user = user; }
+KWin *kapp_main(KApp *a) { return a->main; }
+void kapp_set_draw(KApp *a, KDrawFn fn, void *user) { a->main->draw = fn; a->main->user = user; }
 void kapp_set_tick(KApp *a, int ms) { a->tick_ms = ms; a->last_tick = k_now_ms(); }
 void kapp_set_key_hook(KApp *a, KKeyFn fn, void *user) { a->keyhook = fn; a->keyuser = user; }
 void kapp_set_event_hook(KApp *a, void (*fn)(KApp *, const FairyEvent *, void *), void *user) { a->evhook = fn; a->evuser = user; }
 void kapp_set_close_handler(KApp *a, bool (*fn)(KApp *, void *), void *user) { a->on_close = fn; a->close_user = user; }
-void kapp_redraw(KApp *a) { a->dirty = true; }
+void kapp_redraw(KApp *a) { for (int i = 0; i < a->nwins; i++) a->wins[i]->dirty = true; }
 void kapp_quit(KApp *a, int code) { a->quit = true; a->code = code; }
-void kapp_set_title(KApp *a, const char *t) { fairy_window_set_title(a->win, t); }
-void kapp_set_cursor(KApp *a, unsigned shape) { if (shape != a->cursor) { a->cursor = shape; fairy_window_set_cursor(a->win, shape); } }
-void kapp_set_minsize(KApp *a, int w, int h) { fairy_window_set_minsize(a->win, w, h); }
-void kapp_move(KApp *a, int x, int y, int w, int h) { fairy_window_move(a->win, x, y, w, h); }
-void kapp_set_state(KApp *a, unsigned s) { fairy_window_set_state(a->win, s); }
+void kapp_set_title(KApp *a, const char *t) { fairy_window_set_title(a->main->win, t); }
+void kapp_set_cursor(KApp *a, unsigned shape) {
+    if (shape != a->main->cursor) { a->main->cursor = shape; fairy_window_set_cursor(a->main->win, shape); }
+}
+void kapp_set_minsize(KApp *a, int w, int h) { fairy_window_set_minsize(a->main->win, w, h); }
+void kapp_move(KApp *a, int x, int y, int w, int h) { fairy_window_move(a->main->win, x, y, w, h); }
+void kapp_set_state(KApp *a, unsigned s) { fairy_window_set_state(a->main->win, s); }
 FairyDisplay *kapp_display(KApp *a) { return a->d; }
-FairyWindow *kapp_window(KApp *a) { return a->win; }
-int kapp_width(KApp *a) { return a->bw; }
-int kapp_height(KApp *a) { return a->bh; }
+FairyWindow *kapp_window(KApp *a) { return a->main->win; }
+int kapp_width(KApp *a) { return a->main->bw; }
+int kapp_height(KApp *a) { return a->main->bh; }
+KUI *kapp_ui(KApp *a) { return &a->main->ui; }
 
 void kapp_watch_fd(KApp *a, int fd, KFdFn fn, void *user) {
     if (a->nwatch >= MAX_WATCH) return;
@@ -104,6 +176,11 @@ void kapp_watch_fd(KApp *a, int fd, KFdFn fn, void *user) {
     a->watch[a->nwatch].fn = fn;
     a->watch[a->nwatch].user = user;
     a->nwatch++;
+}
+
+void kapp_unwatch_fd(KApp *a, int fd) {
+    for (int i = 0; i < a->nwatch; i++)
+        if (a->watch[i].fd == fd) { a->watch[i] = a->watch[a->nwatch - 1]; a->nwatch--; return; }
 }
 
 void kapp_clipboard_copy(KApp *a, const char *text, size_t len) {
@@ -125,42 +202,48 @@ void kapp_clipboard_fetch(KApp *a) { fairy_clipboard_request(a->d); }
 
 void kapp_destroy(KApp *a) {
     if (!a) return;
-    fairy_window_destroy(a->win);
+    while (a->nwins) kwin_destroy(a->wins[a->nwins - 1]);
     fairy_disconnect(a->d);
-    free(a->back);
     free(a);
 }
 
 /* ---------------------------------------------------------------- one frame */
 
-static void frame(KApp *a) {
-    KUI *ui = &a->ui;
+static void frame(KWin *kw) {
+    KUI *ui = &kw->ui;
     ui->now_ms = k_now_ms();
     ui->redraw_soon = false;
     ui->cursor_shape = FC_ARROW;
     ui->tooltip = NULL;
     ui->hot = 0;
     ui->input_blocked = ui->menu_open != 0;
-    kc_init(&ui->cv, a->back, a->bw, a->bh, a->bw);
-    if (a->draw) a->draw(a, ui, a->user);
+    kc_init(&ui->cv, kw->back, kw->bw, kw->bh, kw->bw);
+    ui->has_damage = false;
+    if (kw->draw) kw->draw(kw->app, ui, kw->user);
 
-    if (ui->tooltip && ui->tooltip[0]) {
+    bool tooltip_shown = ui->tooltip && ui->tooltip[0];
+    if (tooltip_shown) {
         int tw = kc_text_width(ui->tooltip) + 10;
         int tx = ui->tooltip_x, ty = ui->tooltip_y;
-        if (tx + tw > a->bw) tx = a->bw - tw;
-        if (ty + 22 > a->bh) ty = ui->my - 26;
-        kc_set_clip(&ui->cv, kr(0, 0, a->bw, a->bh));
+        if (tx + tw > kw->bw) tx = kw->bw - tw;
+        if (ty + 22 > kw->bh) ty = ui->my - 26;
+        kc_set_clip(&ui->cv, kr(0, 0, kw->bw, kw->bh));
         kc_panel(&ui->cv, kr(tx, ty, tw, 22), KB_FRAME, 0xFFF8D0);
         kc_text(&ui->cv, tx + 5, ty + 3, ui->tooltip, KC_INK);
     }
 
     int w, h, stride;
-    uint32_t *px = fairy_window_pixels(a->win, &w, &h, &stride);
-    if (px && w == a->bw && h == a->bh) {
-        for (int y = 0; y < h; y++) memcpy(px + (size_t)y * stride, a->back + (size_t)y * a->bw, (size_t)w * 4);
-        fairy_window_commit(a->win, 0, 0, w, h);
+    uint32_t *px = fairy_window_pixels(kw->win, &w, &h, &stride);
+    if (px && w == kw->bw && h == kw->bh) {
+        KRect d = ui->has_damage ? kr_intersect(ui->damage, kr(0, 0, w, h)) : kr(0, 0, w, h);
+        if (tooltip_shown) d = kr(0, 0, w, h);
+        if (!kr_empty(d)) {
+            for (int y = d.y; y < d.y + d.h; y++) memcpy(px + (size_t)y * stride + d.x, kw->back + (size_t)y * kw->bw + d.x, (size_t)d.w * 4);
+            fairy_window_commit(kw->win, d.x, d.y, d.w, d.h);
+        }
     }
-    kapp_set_cursor(a, ui->cursor_shape);
+    ui->has_damage = false;
+    if (ui->cursor_shape != kw->cursor) { kw->cursor = ui->cursor_shape; fairy_window_set_cursor(kw->win, kw->cursor); }
 
     memset(ui->pressed, 0, sizeof ui->pressed);
     memset(ui->released, 0, sizeof ui->released);
@@ -169,11 +252,19 @@ static void frame(KApp *a) {
     ui->nkeys = 0;
 }
 
+static void push_key(KUI *ui, const FeKey *k) {
+    ui->mods = k->mods;
+    ui->key_down[k->code] = k->down != 0;
+    if (k->down && ui->nkeys < KUI_MAX_KEYS) ui->keys[ui->nkeys++] = (KKey){ k->code, k->mods, k->down, k->ch };
+}
+
 static void handle_event(KApp *a, FairyEvent *ev) {
-    KUI *ui = &a->ui;
     if (a->evhook) a->evhook(a, ev, a->evuser);
+    KWin *kw = ev->window ? fairy_window_user(ev->window) : NULL;
     switch (ev->type) {
     case FEV_POINTER: {
+        if (!kw) break;
+        KUI *ui = &kw->ui;
         FePointer *p = &ev->u.pointer;
         ui->mx = p->x;
         ui->my = p->y;
@@ -198,34 +289,40 @@ static void handle_event(KApp *a, FairyEvent *ev) {
         }
         if (p->kind == FP_WHEEL) ui->wheel += p->wheel;
         ui->buttons = p->buttons;
-        if (p->kind == FP_LEAVE) ui->mouse_inside = false;
+        kw->dirty = true;
         break;
     }
     case FEV_KEY: {
         FeKey *k = &ev->u.key;
-        ui->mods = k->mods;
-        ui->key_down[k->code] = k->down != 0;
         if (a->keyhook) {
             KKey kk = { k->code, k->mods, k->down, k->ch };
             a->keyhook(a, &kk, a->keyuser);
         }
-        if (k->down && ui->nkeys < KUI_MAX_KEYS) ui->keys[ui->nkeys++] = (KKey){ k->code, k->mods, k->down, k->ch };
+        if (kw) { push_key(&kw->ui, k); kw->dirty = true; }
+        for (int i = 0; i < a->nwins; i++)                      /* popups never get the focus: they see the keys of their owner */
+            if (a->wins[i]->popup) { push_key(&a->wins[i]->ui, k); a->wins[i]->dirty = true; }
         break;
     }
     case FEV_FOCUS:
-        ui->has_focus = ev->u.focus.gained != 0;
-        if (!ui->has_focus) { memset(ui->key_down, 0, sizeof ui->key_down); ui->menu_open = 0; }
+        if (!kw) break;
+        kw->ui.has_focus = ev->u.focus.gained != 0;
+        if (!kw->ui.has_focus) { memset(kw->ui.key_down, 0, sizeof kw->ui.key_down); kw->ui.menu_open = 0; }
         else fairy_clipboard_request(a->d);
+        kw->dirty = true;
         break;
     case FEV_CONFIGURE: {
+        if (!kw) break;
         FeConfigure *c = &ev->u.configure;
-        if (c->w > 0 && c->h > 0 && (c->w != a->bw || c->h != a->bh)) {
-            if (fairy_window_resize(a->win, c->w, c->h) == 0) resize_back(a, c->w, c->h);
+        if (c->w > 0 && c->h > 0 && (c->w != kw->bw || c->h != kw->bh)) {
+            if (fairy_window_resize(kw->win, c->w, c->h) == 0) resize_back(kw, c->w, c->h);
         }
+        kw->dirty = true;
         break;
     }
     case FEV_CLOSE:
-        if (!a->on_close || a->on_close(a, a->close_user)) a->quit = true;
+        if (!kw) break;
+        if (kw == a->main) { if (!a->on_close || a->on_close(a, a->close_user)) a->quit = true; }
+        else { if (kw->on_close) kw->on_close(kw, kw->close_user); kw->dead = true; }
         break;
     case FEV_CLIPBOARD: {
         size_t n = ev->u.clipboard.len;
@@ -241,45 +338,61 @@ static void handle_event(KApp *a, FairyEvent *ev) {
     default:
         break;
     }
-    a->dirty = true;
+}
+
+static bool any_dirty(KApp *a) {
+    for (int i = 0; i < a->nwins; i++) if (a->wins[i]->dirty) return true;
+    return false;
+}
+
+static void reap_closed(KApp *a) {
+    for (int i = a->nwins - 1; i >= 0; i--) {
+        KWin *w = a->wins[i];
+        if (w->dead && w != a->main) kwin_destroy(w);
+    }
 }
 
 int kapp_run(KApp *a) {
-    if (!a) return 1;
-    frame(a);
-    a->dirty = false;
+    if (!a || !a->main) return 1;
+    for (int i = 0; i < a->nwins; i++) { frame(a->wins[i]); a->wins[i]->dirty = false; }
     while (!a->quit) {
         struct pollfd pf[1 + MAX_WATCH];
         pf[0].fd = fairy_fd(a->d);
         pf[0].events = POLLIN;
         pf[0].revents = 0;
         for (int i = 0; i < a->nwatch; i++) { pf[1 + i].fd = a->watch[i].fd; pf[1 + i].events = POLLIN; pf[1 + i].revents = 0; }
-        int timeout = a->dirty ? 0 : -1;
+        int timeout = any_dirty(a) ? 0 : -1;
         uint64_t now = k_now_ms();
-        if (!a->dirty) {
+        bool soon = false;
+        for (int i = 0; i < a->nwins; i++) if (a->wins[i]->ui.redraw_soon) soon = true;
+        if (timeout != 0) {
             if (a->tick_ms > 0) {
                 int64_t left = (int64_t)a->last_tick + a->tick_ms - (int64_t)now;
                 timeout = left < 0 ? 0 : (int)left;
             }
-            if (a->ui.redraw_soon && (timeout < 0 || timeout > 250)) timeout = 250;
+            if (soon && (timeout < 0 || timeout > 250)) timeout = 250;
         }
         poll(pf, (nfds_t)(1 + a->nwatch), timeout);
         FairyEvent ev;
         for (int i = 0; i < a->nwatch; i++)
-            if (pf[1 + i].revents & (POLLIN | POLLHUP | POLLERR)) { a->watch[i].fn(a, a->watch[i].fd, a->watch[i].user); a->dirty = true; }
+            if (pf[1 + i].revents & (POLLIN | POLLHUP | POLLERR)) { a->watch[i].fn(a, a->watch[i].fd, a->watch[i].user); kapp_redraw(a); }
         for (int guard = 0; guard < 512; guard++) {
             int r = fairy_next_event(a->d, &ev, 0);
             if (r == 0) break;
             handle_event(a, &ev);
             if (r < 0 || a->quit) break;
         }
+        if (a->quit) break;
         now = k_now_ms();
         bool tick_due = a->tick_ms > 0 && now - a->last_tick >= (uint64_t)a->tick_ms;
-        if (tick_due) a->last_tick = now;
-        if (a->dirty || tick_due || (a->ui.redraw_soon && timeout == 250)) {
-            if (a->quit) break;
-            a->dirty = false;
-            frame(a);
+        if (tick_due) { a->last_tick = now; kapp_redraw(a); }
+        reap_closed(a);
+        for (int i = 0; i < a->nwins; i++) {
+            KWin *w = a->wins[i];
+            if (w->dirty || (w->ui.redraw_soon && timeout == 250)) {
+                w->dirty = false;
+                frame(w);
+            }
         }
     }
     return a->code;
@@ -294,7 +407,6 @@ static void msgbox_draw(KApp *app, KUI *ui, void *user) {
     k_clear(ui);
     int w = kapp_width(app);
     k_icon(&ui->cv, m->icon, 16, 16, 32);
-    /* word wrap the message into the space right of the icon */
     int maxcols = (w - 72 - 12) / 8;
     int y = 16;
     const char *p = m->msg;

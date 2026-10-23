@@ -10,7 +10,7 @@ from qemu import Qemu  # noqa: E402
 
 lines = Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
 wait = float(sys.argv[2]) if len(sys.argv) > 2 else 2.0
-with Qemu(cmdline="", name="t-dbg") as vm:
+with Qemu(cmdline="text", name="t-dbg") as vm:
     vm.expect(r"reimu@gensokyo \S+ \$ ", timeout=90)
     for line in lines:
         start = len(vm.text())

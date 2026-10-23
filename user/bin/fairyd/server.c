@@ -184,7 +184,7 @@ static void handle_create(Client *c, const FairyHdr *h, const FmCreate *m) {
 static void handle_msg(Client *c, const FairyHdr *h, const uint8_t *p) {
     size_t plen = h->size - sizeof *h;
     Win *w = h->win ? win_by_id(h->win) : NULL;
-    if (w && w->client != c && h->type != FM_ACTIVATE && h->type != FM_REQUEST_CLOSE) w = NULL;     /* only the owner may touch a window */
+    if (w && w->client != c && h->type != FM_ACTIVATE && h->type != FM_REQUEST_CLOSE && !(c->is_shell && h->type == FM_SET_STATE)) w = NULL;   /* only the owner (or the shell) may touch a window */
     switch (h->type) {
     case FM_HELLO: {
         if (plen < sizeof(FmHello)) break;

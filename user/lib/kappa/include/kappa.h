@@ -152,13 +152,21 @@ typedef struct KUI {
     int caret, sel_anchor;          /* text field editing state (the focused field) */
     uint64_t caret_ms;
     struct KApp *app;
+    struct KWin *window;            /* the window this UI draws into */
     int menu_open;                  /* 1-based index of the open menu, 0 = none; widgets ignore the pointer while a menu is open */
     int menu_item_hover;
     bool input_blocked;
     const char *tooltip;
     int tooltip_x, tooltip_y;
+    KRect damage;                   /* set by programs that redraw only part of the window (terminals); default: everything */
+    bool has_damage;
     char scratch[64];
 } KUI;
+
+static inline void k_damage(KUI *ui, KRect r) {
+    ui->damage = ui->has_damage ? kr_union(ui->damage, r) : r;
+    ui->has_damage = true;
+}
 
 uint32_t k_id(const char *label, KRect r);
 void k_clear(KUI *ui);                                           /* fills the whole canvas with the window background */
@@ -227,6 +235,23 @@ typedef void (*KDrawFn)(KApp *app, KUI *ui, void *user);
 typedef void (*KFdFn)(KApp *app, int fd, void *user);
 typedef void (*KKeyFn)(KApp *app, const KKey *key, void *user);     /* raw key hook before the widgets see it; return via app_consume */
 
+/* A KApp can own several windows (the main one plus popups and dialogs), all sharing one event loop. */
+typedef struct KWin KWin;
+KWin *kwin_new(KApp *app, int x, int y, int w, int h, const char *title, unsigned fairy_flags, KDrawFn draw, void *user);
+void  kwin_close(KWin *w);                                        /* closes at the end of the current iteration */
+void  kwin_redraw(KWin *w);
+void  kwin_set_close_handler(KWin *w, void (*fn)(KWin *w, void *user), void *user);   /* the server asked it to close (popups: click outside) */
+KUI  *kwin_ui(KWin *w);
+int   kwin_width(KWin *w);
+int   kwin_height(KWin *w);
+FairyWindow *kwin_fairy(KWin *w);
+void  kwin_move(KWin *w, int x, int y, int content_w, int content_h);
+void  kwin_set_title(KWin *w, const char *title);
+KWin *kapp_main(KApp *app);
+KUI  *kapp_ui(KApp *app);
+void  kapp_unwatch_fd(KApp *app, int fd);
+
+KApp *kapp_new_screen(const char *title, unsigned fairy_flags);   /* window the size of the screen */
 KApp *kapp_new(const char *title, int w, int h, unsigned fairy_flags);
 KApp *kapp_new_at(const char *title, int x, int y, int w, int h, unsigned fairy_flags);
 void  kapp_set_draw(KApp *app, KDrawFn fn, void *user);

@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -23,7 +24,8 @@ static int cmdline_has(const char *word) {
     return strstr(buf, word) != NULL;
 }
 
-static pid_t spawn_shell(const char *user, int uid, int gid, const char *home) {
+/* Starts the login shell, or the desktop session, as `user` on the console. */
+static pid_t spawn_login(const char *user, int uid, int gid, const char *home, bool desktop) {
     pid_t pid = fork();
     if (pid != 0) return pid;
     setpgid(0, 0);
@@ -40,6 +42,11 @@ static pid_t spawn_shell(const char *user, int uid, int gid, const char *home) {
     setenv("PATH", "/bin:/sbin:/usr/bin", 1);
     setenv("HOSTNAME", "gensokyo", 1);
     setenv("TERM", "xterm", 1);
+    if (desktop) {
+        execl("/bin/hakurei-session", "hakurei-session", (char *)NULL);
+        perror("init: cannot start the desktop");
+        _exit(127);
+    }
     execl("/bin/gapsh", "gapsh", "-l", (char *)NULL);
     perror("init: cannot start gapsh");
     _exit(127);
@@ -65,15 +72,25 @@ int main(void) {
     const char *home = "/HumanVillage/reimu";
     if (cmdline_has("user=root")) { user = "root"; uid = 0; gid = 0; home = "/root"; }
 
-    pid_t shell = spawn_shell(user, uid, gid, home);
+    /* Boot into the desktop when there is a screen to draw on, unless "text" is on the command line. A desktop that dies
+     * (rather than being logged out of) drops back to the text shell so the machine is never left without a console. */
+    bool want_desktop = access("/dev/fb0", F_OK) == 0 && access("/bin/hakurei-session", X_OK) == 0 && !cmdline_has("text") && !cmdline_has("nogui");
+    bool in_desktop = want_desktop;
+    pid_t shell = spawn_login(user, uid, gid, home, in_desktop);
+    if (in_desktop) printf("\x1b[1;31m[Hakurei]\x1b[0m opening the desktop for %s\n", user);
     for (;;) {
         int status = 0;
         pid_t pid = wait(&status);
         if (pid < 0) { sleep(1); continue; }
         if (pid == shell) {
-            printf("\x1b[1;31m[Hakurei]\x1b[0m %s left the shrine (status %d); a new maiden steps in\n", user,
-                   WIFEXITED(status) ? WEXITSTATUS(status) : -WTERMSIG(status));
-            shell = spawn_shell(user, uid, gid, home);
+            int code = WIFEXITED(status) ? WEXITSTATUS(status) : -WTERMSIG(status);
+            if (in_desktop && code != 0) {
+                printf("\x1b[1;31m[Hakurei]\x1b[0m the desktop ended (status %d): here is the text shell; type 'desktop' to try again\n", code);
+                in_desktop = false;
+            } else if (!in_desktop) {
+                printf("\x1b[1;31m[Hakurei]\x1b[0m %s left the shrine (status %d); a new maiden steps in\n", user, code);
+            }
+            shell = spawn_login(user, uid, gid, home, in_desktop);
         }
     }
 }

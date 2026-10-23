@@ -157,7 +157,7 @@ int main(int argc, char **argv, char **envp) {
     } else {
         if (g_interactive) {
             history_load();
-            if (login) {
+            if (login && !getenv("NOMOTD")) {                   /* terminal windows skip the banner */
                 FILE *m = fopen("/etc/motd", "r");
                 if (m) {
                     int ch;                                 /* "\e" in the file means ESC, so the motd can carry colours */

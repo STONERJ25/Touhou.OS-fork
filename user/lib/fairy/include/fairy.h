@@ -137,6 +137,7 @@ void          fairy_window_set_cursor(FairyWindow *win, unsigned shape);
 void          fairy_window_move(FairyWindow *win, int x, int y, int w, int h);
 void          fairy_window_raise(FairyWindow *win);
 void          fairy_window_activate(FairyDisplay *d, uint32_t id);  /* focus + raise + unminimize any window (task lists) */
+void          fairy_window_set_state_id(FairyDisplay *d, uint32_t id, unsigned state);   /* shell clients only: minimize/restore any window */
 void          fairy_window_close_request(FairyDisplay *d, uint32_t id);
 void          fairy_window_set_minsize(FairyWindow *win, int w, int h);
 uint32_t      fairy_window_id(FairyWindow *win);

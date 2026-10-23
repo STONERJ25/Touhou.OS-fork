@@ -325,6 +325,21 @@ class Qemu:
         self.mouse_button(button, False)
         time.sleep(0.05)
 
+    def screen_ppm(self):
+        """Returns (width, height, rgb_bytes) of the current screen, for tests that inspect pixels."""
+        path = BUILD / f"{name_safe(self.name)}-screen.ppm"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.qmp("screendump", filename=str(path).replace("\\", "/"), format="ppm")
+        data = path.read_bytes()
+        parts = data.split(b"\n", 3)                    # P6 / W H / 255 / pixels
+        w, h = map(int, parts[1].split())
+        return w, h, parts[3]
+
+    def pixel(self, x, y, shot=None):
+        w, h, rgb = shot or self.screen_ppm()
+        i = (y * w + x) * 3
+        return rgb[i], rgb[i + 1], rgb[i + 2]
+
     def screenshot(self, path):
         path = Path(path).resolve()
         path.parent.mkdir(parents=True, exist_ok=True)

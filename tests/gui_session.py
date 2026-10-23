@@ -22,7 +22,7 @@ from qemu import Qemu, BUILD  # noqa: E402
 
 script = Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
 prefix = sys.argv[2] if len(sys.argv) > 2 else "gui"
-with Qemu(cmdline="", name="t-gui", mem="768M") as vm:
+with Qemu(cmdline="text", name="t-gui", mem="768M") as vm:
     vm.expect(r"reimu@gensokyo \S+ \$ ", timeout=90)
     for line in script:
         if not line.strip() or line.startswith("#"):
@@ -39,6 +39,10 @@ with Qemu(cmdline="", name="t-gui", mem="768M") as vm:
         elif line.startswith("@move"):
             _, dx, dy = line.split()
             vm.mouse_move(int(dx), int(dy))
+        elif line.startswith("@down") or line.startswith("@up"):
+            parts = line.split()
+            vm.mouse_button(parts[1] if len(parts) > 1 else "left", line.startswith("@down"))
+            time.sleep(0.15)
         elif line.startswith("@click"):
             parts = line.split()
             vm.mouse_click(parts[1] if len(parts) > 1 else "left")

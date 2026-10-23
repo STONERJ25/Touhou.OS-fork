@@ -337,6 +337,7 @@ void fairy_window_set_cursor(FairyWindow *win, unsigned shape) { FmCursor c = { 
 void fairy_window_move(FairyWindow *win, int x, int y, int w, int h) { FmMove m = { x, y, w, h }; send_msg(win->d, FM_MOVE, win->id, &m, sizeof m); }
 void fairy_window_raise(FairyWindow *win) { send_msg(win->d, FM_RAISE, win->id, NULL, 0); }
 void fairy_window_activate(FairyDisplay *d, uint32_t id) { send_msg(d, FM_ACTIVATE, id, NULL, 0); }
+void fairy_window_set_state_id(FairyDisplay *d, uint32_t id, unsigned state) { FmState s = { state }; send_msg(d, FM_SET_STATE, id, &s, sizeof s); }
 void fairy_window_close_request(FairyDisplay *d, uint32_t id) { send_msg(d, FM_REQUEST_CLOSE, id, NULL, 0); }
 void fairy_window_set_minsize(FairyWindow *win, int w, int h) { FmMinSize m = { w, h }; send_msg(win->d, FM_SET_MINSIZE, win->id, &m, sizeof m); }
 uint32_t fairy_window_id(FairyWindow *win) { return win->id; }

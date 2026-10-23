@@ -133,7 +133,7 @@ CHECKS = [
 def run_checks(want="", extra_checks=(), verbose=True, **qemu_args):
     """Boots the system and runs every check. Returns the list of failure descriptions (empty = all passed)."""
     failures = []
-    with Qemu(cmdline="", name="t-shell", **qemu_args) as vm:
+    with Qemu(cmdline="text", name="t-shell", **qemu_args) as vm:
         vm.expect(PROMPT, timeout=90)
         for cmd, expect, status in list(CHECKS) + list(extra_checks):
             if want and want not in cmd:
