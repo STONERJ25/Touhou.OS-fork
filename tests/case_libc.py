@@ -12,10 +12,12 @@ functions under test:
 Typing into the guest is slow (about 10 ms per character through the serial console and the tty), so the tests keep their
 input small and let programs inside the guest generate the bulk.
 """
+import hashlib
 import math
 import random
 import re
 import sys
+import time
 from contextlib import contextmanager
 from decimal import Decimal, getcontext
 from pathlib import Path
@@ -296,3 +298,112 @@ def libc_seq_float():
         for first, step, last in cases:
             out, rc = sh(vm, f"seq {first} {step} {last}")
             assert out.strip("\n").split("\n") == seq_g(float(first), float(step), float(last)), (first, step, last, out)
+
+
+# ---------------------------------------------------------------------------------------------------------------- stdio
+
+def guest_seconds(vm, cmd, timeout=900):
+    """Wall time of a command according to the guest's own clock (/proc/uptime, centiseconds)."""
+    out, rc = sh(vm, f"a=$(cat /proc/uptime); {cmd} > /dev/null; b=$(cat /proc/uptime); echo \"$a $b\" | awk '{{printf \"%.2f\", $2-$1}}'",
+                 timeout=timeout)
+    return float(out.strip().split()[-1])
+
+
+@test
+def libc_stdio_bigfile():
+    """stdio on a 6.9 MB file and a 1.3 MB one: cat, wc, sort, sed, grep, awk, tr, cut, rev, tac give exactly the right answers."""
+    nums = [str(i) for i in range(1, 1000001)]
+    big = ("\n".join(nums) + "\n").encode()
+    mid_nums = nums[:200000]
+    mid = ("\n".join(mid_nums) + "\n").encode()
+    md5 = lambda b: hashlib.md5(b).hexdigest()
+    with_9 = sum(1 for n in nums if "9" in n)
+    checks = [
+        ("cat /tmp/big | md5sum", md5(big)),
+        ("wc -l < /tmp/big", "1000000"),
+        ("wc -c < /tmp/big", str(len(big))),
+        ("sort -n /tmp/big | tail -n 1", "1000000"),
+        ("sed -n '$p' /tmp/big", "1000000"),
+        ("grep -c 9 /tmp/big", str(with_9)),
+        ("awk 'END{print NR}' /tmp/big", "1000000"),
+        ("awk '{s += $1} END{printf \"%d\\n\", s}' /tmp/big", str(sum(range(1, 1000001)))),
+        ("head -n 3 /tmp/big | tail -n 1", "3"),
+        ("sort /tmp/mid | md5sum", md5(("\n".join(sorted(mid_nums)) + "\n").encode())),
+        ("sed s/1/2/ /tmp/mid | md5sum", md5(("\n".join(n.replace("1", "2", 1) for n in mid_nums) + "\n").encode())),
+        ("tr 1 2 < /tmp/mid | md5sum", md5(mid.replace(b"1", b"2"))),
+        ("cut -c1-3 /tmp/mid | md5sum", md5(("\n".join(n[:3] for n in mid_nums) + "\n").encode())),
+        ("rev /tmp/mid | md5sum", md5(("\n".join(n[::-1] for n in mid_nums) + "\n").encode())),
+        ("tac /tmp/mid | md5sum", md5(("\n".join(reversed(mid_nums)) + "\n").encode())),
+        ("sort -n -r /tmp/mid | head -n 1", "200000"),
+    ]
+    with guest("t-libc-stdio") as vm:
+        out, rc = sh(vm, "seq 1 1000000 > /tmp/big; seq 1 200000 > /tmp/mid; ls -l /tmp/big", timeout=300)
+        assert str(len(big)) in out, out
+        bad = []
+        for cmd, want in checks:
+            out, rc = sh(vm, cmd, timeout=900)
+            got = out.strip().split()[0] if out.strip() else ""
+            if got != want or rc != 0:
+                bad.append(f"{cmd}: got {out.strip()[:60]!r} rc {rc}, want {want!r}")
+        assert not bad, "\n".join(bad)
+        for name, cmd in (("cat", "cat /tmp/big"), ("wc -l", "wc -l /tmp/big"), ("sort -n", "sort -n /tmp/big"), ("sed", "sed s/1/2/ /tmp/big"),
+                          ("grep -c", "grep -c 9 /tmp/big"), ("awk NR", "awk 'END{print NR}' /tmp/big")):
+            print(f"  [libc timing] {name:8} {guest_seconds(vm, cmd):6.2f} s (guest clock)")
+
+
+@test
+def libc_malloc_patterns():
+    """malloc/realloc under stress through the tools: a million allocate+free cycles, fragmentation, long lines, growing strings."""
+    nsort = 200000
+    nums = [str(i) for i in range(1, nsort + 1)]
+    sorted_md5 = hashlib.md5(("\n".join(sorted(nums)) + "\n").encode()).hexdigest()
+    cases = [
+        ("seq 1 1000000 | awk '{a[$1] = $1; delete a[$1]} END{print length(a)}'", "0"),
+        ("seq 1 100000 | awk '{a[NR] = $1} END{for (i = 1; i <= NR; i += 2) delete a[i]; "
+         "for (i = 1; i <= NR; i++) b[i] = sprintf(\"%040d\", i); for (i = 2; i <= NR; i += 2) delete a[i]; "
+         "n = 0; for (k in b) n++; print n, length(a), b[99999]}'", "100000 0 0000000000000000000000000000000000099999"),
+        ("awk 'BEGIN{for (i = 0; i < 1000000; i++) printf \"x\"; print \"\"}' | rev | wc -c", "1000001"),
+        ("awk 'BEGIN{for (i = 0; i < 20000; i++) s = s \"ab\"; print length(s)}'", "40000"),
+        ("awk 'BEGIN{s = \"x\"; for (i = 0; i < 22; i++) s = s s; print length(s)}'", "4194304"),
+        (f"seq 1 {nsort} | sort | md5sum", sorted_md5),
+        (f"seq 1 {nsort} | tac | tac | md5sum", hashlib.md5(("\n".join(nums) + "\n").encode()).hexdigest()),
+    ]
+    with guest("t-libc-malloc") as vm:
+        bad = []
+        for cmd, want in cases:
+            t0 = time.time()
+            out, rc = sh(vm, cmd, timeout=900)
+            got = out.strip().split(None, 0)[0] if out.strip() else ""
+            if " ".join(out.split()[:len(want.split())]) != want or rc != 0:
+                bad.append(f"{cmd[:80]}: got {out.strip()[:60]!r} rc {rc}, want {want!r}")
+            print(f"  [libc timing] {cmd[:60]:60} {time.time() - t0:6.1f} s wall")
+        assert not bad, "\n".join(bad)
+        out, rc = sh(vm, "free | head -n 2")
+        assert rc == 0
+
+
+@test
+def libc_strtol_family():
+    """strtoll/strtoull through the shell's printf (base 0): prefixes, signs, saturation, junk; expr and date -d use strtoll/sscanf."""
+    cmds = [
+        ("printf '%d|%d|%d|%d|%d\\n' 0x1F 010 -0x10 '  42' +7", "31|8|-16|42|7\n"),
+        ("printf '%d|%d\\n' 9223372036854775807 9223372036854775808", "9223372036854775807|9223372036854775807\n"),
+        ("printf '%d|%d\\n' -9223372036854775808 -9223372036854775809", "-9223372036854775808|-9223372036854775808\n"),
+        ("printf '%u|%u|%x\\n' -1 18446744073709551616 0xFFFFFFFFFFFFFFFF", "18446744073709551615|18446744073709551615|ffffffffffffffff\n"),
+        ("printf '%d|%d|%d|%d\\n' 0x 0xg 12abc ''", "0|0|12|0\n"),
+        ("printf '%d|%d|%d\\n' 0777 08 0x7fffffff", "511|0|2147483647\n"),
+        ("expr 99999999999999999999 + 1", "-9223372036854775808\n"),
+        ("expr 007 + 1", "8\n"),
+        ("date -u -d '2024-02-29 12:34:56' +%Y-%m-%d_%H:%M:%S", "2024-02-29_12:34:56\n"),
+        ("date -u -d '2024-02-29T01:02:03' +%s", "1709168523\n"),
+        ("head -n 2x /dev/null; echo rc=$?", None),
+    ]
+    with guest("t-libc-strtol") as vm:
+        bad = []
+        for cmd, want in cmds:
+            out, rc = sh(vm, cmd)
+            if want is None:
+                continue
+            if out != want:
+                bad.append(f"{cmd[:80]}\n   got  {out[:200]!r}\n   want {want[:200]!r}")
+        assert not bad, "\n".join(bad)
