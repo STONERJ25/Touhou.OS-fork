@@ -29,7 +29,7 @@ staged in the Prismriver Concert Hall.
 | System sounds (login, dialog, error, shutdown) in the shell, greeter, lock screen, Kappa dialogs, switch `nosounds` / `HAKUREI_SOUNDS` / `/etc/hakurei/sounds` | done, tested |
 | Volume control in the panel | done, tested |
 | Recording (capture) | not done (the task called it optional) |
-| Tests | `tests/case_audio.py`, `tests/host/hdatest.c`, `tests/guitext.py` (see Tests) |
+| Tests | `tests/case_audio.py` (19 tests), `tests/audiotools.py`, `tests/modtools.py`, `tests/host/hdatest.c`, `tests/guitext.py` (see Tests) |
 
 ## The device
 
