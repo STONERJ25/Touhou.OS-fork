@@ -59,4 +59,4 @@ The options `-H`, `-T` and `-t` are accepted and ignored.
 0 when the files are the same, 1 when they differ, 2 when something went wrong (a file that cannot be read, a bad option).
 
 # SEE ALSO
-cmp(1), comm(1)
+patch(1), cmp(1), comm(1)
