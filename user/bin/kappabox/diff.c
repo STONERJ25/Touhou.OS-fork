@@ -944,7 +944,7 @@ static int compare_paths(const char *n0, const char *n1, int absent0, int absent
         if (d0 || d1) {                                 /* a file against a directory: the file of that name in the directory */
             const char *file = d0 ? n1 : n0, *dir = d0 ? n0 : n1, *base = strrchr(file, '/');
             char *both = kb_join(dir, base ? base + 1 : file);
-            rc = d0 ? compare_paths(both, n1, 0, 0, 0) : compare_paths(n0, both, 0, 0, 0);
+            rc = d0 ? compare_paths(both, n1, 0, 0, 1) : compare_paths(n0, both, 0, 0, 1);
             free(both);
             return rc;
         }
@@ -1021,9 +1021,25 @@ APPLET(diff) {
     if (o_ctx < 0) o_ctx = 0;
     g_plain = !(o_icase || o_ws);
     for (int i = 1; i < optind; i++) {                  /* the options as typed, for the "diff -r a/x b/x" lines */
-        if (strlen(g_switches) + strlen(argv[i]) + 2 < sizeof g_switches) {
+        const char *w = argv[i];
+        int plain = *w != 0;
+        char tmp[256];
+        size_t n = 0;
+        for (const char *s = w; *s; s++) if (!isalnum((unsigned char)*s) && !strchr("_./=:,+@%-", *s)) plain = 0;
+        if (strlen(w) > 100) continue;
+        if (!plain) {                                   /* quoted like a shell would, so the line can be pasted */
+            tmp[n++] = '\'';
+            for (const char *s = w; *s; s++) {
+                if (*s == '\'') { memcpy(tmp + n, "'\\''", 4); n += 4; }
+                else tmp[n++] = *s;
+            }
+            tmp[n++] = '\'';
+            tmp[n] = 0;
+            w = tmp;
+        }
+        if (strlen(g_switches) + strlen(w) + 2 < sizeof g_switches) {
             strcat(g_switches, " ");
-            strcat(g_switches, argv[i]);
+            strcat(g_switches, w);
         }
     }
     if (argc - optind != 2) {
