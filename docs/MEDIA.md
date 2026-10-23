@@ -45,12 +45,13 @@ the `wallpaper` command, reload on change in `hakurei-shell`, `hakurei-lock`, `h
 `manual` test fails for an applet without a page), and the mention in `docs/DESKTOP.md`.
 
 **Known problems**
-* The `manual` test (`python tests/run_all.py manual`) was run once on this branch and **failed with a boot timeout**: the guest
-  printed the kernel log up to "scheduler running" and never produced the `reimu@gensokyo` prompt within 90 seconds. Boots
-  with `cmdline="text"` (used for every other check here) were fine, and the test never got as far as checking the manual
-  pages. Whether the cause is the host being busy with other agents' QEMU runs or one of this branch's changes is **not
-  known**; re-run it first. A shorter check of the new pages (`patchouli --check-all`, `patchouli -l`) was started afterwards,
-  see the final report for its result.
+* `python tests/run_all.py manual` **fails on this branch with a boot timeout** (it did so twice, identically), but the cause is
+  not this branch's code: the tests in `tests/case_text.py` (`pnote_edit`, `pnote_commands`, `pnote_big`, `pager`, `manual`,
+  `shrine`) boot with `cmdline=""` and wait for the `reimu@gensokyo` console prompt, and since the default boot became the
+  desktop the console never shows one (the serial log stops after the kernel's "scheduler running" lines). Running the very
+  same `manual` test function with `cmdline="text"` **passes**: `patchouli --check-all` reports 153 pages, 0 problems, and every
+  applet (gzip, gunzip, zcat, tar, zip, unzip included) has a page. Those six tests should boot with `text`; I did not change
+  the file (it belongs to the Patchouli work) and I did not run it on `main` itself, so "already failing there" is inferred.
 * `zip` cannot add to an existing archive (it refuses), no zip64; `tar` cannot extract hard links except as copies and
   does not extract devices; `gzip -l` reads only the last member's trailer.
 * The libz host-test driver (a small C program plus a Python script comparing with `zlib`) is in my scratch directory, not in the
@@ -59,7 +60,7 @@ the `wallpaper` command, reload on change in `hakurei-shell`, `hakurei-lock`, `h
 
 **How to resume**
 1. `git merge main` if main has moved, then `python tools/build.py`.
-2. Re-run `python tests/run_all.py manual` (and the `shell` test) to see whether the boot timeout was load.
+2. Run the `shell` test, and the `manual` test with `cmdline="text"` (see Known problems) to confirm every applet still has a page.
 3. Write `user/lib/img/src/png.c` first (inflate rows straight from IDAT chunks with `z_inflate`, unfilter, expand to ARGB;
    interlaced and tRNS; header CRCs with `z_crc32`), then `write.c` with the PNG / BMP / PPM encoders (`z_deflate` is streaming), then
    `bmp.c`, `pnm.c`, `gif.c`, `tga.c`, and `jpeg.c` last (baseline first, then progressive; the integer "islow" IDCT and
