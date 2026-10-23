@@ -46,6 +46,7 @@
 #define ENOTEMPTY 39
 #define ELOOP 40
 #define EOVERFLOW 75
+#define ECANCELED 125
 #define ENOTSOCK 88
 #define EPROTONOSUPPORT 93
 #define ENOTSUP 95
@@ -175,6 +176,7 @@ struct gdirent {
 #define SIGTTIN  21
 #define SIGTTOU  22
 #define SIGWINCH 28
+#define SIGCANCEL 31            /* reserved for pthread_cancel: sticky, never runs a handler; see docs/THREADS.md */
 #define NSIG     32
 
 #define WNOHANG 1

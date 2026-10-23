@@ -185,7 +185,50 @@ static void reap_zombies(void) {
 
 static void thread_entry(void *arg) {
     struct pthread *self = arg;
+    __sc3(SYS_sigprocmask, SIG_UNBLOCK, 1L << SIGCANCEL, 0);        /* a new thread starts with cancellation enabled, whatever its creator chose */
     pthread_exit(self->fn(self->arg));
+}
+
+/* ---------------------------------------------------------------- cancellation
+ * pthread_cancel sets a flag in the target's control block and sends it SIGCANCEL (tgkill). The kernel keeps that signal
+ * pending without running a handler; a thread that blocks in the kernel while it is pending (and unblocked) gets -ECANCELED,
+ * which every cancellation point turns into pthread_exit(PTHREAD_CANCELED). Blocking SIGCANCEL is how a thread disables
+ * cancellation. Only deferred cancellation exists: PTHREAD_CANCEL_ASYNCHRONOUS is accepted and behaves as deferred. */
+
+extern RLock __stdio_lock;
+
+void __cancel_exit(void) {
+    struct pthread *self = __pthread_self();
+    if (__stdio_lock.count && __stdio_lock.owner == self->tid) { __stdio_lock.count = 1; __runlock(&__stdio_lock); }   /* cancelled inside stdio */
+    pthread_exit(PTHREAD_CANCELED);
+}
+
+int pthread_cancel(pthread_t t) {
+    int tid = t->tid;
+    if (!tid) return ESRCH;
+    __atomic_store_n(&t->cancel_flag, 1, __ATOMIC_SEQ_CST);
+    long r = __sc3(SYS_tgkill, getpid(), tid, SIGCANCEL);
+    return r < 0 ? (int)-r : 0;
+}
+
+int pthread_setcancelstate(int state, int *old) {
+    struct pthread *self = __pthread_self();
+    if (state != PTHREAD_CANCEL_ENABLE && state != PTHREAD_CANCEL_DISABLE) return EINVAL;
+    if (old) *old = self->cancel_disabled ? PTHREAD_CANCEL_DISABLE : PTHREAD_CANCEL_ENABLE;
+    self->cancel_disabled = state == PTHREAD_CANCEL_DISABLE;
+    __sc3(SYS_sigprocmask, state == PTHREAD_CANCEL_DISABLE ? SIG_BLOCK : SIG_UNBLOCK, 1L << SIGCANCEL, 0);
+    return 0;
+}
+
+int pthread_setcanceltype(int type, int *old) {
+    if (type != PTHREAD_CANCEL_DEFERRED && type != PTHREAD_CANCEL_ASYNCHRONOUS) return EINVAL;
+    if (old) *old = PTHREAD_CANCEL_DEFERRED;
+    return 0;
+}
+
+void pthread_testcancel(void) {
+    struct pthread *self = __pthread_self();
+    if (!self->cancel_disabled && __atomic_load_n(&self->cancel_flag, __ATOMIC_ACQUIRE)) __cancel_exit();
 }
 
 int pthread_create(pthread_t *out, const pthread_attr_t *attr, void *(*fn)(void *), void *arg) {
@@ -236,7 +279,8 @@ int pthread_join(pthread_t t, void **ret) {
     if (t == __pthread_self()) return EDEADLK;
     if (t->flags & TF_DETACHED) return EINVAL;
     int tid;
-    while ((tid = __atomic_load_n(&t->tid, __ATOMIC_ACQUIRE)) != 0) __futex(&t->tid, FUTEX_WAIT, tid, NULL, NULL, 0);
+    while ((tid = __atomic_load_n(&t->tid, __ATOMIC_ACQUIRE)) != 0)         /* a cancellation point */
+        if (__futex(&t->tid, FUTEX_WAIT | FUTEX_CANCELLABLE, tid, NULL, NULL, 0) == -ECANCELED) __cancel_exit();
     if (ret) *ret = t->retval;
     if (t->map) munmap(t->map, t->maplen);
     return 0;
@@ -383,10 +427,16 @@ static int cond_wait(pthread_cond_t *c, pthread_mutex_t *m, const struct timespe
     int r = 0;
     struct timespec rel;
     int have_time = abs ? rel_from_abs(abs, &rel) : 1;
+    int cancelled = 0;
     pthread_mutex_unlock(m);
     if (!have_time) r = ETIMEDOUT;
-    else if (__futex(&c->__seq, FUTEX_WAIT, seq, abs ? &rel : NULL, NULL, 0) == -ETIMEDOUT) r = ETIMEDOUT;
-    pthread_mutex_lock(m);
+    else {
+        long fr = __futex(&c->__seq, FUTEX_WAIT | FUTEX_CANCELLABLE, seq, abs ? &rel : NULL, NULL, 0);       /* a cancellation point */
+        if (fr == -ETIMEDOUT) r = ETIMEDOUT;
+        else if (fr == -ECANCELED) cancelled = 1;
+    }
+    pthread_mutex_lock(m);                      /* the mutex is held again before cleanup handlers run, as POSIX requires */
+    if (cancelled) __cancel_exit();
     return r;
 }
 
@@ -540,8 +590,9 @@ static int sem_wait_until(sem_t *s, const struct timespec *abs) {
         struct timespec rel;
         if (abs && !rel_from_abs(abs, &rel)) { errno = ETIMEDOUT; return -1; }
         __atomic_fetch_add(&s->__waiters, 1, __ATOMIC_ACQ_REL);
-        long r = __futex(&s->__value, FUTEX_WAIT, 0, abs ? &rel : NULL, NULL, 0);
+        long r = __futex(&s->__value, FUTEX_WAIT | FUTEX_CANCELLABLE, 0, abs ? &rel : NULL, NULL, 0);        /* a cancellation point */
         __atomic_fetch_sub(&s->__waiters, 1, __ATOMIC_ACQ_REL);
+        if (r == -ECANCELED) __cancel_exit();
         if (r == -ETIMEDOUT) { errno = ETIMEDOUT; return -1; }
     }
 }

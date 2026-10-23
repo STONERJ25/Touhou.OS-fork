@@ -33,7 +33,16 @@ bool signal_pending_now(Process *p) {
     Task *t = current;
     (void)p;
     if (!t->proc) return false;
-    return thread_must_die(t) || ((t->sig_pending | t->proc->sig_pending) & ~t->sig_blocked) != 0;
+    u32 pend = (t->sig_pending | t->proc->sig_pending) & ~t->sig_blocked;
+    if (t->ignore_cancel) pend &= ~(1U << SIGCANCEL);
+    return thread_must_die(t) || pend != 0;
+}
+
+/* pthread_cancel's request is a sticky thread-directed SIGCANCEL: it never runs a handler (signal_deliver leaves it alone),
+ * it makes interruptible waits return, and syscall_dispatch then reports -ECANCELED instead of -EINTR. Blocking the signal
+ * is how a thread disables cancellation. */
+bool signal_cancel_pending(Task *t) {
+    return (t->sig_pending & (1U << SIGCANCEL)) && !(t->sig_blocked & (1U << SIGCANCEL));
 }
 
 void signal_send(Process *p, int sig) {
@@ -43,9 +52,10 @@ void signal_send(Process *p, int sig) {
     p->sig_pending |= 1U << sig;
     Task *target = NULL;
     for (Task *t = p->threads; t; t = t->thread_next) {
+        if (t->sigwait_set & (1U << sig)) { target = t; break; }       /* somebody is waiting for exactly this signal */
         if (t->sig_blocked & (1U << sig)) continue;
         if (!target) target = t;
-        if (t == current) { target = t; break; }        /* the running thread picks it up on its way back to user mode */
+        if (t == current) target = t;                   /* the running thread picks it up on its way back to user mode */
     }
     irq_restore(f);
     if (target) task_interrupt(target);
@@ -58,7 +68,7 @@ void signal_send_thread(Task *t, int sig) {
     u64 f = irq_save();
     t->sig_pending |= 1U << sig;
     irq_restore(f);
-    if (!(t->sig_blocked & (1U << sig))) task_interrupt(t);
+    if (!(t->sig_blocked & (1U << sig)) || (t->sigwait_set & (1U << sig))) task_interrupt(t);
 }
 
 /* A synchronous fault of the calling thread: the signal is aimed at that thread, with the default action. */
@@ -95,11 +105,14 @@ void signal_deliver(TrapFrame *tf) {
 
     for (;;) {
         u64 f = irq_save();
-        u32 pend = (t->sig_pending | p->sig_pending) & (~t->sig_blocked | (1U << SIGKILL));
+        u32 pend = (t->sig_pending | p->sig_pending) & (~t->sig_blocked | (1U << SIGKILL)) & ~(1U << SIGCANCEL);
         int sig = pend ? __builtin_ctz(pend) : 0;
         if (pend) { t->sig_pending &= ~(1U << sig); p->sig_pending &= ~(1U << sig); }
         irq_restore(f);
-        if (!pend) return;
+        if (!pend) {
+            if (t->saved_mask_valid) { t->sig_blocked = t->saved_mask; t->saved_mask_valid = false; }   /* sigsuspend ended without a handler */
+            return;
+        }
         struct gsigaction *act = &p->sigact[sig];
 
         if (act->handler == SIG_IGN || (act->handler == SIG_DFL && default_ignored(sig))) continue;
@@ -112,7 +125,8 @@ void signal_deliver(TrapFrame *tf) {
         SigFrame fr;
         fr.restorer = act->restorer;
         fr.saved = *tf;
-        fr.saved_mask = t->sig_blocked;
+        fr.saved_mask = t->saved_mask_valid ? t->saved_mask : t->sig_blocked;     /* after sigsuspend the handler returns to the old mask */
+        t->saved_mask_valid = false;
         fr.signo = (u32)sig;
         u64 sp = ((tf->rsp - 128 - sizeof fr) & ~0xFUL) - 8;
         if (copy_to_user((void *)sp, &fr, sizeof fr)) {

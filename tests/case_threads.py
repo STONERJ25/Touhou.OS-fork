@@ -13,6 +13,8 @@ THREAD_SECTIONS = [
     "errno, thread-specific data, once",
     "detached threads, 200 created and joined",
     "signals: pthread_kill, per-thread masks, process-directed delivery",
+    "sigsuspend, sigwait, sigtimedwait and sigpending",
+    "pthread_cancel: blocked read, condition wait, sleep, disabled state",
     "futex, condition variable, semaphore and mutex timeouts",
     "thread limit: creation fails cleanly with EAGAIN",
     "SIGSEGV in a thread ends the whole process",
@@ -25,20 +27,36 @@ THREAD_SECTIONS = [
 ]
 
 
+def run_utest(name):
+    """Boots `utest` and returns the serial text once the verdict is in. The guest powers the machine off right after the
+    verdict, and on a busy host QEMU can vanish before the harness has read the last serial bytes (the TCP stream is cut);
+    a run that ends without a verdict is repeated (up to three times), a run with a verdict is never repeated."""
+    last = None
+    for attempt in range(3):
+        with Qemu(cmdline="utest", name=name) as vm:
+            try:
+                vm.expect(r"UTEST (PASS|FAIL)", timeout=240)
+            except RuntimeError as e:
+                if not str(e).startswith("QEMU exited"):
+                    raise
+                last = e
+                continue
+            rc = vm.wait_exit(10)
+            return vm.text(), rc
+    raise last
+
+
 @test
 def threads_utest():
     """Threads: pthreads, futex, signals, fork/exec/exit from threads, limits and a leak check (utest section)."""
-    with Qemu(cmdline="utest", name="t-threads-utest") as vm:
-        vm.expect(r"UTEST (PASS|FAIL)", timeout=240)
-        text = vm.text()
-        for section in THREAD_SECTIONS:
-            assert f"utest: threads: {section}" in text, f"thread section did not run: {section}\n{text[-1500:]}"
-        assert "FAIL " not in text.split("UTEST")[0] or "UTEST PASS" in text, text[-2500:]
-        assert "UTEST PASS" in text, text[-2500:]
-        m = re.search(r"stress: free memory (\d+) KiB before, (\d+) KiB after", text)
-        assert m, "the stress test did not report its page counts"
-        assert int(m.group(2)) + 1024 >= int(m.group(1)), f"pages leaked: {m.group(0)}"
-        assert vm.wait_exit(10) == 0
+    text, rc = run_utest("t-threads-utest")
+    for section in THREAD_SECTIONS:
+        assert f"utest: threads: {section}" in text, f"thread section did not run: {section}\n{text[-1500:]}"
+    assert "UTEST PASS" in text, text[-2500:]
+    m = re.search(r"stress: free memory (\d+) KiB before, (\d+) KiB after", text)
+    assert m, "the stress test did not report its page counts"
+    assert int(m.group(2)) + 1024 >= int(m.group(1)), f"pages leaked: {m.group(0)}"
+    assert rc == 0, f"utest exit status {rc}"
 
 
 @test

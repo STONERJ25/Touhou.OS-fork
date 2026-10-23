@@ -546,6 +546,159 @@ static void test_threads_stress(void) {
     close(g_th_stress_pipe[1]);
 }
 
+/* ---- sigsuspend, sigwait, sigtimedwait, sigpending ---- */
+
+static void *th_kill_main(void *arg) {
+    usleep(5000);
+    pthread_kill((pthread_t)arg, SIGUSR1);
+    return NULL;
+}
+
+static void *th_sigwaiter(void *arg) {
+    sigset_t s;
+    int sig = 0;
+    (void)arg;
+    sigemptyset(&s);
+    sigaddset(&s, SIGUSR2);
+    sem_post(&g_th_ready);
+    int r = sigwait(&s, &sig);
+    return (void *)(long)(r == 0 ? sig : -1);
+}
+
+static void test_threads_sigwait(void) {
+    TH_SECTION("sigsuspend, sigwait, sigtimedwait and sigpending");
+    struct sigaction sa = { th_on_sig, 0, 0 };
+    CHECK(sigaction(SIGUSR1, &sa, NULL) == 0 && sigaction(SIGUSR2, &sa, NULL) == 0);
+    sem_init(&g_th_ready, 0, 0);
+
+    sigset_t blk, empty, cur;
+    sigemptyset(&blk);
+    sigaddset(&blk, SIGUSR1);
+    sigemptyset(&empty);
+    pthread_sigmask(SIG_BLOCK, &blk, NULL);
+    g_th_sig_hits = 0;
+    g_th_sig_tid = 0;
+    pthread_t t;
+    CHECK(pthread_create(&t, NULL, th_kill_main, (void *)pthread_self()) == 0);
+    CHECK(sigsuspend(&empty) == -1 && errno == EINTR);              /* the handler ran inside sigsuspend, under the empty mask */
+    CHECK(g_th_sig_hits == 1 && g_th_sig_tid == gettid());
+    pthread_sigmask(SIG_BLOCK, NULL, &cur);
+    CHECK(cur & (1U << SIGUSR1));                                   /* ... and the old mask came back afterwards */
+    pthread_join(t, NULL);
+    pthread_sigmask(SIG_UNBLOCK, &blk, NULL);
+
+    /* a dedicated thread accepts SIGUSR2 with sigwait while every thread blocks it: no handler runs */
+    sigset_t b2;
+    sigemptyset(&b2);
+    sigaddset(&b2, SIGUSR2);
+    pthread_sigmask(SIG_BLOCK, &b2, NULL);
+    g_th_sig_hits = 0;
+    void *ret = NULL;
+    CHECK(pthread_create(&t, NULL, th_sigwaiter, NULL) == 0);
+    sem_wait(&g_th_ready);
+    CHECK(kill(getpid(), SIGUSR2) == 0);
+    CHECK(pthread_join(t, &ret) == 0 && (long)ret == SIGUSR2 && g_th_sig_hits == 0);
+
+    /* sigpending sees a blocked signal, sigtimedwait takes it, and times out when there is none */
+    raise(SIGUSR2);
+    sigset_t pend;
+    sigemptyset(&pend);
+    CHECK(sigpending(&pend) == 0 && (pend & (1U << SIGUSR2)));
+    struct timespec ts = { 0, 20 * 1000000L };
+    CHECK(sigtimedwait(&b2, NULL, &ts) == SIGUSR2);
+    CHECK(sigtimedwait(&b2, NULL, &ts) == -1 && errno == EAGAIN);
+    sigemptyset(&pend);
+    CHECK(sigpending(&pend) == 0 && !(pend & (1U << SIGUSR2)));
+    pthread_sigmask(SIG_UNBLOCK, &b2, NULL);
+    signal(SIGUSR1, SIG_DFL);
+    signal(SIGUSR2, SIG_DFL);
+}
+
+/* ---- cancellation ---- */
+
+static int g_cancel_cleanup, g_cancel_progress, g_cancel_go;
+static pthread_cond_t g_cancel_cond = PTHREAD_COND_INITIALIZER;
+static pthread_mutex_t g_cancel_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int g_cancel_pipe[2];
+
+static void th_cleanup_count(void *arg) { (void)arg; __atomic_fetch_add(&g_cancel_cleanup, 1, __ATOMIC_SEQ_CST); }
+static void th_cleanup_unlock(void *m) { pthread_mutex_unlock(m); __atomic_fetch_add(&g_cancel_cleanup, 1, __ATOMIC_SEQ_CST); }
+
+static void *th_cancel_read(void *arg) {
+    char c;
+    (void)arg;
+    pthread_cleanup_push(th_cleanup_count, NULL)
+    sem_post(&g_th_ready);
+    read(g_cancel_pipe[0], &c, 1);                                  /* blocks: a cancellation point */
+    g_cancel_progress = -1;                                         /* never reached */
+    pthread_cleanup_pop(0)
+    return NULL;
+}
+
+static void *th_cancel_cond(void *arg) {
+    (void)arg;
+    pthread_mutex_lock(&g_cancel_mutex);
+    pthread_cleanup_push(th_cleanup_unlock, &g_cancel_mutex)
+    sem_post(&g_th_ready);
+    for (;;) pthread_cond_wait(&g_cancel_cond, &g_cancel_mutex);
+    pthread_cleanup_pop(1)
+    return NULL;
+}
+
+static void *th_cancel_sleep(void *arg) { (void)arg; sem_post(&g_th_ready); sleep(600); g_cancel_progress = -1; return NULL; }
+
+static void *th_cancel_disabled(void *arg) {
+    int old = -1;
+    (void)arg;
+    pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &old);
+    CHECK(old == PTHREAD_CANCEL_ENABLE);
+    sem_post(&g_th_ready);
+    for (int i = 0; i < 3000 && !g_cancel_go; i++) usleep(2000);    /* cancellation is pending the whole time but must not act */
+    g_cancel_progress = 1;
+    pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
+    pthread_testcancel();                                           /* acts now */
+    g_cancel_progress = -1;
+    return NULL;
+}
+
+static void test_threads_cancel(void) {
+    TH_SECTION("pthread_cancel: blocked read, condition wait, sleep, disabled state");
+    sem_init(&g_th_ready, 0, 0);
+    pipe(g_cancel_pipe);
+    pthread_t t;
+    void *ret = NULL;
+    g_cancel_cleanup = g_cancel_progress = g_cancel_go = 0;
+
+    CHECK(pthread_create(&t, NULL, th_cancel_read, NULL) == 0);
+    sem_wait(&g_th_ready);
+    CHECK(pthread_cancel(t) == 0);
+    CHECK(pthread_join(t, &ret) == 0 && ret == PTHREAD_CANCELED);
+    CHECK(g_cancel_cleanup == 1 && g_cancel_progress == 0);
+
+    CHECK(pthread_create(&t, NULL, th_cancel_cond, NULL) == 0);
+    sem_wait(&g_th_ready);
+    CHECK(pthread_cancel(t) == 0);
+    CHECK(pthread_join(t, &ret) == 0 && ret == PTHREAD_CANCELED);
+    CHECK(g_cancel_cleanup == 2);
+    CHECK(pthread_mutex_trylock(&g_cancel_mutex) == 0);             /* the condition wait gave the mutex back before the handler ran */
+    pthread_mutex_unlock(&g_cancel_mutex);
+
+    CHECK(pthread_create(&t, NULL, th_cancel_sleep, NULL) == 0);
+    sem_wait(&g_th_ready);
+    CHECK(pthread_cancel(t) == 0);
+    CHECK(pthread_join(t, &ret) == 0 && ret == PTHREAD_CANCELED && g_cancel_progress == 0);
+
+    CHECK(pthread_create(&t, NULL, th_cancel_disabled, NULL) == 0);
+    sem_wait(&g_th_ready);
+    CHECK(pthread_cancel(t) == 0);
+    for (int i = 0; i < 20; i++) usleep(2000);                      /* it must still be running, not cancelled */
+    CHECK(g_cancel_progress == 0);
+    g_cancel_go = 1;
+    CHECK(pthread_join(t, &ret) == 0 && ret == PTHREAD_CANCELED && g_cancel_progress == 1);
+    close(g_cancel_pipe[0]);
+    close(g_cancel_pipe[1]);
+}
+
 static void test_threads_proc(void) {
     TH_SECTION("/proc shows the threads");
     sem_init(&g_th_hold, 0, 0);
@@ -585,6 +738,8 @@ static void test_threads(void) {
     test_threads_local();
     test_threads_many();
     test_threads_signals();
+    test_threads_sigwait();
+    test_threads_cancel();
     test_threads_timeouts();
     test_threads_processes();
     test_threads_stress();

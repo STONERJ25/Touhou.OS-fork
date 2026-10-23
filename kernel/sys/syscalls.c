@@ -118,7 +118,7 @@ static long sys_waitpid(TrapFrame *tf) {
 static long sys_kill(TrapFrame *tf) {
     long pid = (long)A0(tf);
     int sig = (int)A1(tf);
-    if (sig < 0 || sig >= NSIG) return -EINVAL;
+    if (sig < 0 || sig >= NSIG || sig == SIGCANCEL) return -EINVAL;      /* SIGCANCEL is thread-directed only (tgkill) */
     Process *self = me();
     if (pid > 0) {
         Process *t = process_by_pid((int)pid);
@@ -805,6 +805,7 @@ void syscall_dispatch(TrapFrame *tf) {
     u64 nr = tf->rax;
     long ret = -ENOSYS;
     if (nr < SYS_nsyscalls && g_table[nr]) ret = g_table[nr](tf);
+    if (ret == -EINTR && current->proc && signal_cancel_pending(current)) ret = -ECANCELED;      /* pthread_cancel: see signal.c */
     if (nr != SYS_sigreturn) tf->rax = (u64)ret;
     task_on_trap_return(tf);                /* reschedule if due, deliver signals */
     cli();

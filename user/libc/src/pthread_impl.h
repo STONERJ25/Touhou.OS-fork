@@ -11,6 +11,8 @@ struct pthread {
     int pad;
     volatile int tid;               /* kernel thread id; the kernel zeroes it and wakes it when the thread exits (join waits here) */
     volatile int flags;             /* TF_* */
+    volatile int cancel_flag;       /* pthread_cancel was called on this thread */
+    int cancel_disabled;            /* pthread_setcancelstate(DISABLE): SIGCANCEL is blocked in the kernel mask */
     void *(*fn)(void *);
     void *arg;
     void *retval;
@@ -33,6 +35,7 @@ static inline struct pthread *__pthread_self(void) {
 }
 
 void __pthread_init_main(void);
+void __cancel_exit(void) __attribute__((noreturn));      /* the calling thread acts on a cancellation request */
 int  __futex(volatile int *addr, int op, int val, const struct timespec *rel, volatile int *addr2, int val3);
 
 /* Small non-recursive lock for libc internals; works before any thread exists (no system call unless contended). */

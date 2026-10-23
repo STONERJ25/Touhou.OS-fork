@@ -6,6 +6,7 @@
 #include "kernel.h"
 #include "cpu.h"
 #include "initcall.h"
+#include "irq.h"
 
 static long sys_thread_create(TrapFrame *tf) {
     Process *p = current->proc;
@@ -64,7 +65,75 @@ static long sys_tgkill(TrapFrame *tf) {
     return found ? 0 : -ESRCH;
 }
 
+/* sigsuspend(mask): atomically replace the thread's mask and sleep until a signal is delivered. The handler runs under the
+ * temporary mask and sigreturn brings the old one back (Task.saved_mask). Always returns -EINTR. */
+static long sys_sigsuspend(TrapFrame *tf) {
+    Task *t = current;
+    u64 f = irq_save();
+    t->saved_mask = t->sig_blocked;
+    t->saved_mask_valid = true;
+    t->sig_blocked = (u32)A0(tf) & ~((1U << SIGKILL) | (1U << SIGSTOP));
+    while (!signal_pending_now(t->proc)) {
+        t->intr = true;
+        t->wake_ms = ~0ULL;
+        t->state = TASK_SLEEPING;
+        schedule();
+        t->intr = false;
+    }
+    irq_restore(f);
+    return -EINTR;
+}
+
+/* sigtimedwait(set, timeout): accepts one pending signal of `set` (the caller normally blocks them) and returns its number
+ * without running a handler. Timeout is a relative struct gtimespec* or NULL; -EAGAIN when it expires, -EINTR when some
+ * other signal needs a handler. */
+static long sys_sigtimedwait(TrapFrame *tf) {
+    Task *t = current;
+    Process *p = t->proc;
+    u32 set = (u32)A0(tf) & ~((1U << SIGKILL) | (1U << SIGSTOP));
+    u64 deadline = ~0ULL;
+    if (A1(tf)) {
+        struct gtimespec ts;
+        if (copy_from_user(&ts, (void *)A1(tf), sizeof ts)) return -EFAULT;
+        if (ts.tv_sec < 0 || ts.tv_nsec < 0 || ts.tv_nsec >= 1000000000) return -EINVAL;
+        deadline = uptime_ms() + (u64)ts.tv_sec * 1000 + (u64)ts.tv_nsec / 1000000 + ((ts.tv_nsec % 1000000) ? 1 : 0);
+    }
+    long rc;
+    u64 f = irq_save();
+    t->sigwait_set = set;
+    for (;;) {
+        u32 hit = (t->sig_pending | p->sig_pending) & set;
+        if (hit) {
+            int sig = __builtin_ctz(hit);
+            t->sig_pending &= ~(1U << sig);
+            p->sig_pending &= ~(1U << sig);
+            rc = sig;
+            break;
+        }
+        /* something else that needs attention (a handler, or the thread must die) */
+        if (thread_must_die(t) || ((t->sig_pending | p->sig_pending) & ~t->sig_blocked & ~set)) { rc = -EINTR; break; }
+        if (deadline != ~0ULL && uptime_ms() >= deadline) { rc = -EAGAIN; break; }
+        t->intr = true;
+        t->wake_ms = deadline;
+        t->state = TASK_SLEEPING;
+        schedule();
+        t->intr = false;
+    }
+    t->sigwait_set = 0;
+    irq_restore(f);
+    return rc;
+}
+
+static long sys_sigpending(TrapFrame *tf) {
+    Task *t = current;
+    u32 pend = (t->sig_pending | t->proc->sig_pending) & t->sig_blocked;
+    return copy_to_user((void *)A0(tf), &pend, sizeof pend);
+}
+
 static void thread_init(void) {
+    syscall_register(SYS_sigsuspend, sys_sigsuspend);
+    syscall_register(SYS_sigtimedwait, sys_sigtimedwait);
+    syscall_register(SYS_sigpending, sys_sigpending);
     syscall_register(SYS_thread_create, sys_thread_create);
     syscall_register(SYS_thread_exit, sys_thread_exit);
     syscall_register(SYS_gettid, sys_gettid);

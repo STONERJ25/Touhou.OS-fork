@@ -63,6 +63,17 @@ int  pthread_sigmask(int how, const sigset_t *set, sigset_t *old);
 int  pthread_once(pthread_once_t *once, void (*fn)(void));
 int  pthread_atfork(void (*prepare)(void), void (*parent)(void), void (*child)(void));
 
+/* cancellation: deferred only. A cancellation point is any call that can block in the kernel (read, write, poll, nanosleep,
+ * sleep, waitpid, pause, accept, ...) plus pthread_join, pthread_cond_wait/timedwait, sem_wait/timedwait and pthread_testcancel. */
+#define PTHREAD_CANCEL_ENABLE       0
+#define PTHREAD_CANCEL_DISABLE      1
+#define PTHREAD_CANCEL_DEFERRED     0
+#define PTHREAD_CANCEL_ASYNCHRONOUS 1   /* accepted, but behaves as deferred */
+int  pthread_cancel(pthread_t t);
+int  pthread_setcancelstate(int state, int *old);
+int  pthread_setcanceltype(int type, int *old);
+void pthread_testcancel(void);
+
 /* attributes */
 int  pthread_attr_init(pthread_attr_t *a);
 int  pthread_attr_destroy(pthread_attr_t *a);

@@ -384,9 +384,43 @@ sighandler_t signal(int sig, sighandler_t h) {
     return o.sa_handler;
 }
 
+/* SIGCANCEL belongs to pthread_cancel (blocking it is how a thread disables cancellation), so applications never see it
+ * in a mask and cannot change it through here. */
 int sigprocmask(int how, const sigset_t *set, sigset_t *old) {
-    return (int)__ret(__sc3(SYS_sigprocmask, how, set ? (long)*set : 0, (long)old));
+    const unsigned bit = 1U << SIGCANCEL;
+    long v = set ? (long)(*set & ~bit) : 0;
+    if (!set) how = SIG_BLOCK;                                  /* a query: block nothing */
+    if (set && how == SIG_SETMASK && __pthread_self()->cancel_disabled) v |= bit;
+    long r = __sc3(SYS_sigprocmask, how, v, (long)old);
+    if (r == 0 && old) *old &= ~bit;
+    return (int)__ret(r);
 }
+/* Mask by value, like sigprocmask. sigsuspend always ends with -1/EINTR after a handler has run. */
+int sigsuspend(const sigset_t *mask) { return (int)__ret(__sc1(SYS_sigsuspend, (long)*mask)); }
+
+int sigtimedwait(const sigset_t *set, void *info, const struct timespec *timeout) {
+    struct gtimespec g;
+    long tp = 0;
+    (void)info;                                 /* no siginfo: the number of the signal is the whole answer */
+    if (timeout) { g.tv_sec = timeout->tv_sec; g.tv_nsec = timeout->tv_nsec; tp = (long)&g; }
+    return (int)__ret(__sc2(SYS_sigtimedwait, (long)*set, tp));
+}
+
+int sigwait(const sigset_t *set, int *sig) {
+    for (;;) {
+        long r = __sc2(SYS_sigtimedwait, (long)*set, 0);
+        if (r > 0) { *sig = (int)r; return 0; }
+        if (r != -EINTR) return (int)-r;        /* EINTR: a handler ran for some other signal; keep waiting */
+    }
+}
+
+int sigpending(sigset_t *set) {
+    unsigned v = 0;
+    long r = __ret(__sc1(SYS_sigpending, (long)&v));
+    if (r == 0) *set = v;
+    return (int)r;
+}
+
 int sigemptyset(sigset_t *s) { *s = 0; return 0; }
 int sigfillset(sigset_t *s) { *s = ~0U; return 0; }
 int sigaddset(sigset_t *s, int sig) { *s |= 1U << sig; return 0; }

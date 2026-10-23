@@ -160,8 +160,15 @@ void futex_wake_all_at(u64 uaddr) { futex_wake(uaddr, -1); }
 static long sys_futex(TrapFrame *tf) {
     u64 uaddr = A0(tf);
     int op = (int)A1(tf);
+    bool cancellable = (op & FUTEX_CANCELLABLE) != 0;
+    op &= ~FUTEX_CANCELLABLE;
     switch (op) {
-    case FUTEX_WAIT:        return futex_wait(uaddr, (u32)A2(tf), A3(tf));
+    case FUTEX_WAIT: {
+        current->ignore_cancel = !cancellable;          /* a mutex wait must not spin because a cancel is pending */
+        long r = futex_wait(uaddr, (u32)A2(tf), A3(tf));
+        current->ignore_cancel = false;
+        return r;
+    }
     case FUTEX_WAKE:        return futex_wake(uaddr, (int)A2(tf));
     case FUTEX_CMP_REQUEUE: return futex_cmp_requeue(uaddr, (int)A2(tf), A3(tf), A4(tf), (u32)A5(tf));
     default:                return -ENOSYS;

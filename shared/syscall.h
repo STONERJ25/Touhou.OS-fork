@@ -95,12 +95,15 @@
 #define SYS_tgkill        110     /* (pid, tid, sig): signal one thread */
 #define SYS_exit_group    111     /* (status): ends every thread (SYS_exit does the same) */
 #define SYS_set_tls       112     /* (base): sets the calling thread's FS base */
-/* 113-115 are kept for sigsuspend, sigtimedwait and sigpending (not implemented yet) */
+#define SYS_sigsuspend    113     /* (mask): replace the thread's mask and sleep until a handler has run; returns -EINTR */
+#define SYS_sigtimedwait  114     /* (set, timeout): accept one pending signal of set without a handler; returns its number, -EAGAIN on timeout */
+#define SYS_sigpending    115     /* (u32 *set): signals pending and blocked */
 #define SYS_nsyscalls     128
 
 #define FUTEX_WAIT        0       /* sleep while *uaddr == val; timeout is a struct gtimespec* (relative) or NULL */
 #define FUTEX_WAKE        1       /* wake up to val waiters */
 #define FUTEX_CMP_REQUEUE 4       /* if *uaddr == val3: wake val waiters, move up to (long)timeout waiters to uaddr2 */
+#define FUTEX_CANCELLABLE 0x100   /* or-ed into op: this wait is a cancellation point (a pending pthread_cancel ends it with -ECANCELED) */
 #define THREADS_PER_PROC_MAX 256
 #define THREADS_TOTAL_MAX    1024
 

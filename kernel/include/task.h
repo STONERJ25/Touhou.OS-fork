@@ -51,6 +51,10 @@ typedef struct Task {
     u64  clear_tid;             /* user address that is zeroed and futex-woken when the thread exits (0 = none) */
     u32  sig_blocked;           /* per-thread signal mask */
     u32  sig_pending;           /* signals aimed at this thread (tgkill, synchronous faults) */
+    u32  sigwait_set;           /* signals this thread is waiting to accept in sigtimedwait (they may be blocked) */
+    u32  saved_mask;            /* sigsuspend: the mask to bring back once a handler has run */
+    bool saved_mask_valid;
+    bool ignore_cancel;         /* inside a futex wait that is not a cancellation point: a pending cancel does not interrupt it */
 } Task;
 
 /* Start-up state of a user thread, set before the Task can first run. */

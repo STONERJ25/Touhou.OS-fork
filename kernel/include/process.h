@@ -135,6 +135,7 @@ void signal_force(Process *p, int sig);                                 /* synch
 void signal_pgrp(int pgid, int sig);
 void signal_deliver(TrapFrame *tf);                                     /* on the way back to user mode */
 bool signal_pending_now(Process *p);                                    /* the calling thread has a deliverable signal (or must die) */
+bool signal_cancel_pending(Task *t);                                    /* pthread_cancel is waiting for this thread to reach a cancellation point */
 long sys_sigreturn_impl(TrapFrame *tf);
 
 /* syscall plumbing */
