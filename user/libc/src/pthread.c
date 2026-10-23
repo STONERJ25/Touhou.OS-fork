@@ -13,15 +13,45 @@
 #define DEFAULT_STACK (256 * 1024)
 #define PAGE 4096UL
 
-/* ---------------------------------------------------------------- the main thread, futex glue */
+/* ---------------------------------------------------------------- TLS blocks, the main thread, futex glue
+ *
+ * x86-64 "variant II" static TLS: the thread pointer (FS base) points at the control block (struct pthread) and the TLS
+ * block of _Thread_local variables sits right below it; the offsets the linker bakes into the code are negative. user.ld
+ * defines the PT_TLS template (__tls_init_image/size = .tdata, __tls_mem_size = .tdata + .tbss, __tls_align). */
 
-static struct pthread g_main_thread;
+extern char __tls_init_image[], __tls_init_size[], __tls_mem_size[], __tls_align[];
 
-/* First thing __libc_start does: the main thread gets a control block, so errno works from here on. */
+/* Keep .tdata and .tbss in every program, so the linker script's symbols always have sections to describe. */
+_Thread_local char __tls_anchor_bss;
+_Thread_local char __tls_anchor_data = 1;
+
+/* Bytes of TLS block under the thread pointer. This is the linker's own formula (lld's getTlsTpOffset): the template starts
+ * memsz plus the padding that makes (start - p_vaddr) a multiple of the alignment below TP. */
+static size_t tls_block(void) {
+    size_t a = (size_t)__tls_align ? (size_t)__tls_align : 1;
+    size_t memsz = (size_t)__tls_mem_size, va = (size_t)__tls_init_image;
+    return memsz + ((0 - va - memsz) & (a - 1));
+}
+static size_t tls_reserve(void) { return (tls_block() + 15) & ~15UL; }          /* ... rounded so a stack can sit below it */
+static size_t tcb_alignment(void) { return (size_t)__tls_align > 64 ? (size_t)__tls_align : 64; }
+static size_t tcb_size(void) { size_t a = tcb_alignment(); return (sizeof(struct pthread) + a - 1) & ~(a - 1); }
+
+/* Prepares the TLS block below tp (a fresh, zeroed mapping): the template's initialised part is copied in. */
+static void tls_init_block(char *tp) {
+    memcpy(tp - tls_block(), __tls_init_image, (size_t)__tls_init_size);
+}
+
+/* First thing __libc_start does: the main thread gets a TLS block and a control block, so errno works from here on.
+ * (Nothing here may touch errno or any _Thread_local variable: the thread pointer does not exist yet.) */
 void __pthread_init_main(void) {
-    g_main_thread.self = &g_main_thread;
-    g_main_thread.tid = (int)__sc0(SYS_gettid);
-    __sc1(SYS_set_tls, (long)&g_main_thread);
+    size_t total = (tls_reserve() + tcb_size() + tcb_alignment() + PAGE - 1) & ~(PAGE - 1);
+    long m = __sc6(SYS_mmap, 0, (long)total, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if ((unsigned long)m > (unsigned long)-4096L) { __sc1(SYS_exit, 127 << 8); for (;;) __asm__ volatile ("ud2"); }
+    struct pthread *t = (struct pthread *)(((size_t)m + total - tcb_size()) & ~(tcb_alignment() - 1));
+    tls_init_block((char *)t);
+    t->self = t;
+    t->tid = (int)__sc0(SYS_gettid);
+    __sc1(SYS_set_tls, (long)t);
 }
 
 int __futex(volatile int *addr, int op, int val, const struct timespec *rel, volatile int *addr2, int val3) {
@@ -238,21 +268,23 @@ int pthread_create(pthread_t *out, const pthread_attr_t *attr, void *(*fn)(void 
     stack = (stack + PAGE - 1) & ~(PAGE - 1);
     if (stack < PTHREAD_STACK_MIN) stack = PTHREAD_STACK_MIN;
     guard = (guard + PAGE - 1) & ~(PAGE - 1);
-    size_t tcb = (sizeof(struct pthread) + 63) & ~63UL;
-    size_t total = (guard + stack + tcb + PAGE - 1) & ~(PAGE - 1);
+    size_t tcb = tcb_size();
+    size_t total = (guard + stack + tls_reserve() + tcb + PAGE - 1) & ~(PAGE - 1);
 
     char *map = mmap(NULL, total, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (map == MAP_FAILED) return EAGAIN;
     if (guard && mprotect(map, guard, PROT_NONE) < 0) { munmap(map, total); return EAGAIN; }
 
-    struct pthread *t = (struct pthread *)(map + total - tcb);      /* the block ends with the control block; the stack grows down below it */
+    /* the mapping ends with [TLS block][control block]; the stack grows down below them */
+    struct pthread *t = (struct pthread *)(map + total - tcb);
+    tls_init_block((char *)t);
     t->self = t;
     t->fn = fn;
     t->arg = arg;
     t->map = map;
     t->maplen = total;
     if (attr && attr->__detach) t->flags = TF_DETACHED;
-    char *top = (char *)t - 8;                                       /* entry sees rsp = 8 mod 16, like after a call */
+    char *top = (char *)t - tls_reserve() - 8;                       /* entry sees rsp = 8 mod 16, like after a call */
     *(void **)top = NULL;
     long r = __sc6(SYS_thread_create, 0, (long)top, (long)t, (long)&t->tid, (long)thread_entry, (long)t);
     if (r < 0) { munmap(map, total); return (int)-r; }

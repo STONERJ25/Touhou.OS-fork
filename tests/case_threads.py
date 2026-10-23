@@ -11,6 +11,7 @@ THREAD_SECTIONS = [
     "rwlock",
     "barrier",
     "errno, thread-specific data, once",
+    "_Thread_local: initialised and zeroed copies per thread",
     "detached threads, 200 created and joined",
     "signals: pthread_kill, per-thread masks, process-directed delivery",
     "sigsuspend, sigwait, sigtimedwait and sigpending",

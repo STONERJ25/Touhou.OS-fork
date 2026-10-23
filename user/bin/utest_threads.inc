@@ -191,6 +191,39 @@ static void test_threads_local(void) {
     pthread_key_delete(g_key);
 }
 
+/* _Thread_local: every thread has its own copy, initialised from the .tdata template and zero for .tbss */
+static _Thread_local int tl_int = 7;
+static _Thread_local char tl_zero[100];
+static _Thread_local struct { int a; long b; } tl_struct = { 3, 4 };
+static _Alignas(64) _Thread_local char tl_aligned[8];
+
+static void *th_tls_check(void *arg) {
+    long id = (long)arg;
+    int ok = tl_int == 7 && tl_struct.a == 3 && tl_struct.b == 4 && !tl_zero[0] && !tl_zero[99] && ((unsigned long)tl_aligned % 64) == 0;
+    tl_int = (int)id;
+    tl_zero[50] = (char)id;
+    tl_struct.b = id;
+    for (int i = 0; i < 100; i++) {
+        sched_yield();
+        if (tl_int != (int)id || tl_zero[50] != (char)id || tl_struct.b != id) ok = 0;
+    }
+    return ok ? (void *)&tl_int : NULL;
+}
+
+static void test_threads_tls(void) {
+    TH_SECTION("_Thread_local: initialised and zeroed copies per thread");
+    CHECK(tl_int == 7 && tl_struct.a == 3 && tl_struct.b == 4 && !tl_zero[3] && ((unsigned long)tl_aligned % 64) == 0);
+    pthread_t t[4];
+    void *addr[4];
+    for (long i = 0; i < 4; i++) pthread_create(&t[i], NULL, th_tls_check, (void *)(i + 10));
+    for (int i = 0; i < 4; i++) { addr[i] = NULL; pthread_join(t[i], &addr[i]); }
+    for (int i = 0; i < 4; i++) {
+        CHECK(addr[i] != NULL && addr[i] != (void *)&tl_int);
+        for (int j = i + 1; j < 4; j++) CHECK(addr[i] != addr[j]);
+    }
+    CHECK(tl_int == 7 && tl_struct.b == 4 && !tl_zero[50]);         /* the main thread's copy never changed */
+}
+
 static volatile int g_detached_done;
 
 static void *th_detached(void *arg) { (void)arg; __atomic_fetch_add(&g_detached_done, 1, __ATOMIC_SEQ_CST); return NULL; }
@@ -736,6 +769,7 @@ static void test_threads(void) {
     test_threads_proc();
     test_threads_sync();
     test_threads_local();
+    test_threads_tls();
     test_threads_many();
     test_threads_signals();
     test_threads_sigwait();
