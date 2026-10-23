@@ -120,6 +120,7 @@ int  ip_output(u32 src, u32 dst, u8 proto, u8 ttl, u8 tos, bool df, NetBuf *nb);
 int  ip_output_buf(u32 src, u32 dst, u8 proto, u8 ttl, u8 tos, bool df, const u8 *payload, size_t len);   /* any size: fragments */
 extern const u8 *g_net_rx_ip;                                         /* the IP header (and 8 payload bytes) of the packet being delivered */
 extern size_t g_net_rx_iplen;
+int  ip_send_on(NetDev *dev, u32 src, u32 dst, u8 proto, NetBuf *nb);   /* bypasses routing: DHCP before the interface has an address */
 Route *ip_route(u32 dst);
 u32  ip_source_for(u32 dst);                                          /* the address we would send from; 0 = unroutable */
 int  route_add(u32 dst, u32 mask, u32 gw, NetDev *d, u32 metric);
@@ -145,6 +146,8 @@ size_t net_proc_udp(char *buf, size_t cap);
 long net_ctl(unsigned long cmd, void *arg);                           /* SYS_netctl backend; arg already in kernel memory */
 void dhcp_start(NetDev *d);
 void dhcp_tick(u64 now);
+void dhcp_input(NetDev *d, const u8 *p, size_t len);                  /* a datagram for port 68 */
+size_t dhcp_dns(u32 *servers, size_t max);                            /* name servers learned from DHCP */
 extern int g_net_lo_drop, g_net_lo_dup, g_net_lo_reorder, g_net_lo_corrupt;   /* fault injection on lo, percent */
 extern int g_net_rto_min_ms, g_net_syn_retries, g_net_data_retries, g_net_timewait_ms;
 extern u64 g_net_stat_ip_bad, g_net_stat_tcp_bad;

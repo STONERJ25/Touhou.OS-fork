@@ -91,13 +91,13 @@ bool sock_port_conflict(Sock *me, u32 addr, u16 port) {
 /* ------------------------------------------------------------------ UDP */
 
 void udp_input(NetDev *d, const u8 *p, size_t len, u32 src, u32 dst) {
-    (void)d;
     if (len < 8) { g_net_stat_ip_bad++; return; }
     size_t ulen = rd16(p + 4);
     if (ulen < 8 || ulen > len) { g_net_stat_ip_bad++; return; }
     len = ulen;
     if (rd16(p + 6) != 0 && net_csum(p, len, net_pseudo_csum(src, dst, IPPROTO_UDP, (u16)len)) != 0xFFFF) { g_net_stat_ip_bad++; return; }
     u16 sport = rd16(p), dport = rd16(p + 2);
+    if (dport == 68 && sport == 67) { dhcp_input(d, p + 8, len - 8); return; }
     bool bcast = dst == 0xFFFFFFFFu || (dst & 0xFF) == 0xFF;
     bool delivered = false;
     for (Sock *s = g_socks; s; s = s->next) {

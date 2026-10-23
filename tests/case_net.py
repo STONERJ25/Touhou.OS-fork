@@ -5,7 +5,7 @@ effect: every wait is for serial output with a generous timeout, and the guest-s
 import re
 
 import test_shell
-from harness import test, Qemu, BUILD
+from harness import test, TESTS, Qemu, BUILD
 
 
 def nettest(name="", timeout=240, setup=()):
@@ -26,3 +26,18 @@ def net_loopback():
     for check in ("udp", "tcp", "bulk", "refused", "nonblock", "close", "half", "many", "opts", "ping"):
         assert re.search(rf"ok\s+{check}\b", out), f"{check} did not pass:\n{out[-1500:]}"
     assert re.search(r"bulk: 5242880 bytes, checksum [0-9a-f]{8} ok", out), out[-800:]
+
+
+LEASE = r"\[Yukari\] eth0: lease 10\.0\.2\.15/255\.255\.255\.0 from 10\.0\.2\.2, gateway 10\.0\.2\.2, 1 name server"
+
+
+def nic_case(model, label):
+    def run():
+        with Qemu(cmdline="text", net=model, name="t-net-" + label) as vm:
+            vm.expect(LEASE, timeout=120)
+    run.__name__ = f"net_dhcp_{label}"
+    run.__doc__ = f"{model}: the NIC is found, DHCP gives 10.0.2.15 with gateway and DNS"
+    TESTS.append(run)
+
+
+nic_case("virtio-net-pci", "virtio")

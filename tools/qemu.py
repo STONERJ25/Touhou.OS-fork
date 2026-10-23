@@ -71,9 +71,11 @@ def char_to_key(ch):
 
 class Qemu:
     def __init__(self, cmdline="", mem="512M", display="none", disk=None, net=False, no_reboot=True,
-                 trace_int=False, extra=(), esp=None, name="vm", video=None, headless_serial=True):
+                 trace_int=False, extra=(), esp=None, name="vm", video=None, headless_serial=True, hostfwd=(), netdev_opts=""):
         self.cmdline, self.mem, self.display = cmdline, mem, display
         self.disk, self.net, self.no_reboot, self.trace_int = disk, net, no_reboot, trace_int
+        self.hostfwd = list(hostfwd)
+        self.netdev_opts = netdev_opts
         self.extra = list(extra)
         self.esp = Path(esp) if esp else BUILD / "esp"
         self.name = name
@@ -102,6 +104,25 @@ class Qemu:
         (self.esp / "cmdline.txt").write_text(cmdline + "\n")
         return vars_copy
 
+    def _net_args(self):
+        """The QEMU options for the guest's network card.
+
+        net=False             no card (and no -netdev), as before
+        net=True              an e1000 on user-mode networking (10.0.2.0/24, gateway 10.0.2.2, DNS 10.0.2.3), as before
+        net="virtio-net-pci"  any NIC model QEMU knows: e1000, e1000e, rtl8139, virtio-net-pci[,disable-legacy=on] ...
+        hostfwd=[...]         user-mode port forwards, each "tcp:127.0.0.1:18080-:80" (host side first, guest side after the dash)
+        netdev_opts="..."     extra -netdev user options such as "restrict=on" or "net=192.168.7.0/24"
+        """
+        if not self.net:
+            return ["-net", "none"]
+        model = "e1000" if self.net is True else str(self.net)
+        netdev = "user,id=net0"
+        for fwd in self.hostfwd:
+            netdev += f",hostfwd={fwd}"
+        if self.netdev_opts:
+            netdev += "," + self.netdev_opts
+        return ["-netdev", netdev, "-device", f"{model},netdev=net0"]
+
     def _args(self, vars_copy, serial_port, qmp_port):
         a = [str(QEMU),
              "-machine", "q35", "-cpu", "max", "-m", self.mem, "-smp", "1",
@@ -112,10 +133,7 @@ class Qemu:
              "-d", "guest_errors,cpu_reset" + (",int" if self.trace_int else ""), "-D", str(self.log_path)]
         if self.disk:
             a += ["-drive", f"if=none,id=data0,format=raw,file={self.disk}", "-device", "virtio-blk-pci,drive=data0"]
-        if self.net:
-            a += ["-netdev", "user,id=net0", "-device", "e1000,netdev=net0"]
-        else:
-            a += ["-net", "none"]
+        a += self._net_args()
         if self.no_reboot:
             a += ["-no-reboot"]
         if self.display:

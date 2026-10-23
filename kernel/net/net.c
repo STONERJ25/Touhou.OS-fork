@@ -171,6 +171,7 @@ NetDev *netdev_register(const char *prefix, NetDev *d) {
     d->next = NULL;
     if (!g_devs) g_devs = d;
     else { NetDev *t = g_devs; while (t->next) t = t->next; t->next = d; }
+    if ((d->flags & NDF_LINK) && !(d->flags & NDF_LOOPBACK)) dhcp_start(d);
     net_unlock();
     net_kick();
     return d;
@@ -181,7 +182,7 @@ void net_set_link(NetDev *d, bool up) {
     if (up == was) return;
     if (up) d->flags |= NDF_LINK; else d->flags &= ~(u32)NDF_LINK;
     klog("Yukari", "%s: link %s", d->name, up ? "up, the gap is open" : "down, the gap closed");
-    if (up && !(d->flags & NDF_LOOPBACK)) dhcp_start(d);
+    if (up && !(d->flags & NDF_LOOPBACK) && (!d->addr || (d->flags & NDF_DHCP))) dhcp_start(d);
 }
 
 /* ------------------------------------------------------------------ routes */
@@ -710,6 +711,14 @@ static void ip_header(u8 *h, u8 tos, u16 totlen, u16 id, u16 fragfield, u8 ttl, 
     wr32(h + 12, src); wr32(h + 16, dst);
     u16 c = (u16)~net_csum(h, IP_HLEN, 0);
     memcpy(h + 10, &c, 2);
+}
+
+/* Sends one packet out of a given device, bypassing the routing table (DHCP, before the interface has an address). */
+int ip_send_on(NetDev *dev, u32 src, u32 dst, u8 proto, NetBuf *nb) {
+    size_t plen = nb->len;
+    if (plen + IP_HLEN > dev->mtu) { nb_free(nb); return -EMSGSIZE; }
+    ip_header(nb_push(nb, IP_HLEN), 0, (u16)(plen + IP_HLEN), ++g_ip_id, 0, 64, proto, src, dst);
+    return eth_output(dev, dst, ETH_P_IP, nb);
 }
 
 int ip_output_buf(u32 src, u32 dst, u8 proto, u8 ttl, u8 tos, bool df, const u8 *data, size_t plen) {
