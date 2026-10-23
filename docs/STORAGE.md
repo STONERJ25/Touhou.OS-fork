@@ -184,6 +184,33 @@ python tools/mkdisk.py --ls disk.img:2 /reimu  # also --cat, --extract IMAGE:N P
 **Note:** OVMF boots the first bootable ESP it finds, so a data disk whose ESP contains `EFI/BOOT/BOOTX64.EFI` will be
 booted instead of `build/esp`; tests therefore use ESPs without it.
 
+### A bootable image, and a USB stick
+
+```
+python tools/build.py
+python tools/mkdisk.py build/touhouos.img --size 512M --esp build/esp --hv-size 256M
+```
+
+This writes a GPT disk with a 64 MiB FAT32 EFI System Partition (a copy of `build/esp`: `EFI/BOOT/BOOTX64.EFI`, `kernel.elf`,
+`initrd.img`, `cmdline.txt`) and a FAT32 partition named and labelled HUMANVILLAGE that takes the rest, then runs the checker
+on the result. The image was booted from that file alone in QEMU/OVMF (`-drive if=none,id=d0,format=raw,file=build/touhouos.img
+-device virtio-blk-pci,drive=d0`, no `fat:` drive): UEFI starts `EFI/BOOT/BOOTX64.EFI` through the removable-media path, and the
+kernel logs `fat32: vda2 mounted on /HumanVillage` and creates `reimu`, `marisa` and `sakuya`.
+
+* `build/esp/cmdline.txt` is rewritten by every `tools/qemu.py` and test run: look at it (or empty it) before building an image
+  for real hardware.
+* Do not name a bootable image `build/disk.img`: `tools/qemu.py run` attaches that file as a data disk, and OVMF may boot the
+  (older) kernel stored in its ESP instead of `build/esp`. To test persistence use a data-only disk:
+  `python tools/mkdisk.py build/disk.img --size 256M --no-esp`.
+* On a USB stick: write the image with a raw-image writer (`dd`, Rufus in DD mode, balenaEtcher); the whole stick is replaced.
+  Secure Boot must be off (the loader is unsigned). The backup GPT sits at the end of the image, not of the stick, so disk tools
+  may offer to fix it; that is harmless. HUMANVILLAGE is an ordinary FAT32 volume: Windows, Linux and macOS can open it to copy
+  files in and out (eject it safely first, otherwise TouhouOS finds the dirty flag and mounts it read-only). TouhouOS mounts
+  only that volume, wherever it sits, and nothing else on the machine.
+* Reading a stick from TouhouOS needs a USB mass-storage driver (not part of this work). Such a driver registers its disks with
+  the block layer and then calls `storage_mount_boot_volumes()`; the call at boot happens before USB is initialised, and a
+  second call is harmless.
+
 The checker is deliberately independent of the kernel (it shares no code with it), and a self-test makes sure it notices
 loops, holes, leaked clusters, FAT mirror mismatches, wrong LFN checksums, wrong FSInfo and broken GPT CRCs. Images written
 by the kernel were also mounted read-only with Linux's vfat driver and compared with `diff -r`.
