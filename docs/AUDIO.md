@@ -138,8 +138,8 @@ Not covered yet: `hda-duplex`, the Jukebox, the system sounds in the desktop, th
 
 The work was stopped on request in the middle of the sound project; this is exactly where it is.
 
-**Done, committed, tested in QEMU** (`python tests/run_all.py audio_` passed 7 of 7 and `manual` passed, on the commit before
-the last merge of `main`; after that merge only `audio_hda_tone`, `audio_no_device` and `audio_ac97_tone` were re-run and passed):
+**Done, committed, tested in QEMU** (`python tests/run_all.py audio_,manual`: all 7 audio tests and `manual` pass on the last
+commit, after the second merge of `main`; the rest of the suite was not run):
 the audio core (`/dev/audio`, mixer, limiter, volumes, `/proc/audio`, silence on underrun, stall fallback), the Intel HDA
 driver, the AC'97 driver, libaudio's device/WAV/generator/system-sound code, the `beep`, `play`, `volume` applets with
 manual pages (`beep(1)`, `play(1)`, `volume(1)`, `audio(7)`), the harness support (`Qemu(audio=...)`, `tests/audiotools.py`).
