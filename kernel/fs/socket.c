@@ -1,6 +1,8 @@
 /*
  * UNIX-domain stream sockets: the "gaps" Yukari opens between processes. The window server, its clients and anything
  * else that wants a conversation uses them. Bound sockets are special files in tmpfs directories (/BambooForest, /dev).
+ * The same system calls also serve Internet sockets (AF_INET): when the descriptor (or the domain) says so they are handed
+ * to kernel/net/sockcall.c.
  *
  * A connection is a Conn: two byte queues (one per direction) and a wait queue shared by both ends. Each end is a Sock
  * owned by one open File. Everything is protected by disabling interrupts (single CPU); blocking uses wait queues.
@@ -40,6 +42,20 @@ typedef struct Sock {
 } Sock;
 
 extern void (*g_signal_self_hook)(int sig);
+
+/* kernel/net/sockcall.c */
+extern const FileOps g_inet_fops;
+long inet_socket(int type, int protocol);
+long inet_bind(File *f, u64 uaddr, u64 len);
+long inet_listen(File *f, int backlog);
+long inet_accept(File *f, u64 uaddr, u64 ulenp);
+long inet_connect(File *f, u64 uaddr, u64 len);
+long inet_shutdown(File *f, int how);
+
+static inline File *inet_fd(u64 fd) {
+    File *f = fd_get(current->proc, (int)fd);
+    return f && f->fops == &g_inet_fops ? f : NULL;
+}
 
 static const VNodeOps sock_node_ops;            /* identifies socket files; no data operations */
 static const FileOps sock_fops;
@@ -211,6 +227,7 @@ static long fd_for(File *f, int type) {
 
 static long sys_socket(TrapFrame *tf) {
     int type = (int)A1(tf);
+    if (A0(tf) == AF_INET) return inet_socket(type, (int)A2(tf));
     if (A0(tf) != AF_UNIX) return -EAFNOSUPPORT;
     if ((type & 0xFF) != SOCK_STREAM) return -EPROTONOSUPPORT;
     Sock *s = kzalloc(sizeof *s);
@@ -252,12 +269,14 @@ static long sys_socketpair(TrapFrame *tf) {
 }
 
 static long sys_bind(TrapFrame *tf) {
+    File *inf = inet_fd(A0(tf));
+    if (inf) return inet_bind(inf, A1(tf), A2(tf));
     File *f;
     Sock *s = sock_of((int)A0(tf), &f);
     if (!s) return -ENOTSOCK;
     if (s->state != SS_NEW || s->bound) return -EINVAL;
     char path[PATH_MAX];
-    int n = strncpy_from_user(path, (const char *)A1(tf), sizeof path);
+    int n = strncpy_from_user(path, (const char *)A1(tf) + sizeof(u16), sizeof path);       /* A1 is a struct sockaddr_un */
     if (n < 0) return n;
     Process *p = current->proc;
     VNode *dir;
@@ -281,6 +300,8 @@ static long sys_bind(TrapFrame *tf) {
 }
 
 static long sys_listen(TrapFrame *tf) {
+    File *inf = inet_fd(A0(tf));
+    if (inf) return inet_listen(inf, (int)A1(tf));
     Sock *s = sock_of((int)A0(tf), NULL);
     if (!s) return -ENOTSOCK;
     if (s->state == SS_CONN || !s->bound) return -EINVAL;
@@ -291,13 +312,15 @@ static long sys_listen(TrapFrame *tf) {
 }
 
 static long sys_connect(TrapFrame *tf) {
+    File *inf = inet_fd(A0(tf));
+    if (inf) return inet_connect(inf, A1(tf), A2(tf));
     File *f;
     Sock *s = sock_of((int)A0(tf), &f);
     if (!s) return -ENOTSOCK;
     if (s->state == SS_CONN) return -EISCONN;
     if (s->state != SS_NEW) return -EINVAL;
     char path[PATH_MAX];
-    int n = strncpy_from_user(path, (const char *)A1(tf), sizeof path);
+    int n = strncpy_from_user(path, (const char *)A1(tf) + sizeof(u16), sizeof path);       /* A1 is a struct sockaddr_un */
     if (n < 0) return n;
     Process *p = current->proc;
     VNode *v;
@@ -328,6 +351,8 @@ static long sys_connect(TrapFrame *tf) {
 }
 
 static long sys_accept(TrapFrame *tf) {
+    File *inf = inet_fd(A0(tf));
+    if (inf) return inet_accept(inf, A1(tf), A2(tf));
     File *f;
     Sock *l = sock_of((int)A0(tf), &f);
     if (!l) return -ENOTSOCK;
@@ -363,6 +388,8 @@ static long sys_accept(TrapFrame *tf) {
 }
 
 static long sys_shutdown(TrapFrame *tf) {
+    File *inf = inet_fd(A0(tf));
+    if (inf) return inet_shutdown(inf, (int)A1(tf));
     Sock *s = sock_of((int)A0(tf), NULL);
     if (!s) return -ENOTSOCK;
     if (s->state != SS_CONN) return -ENOTCONN;

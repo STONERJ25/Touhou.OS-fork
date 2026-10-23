@@ -41,9 +41,12 @@
 #define EDOM 33
 #define ERANGE 34
 #define ENAMETOOLONG 36
+#define EDEADLK 35
 #define ENOSYS 38
 #define ENOTEMPTY 39
 #define ELOOP 40
+#define EOVERFLOW 75
+#define ECANCELED 125
 #define ENOTSOCK 88
 #define EPROTONOSUPPORT 93
 #define ENOTSUP 95
@@ -194,6 +197,7 @@ struct gdirent {
 #define SIGTTIN  21
 #define SIGTTOU  22
 #define SIGWINCH 28
+#define SIGCANCEL 31            /* reserved for pthread_cancel: sticky, never runs a handler; see docs/THREADS.md */
 #define NSIG     32
 
 #define WNOHANG 1
@@ -275,7 +279,7 @@ struct gwinsize {
     uint16_t ws_row, ws_col, ws_xpixel, ws_ypixel;
 };
 
-/* Sockets (AF_UNIX stream only) */
+/* Sockets: AF_UNIX streams here; AF_INET constants, socket options and the netctl structures are in netabi.h */
 #define AF_UNIX         1
 #define SOCK_STREAM     1
 #define SOCK_NONBLOCK   0x800
@@ -337,5 +341,7 @@ struct ginput_event {
     uint64_t time_ms;
 };
 #define INPUT_GRAB 0x4501               /* arg: 1 = deliver keyboard to this reader instead of the console tty */
+
+#include "netabi.h"
 
 #endif /* SHARED_ABI_H */

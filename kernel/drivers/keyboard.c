@@ -255,6 +255,7 @@ static void mouse_byte(u8 b) {
     if (g_mouse_wheel) {
         wheel = g_mpkt[3] & 0x0F;
         if (wheel & 8) wheel -= 16;
+        wheel = -wheel;                         /* PS/2 counts a turn towards the user as positive; the input layer wants up = positive */
     }
     dy = -dy;                                   /* PS/2 reports up as positive */
     input_mouse(dx, dy, wheel, flags & 7);

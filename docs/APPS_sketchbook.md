@@ -57,6 +57,7 @@ foreground and background colours, as does the small arrows button.
 * The pixel grid shows from 400% on; `G` hides or shows it.
 * Scroll with the mouse wheel (Shift+wheel sideways), the scroll bars, the arrow keys, Page Up/Down, or pan by dragging
   with the middle mouse button.
+* Dragging a tool (a selection, a shape, a stroke) past the edge of the view scrolls the view in that direction.
 * The status bar shows the picture position under the pointer, the colour there, the picture size and the zoom.
 
 ### Selections and the clipboard
@@ -130,4 +131,7 @@ horizontal spans), `fileio.c` (BMP and PPM), `canvas.c` (zoom, scrolling, drawin
 `tests/case_sketchbook.py` boots the desktop in QEMU and drives the program with the mouse and keyboard: drawing and
 undo/redo with pixel checks, zoom and grid, the colour mixer, saving and re-reading BMP and PPM files (byte for byte through
 the serial shell), bad files, dialogs and the unsaved-changes guard, selections and image operations, text and spray,
-shift-constrained shapes and opening `/tmp/screenshot.ppm`. Run them with `python tests/run_all.py sketchbook`.
+shift-constrained shapes and opening `/tmp/screenshot.ppm`. Run them with `python tests/run_all.py sketchbook`. The mouse the
+test rig drives is a PS/2 mouse that occasionally loses a byte when the one-CPU guest is busy (the pointer then sits somewhere
+else for the rest of that boot), so each test is run once more on a fresh VM before it counts as failed; the first failure is
+printed.

@@ -1,0 +1,51 @@
+.page tar 1 create, list and extract tape archives
+
+# SYNOPSIS
+*tar* *-c* [*-zvhp*] [*-f* _ARCHIVE_] [*-C* _DIR_] [*--exclude=*_PATTERN_] _FILE_...
+*tar* *-x* [*-zvpkmO*] [*-f* _ARCHIVE_] [*-C* _DIR_] [*--strip-components=*_N_] [_MEMBER_...]
+*tar* *-t* [*-zv*] [*-f* _ARCHIVE_] [_MEMBER_...]
+
+# DESCRIPTION
+`tar` packs files and directories into one archive and unpacks them again. It writes the ustar format (long paths use a GNU long-name entry) and reads ustar, GNU tar and pax archives, so archives made on other systems can be unpacked here. Permissions, symbolic links and modification times are kept. Directories are walked in name order, so the same tree gives the same archive.
+
+The first argument may be written without a dash, as is traditional: *tar czf docs.tgz docs*. Without *-f* the archive is standard input or output. When an archive is read, gzip compression is detected from its first bytes, so *-z* is only needed for writing.
+
+For safety members whose names contain *..* are skipped, leading slashes are removed, and a member is never extracted through a symbolic link. Hard links in an archive are extracted as copies (the system has no hard links). Device files and pipes are not extracted.
+
+# OPTIONS
+@ *-c*, *-x*, *-t*
+    Create, extract or list. Exactly one is needed.
+@ *-f* _ARCHIVE_
+    The archive file; *-* means standard input or output.
+@ *-z*
+    Compress with gzip while writing (read: decompress even without the gzip signature).
+@ *-v*
+    List each member as it is processed. With *-t*, show permissions, owner, size and time.
+@ *-C* _DIR_
+    Change to _DIR_ before the files that follow (create) or before extracting.
+@ *-p*
+    Extract exactly the stored permission bits. This is the default for root; others get them reduced by their umask.
+@ *-k*
+    Do not overwrite existing files.
+@ *-O*
+    Extract file contents to standard output.
+@ *-h*
+    Archive the files that symbolic links point to.
+@ *-m*
+    Do not restore modification times.
+@ *--strip-components=*_N_
+    Remove the first _N_ directory names from each member name on extraction.
+@ *--exclude=*_PATTERN_
+    Skip members whose name matches the glob pattern (also matched against each trailing part of the name).
+
+# EXIT STATUS
+0, 1 if a member was not found, 2 for any error (unreadable file, damaged archive, bad usage).
+
+# EXAMPLES
+    tar -czf backup.tgz -C /HumanVillage reimu
+    tar -tvf backup.tgz
+    tar -xf backup.tgz -C /tmp --strip-components=1
+    tar -xOf notes.tar notes/todo.txt
+
+# SEE ALSO
+gzip(1), cp(1)

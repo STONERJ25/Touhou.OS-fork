@@ -7,6 +7,7 @@
 #include <limits.h>
 #include <sys/mman.h>
 #include <math.h>
+#include "pthread_impl.h"
 
 /* ---------------------------------------------------------------- malloc */
 
@@ -118,7 +119,7 @@ static void place(void *bp, size_t size) {
     }
 }
 
-void *malloc(size_t n) {
+static void *malloc_nl(size_t n) {
     if (n == 0) n = 1;
     if (n >= MMAP_THRESHOLD) {
         size_t total = (n + DSIZE + 4095) & ~(size_t)4095;
@@ -140,7 +141,7 @@ void *malloc(size_t n) {
     return bp;
 }
 
-void free(void *p) {
+static void free_nl(void *p) {
     if (!p) return;
     char *b = (char *)p;
     if (GET(b - WSIZE) == 0x4D4D4150) {
@@ -167,15 +168,34 @@ static size_t usable(void *p) {
     return BSIZE(HDRP(p)) - DSIZE;
 }
 
+/* One lock covers the whole allocator (threads share the heap); fork() takes it too, see sys.c. */
+volatile int __malloc_lock;
+
+void *malloc(size_t n) {
+    __lock(&__malloc_lock);
+    void *p = malloc_nl(n);
+    __unlock(&__malloc_lock);
+    return p;
+}
+
+void free(void *p) {
+    if (!p) return;
+    __lock(&__malloc_lock);
+    free_nl(p);
+    __unlock(&__malloc_lock);
+}
+
 void *realloc(void *p, size_t n) {
     if (!p) return malloc(n);
     if (n == 0) { free(p); return NULL; }
+    __lock(&__malloc_lock);
     size_t old = usable(p);
-    if (n <= old) return p;
-    void *np = malloc(n);
-    if (!np) return NULL;
-    memcpy(np, p, old);
-    free(p);
+    void *np = p;
+    if (n > old) {
+        np = malloc_nl(n);
+        if (np) { memcpy(np, p, old); free_nl(p); }
+    }
+    __unlock(&__malloc_lock);
     return np;
 }
 
