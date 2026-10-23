@@ -20,7 +20,8 @@ The sound system belongs to the Kappa/Nitori hardware crowd (kernel log tag `Nit
 | Intel HDA driver (CORB/RIRB polled, codec graph parse, path selection, unmute, EAPD, stream, jack auto-mute) | done, tested in QEMU with `hda-output` only; **never run on real hardware** |
 | AC'97 driver (polled, circular descriptor list) | done, tested in QEMU (`AC97`); never run on real hardware |
 | libaudio: device, WAV reader/writer, tone and noise generators, system sounds | done |
-| libaudio: chiptune synthesizer / sequencer and the procedural tracks | not written yet |
+| libaudio: chiptune synthesizer / sequencer (`chip.h`, `chip.c`: MML notation, 12 instruments, ADSR, vibrato, PolyBLEP) | written and compiles; **never run or tested**, not used by any program yet |
+| the procedural tracks (`chip_songs()`, `songs.c`) | not written yet |
 | `beep`, `play` (`-g MS` keeps the stream open between files), `volume` | done |
 | Reimu's Jukebox (GUI) | not written yet |
 | System sounds hooked into the shell, greeter, lock screen and dialogs | not hooked in yet (`beep -e login` plays them) |
@@ -132,3 +133,48 @@ Covered so far (all on QEMU's `hda-output`; `python tests/run_all.py audio_`):
 Also `audio_ac97_tone` (the AC'97 path with a 22050 Hz 8-bit client as well).
 
 Not covered yet: `hda-duplex`, the Jukebox, the system sounds in the desktop, the real Dell.
+
+## State when paused
+
+The work was stopped on request in the middle of the sound project; this is exactly where it is.
+
+**Done, committed, tested in QEMU** (`python tests/run_all.py audio_` passed 7 of 7 and `manual` passed, on the commit before
+the last merge of `main`; after that merge only `audio_hda_tone`, `audio_no_device` and `audio_ac97_tone` were re-run and passed):
+the audio core (`/dev/audio`, mixer, limiter, volumes, `/proc/audio`, silence on underrun, stall fallback), the Intel HDA
+driver, the AC'97 driver, libaudio's device/WAV/generator/system-sound code, the `beep`, `play`, `volume` applets with
+manual pages (`beep(1)`, `play(1)`, `volume(1)`, `audio(7)`), the harness support (`Qemu(audio=...)`, `tests/audiotools.py`).
+
+**Half done:** `user/lib/audio/include/chip.h` and `src/chip.c`, the chiptune synthesizer and MML sequencer. It compiles
+without warnings but has never been run: nothing calls it, and `chip_songs()` (declared in `chip.h`) does not exist yet.
+Expect small bugs; test it first on the host (it is plain C with libm: compile `chip.c` with a host compiler together with
+a `main` that renders a song to a WAV, and look at the file with `tests/audiotools.py`).
+
+**Not started:**
+
+* `user/lib/audio/src/songs.c`: five or so original tracks in MML (instrument table and the notation are in `chip.h`).
+* Reimu's Jukebox (`user/bin/jukebox/`, a Kappa app): track list (the built-in songs and the `.wav` files in `~/Music`), play,
+  pause, stop, next, seek bar, volume slider (the master volume), a spectrum or waveform view, a `.pw` manual page, an entry
+  in `user/bin/hakurei-shell/launch.c` and a GUI test with `tests/guitools.py`. Plan: feed `/dev/audio` from the `kapp_set_tick`
+  callback with a non-blocking stream, about 400 ms ahead, using `AUDIO_GET_STATUS` to see how much is queued; `AUDIO_FLUSH`
+  on pause and seek.
+* Hooking the system sounds in: `audio_event(AUDIO_EV_LOGIN)` in `hakurei-shell` at start, `AUDIO_EV_DIALOG` and
+  `AUDIO_EV_ERROR` in the Kappa dialogs, `AUDIO_EV_SHUTDOWN` before `gap_reboot` (wait about a second so it is heard). The
+  functions, the switch and the sounds exist and work (`beep -e login`); no program calls them. A test with
+  `Qemu(sounds=True)` should check that the chime reaches the capture.
+* Recording, an `hda-duplex` test, mentions in `docs/DESKTOP.md` and `docs/THEMING.md` beyond the lines already added.
+
+**Known problems and risks:**
+
+* Nothing has run on real hardware. Everything about the Dell (jack retasking, Realtek coefficient tweaks, GPIO amplifiers,
+  the HDMI codec on the same controller) is untested. The HDA driver has no immediate-command fallback if CORB/RIRB fails.
+* The mix test (`audio_mix_two_clients`) was flaky until the ring was lengthened to 1.4 s; a guest that the host starves for
+  more than a second can still make the hardware lap the ring and repeat old sound. If it flakes again, lengthen the ring
+  or look at the `underruns` counters in `/proc/audio`.
+* `play -g` exists because gapsh's `( a; b ) | cmd` closes the pipe after the first command of the group; not looked into.
+* The mixer thread polls every 5 ms while sound plays and sleeps otherwise; the hardware engine stops after 3 s of silence
+  (`audio.idle=MS` on the command line). The first sound after that has a short start-up.
+
+**How to resume:** `git log` on this branch, `python tools/build.py`, `python tests/run_all.py audio_` (about two minutes).
+Merge `main` first (`git merge main`; `tools/qemu.py` is the file that conflicts: keep both the `boot_image` and the `audio`
+parameters). Then do the "Not started" list in this order: songs.c, a host-side render of every song, `play --song`, the
+Jukebox, the hooks, the tests, the full `python tests/run_all.py`.

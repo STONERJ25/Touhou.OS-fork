@@ -16,7 +16,7 @@ All art is original or procedurally generated. No assets are extracted from the 
 | Sakuya | timers, clock, tick | time manipulation |
 | Alice | tasks, processes, scheduler | she moves puppets on strings |
 | Eiki | faults, permissions, security | the judge: incidents are reported to Eiki |
-| Kappa / Nitori | hardware, framebuffer, window toolkit | kappa engineers |
+| Kappa / Nitori | hardware, framebuffer, window toolkit, sound (the mixer, `/dev/audio`, the HDA and AC'97 drivers) | kappa engineers; the music player is Reimu's Jukebox |
 | Marisa | PCI and block devices (she collects everything on the bus) | borrows without asking |
 | Hakurei | init and the login screen | the shrine opens for the day |
 | Satori | keyboard | she reads your mind (your keystrokes) |
