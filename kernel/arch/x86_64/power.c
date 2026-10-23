@@ -4,8 +4,13 @@
 #include "kernel.h"
 #include "acpi.h"
 #include "fbcon.h"
+#include "irq.h"
 
 NORETURN void qemu_exit(int code) {
+    /* The test harness reads the serial port over a TCP connection and QEMU leaves through exit(): on a loaded Windows host the connection
+     * can be reset before the harness has read the last lines, the verdict ("UTEST PASS") among them, and a passing run is reported as
+     * "QEMU exited (code 1)" (about 1 run in 60 for the utest suite while the host was busy, on main as well). Give the reader a moment. */
+    udelay(300000);
     outb(0xF4, (u8)code);               /* isa-debug-exit: QEMU exits with (code << 1) | 1 */
     for (;;) hlt();
 }

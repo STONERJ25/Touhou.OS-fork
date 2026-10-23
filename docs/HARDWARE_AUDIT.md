@@ -121,7 +121,8 @@ is easier to read).
 | P3 | BAR sizing switches the device's memory decoding off and writes all ones into the BARs. For the display adapter that is the window the console is drawing through. | `probe_bars` | low-medium | **fixed**: class 03 devices are not sized at all (Linux's `mmio_always_on`). |
 | P4 | BARs: 64-bit and prefetchable BARs are sized correctly (`type == 2` takes two registers), memory and I/O decoding are restored. A BAR the firmware left unassigned (base 0) makes `pci_map_bar` return NULL and the driver logs `has no memory BAR`. | | | **fine** |
 | P5 | Driver matching is by class code (`pci_find_class`): xHCI `0C/03/30`, AHCI `01/06/01`, NVMe `01/08/02`, HDA `04/03`, Ethernet by vendor/device id only for the Intel/virtio families that are known. | | | **fine** |
-| P6 | `quiesce_dma` clears bus mastering on storage, network, audio and USB endpoints at scan time so firmware leftovers cannot DMA into reused memory (bridges and the display adapter are left alone on purpose); each driver turns it back on when it claims the device. | | | **fine** |
+| P6 | The kernel assigns no resources: bridge windows and BARs are whatever the firmware programmed. A device the BIOS left disabled has base 0 and is skipped by `pci_map_bar` (its driver logs it); nothing is ever moved. | `probe_bars`, `pci_map_bar` | | **fine** for a PC that boots from UEFI (it enumerates and assigns everything it enabled, including the ranges behind the root port of an NVMe drive). |
+| P7 | `quiesce_dma` clears bus mastering on storage, network, audio and USB endpoints at scan time so firmware leftovers cannot DMA into reused memory (bridges and the display adapter are left alone on purpose); each driver turns it back on when it claims the device. | | | **fine** |
 
 ## 5. AHCI and NVMe
 
@@ -175,6 +176,14 @@ Read against AHCI 1.3.1 and NVMe 1.4 and Linux's `libahci`/`nvme-pci`. **No defe
 * A failed power-off (S5 not working) halted silently. **Fixed**: it says so and tells you to hold the button.
 * The kernel log scrolled through a path that was slow on write-combining memory (F1).
 * `kernel/drivers/usb/usb.c` prints raw PORTSC values when no keyboard shows up: keep this when changing the driver.
+* **A test flake that is not a kernel bug** (found while running the suite for this audit): `utest` and the other tests that end through
+  `qemu_exit()` sometimes fail with `QEMU exited (code 1) while waiting for /UTEST (PASS|FAIL)/` and a serial log that stops in the middle of
+  the last lines. Exit status 1 is the guest saying *success* (`(0 << 1) | 1` from `isa-debug-exit`); the trace of such a run shows a healthy
+  guest reaching `init`'s `reboot()` (see `-d int` log tails). The harness reads the guest's serial port over TCP, QEMU leaves through `exit()`,
+  and on a loaded Windows host the connection is reset before the reader thread has fetched the last bytes. It happens at the same rate on
+  `main` (2 of 120 runs each in a side-by-side loop, `utest` boots with other test runs going on) and on this branch (2 of 120), so it is not
+  caused by the changes here. `qemu_exit()` now waits 300 ms before leaving so that the reader can catch up (0 failures in 139 runs afterwards,
+  under lighter load). Not a hardware matter, noted so nobody chases it.
 
 ### Network and audio drivers on main (noted, not changed; their owners review the details)
 

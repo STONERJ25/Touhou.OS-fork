@@ -76,7 +76,7 @@ static bool ram_mapped(u64 phys, u64 len) {
 static const void *acpi_map(u64 phys, u64 len) {
     if (!phys || phys + len < phys || phys + len > (1ULL << 48)) return NULL;       /* a garbage pointer must not become a mapping */
     if (ram_mapped(phys, len)) return phys_to_virt(phys);
-    return ioremap(phys, len, 0);
+    return ioremap(phys, len, PTE_PCD);                 /* firmware memory outside the direct map: uncached, in case it is device memory after all */
 }
 
 static bool checksum_ok(const void *p, size_t len) {
