@@ -2,7 +2,7 @@
  * jukebox: Reimu's Jukebox, the music player of HakureiDE, staged in the Prismriver Concert Hall.
  *
  * The Prismriver sisters (Lunasa, Merlin and Lyrica) play whatever the playlist holds: the songs that ship with the
- * system (the .tms files in /ScarletDevilMansion/share/music, see tms(5)) and the .wav and .tms files in ~/Music. The sound goes
+ * system (the .tms files in /ScarletDevilMansion/share/music, see tms(5)) and the .wav, .tms and .mod files in ~/Music. The sound goes
  * through /dev/audio like any other program's; the window is one KApp whose tick keeps the device fed.
  *
  *   player.c    what is loaded, the stream to the sound device, play / pause / seek, the picture of the sound
@@ -17,8 +17,9 @@
 #include <kappa.h>
 #include <audio.h>
 #include <chip.h>
+#include <music.h>
 
-typedef enum { TK_SONG, TK_WAV } TrackKind;
+typedef enum { TK_MUSIC, TK_WAV } TrackKind;           /* a song or module (libaudio's Music), or a WAV file */
 
 typedef struct Track {
     char path[256];
@@ -49,8 +50,8 @@ typedef struct Jukebox {
     bool playing, paused;
     bool repeat;
     char status[160];
-    ChipSong *song;
-    ChipPlayer *cp;
+    Music *mus;                         /* the loaded song or module, NULL for a WAV file */
+    MusicInfo minfo;
     AudioWav wav;
     bool wav_open;
     unsigned rate;

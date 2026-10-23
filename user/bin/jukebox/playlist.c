@@ -27,7 +27,7 @@ static void base_title(const char *path, char *out, size_t n) {
 int playlist_add(const char *path, bool shipped) {
     for (int i = 0; i < J.ntr; i++) if (!strcmp(J.tr[i].path, path)) return i;
     TrackKind kind;
-    if (has_suffix(path, ".tms")) kind = TK_SONG;
+    if (has_suffix(path, ".tms") || has_suffix(path, ".mod")) kind = TK_MUSIC;
     else if (has_suffix(path, ".wav")) kind = TK_WAV;
     else return -1;
     if (J.ntr == J.cap) {
@@ -43,18 +43,18 @@ int playlist_add(const char *path, bool shipped) {
     t->kind = kind;
     t->shipped = shipped;
     base_title(path, t->title, sizeof t->title);
-    if (kind == TK_SONG) {
-        char err[160];
-        ChipSong *s = chip_song_load(path, err, sizeof err);
-        if (!s) {
+    if (kind == TK_MUSIC) {
+        char err[200];
+        MusicInfo info;
+        Music *m = music_open(path, SONG_RATE, &info, err, sizeof err);
+        if (!m) {
             snprintf(t->err, sizeof t->err, "%s", err);
             snprintf(t->sub, sizeof t->sub, "cannot be played");
         } else {
-            snprintf(t->title, sizeof t->title, "%s", s->title);
-            snprintf(t->sub, sizeof t->sub, "%s", s->mood);
-            ChipPlayer *p = chip_new(s, SONG_RATE);
-            if (p) { t->length = chip_length(p); chip_free(p); }
-            chip_song_free(s);
+            snprintf(t->title, sizeof t->title, "%s", info.title);
+            snprintf(t->sub, sizeof t->sub, "%s", info.sub);
+            t->length = info.length;
+            music_close(m);
         }
     } else {
         AudioWav w;
@@ -82,7 +82,7 @@ static void add_directory(const char *dir, bool shipped) {
     struct dirent *e;
     while ((e = readdir(d)) && n < 256) {
         if (e->d_name[0] == '.') continue;
-        if (!has_suffix(e->d_name, ".tms") && !has_suffix(e->d_name, ".wav")) continue;
+        if (!has_suffix(e->d_name, ".tms") && !has_suffix(e->d_name, ".mod") && !has_suffix(e->d_name, ".wav")) continue;
         names[n++] = strdup(e->d_name);
     }
     closedir(d);

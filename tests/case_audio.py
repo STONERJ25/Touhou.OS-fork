@@ -171,6 +171,21 @@ def audio_no_device():
 
 
 @test
+def audio_hda_no_codec():
+    """An HDA controller with no codec behind it: the boot is not held up, there is no /dev/audio, the log says why."""
+    with Qemu(cmdline="text", name="t-audio-nocodec", audio="hda-nocodec") as vm:
+        vm.expect(test_shell.PROMPT, timeout=90)
+        out, rc = sh(vm, "ls /dev/audio /proc/audio")
+        assert rc != 0 and "No such file" in out, out
+        out, rc = sh(vm, "dmesg | grep Nitori")
+        assert "no codec answered" in out, out
+        out, rc = sh(vm, "beep 2>&1; echo rc=$?")
+        assert "no sound device" in out and "rc=1" in out, out
+        out, rc = sh(vm, "echo still-alive")
+        assert "still-alive" in out, out
+
+
+@test
 def audio_hda_graph():
     """The HDA output planner picks the right pins, mixers, selectors and converters in invented Realtek-style codecs."""
     with Qemu(cmdline="text", name="t-audio-graph") as vm:
@@ -253,6 +268,117 @@ def audio_song_timing_and_pitch():
     assert 1.6 < (b - a) / rate < 3.0, f"a whole note at 120 bpm lasts about 2 s (gate 7/8, plus its release): {(b - a) / rate:.2f}"
     f = at.dominant_freq(at.trimmed(x[a:b], rate, ms=60), rate)
     assert abs(f - 659.3) < 8, f"the FM note should sound at E5 (659 Hz), heard {f:.1f}"
+
+
+def make_module():
+    """A four-channel ProTracker module built from scratch, so the test knows exactly what it must sound like.
+
+    Its one instrument is a 64-byte sine wave that loops; period 214 plays it at 259 Hz. At speed 6 and tempo 125 a row
+    lasts 120 ms. Pattern 0: rows 0-3 a note on channel 1 (left), rows 4-7 the same note an octave up, rows 8-11 the
+    first note on channel 2 (right), row 12 jumps on. Pattern 1: rows 0-7 the note with an arpeggio of 0, 3 and 7
+    semitones; row 8 ends the song and, with a pattern delay, lasts two rows: 23 rows, 2.76 s in all."""
+    import math
+    import struct
+    sine = bytes(round(100 * math.sin(2 * math.pi * i / 64)) & 0xFF for i in range(64))
+    data = b"Test Module".ljust(20, b"\0")
+    data += b"sine".ljust(22, b"\0") + struct.pack(">HBBHH", 32, 0, 64, 0, 32)          # length, finetune, volume, loop start and length (words)
+    data += (bytes(22) + struct.pack(">HBBHH", 0, 0, 0, 0, 1)) * 30
+    data += bytes([2, 127]) + bytes([0, 1]) + bytes(126) + b"M.K."                        # two orders: pattern 0, pattern 1
+    assert len(data) == 1084
+    pats = [[[(0, 0, 0, 0)] * 4 for _ in range(64)] for _ in range(2)]
+
+    def put(pat, row, ch, sample=0, period=0, effect=0, param=0):
+        pats[pat][row][ch] = (sample, period, effect, param)
+
+    put(0, 0, 0, 1, 214)
+    put(0, 4, 0, 1, 107)
+    put(0, 8, 0, effect=0xC)                                                              # set volume 0
+    put(0, 8, 1, 1, 214)
+    put(0, 12, 1, effect=0xC)
+    put(0, 12, 3, effect=0xD)                                                             # pattern break: on to pattern 1
+    put(1, 0, 0, 1, 214, 0, 0x37)                                                         # arpeggio 0, 3, 7
+    for row in range(1, 8):
+        put(1, row, 0, effect=0, param=0x37)
+    put(1, 8, 0, effect=0xC)
+    put(1, 8, 1, effect=0xE, param=0xE1)                                                  # pattern delay: this row twice
+    put(1, 8, 3, effect=0xD)                                                              # and then the end of the song
+    for pat in pats:
+        for row in pat:
+            for sample, period, effect, param in row:
+                data += bytes([(sample & 0xF0) | (period >> 8), period & 0xFF, ((sample & 0x0F) << 4) | effect, param])
+    return data + sine
+
+
+def put_file(vm, path, data, chunk=200):
+    """Writes a file into the guest through the shell: base64 text in short lines, decoded there, checked with md5sum."""
+    import base64
+    import hashlib
+    text = base64.b64encode(data).decode()
+    sh(vm, f"rm -f {path}.b64")
+    for i in range(0, len(text), chunk):
+        out, rc = sh(vm, f"echo {text[i:i + chunk]} >> {path}.b64")
+        assert rc == 0, out
+    out, rc = sh(vm, f"base64 -d {path}.b64 > {path}; md5sum {path}")
+    assert hashlib.md5(data).hexdigest() in out, f"the file did not arrive intact: {out}"
+
+
+def rms(x):
+    return float((x.astype("float64") ** 2).mean() ** 0.5) if len(x) else 0.0
+
+
+@test
+def audio_mod_module():
+    """A ProTracker module plays at the right pitch, speed and side; arpeggio, pattern delay and seeking work; junk is refused."""
+    mod = make_module()
+    with Qemu(cmdline="text", name="t-audio-mod", audio="hda") as vm:
+        vm.expect(test_shell.PROMPT, timeout=90)
+        put_file(vm, "/tmp/test.mod", mod)
+        out, rc = sh(vm, "play -i /tmp/test.mod", timeout=180)
+        assert rc == 0, out
+        assert "Test Module (ProTracker module, 4 channels)" in out, out
+        assert re.search(r"module, 4 channels, 0:03", out), out
+        m = re.search(r"measured ([\d.]+) s: peak ([\d.]+)", out)
+        assert m and abs(float(m.group(1)) - 2.8) < 0.06 and 0.2 < float(m.group(2)) < 0.28, f"23 rows of 120 ms were expected: {out}"
+        out, rc = sh(vm, "jukebox --list /tmp/test.mod")
+        assert re.search(r"^\s*1\. Test Module \(0:03\) /tmp/test\.mod$", out, re.M), out
+        out, rc = sh(vm, "cp /tmp/test.mod /tmp/renamed.bin; play -i /tmp/renamed.bin")           # found by its signature, not its name
+        assert rc == 0 and "Test Module" in out, out
+        out, rc = sh(vm, "echo hello > /tmp/junk.mod; play -i /tmp/junk.mod")
+        assert rc == 1 and "too short to be a ProTracker module" in out, out
+        sh(vm, "volume 100")
+        out, rc = sh(vm, "play -q /tmp/test.mod", timeout=180)
+        assert rc == 0, out
+        out, rc = sh(vm, "sleep 1; play -q -s 1.56 -t 0.96 /tmp/test.mod", timeout=180)          # seek to the start of pattern 1
+        assert rc == 0, out
+        vm.stop()
+        rate, x = at.load(vm.audio_path)
+    left, right = x[:, 0], x[:, 1]
+    segs = at.segments(x, rate, threshold=0.01, merge_ms=300)
+    assert len(segs) == 2, f"expected the module and the part played after the seek, found {segs}"
+    (a, b), (c, d) = segs
+    assert 2.35 < (b - a) / rate < 2.7, f"rows 0-11 and 13-20 are 2.52 s of sound, found {(b - a) / rate:.2f} s"
+
+    def win(ch, start, t0, t1):
+        return ch[start + int(t0 * rate):start + int(t1 * rate)]
+
+    f = at.dominant_freq(win(left, a, 0.06, 0.42), rate)
+    assert abs(f - 258.97) < 4, f"period 214 with a 64-byte wave is 259 Hz, heard {f:.1f}"
+    assert rms(win(left, a, 0.06, 0.42)) > 2.5 * rms(win(right, a, 0.06, 0.42)), "channel 1 belongs on the left"
+    f = at.dominant_freq(win(left, a, 0.54, 0.90), rate)
+    assert abs(f - 517.9) < 8, f"period 107 is an octave higher (518 Hz), heard {f:.1f}"
+    f = at.dominant_freq(win(right, a, 1.02, 1.38), rate)
+    assert abs(f - 258.97) < 4, f"channel 2 plays 259 Hz again, heard {f:.1f}"
+    assert rms(win(right, a, 1.02, 1.38)) > 2.5 * rms(win(left, a, 1.02, 1.38)), "channel 2 belongs on the right"
+    assert 0.2 < at.peak(left) < 0.3, f"one voice at full volume should peak near 0.24, found {at.peak(left):.2f}"
+
+    def arpeggio(start, t0, t1):
+        bands = [at.band_power(win(left, start, t0, t1), rate, hz, 14) for hz in (258.97, 307.9, 387.6)]
+        assert min(bands) > 0.09 and sum(bands) > 0.45, f"an arpeggio of 0, 3 and 7 semitones has three equal peaks, found {bands}"
+
+    arpeggio(a, 1.62, 2.46)                                                               # pattern 1 in the whole module
+    assert 0.85 < (d - c) / rate < 1.15, f"the seek should leave the 0.96 s of pattern 1, found {(d - c) / rate:.2f} s"
+    arpeggio(c, 0.06, 0.90)                                                               # the same after the seek
+    assert rms(win(right, c, 0.06, 0.90)) < 0.45 * rms(win(left, c, 0.06, 0.90)), "after the seek only channel 1 is left"
 
 
 @test

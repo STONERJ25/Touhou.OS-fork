@@ -5,7 +5,7 @@
 *jukebox* *--list*
 
 # DESCRIPTION
-`jukebox` is the desktop's music player. Its window is the Prismriver Concert Hall: Lunasa, Merlin and Lyrica stand on a stage and play whatever the playlist holds, and the three of them jump to the low, middle and high parts of the sound while a row of bars in the orchestra pit shows its spectrum. The playlist on the left is made of the songs that ship with the system (`/ScarletDevilMansion/share/music`, see tms(5)) followed by the `.wav` and `.tms` files in `~/Music`; files named on the command line come first, and *Open music...* adds more. WAV files may be 8, 16, 24 or 32 bits, mono or stereo, at any rate.
+`jukebox` is the desktop's music player. Its window is the Prismriver Concert Hall: Lunasa, Merlin and Lyrica stand on a stage and play whatever the playlist holds, and the three of them jump to the low, middle and high parts of the sound while a row of bars in the orchestra pit shows its spectrum. The playlist on the left is made of the songs that ship with the system (`/ScarletDevilMansion/share/music`, see tms(5)) followed by the `.wav`, `.tms` and `.mod` files in `~/Music`; files named on the command line come first, and *Open music...* adds more. WAV files may be 8, 16, 24 or 32 bits, mono or stereo, at any rate; `.mod` files are ProTracker modules (see audio(7)).
 
 Below the stage are the title and mood of the song, a seek bar with the time, the buttons (previous, play and pause, stop, next) and the master volume. The volume is the one of the whole machine, the same as `volume(1)` and the speaker in the panel. When the playlist ends it starts again unless *Repeat* is off.
 

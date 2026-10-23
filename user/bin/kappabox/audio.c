@@ -2,6 +2,7 @@
 #include "kappabox.h"
 #include <audio.h>
 #include <chip.h>
+#include <music.h>
 #include <math.h>
 
 static volatile int g_stop;
@@ -245,49 +246,37 @@ static int play_stream(Audio *a, int fd, size_t chunk) {
     return rc;
 }
 
-/* A song file starts with the word "tms" (see tms(5)) or is named *.tms. */
-static bool is_song(const char *path) {
-    size_t n = strlen(path);
-    if (n > 4 && !strcmp(path + n - 4, ".tms")) return true;
-    if (!strcmp(path, "-")) return false;
-    int fd = open(path, O_RDONLY);
-    if (fd < 0) return false;
-    char head[4] = { 0 };
-    ssize_t r = read(fd, head, sizeof head);
-    close(fd);
-    return r == 4 && !memcmp(head, "tms", 3) && (head[3] == ' ' || head[3] == '\n' || head[3] == '\r');
-}
-
 static void clock_text(double s, char *out, size_t n) {
     int t = (int)(s + 0.5);
     snprintf(out, n, "%d:%02d", t / 60, t % 60);
 }
 
-static void song_summary(const ChipSong *s, double length, bool full) {
+static void song_summary(const Music *m, const MusicInfo *in, bool full) {
     char len[16];
-    clock_text(length, len, sizeof len);
-    printf("%s%s%s%s\n", s->title, s->mood[0] ? " (" : "", s->mood, s->mood[0] ? ")" : "");
-    printf("  %d bpm, %d channels, %s%s\n", s->bpm, s->nchannels, len, s->loop ? ", loops" : "");
-    if (s->author[0]) printf("  by %s\n", s->author);
-    if (!full) return;
+    clock_text(in->length, len, sizeof len);
+    printf("%s%s%s%s\n", in->title, in->sub[0] ? " (" : "", in->sub, in->sub[0] ? ")" : "");
+    if (in->bpm) printf("  %d bpm, %d channels, %s%s\n", in->bpm, in->channels, len, in->loops ? ", loops" : "");
+    else printf("  %s, %d channels, %s\n", in->kind, in->channels, len);
+    const ChipSong *s = music_chip_song(m);
+    if (s && s->author[0]) printf("  by %s\n", s->author);
+    if (!full || !s) return;
     for (int c = 0; c < s->nchannels; c++) {
-        const ChipInstrument *in = &s->inst[s->def[c].instrument];
-        printf("  channel %-8s starts with %s (pan %+.2f, gain %.2f)\n", s->def[c].name, in->name, (double)s->def[c].pan, (double)s->def[c].gain);
+        const ChipInstrument *ins = &s->inst[s->def[c].instrument];
+        printf("  channel %-8s starts with %s (pan %+.2f, gain %.2f)\n", s->def[c].name, ins->name, (double)s->def[c].pan, (double)s->def[c].gain);
     }
-    if (s->warnings[0]) printf("  note: %s\n", s->warnings);
+    if (in->notes[0]) printf("  note: %s\n", in->notes);
 }
 
-/* Plays (or, with -i, measures; with -w, writes to a WAV file) one song file. *ap is the device, opened on first use. */
+/* Plays (or, with -i, measures; with -w, writes to a WAV file) one song or module. *ap is the device, opened on first use. */
 static int play_song(Audio **ap, const char *path, const PlayOpts *o, int volume) {
     char err[200];
-    ChipSong *song = chip_song_load(path, err, sizeof err);
-    if (!song) { kb_error("%s: %s", path, err); return 1; }
     unsigned rate = o->wavout ? 44100 : SONG_RATE;
-    ChipPlayer *cp = chip_new(song, rate);
-    if (!cp) { kb_error("%s: out of memory", path); chip_song_free(song); return 1; }
-    double len = chip_length(cp);
-    if (!o->quiet || o->info) song_summary(song, len, o->info);
-    if (o->start > 0) chip_seek(cp, o->start);
+    MusicInfo info;
+    Music *mus = music_open(path, rate, &info, err, sizeof err);
+    if (!mus) { kb_error("%s: %s", path, err); return 1; }
+    double len = info.length;
+    if (!o->quiet || o->info) song_summary(mus, &info, o->info);
+    if (o->start > 0) music_seek(mus, o->start);
     double remaining = len - (o->start < len ? o->start : len);
     double limit = o->seconds > 0 && o->seconds < remaining ? o->seconds : remaining;
     if (o->info && o->seconds <= 0 && limit > 30) limit = 30;                  /* measuring is for checking a song, not for waiting */
@@ -302,7 +291,7 @@ static int play_song(Audio **ap, const char *path, const PlayOpts *o, int volume
         int peak = 0, wpeak = 0, wn = 0;
         while (done < total) {
             size_t want = sizeof buf / 4 < total - done ? sizeof buf / 4 : (size_t)(total - done);
-            size_t n = chip_render(cp, buf, want);
+            size_t n = music_render(mus, buf, want);
             if (!n) break;
             for (size_t i = 0; i < n * 2; i++) {
                 int v = buf[i] < 0 ? -buf[i] : buf[i];
@@ -326,7 +315,7 @@ static int play_song(Audio **ap, const char *path, const PlayOpts *o, int volume
             size_t done = 0;
             while (done < total) {
                 size_t want = sizeof buf / 4 < total - done ? sizeof buf / 4 : (size_t)(total - done);
-                size_t n = chip_render(cp, buf, want);
+                size_t n = music_render(mus, buf, want);
                 if (!n) break;
                 memcpy(pcm + done * 4, buf, n * 4);
                 done += n;
@@ -348,7 +337,7 @@ static int play_song(Audio **ap, const char *path, const PlayOpts *o, int volume
         uint64_t done = 0;
         while (!g_stop && done < total) {
             size_t want = sizeof buf / 4 < total - done ? sizeof buf / 4 : (size_t)(total - done);
-            size_t n = chip_render(cp, buf, want);
+            size_t n = music_render(mus, buf, want);
             if (!n) break;
             ssize_t w = audio_write(*ap, buf, n * 4);
             if (w < 0) { kb_error("%s: %s", path, audio_strerror((int)w)); rc = 1; break; }
@@ -356,16 +345,16 @@ static int play_song(Audio **ap, const char *path, const PlayOpts *o, int volume
         }
     }
 out:
-    chip_free(cp);
-    chip_song_free(song);
+    music_close(mus);
     return rc;
 }
 
-#define PLAY_USAGE "usage: play [-q] [-v PERCENT] [-g MS] FILE.wav|FILE.tms ...\n" \
+#define PLAY_USAGE "usage: play [-q] [-v PERCENT] [-g MS] FILE.wav|FILE.tms|FILE.mod ...\n" \
                    "       play -r RATE -c 1|2 -b 8|16|24|32 FILE.raw     (raw samples; - is standard input)\n" \
-                   "       play [-s SECONDS] [-t SECONDS] [-L] FILE.tms   (start there, play that long, repeat forever)\n" \
-                   "       play -i [-t SECONDS] FILE.tms                   (describe and measure a song; no sound device needed)\n" \
-                   "       play -w OUT.wav FILE.tms                        (render a song to a WAV file)\n"
+                   "       play [-s SECONDS] [-t SECONDS] [-L] SONG       (start there, play that long, repeat forever)\n" \
+                   "       play -i [-t SECONDS] SONG                      (describe and measure a song; no sound device needed)\n" \
+                   "       play -w OUT.wav SONG                           (render a song to a WAV file)\n" \
+                   "       SONG is a FILE.tms song or a FILE.mod ProTracker module.\n"
 
 APPLET(play) {
     unsigned rate = 44100, channels = 2, bits = 16;
@@ -397,14 +386,14 @@ APPLET(play) {
         const char *path = argv[i];
         AudioWav w;
         int rc = 0;
-        if (is_song(path)) {
+        if (music_is_file(path)) {
             rc = play_song(&a, path, &o, volume);
             if (rc) status = 1;
             if (a && !g_stop && gap_ms > 0 && i + 1 < argc) usleep((useconds_t)gap_ms * 1000);
             else if (a && !g_stop) audio_drain(a);
             continue;
         }
-        if (o.info || o.wavout) { kb_error("%s: -i and -w need a song file (*.tms)", path); status = 1; continue; }
+        if (o.info || o.wavout) { kb_error("%s: -i and -w need a song (*.tms) or a module (*.mod)", path); status = 1; continue; }
         if (!a) {
             a = audio_open(0);
             if (!a) { no_device("cannot play", errno); return 1; }

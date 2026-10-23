@@ -46,10 +46,8 @@ void player_init(void) {
 }
 
 static void close_source(void) {
-    if (J.cp) chip_free(J.cp);
-    J.cp = NULL;
-    if (J.song) chip_song_free(J.song);
-    J.song = NULL;
+    if (J.mus) music_close(J.mus);
+    J.mus = NULL;
     if (J.wav_open) audio_wav_close(&J.wav);
     J.wav_open = false;
     J.carry_n = 0;
@@ -109,9 +107,9 @@ static void seek_source(double t) {
     J.rendered = 0;
     J.start_pos = t;
     J.hist_total = 0;
-    if (J.cp) {
-        chip_seek(J.cp, t);
-        double left = chip_length(J.cp) - t;
+    if (J.mus) {
+        music_seek(J.mus, t);
+        double left = music_length(J.mus) - t;
         J.limit_frames = left > 0 ? (uint64_t)(left * J.rate) : 0;
     } else if (J.wav_open) {
         uint32_t frame = (uint32_t)(t * J.wav.rate);
@@ -134,19 +132,17 @@ bool player_load(int index, double at, bool start) {
         return false;
     }
     unsigned channels = 2, format = AUDIO_FMT_S16;
-    if (t->kind == TK_SONG) {
-        char err[160];
-        J.song = chip_song_load(t->path, err, sizeof err);
-        if (!J.song) {
+    if (t->kind == TK_MUSIC) {
+        char err[200];
+        J.rate = SONG_RATE;
+        J.mus = music_open(t->path, J.rate, &J.minfo, err, sizeof err);
+        if (!J.mus) {
             snprintf(t->err, sizeof t->err, "%s", err);
             snprintf(J.status, sizeof J.status, "%s: %s", t->title, err);
             trace("cannot play %s: %s", t->title, err);
             return false;
         }
-        J.rate = SONG_RATE;
-        J.cp = chip_new(J.song, J.rate);
-        if (!J.cp) { snprintf(J.status, sizeof J.status, "Out of memory."); return false; }
-        t->length = chip_length(J.cp);
+        t->length = J.minfo.length;
         J.bytes_per_frame = 4;
     } else {
         if (audio_wav_open(&J.wav, t->path) != 0) {
@@ -268,9 +264,9 @@ void player_set_mute(bool mute) {
 static size_t next_chunk(uint8_t *buf, size_t cap) {
     if (J.rendered >= J.limit_frames) return 0;
     uint64_t left = J.limit_frames - J.rendered;
-    if (J.cp) {
+    if (J.mus) {
         size_t want = CHUNK_FRAMES < left ? CHUNK_FRAMES : (size_t)left;
-        size_t n = chip_render(J.cp, (int16_t *)buf, want);
+        size_t n = music_render(J.mus, (int16_t *)buf, want);
         push_history(buf, n, 2, AUDIO_FMT_S16);
         J.rendered += n;
         return n * 4;

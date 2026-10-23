@@ -144,7 +144,7 @@ static int playlist_widget(KUI *ui, KRect r) {
         uint32_t fg = ui->theme->field_text;
         if (selected) { kc_fill(cv, rr, ui->theme->select_bg); fg = ui->theme->select_text; }
         else if (row == hover) kc_fill(cv, rr, kc_mix(ui->theme->field_bg, ui->theme->accent_light, 40));
-        KIcon icon = t->err[0] ? KI_WARNING : row == J.cur ? (J.playing ? KI_STAR : KI_PETAL) : t->kind == TK_SONG ? KI_MOON : KI_FILE;
+        KIcon icon = t->err[0] ? KI_WARNING : row == J.cur ? (J.playing ? KI_STAR : KI_PETAL) : t->kind == TK_MUSIC ? KI_MOON : KI_FILE;
         k_icon(cv, icon, rr.x + 3, rr.y + 2, 16);
         char clock[16] = "";
         if (t->length > 0) fmt_clock(t->length, clock, sizeof clock);
@@ -283,7 +283,7 @@ static void about(KApp *app) {
     k_messagebox(kapp_display(app), "About Reimu's Jukebox",
                  "Reimu's Jukebox\n\nThe Prismriver sisters (Lunasa, Merlin and Lyrica) play in the Concert Hall.\n"
                  "The songs that come with the system are original music for TouhouOS;\n"
-                 "put .wav or .tms files in your Music folder to add your own.",
+                 "put .wav, .tms or .mod files in your Music folder to add your own.",
                  KI_INFO, ok, 1);
 }
 
@@ -291,7 +291,7 @@ static void file_chosen(const char *path, void *user) {
     (void)user;
     if (!path) return;
     int i = playlist_add(path, false);
-    if (i < 0) { snprintf(J.status, sizeof J.status, "%s is not a .wav or .tms file.", k_basename(path)); return; }
+    if (i < 0) { snprintf(J.status, sizeof J.status, "%s is not a .wav, .tms or .mod file.", k_basename(path)); return; }
     J.list.selected = i;
     trace("added %s", J.tr[i].title);
     player_load(i, 0, true);
@@ -392,7 +392,7 @@ void ui_draw(KApp *app, KUI *ui, void *user) {
         kc_text_in(cv, t2, shown->sub, ui->theme->text_dim, KA_LEFT);
     } else {
         kc_text_in(cv, t1, "Nothing to play yet.", ui->theme->text_dim, KA_LEFT);
-        kc_text_in(cv, t2, "Put .wav or .tms files in your Music folder.", ui->theme->text_dim, KA_LEFT);
+        kc_text_in(cv, t2, "Put .wav, .tms or .mod files in your Music folder.", ui->theme->text_dim, KA_LEFT);
     }
 
     /* seek bar and times */
@@ -404,9 +404,10 @@ void ui_draw(KApp *app, KUI *ui, void *user) {
     fmt_clock(len, b, sizeof b);
     snprintf(times, sizeof times, "%s / %s", a, b);
     kc_text_in(cv, L.times, times, ui->theme->text, KA_LEFT);
-    if (J.cur >= 0 && J.tr[J.cur].kind == TK_SONG && J.song) {
+    if (J.cur >= 0 && J.tr[J.cur].kind == TK_MUSIC && J.mus) {
         char info[80];
-        snprintf(info, sizeof info, "%d bpm, %d voices", J.song->bpm, J.song->nchannels);
+        if (J.minfo.bpm) snprintf(info, sizeof info, "%d bpm, %d voices", J.minfo.bpm, J.minfo.channels);
+        else snprintf(info, sizeof info, "%d channels", J.minfo.channels);
         kc_text_in(cv, L.times, info, ui->theme->text_dim, KA_RIGHT);
     }
 
