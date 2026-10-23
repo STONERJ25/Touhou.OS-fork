@@ -314,7 +314,7 @@ def blk_nvme_read():
         assert (n1["size"], n1["ss"], n1["ro"], n1["parent"], n1["driver"], n1["model"]) == (size, 512, 0, "-", "nvme", "QEMU NVMe Ctrl"), n1
         must(g.ok("lsblk"), r"(?m)^nvme0n1\s+4\.0M\s+0\s+disk\s+nvme\s+QEMU NVMe Ctrl\s*$")
         check_reads(g, "nvme0n1", size)
-        must(g.ok("cat /proc/nvme"), r'nvme0 00:02\.0 1b36:0010 "QEMU NVMe Ctrl" serial TOUHOU01 fw \S+ version \d+\.\d+ cmds \d+ errors 0\s+nsid 1 nvme0n1 8192 x 512')
+        must(g.ok("cat /proc/nvme"), r'nvme0 00:02\.0 1b36:0010 "QEMU NVMe Ctrl" serial TOUHOU01 fw \S+ version \d+\.\d+ cmds \d+ errors 0 flushes \d+\s+nsid 1 nvme0n1 8192 x 512')
 
 
 # -------------------------------------------------------------------------------------------------- writes and copies
@@ -350,7 +350,7 @@ def blk_copy_matrix():
              sata_disk("s2", dsts["ns"], "ide.4", model="DST-S-FROM-N") +
              nvme_ctrl("nv", "CM0001", [(src_nvme, 1), (dsts["sn"], 2), (dsts["nn"], 3)]))
     pairs = [("sdb", "sdc", "ss"), ("sdb", "nvme0n2", "sn"), ("nvme0n1", "sdd", "ns"), ("nvme0n1", "nvme0n3", "nn")]
-    with Guest("t-blk-copy", extra) as g:
+    with Guest("t-blk-copy", extra, cmdline="ahci.nosync nvme.nosync") as g:       # (a flush per 512-byte write would just make it slow)
         parts = g.partitions()
         assert device_by_model(parts, "SRC-SATA") == "sdb" and device_by_model(parts, "DST-S-FROM-S") == "sdc" and device_by_model(parts, "DST-S-FROM-N") == "sdd"
         assert all(n in parts for n in ("nvme0n1", "nvme0n2", "nvme0n3")), sorted(parts)
@@ -371,6 +371,33 @@ def blk_copy_matrix():
     base["ss"] = expected_copy(base["ss"], srcdata, [(SIZE6 - 4096, SIZE6 - 4096, 4096)])
     for tag, path in dsts.items():
         assert path.read_bytes() == base[tag], f"image of destination '{tag}' differs from what the guest wrote"
+
+
+@test
+def blk_write_flush():
+    """Each write request to a disk with a volatile write cache is followed by a flush; reads are not; 'nosync' switches it off."""
+    ssd = pattern_image("wf-sata", 2)
+    nvm = pattern_image("wf-nvme", 2)
+    extra = sata_disk("s0", ssd, "ide.1", model="WF-SATA") + nvme_ctrl("wf", "WF0001", [(nvm, 1)])
+    for nosync in (False, True):
+        with Guest(f"t-blk-flush-{int(nosync)}", extra, cmdline="ahci.nosync nvme.nosync" if nosync else "") as g:
+            log = g.log()
+            must(log, r"volatile write cache" + ("" if nosync else r" \(flushed after every write\)"))
+            def flushes():
+                a = int(must(g.ok("cat /proc/ahci"), r'"WF-SATA".* flushes (\d+)').group(1))
+                n = int(must(g.ok("cat /proc/nvme"), r'"QEMU NVMe Ctrl".* flushes (\d+)').group(1))
+                return a, n
+            before = flushes()
+            g.ok("dd if=/dev/sdb of=/dev/null bs=4096 count=10 status=none")
+            g.ok("dd if=/dev/nvme0n1 of=/dev/null bs=4096 count=10 status=none")
+            assert flushes() == before, "reading must not flush"
+            g.ok("dd if=/dev/zero of=/dev/sdb bs=4096 count=20 conv=notrunc status=none")
+            g.ok("dd if=/dev/zero of=/dev/nvme0n1 bs=4096 count=20 conv=notrunc status=none")
+            after = flushes()
+            if nosync:
+                assert after == before, f"nosync: no flushes expected, got {before} -> {after}"
+            else:
+                assert after[0] - before[0] >= 20 and after[1] - before[1] >= 20, f"expected a flush per write request: {before} -> {after}"
 
 
 # ----------------------------------------------------------------------------------------------- partition tables
@@ -475,7 +502,7 @@ def blk_sata_errors():
         must(out, r"error writing '/dev/\w+': Input/output error")
         g.ok(f"dd if=/dev/zero of=/dev/{dev} bs=512 seek=201 count=2 conv=notrunc status=none")
         g.ok(f"dd if=/dev/zero of=/dev/{dev} bs=512 seek=198 count=2 conv=notrunc status=none")
-        stats = must(g.ok("cat /proc/ahci"), r"port 1 \w+ \"FLAKY-SATA\".*cmds \d+ errors (\d+) resets (\d+)(\s+DEAD)?")
+        stats = must(g.ok("cat /proc/ahci"), r"port 1 \w+ \"FLAKY-SATA\".*cmds \d+ errors (\d+) resets (\d+) flushes \d+(\s+DEAD)?")
         assert int(stats.group(1)) >= 2 and int(stats.group(2)) >= 2 and not stats.group(3), stats.group(0)
         g.ok("sync")
     img = src.read_bytes()
@@ -497,7 +524,7 @@ def blk_sata_timeout():
         must(text, r"ahci0 port 1: command 25 \(lba \d+, \d+ sectors\) failed: timeout")
         must(text, r"ahci0 port 1: link reset done, disk is back")
         assert g.sha_of(f"sha256sum /dev/{dev}") == sha(data), "the disk must read back correctly after the recovery"
-        stats = must(g.ok("cat /proc/ahci"), r"port 1 \w+ \"TIMEOUT-SATA\".*errors (\d+) resets (\d+)(\s+DEAD)?")
+        stats = must(g.ok("cat /proc/ahci"), r"port 1 \w+ \"TIMEOUT-SATA\".*errors (\d+) resets (\d+) flushes \d+(\s+DEAD)?")
         assert int(stats.group(2)) >= 1 and not stats.group(3), stats.group(0)
 
 
@@ -520,7 +547,7 @@ def blk_nvme_errors():
         must(out, r"error writing '/dev/nvme0n1': Input/output error")
         must(out, r"nvme0: write of 1 blocks at lba 200 on nsid 1 failed: status type \d code 0x[0-9a-f]+")
         g.ok("dd if=/dev/zero of=/dev/nvme0n1 bs=512 seek=201 count=2 conv=notrunc status=none")
-        stats = must(g.ok("cat /proc/nvme"), r"cmds \d+ errors (\d+)(\s+DEAD)?")
+        stats = must(g.ok("cat /proc/nvme"), r"cmds \d+ errors (\d+) flushes \d+(\s+DEAD)?")
         assert int(stats.group(1)) >= 3 and not stats.group(2), stats.group(0)
         g.ok("sync")
     img = src.read_bytes()
@@ -545,7 +572,7 @@ def blk_nvme_timeout():
         out, rc = g.run("dd if=/dev/nvme0n1 of=/dev/null bs=4096 count=1")
         assert time.time() - t0 < 6, "a dead controller must fail requests immediately, not wait again"
         must(out, r"Input/output error")
-        must(g.ok("cat /proc/nvme"), r"nvme0 .*errors \d+\s+DEAD")
+        must(g.ok("cat /proc/nvme"), r"nvme0 .*errors \d+ flushes \d+\s+DEAD")
         assert g.sha_of(f"sha256sum /dev/{sata}") == sha(sdata), "the SATA disk must be unaffected by the dead NVMe controller"
         assert g.ok("echo still-alive").strip() == "still-alive"
 

@@ -4,7 +4,7 @@
  *
  * Design in one paragraph: polled and single-command. Every port gets one command slot (slot 0), one command table with a
  * PRDT, and is protected by a mutex, so any number of threads can issue I/O. A request is split into commands of at most
- * 16 MiB / 65535 sectors; each command is a READ/WRITE DMA EXT with a PRDT describing the caller's buffer in physically
+ * 4 MiB / 65535 sectors; each command is a READ/WRITE DMA EXT with a PRDT describing the caller's buffer in physically
  * contiguous runs (bounced through a driver buffer when the buffer is odd-aligned or, on a 32-bit controller, above
  * 4 GiB). Completion is polled: a short spin, then a 1 ms sleep per poll, so an idle disk costs nothing and a fast SSD
  * still copies quickly. No interrupts, no NCQ, no hot-plug, no power management (see docs/BLOCKDEVICES.md).
@@ -106,7 +106,7 @@ void blk_selftest(const char *driver);          /* blk_selftest.c: optional in-k
 
 #define AHCI_MAX_PRD       256                  /* PRDT entries in the command table */
 #define AHCI_PRD_MAX_BYTES (4u << 20)           /* a PRDT entry describes at most 4 MiB */
-#define AHCI_CMD_MAX_BYTES (16u << 20)          /* bytes per command (also at most 65535 sectors) */
+#define AHCI_CMD_MAX_BYTES (4u << 20)           /* bytes per command (also at most 65535 sectors); Linux stays near 1 MiB */
 #define AHCI_BOUNCE_BYTES  (128u << 10)
 
 #define T_ENGINE_MS        500                  /* spec: CR/FR must clear within 500 ms */
@@ -142,11 +142,12 @@ typedef struct AhciPort {
     u32      sector_size;
     u64      sectors;
     u8       flush_cmd;                         /* 0 (none), ATA_FLUSH or ATA_FLUSH_EXT */
+    bool     wcache;                            /* the disk has a volatile write cache that is switched on */
     bool     ssd, locked;
     u32      phys_shift;                        /* log2(logical sectors per physical sector) */
     BlockDev *bd;
 
-    u32      n_cmds, n_errors, n_resets;        /* for /proc/ahci */
+    u32      n_cmds, n_errors, n_resets, n_flushes;     /* for /proc/ahci */
 } AhciPort;
 
 struct AhciHba {
@@ -173,6 +174,7 @@ static bool g_force_hba_reset;                  /* ahci.hbareset    reset the HB
 static u32  g_io_timeout = T_IO_MS;             /* ahci.iotimeout=N ms to wait for a read/write */
 static u32  g_drop_after;                       /* ahci.dropcmd=N   never issue the N-th read/write, so it times out for real */
 static u32  g_rw_count;
+static bool g_nosync;                           /* ahci.nosync      do not flush the write cache after every write request */
 
 #define PR(p, off)      mmio_r32((p)->regs, (off))
 #define PW(p, off, v)   mmio_w32((p)->regs, (off), (v))
@@ -187,7 +189,7 @@ typedef struct {
     u32  sector_size;                           /* logical */
     u32  phys_shift;
     u8   flush_cmd;
-    bool lba48, ssd, locked, atapi;
+    bool lba48, ssd, locked, atapi, wcache;
 } AtaInfo;
 
 /* Pure function of the 256 identify words, so it can be unit tested without hardware. */
@@ -213,6 +215,9 @@ static void ata_parse_identify(const u16 *id, AtaInfo *out) {
     }
 
     if (cmdset_valid) out->flush_cmd = (id[83] & BIT(13)) ? ATA_FLUSH_EXT : (id[83] & BIT(12)) ? ATA_FLUSH : 0;
+    /* Volatile write cache: assumed on when the "enabled" word is not valid, so that a flush is never skipped by mistake. */
+    bool enabled_valid = (id[87] & 0xC000) == 0x4000;
+    out->wcache = out->flush_cmd && (!enabled_valid || (id[85] & BIT(5)));
     out->ssd = id[217] == 1;
     out->locked = (id[128] & BIT(1)) && (id[128] & BIT(2));
 }
@@ -255,6 +260,7 @@ static void ahci_identify_selftest(void) {
     EXPECT(a.lba48 && a.sectors == 0x0000000312345678ull);
     EXPECT(a.sector_size == 4096 && a.phys_shift == 0);
     EXPECT(a.flush_cmd == ATA_FLUSH_EXT && a.ssd && !a.locked && !a.atapi);
+    EXPECT(a.wcache);                                                   /* word 87 not valid: assume the cache is on */
 
     /* 512e: 512-byte logical sectors on 4096-byte physical sectors (8 per physical). */
     id[106] = 0x4000 | BIT(13) | 3;
@@ -265,6 +271,12 @@ static void ahci_identify_selftest(void) {
     ata_parse_identify(id, &a);
     EXPECT(a.sector_size == 512 && a.phys_shift == 3);
     EXPECT(a.flush_cmd == ATA_FLUSH && !a.ssd && a.locked);
+    id[87] = 0x4000;                                                    /* word 85 valid, write cache bit clear: cache is off */
+    ata_parse_identify(id, &a);
+    EXPECT(!a.wcache);
+    id[85] = BIT(5);
+    ata_parse_identify(id, &a);
+    EXPECT(a.wcache);
 
     /* A pre-LBA48 disk, and word 106 invalid (bit 14 clear) must be ignored. */
     id[83] = 0x4000;
@@ -526,7 +538,6 @@ static int ahci_rw(AhciPort *p, u64 lba, u32 count, void *buf, bool write) {
 }
 
 static int ahci_blk_read(BlockDev *d, u64 lba, u32 count, void *buf) { return ahci_rw(d->priv, lba, count, buf, false); }
-static int ahci_blk_write(BlockDev *d, u64 lba, u32 count, const void *buf) { return ahci_rw(d->priv, lba, count, (void *)buf, true); }
 
 static int ahci_blk_flush(BlockDev *d) {
     AhciPort *p = d->priv;
@@ -534,7 +545,20 @@ static int ahci_blk_flush(BlockDev *d) {
     mutex_lock(&p->lock);
     AtaCmd c = { .cmd = p->flush_cmd, .device = 0x40 };
     int rc = ahci_issue(p, &c, 0, T_FLUSH_MS);
+    p->n_flushes++;
     mutex_unlock(&p->lock);
+    return rc;
+}
+
+/*
+ * A write that returns is on stable media: nothing above the block layer calls blk_flush yet (sync is a no-op, power-off does not
+ * flush), and a PC that is reset or powered off with data in a disk's volatile cache loses it. So when the disk has a write
+ * cache that is on, every write request is followed by FLUSH CACHE (one flush per request, however large). "ahci.nosync" skips it.
+ */
+static int ahci_blk_write(BlockDev *d, u64 lba, u32 count, const void *buf) {
+    AhciPort *p = d->priv;
+    int rc = ahci_rw(p, lba, count, (void *)buf, true);
+    if (!rc && count && p->wcache && !g_nosync) rc = ahci_blk_flush(d);
     return rc;
 }
 
@@ -556,7 +580,7 @@ static int port_identify(AhciPort *p, AtaInfo *info) {
 
 /* ---------------------------------------------------------------- port bring-up */
 
-typedef enum { PORT_EMPTY, PORT_STUCK, PORT_PRESENT } PortProbe;
+typedef enum { PORT_EMPTY, PORT_STUCK, PORT_PRESENT, PORT_POWERING } PortProbe;
 
 /*
  * Phase 1, registers only so that empty ports cost nothing: stops whatever the firmware left running, powers the port
@@ -581,12 +605,8 @@ static PortProbe port_detect(AhciPort *p) {
     }
     if (want != cmd) PW(p, PX_CMD, want);
     if (p->hba->cap2 & CAP2_SDS) PW(p, PX_DEVSLP, PR(p, PX_DEVSLP) & ~DEVSLP_ADSE);
-    u32 det = PR(p, PX_SSTS) & 0xF;
-    if (det == 0 && !powered_before) {
-        BLK_POLL((PR(p, PX_SSTS) & 0xF) != 0, 1000);                           /* give a device we just powered time to answer */
-        det = PR(p, PX_SSTS) & 0xF;
-    }
-    return det ? PORT_PRESENT : PORT_EMPTY;
+    if (PR(p, PX_SSTS) & 0xF) return PORT_PRESENT;
+    return powered_before ? PORT_EMPTY : PORT_POWERING;            /* a port we just powered gets a moment to answer (see hba_probe) */
 }
 
 /*
@@ -648,25 +668,9 @@ static const char *spd_name(u32 ssts) {
     }
 }
 
-static void port_probe(AhciHba *h, int n) {
-    if (PORT_BASE(n) + 0x80 > h->pci->bar[5].size) {
-        klog("Kappa", "ahci%d: port %d lies beyond the register window; ignored", h->index, n);
-        return;
-    }
-    AhciPort *p = kzalloc(sizeof *p);
-    if (!p) return;
-    p->hba = h;
-    p->num = n;
-    p->regs = h->mmio + PORT_BASE(n);
-    mutex_init(&p->lock);
-
-    PortProbe st = port_detect(p);
-    if (st == PORT_EMPTY) { kfree(p); return; }
-    if (st == PORT_STUCK) {
-        klog("Kappa", "ahci%d port %d: the command engine will not stop; port ignored", h->index, n);
-        kfree(p);
-        return;
-    }
+/* Everything after detection: memory, link, identify, registration. Frees p when the port does not end up as a disk. */
+static void port_bringup(AhciHba *h, AhciPort *p) {
+    int n = p->num;
     if (!port_alloc(p)) {
         klog("Kappa", "ahci%d port %d: out of DMA memory", h->index, n);
         port_free(p);
@@ -716,6 +720,7 @@ static void port_probe(AhciHba *h, int n) {
     p->sector_size = info.sector_size;
     p->sectors = info.sectors;
     p->flush_cmd = info.flush_cmd;
+    p->wcache = info.wcache;
     p->ssd = info.ssd;
     p->locked = info.locked;
     p->phys_shift = info.phys_shift;
@@ -724,7 +729,9 @@ static void port_probe(AhciHba *h, int n) {
     klog("Kappa", "ahci%d port %d: %s %s link, \"%s\" serial %s firmware %s", h->index, n, spd_name(ssts), info.ssd ? "SSD" : "disk", p->model,
          p->serial[0] ? p->serial : "-", p->firmware[0] ? p->firmware : "-");
     klog("Kappa", "ahci%d port %d: %lu MiB, %lu sectors of %u bytes%s%s", h->index, n, (unsigned long)(p->sectors * p->sector_size >> 20),
-         (unsigned long)p->sectors, p->sector_size, p->phys_shift ? " (512e: larger physical sectors)" : "", p->flush_cmd ? "" : ", no cache flush command");
+         (unsigned long)p->sectors, p->sector_size, p->phys_shift ? " (512e: larger physical sectors)" : "",
+         p->wcache ? (g_nosync ? ", volatile write cache (nosync: not flushed)" : ", volatile write cache (flushed after every write)")
+                   : p->flush_cmd ? ", write cache off" : ", no cache flush command");
 
     BlockDev *bd = kzalloc(sizeof *bd);
     if (!bd) return;
@@ -838,12 +845,46 @@ static void hba_probe(PciDev *pci) {
         if (hba_reset(h)) klog("Kappa", "ahci%d: controller reset did not complete; trying the ports anyway", h->index);
     }
 
+    /* Detect on every port first (registers only), give ports we had to power up one shared moment to answer, then bring the
+     * ports with devices up in port order so that disk names do not depend on timing. */
+    AhciPort *cand[32] = { 0 };
+    PortProbe st[32] = { 0 };
+    u32 empty = 0, powering = 0;
+    u64 t0 = uptime_ms();
+    for (u32 n = 0; n < 32; n++) {
+        if (!(h->pi & (1u << n))) continue;
+        if (PORT_BASE(n) + 0x80 > pci->bar[5].size) { klog("Kappa", "ahci%d: port %u lies beyond the register window; ignored", h->index, n); continue; }
+        AhciPort *p = kzalloc(sizeof *p);
+        if (!p) continue;
+        p->hba = h;
+        p->num = (int)n;
+        p->regs = h->mmio + PORT_BASE(n);
+        mutex_init(&p->lock);
+        st[n] = port_detect(p);
+        if (st[n] == PORT_STUCK) { klog("Kappa", "ahci%d port %u: the command engine will not stop; port ignored", h->index, n); kfree(p); continue; }
+        if (st[n] == PORT_EMPTY) { empty |= 1u << n; kfree(p); continue; }
+        if (st[n] == PORT_POWERING) powering |= 1u << n;
+        cand[n] = p;
+    }
+    if (powering) {
+        BLK_POLL(({ u32 up = 0; for (u32 k = 0; k < 32; k++) if (cand[k] && (powering & (1u << k)) && (PR(cand[k], PX_SSTS) & 0xF)) up |= 1u << k; up == powering; }), 500);
+        for (u32 n = 0; n < 32; n++) {
+            if (!cand[n] || !(powering & (1u << n)) || (PR(cand[n], PX_SSTS) & 0xF)) continue;
+            empty |= 1u << n;
+            kfree(cand[n]);
+            cand[n] = NULL;
+        }
+    }
     for (u32 n = 0; n < 32; n++)
-        if (h->pi & (1u << n)) port_probe(h, (int)n);
+        if (cand[n]) port_bringup(h, cand[n]);
 
     int disks = 0;
     for (int n = 0; n < 32; n++) if (h->port[n]) disks++;
-    if (!disks) klog("Kappa", "ahci%d: no disks found", h->index);
+    char none[96] = "";
+    for (u32 n = 0; n < 32; n++)
+        if (empty & (1u << n)) snprintf(none + strlen(none), sizeof none - strlen(none), " %u", n);
+    klog("Kappa", "ahci%d: probed in %lu ms: %d disk%s%s%s", h->index, (unsigned long)(uptime_ms() - t0), disks, disks == 1 ? "" : "s",
+         none[0] ? ", no device on port" : "", none);
 }
 
 /* ---------------------------------------------------------------- /proc/ahci */
@@ -857,9 +898,9 @@ static size_t gen_proc_ahci(char *buf, size_t cap) {
         for (int i = 0; i < 32 && n + 300 < cap; i++) {
             AhciPort *p = h->port[i];
             if (!p) continue;
-            n += (size_t)snprintf(buf + n, cap - n, "  port %d %s \"%s\" serial %s fw %s %lu x %u%s  cmds %u errors %u resets %u%s\n", i, p->bd ? p->bd->name : "-",
+            n += (size_t)snprintf(buf + n, cap - n, "  port %d %s \"%s\" serial %s fw %s %lu x %u%s  cmds %u errors %u resets %u flushes %u%s\n", i, p->bd ? p->bd->name : "-",
                                   p->model, p->serial, p->firmware, (unsigned long)p->sectors, p->sector_size, p->ssd ? " ssd" : "", p->n_cmds,
-                                  p->n_errors, p->n_resets, p->dead ? "  DEAD" : "");
+                                  p->n_errors, p->n_resets, p->n_flushes, p->dead ? "  DEAD" : "");
         }
     }
     return n;
@@ -874,6 +915,7 @@ static void read_knobs(void) {
     if ((v = cmdline_int("ahci.prdmax", 0)) > 0) g_prd_max = (u32)MIN(v, (long)AHCI_MAX_PRD);
     g_force_bounce = cmdline_flag("ahci.bounce");
     g_force_hba_reset = cmdline_flag("ahci.hbareset");
+    g_nosync = cmdline_flag("ahci.nosync");
     if ((v = cmdline_int("ahci.iotimeout", 0)) > 0) g_io_timeout = (u32)v;
     if ((v = cmdline_int("ahci.dropcmd", 0)) > 0) g_drop_after = (u32)v;
 }

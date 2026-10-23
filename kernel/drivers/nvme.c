@@ -132,13 +132,14 @@ struct NvmeCtrl {
 
     char   model[48], serial[24], firmware[12];
     u8     mdts;
+    bool   vwc;                                 /* volatile write cache present: writes are followed by a flush */
     u32    nn;
     u32    last_status;                         /* status field of the last failed admin command */
 
     bool   dead;
     NvmeNs *ns[NVME_MAX_NS];
     int    nns;
-    u32    n_cmds, n_errors;
+    u32    n_cmds, n_errors, n_flushes;
     NvmeCtrl *next;
 };
 
@@ -153,6 +154,7 @@ static bool g_force_bounce;                     /* nvme.bounce      copy every t
 static u32  g_io_timeout = T_IO_MS;             /* nvme.iotimeout=N ms to wait for a read/write completion */
 static u32  g_drop_after;                       /* nvme.dropcmd=N   never ring the doorbell for the N-th read/write batch (a lost command) */
 static u32  g_batches;
+static bool g_nosync;                           /* nvme.nosync      do not flush the write cache after every write request */
 
 #define REG32(c, off)       mmio_r32((c)->regs, (off))
 #define WREG32(c, off, v)   mmio_w32((c)->regs, (off), (v))
@@ -403,7 +405,6 @@ static int nvme_rw(NvmeNs *ns, u64 lba, u32 count, void *buf, bool write) {
 }
 
 static int nvme_blk_read(BlockDev *d, u64 lba, u32 count, void *buf) { return nvme_rw(d->priv, lba, count, buf, false); }
-static int nvme_blk_write(BlockDev *d, u64 lba, u32 count, const void *buf) { return nvme_rw(d->priv, lba, count, (void *)buf, true); }
 
 static int nvme_blk_flush(BlockDev *d) {
     NvmeNs *ns = d->priv;
@@ -419,6 +420,7 @@ static int nvme_blk_flush(BlockDev *d) {
     sq_submit(q, &cmd);
     sq_ring(q);
     c->n_cmds++;
+    c->n_flushes++;
     int rc = 0;
     if (!wait_cqe(c, q, T_FLUSH_MS)) {
         ctrl_fail(c, (REG32(c, NVME_CSTS) & CSTS_CFS) ? "controller fatal status" : "flush timed out");
@@ -436,6 +438,18 @@ static int nvme_blk_flush(BlockDev *d) {
         }
     }
     mutex_unlock(&c->io_lock);
+    return rc;
+}
+
+/*
+ * A write that returns is on stable media: nothing above the block layer calls blk_flush yet (sync is a no-op, power-off does not
+ * flush), and a PC that is reset or powered off with data in a drive's volatile write cache loses it. So when the controller reports
+ * a volatile write cache, every write request is followed by a Flush (one per request, however large). "nvme.nosync" skips it.
+ */
+static int nvme_blk_write(BlockDev *d, u64 lba, u32 count, const void *buf) {
+    NvmeNs *ns = d->priv;
+    int rc = nvme_rw(ns, lba, count, (void *)buf, true);
+    if (!rc && count && ns->ctrl->vwc && !g_nosync) rc = nvme_blk_flush(d);
     return rc;
 }
 
@@ -462,6 +476,7 @@ static void parse_controller(NvmeCtrl *c) {
     id_string(c->firmware, sizeof c->firmware, (const char *)id + 64, 8);
     c->mdts = id[77];
     c->nn = le32(id + 516);
+    c->vwc = (id[525] & 1) != 0;
 }
 
 static bool create_io_queues(NvmeCtrl *c) {
@@ -553,7 +568,7 @@ static void ctrl_probe(PciDev *pci) {
     }
     c->mqes = (u32)(c->cap & 0xFFFF) + 1;
     u32 to = (u32)((c->cap >> 24) & 0xFF);
-    c->ready_timeout_ms = to * 500 < 2000 ? 2000 : (to * 500 > 20000 ? 20000 : to * 500);
+    c->ready_timeout_ms = to * 500 < 2000 ? 2000 : (to * 500 > 30000 ? 30000 : to * 500);
     c->db_stride = 4u << ((c->cap >> 32) & 0xF);
     u32 css = (u32)((c->cap >> 37) & 0xFF);
     u32 mpsmin = (u32)((c->cap >> 48) & 0xF);
@@ -597,8 +612,9 @@ static void ctrl_probe(PciDev *pci) {
         return;
     }
     if (c->mdts) c->max_xfer = MIN(c->max_xfer, 4096u << MIN((u32)c->mdts, 16u));
-    klog("Kappa", "nvme%d: \"%s\" serial %s firmware %s, namespace ids up to %u, max transfer %u KiB per command", c->index, c->model,
-         c->serial[0] ? c->serial : "-", c->firmware[0] ? c->firmware : "-", c->nn, c->max_xfer >> 10);
+    klog("Kappa", "nvme%d: \"%s\" serial %s firmware %s, namespace ids up to %u, max transfer %u KiB per command, %s", c->index, c->model,
+         c->serial[0] ? c->serial : "-", c->firmware[0] ? c->firmware : "-", c->nn, c->max_xfer >> 10,
+         c->vwc ? (g_nosync ? "volatile write cache (nosync: not flushed)" : "volatile write cache (flushed after every write)") : "no volatile write cache");
 
     if (!create_io_queues(c)) {
         klog("Kappa", "nvme%d: could not create the I/O queues; skipped", c->index);
@@ -631,9 +647,9 @@ fail:
 static size_t gen_proc_nvme(char *buf, size_t cap) {
     size_t n = 0;
     for (NvmeCtrl *c = g_head; c && n + 300 < cap; c = c->next) {
-        n += (size_t)snprintf(buf + n, cap - n, "nvme%d %02x:%02x.%x %04x:%04x \"%s\" serial %s fw %s version %u.%u cmds %u errors %u%s\n", c->index,
+        n += (size_t)snprintf(buf + n, cap - n, "nvme%d %02x:%02x.%x %04x:%04x \"%s\" serial %s fw %s version %u.%u cmds %u errors %u flushes %u%s\n", c->index,
                               c->pci->bus, c->pci->dev, c->pci->fn, c->pci->vendor, c->pci->device, c->model, c->serial, c->firmware, c->vs >> 16,
-                              (c->vs >> 8) & 0xFF, c->n_cmds, c->n_errors, c->dead ? "  DEAD" : "");
+                              (c->vs >> 8) & 0xFF, c->n_cmds, c->n_errors, c->n_flushes, c->dead ? "  DEAD" : "");
         for (int i = 0; i < c->nns && n + 200 < cap; i++)
             n += (size_t)snprintf(buf + n, cap - n, "  nsid %u %s %lu x %u\n", c->ns[i]->nsid, c->ns[i]->bd->name, (unsigned long)c->ns[i]->sectors,
                                   c->ns[i]->sector_size);
@@ -649,6 +665,7 @@ static void read_knobs(void) {
     if ((v = cmdline_int("nvme.window", 0)) > 0) g_window = (u32)MIN(v, (long)NVME_WINDOW_MAX);
     if ((v = cmdline_int("nvme.depth", 0)) > 0) g_depth = (u32)v;
     g_force_bounce = cmdline_flag("nvme.bounce");
+    g_nosync = cmdline_flag("nvme.nosync");
     if ((v = cmdline_int("nvme.iotimeout", 0)) > 0) g_io_timeout = (u32)v;
     if ((v = cmdline_int("nvme.dropcmd", 0)) > 0) g_drop_after = (u32)v;
 }
