@@ -1,5 +1,6 @@
 #include "fb.h"
 #include "kernel.h"
+#include "mm.h"
 
 Fb g_fb;
 
@@ -14,6 +15,13 @@ void fb_init(const BootFramebuffer *bf) {
     g_fb.front   = phys_to_virt(bf->base);      /* the loader's direct map covers the first 4 GiB */
     g_fb.back    = g_fb.front;
     g_fb.ready   = true;
+}
+
+void fb_remap(void) {
+    if (!g_fb.ready) return;
+    bool direct = g_fb.back == g_fb.front;
+    g_fb.front = ioremap(g_fb.phys, (size_t)g_fb.pitch * g_fb.height * 4, PTE_PWT);
+    if (direct) g_fb.back = g_fb.front;
 }
 
 static inline void fill32(u32 *dst, u32 v, size_t n) {

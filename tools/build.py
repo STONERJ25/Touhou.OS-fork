@@ -16,6 +16,7 @@ import concurrent.futures
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tarfile
@@ -48,6 +49,7 @@ LD_LLD = find_tool("ld.lld", [LLVM_DIR])
 LLVM_AR = find_tool("llvm-ar", [LLVM_DIR])
 OBJCOPY = find_tool("llvm-objcopy", [LLVM_DIR])
 NASM = find_tool("nasm", [NASM_DIR])
+LLVM_NM = find_tool("llvm-nm", [LLVM_DIR])
 
 COMMON_WARN = ["-Wall", "-Wextra", "-Wno-unused-parameter", "-Wno-sign-compare", "-Wno-missing-field-initializers"]
 
@@ -130,8 +132,9 @@ def run(cmd, what):
 
 
 class Job:
-    def __init__(self, src, obj, cmd, depfile, label):
+    def __init__(self, src, obj, cmd, depfile, label, extra=()):
         self.src, self.obj, self.cmd, self.depfile, self.label = src, obj, cmd, depfile, label
+        self.extra = list(extra)
 
 
 def c_job(src, group, flags):
@@ -145,12 +148,14 @@ def asm_job(src, group):
     obj = OBJ / group / (rel(src) + ".o")
     dep = obj.with_name(obj.name + ".d")
     cmd = [NASM, "-f", "elf64", "-g", "-F", "dwarf", "-I", str(src.parent) + os.sep,
-           "-I", str(ROOT / "kernel" / "include") + os.sep, "-MD", str(dep), str(src), "-o", str(obj)]
-    return Job(src, obj, cmd, dep, "ASM")
+           "-I", str(ROOT / "kernel" / "include") + os.sep, "-I", str(BUILD / "gen") + os.sep,
+           "-MD", str(dep), str(src), "-o", str(obj)]
+    extra = [BUILD / "gen" / "ksyms.bin"] if src.name == "ksyms.asm" else []
+    return Job(src, obj, cmd, dep, "ASM", extra)
 
 
 def build_jobs(jobs, nproc):
-    todo = [j for j in jobs if needs_build(j.obj, j.depfile, j.cmd, [j.src])]
+    todo = [j for j in jobs if needs_build(j.obj, j.depfile, j.cmd, [j.src] + j.extra)]
     if not todo:
         return False
     for j in todo:
@@ -219,17 +224,53 @@ def build_loader(nproc):
 
 # ------------------------------------------------------------------ kernel
 
+def kernel_symbols(elf):
+    """Text symbols of the linked kernel as a ksyms blob: header, (addr, name_off) entries, names."""
+    out = run([LLVM_NM, "-n", "--defined-only", str(elf)], "nm kernel")
+    entries = []
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) == 3 and parts[1] in ("T", "t", "W", "w"):
+            entries.append((int(parts[0], 16), parts[2]))
+    names = bytearray()
+    table = []
+    last = None
+    for addr, name in entries:
+        if addr == last:
+            continue
+        last = addr
+        table.append((addr, len(names)))
+        names += name.encode() + b"\0"
+    blob = struct.pack("<II", len(table), 0)
+    blob += b"".join(struct.pack("<QII", a, o, 0) for a, o in table)
+    return blob + bytes(names)
+
+
 def build_kernel(nproc):
     print("[kernel]")
     csrc = sources(ROOT / "kernel", ["**/*.c"]) + sources(ROOT / "shared", ["*.c"])
     asrc = sources(ROOT / "kernel", ["**/*.asm"])
+    gen = BUILD / "gen"
+    gen.mkdir(parents=True, exist_ok=True)
+    ksyms_bin = gen / "ksyms.bin"
+    if not ksyms_bin.exists():
+        ksyms_bin.write_bytes(struct.pack("<II", 0, 0))
     jobs = [c_job(s, "kernel", KERNEL_CFLAGS) for s in csrc] + [asm_job(s, "kernel") for s in asrc]
     build_jobs(jobs, nproc)
     out = BUILD / "kernel.elf"
     script = ROOT / "kernel" / "linker.ld"
     cmd = [LD_LLD, "-nostdlib", "-static", "-z", "max-page-size=4096", "-z", "noexecstack",
            "-T", str(script), "-Map", str(BUILD / "kernel.map"), "-o", str(out), *[str(j.obj) for j in jobs]]
-    link(out, cmd, [j.obj for j in jobs] + [script], "link kernel")
+    inputs = [j.obj for j in jobs] + [script]
+    link(out, cmd, inputs, "link kernel")
+    # Embed the symbol table: it sits in the last segment, so addresses seen now stay valid after the relink.
+    table = kernel_symbols(out)
+    if not ksyms_bin.exists() or ksyms_bin.read_bytes() != table:
+        ksyms_bin.write_bytes(table)
+        build_jobs(jobs, nproc)
+        link(out, cmd, inputs, "relink kernel with symbols")
+        if kernel_symbols(out) != table:
+            print("warning: symbol addresses moved after embedding ksyms", file=sys.stderr)
 
 
 # ------------------------------------------------------------------ userland

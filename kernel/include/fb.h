@@ -19,6 +19,7 @@ typedef struct {
 extern Fb g_fb;
 
 void fb_init(const BootFramebuffer *bf);
+void fb_remap(void);                    /* switch to a write-combining ioremap once the kernel page tables are live */
 static inline u32 fb_hw(u32 rgb) {
     return g_fb.swap_rb ? ((rgb & 0xFF00) | ((rgb >> 16) & 0xFF) | ((rgb & 0xFF) << 16)) : rgb;
 }

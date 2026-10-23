@@ -168,6 +168,15 @@ class Qemu:
     def alive(self):
         return self.proc is not None and self.proc.poll() is None
 
+    def wait_exit(self, timeout=30):
+        """Waits for QEMU to exit by itself (isa-debug-exit); returns the guest's exit code or None on timeout."""
+        try:
+            rc = self.proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return None
+        time.sleep(0.2)
+        return (rc >> 1) if rc & 1 else rc
+
     def stop(self):
         if self._qmp_file and self.alive():
             try:
@@ -322,10 +331,16 @@ def cmd_boot(args):
             if args.wait and not args.keys:
                 time.sleep(args.wait)
             if args.shot:
-                print("screenshot:", vm.screenshot(args.shot))
+                if vm.alive():
+                    print("screenshot:", vm.screenshot(args.shot))
+                else:
+                    print("screenshot skipped: VM already exited")
         except (TimeoutError, RuntimeError) as e:
             print(e)
             status = 1
+        if not vm.alive():
+            rc = vm.proc.returncode
+            print(f"vm exited: qemu status {rc} (guest code {(rc >> 1) if rc & 1 else rc})")
         print("=" * 30, "serial output", "=" * 30)
         print(vm.text())
         sys.exit(status)

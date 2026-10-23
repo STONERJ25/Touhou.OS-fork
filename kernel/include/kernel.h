@@ -15,6 +15,10 @@ NORETURN void panic(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 #define ASSERT(cond) \
     do { if (unlikely(!(cond))) panic("assertion failed: %s (%s:%d)", #cond, __FILE__, __LINE__); } while (0)
 
+void selftest_run(void);
+
+extern BootInfo g_boot;
+
 /* Physical <-> higher-half direct map. Only valid for RAM. */
 extern u64 g_hhdm;
 static inline void  *phys_to_virt(paddr_t p) { return (void *)(p + g_hhdm); }
