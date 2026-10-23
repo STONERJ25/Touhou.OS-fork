@@ -8,6 +8,7 @@ that only ever runs in QEMU.  The guest runs of this file:
   mcc_selfhost         mcc compiles mcc: stage 2 (host) and the guest's stage 3 are the same file
   mcc_kappabox         all of kappabox, built with mcc, passes the shell test table
   mld_relinks_clang    objects made by clang are relinked by mld and the programs still run
+  mcc_libgap           libgap itself (all but math and setjmp) compiled by mcc passes the OS's own utest suite
 """
 import re
 import subprocess
@@ -162,6 +163,77 @@ def mcc_object_files():
     assert so.split() == ["algo.o", "crypt.o"], so + se
 
 
+@test
+def mcc_driver_options():
+    """mcc: -D -U -I -include -E -o -c -s -M --version behave as documented (host only)."""
+    prepare()
+    out = U.OUT
+    (out / "inc").mkdir(parents=True, exist_ok=True)
+    (out / "inc" / "extra.h").write_text("#define FROM_EXTRA 7
+int extra_value(void);
+")
+    (out / "pre.h").write_text("#define FROM_PRELUDE 11
+")
+    (out / "opts.c").write_text(
+        "#include <extra.h>
+#ifdef GONE
+int gone = GONE;
+#endif
+"
+        "int answer = ANSWER + FROM_EXTRA + FROM_PRELUDE;
+#ifdef NAMED
+const char *name = NAME;
+#endif
+")
+    rc, so, se = U.host("mcc", ["-E", "-DANSWER=30", "-DGONE=1", "-UGONE", "-DNAMED", '-DNAME="marisa"', "-I", "build/mcc-out/inc",
+                                "-include", "build/mcc-out/pre.h", "build/mcc-out/opts.c"])
+    assert rc == 0, se
+    flat = " ".join(so.split())
+    assert "int answer = 30 + 7 + 11 ;" in flat and "gone" not in flat and 'const char *name = "marisa" ;' in flat, so
+    # -E -o writes the file instead of stdout
+    rc, so, se = U.host("mcc", ["-E", "-I", "build/mcc-out/inc", "-DANSWER=1", "build/mcc-out/opts.c", "-o", "build/mcc-out/opts.i"])
+    assert rc == 0 and so == "" and "int answer" in (out / "opts.i").read_text(), (rc, so, se)
+    # -c names the object after the source, -o overrides; the output is an ELF relocatable
+    src = "tests/mcc/guest/hello.c"
+    rc, so, se = U.host("mcc", ["-c", "-O2", "-Wall", "-g", "-std=c11", "-fPIC", src, "-o", "build/mcc-out/h.o"])
+    assert rc == 0, se
+    assert (out / "h.o").read_bytes()[:4] == b"ELF"
+    # linking: -s strips, -M prints a map with main in it
+    rc, so, se = U.host("mcc", [src, "-o", "build/mcc-out/h-sym"])
+    assert rc == 0, se
+    rc, so, se = U.host("mcc", [src, "-s", "-o", "build/mcc-out/h-strip"])
+    assert rc == 0, se
+    assert (out / "h-strip").stat().st_size < (out / "h-sym").stat().st_size
+    rc, so, se = U.host("mcc", [src, "-M", "-o", "build/mcc-out/h-map"])
+    assert rc == 0 and re.search(r"^[0-9a-f]{16} main$", so, re.M) and re.search(r"^[0-9a-f]{16} _start$", so, re.M), so
+    elf = (out / "h-sym").read_bytes()
+    assert elf[:4] == b"ELF" and elf[16:18] == b" " and elf[18:20] == b"> ", "not an x86-64 ET_EXEC"
+    rc, so, se = U.host("mcc", ["--version"])
+    assert rc == 0 and so.startswith("mcc ") and "Marisa" in so, so
+    rc, so, se = U.host("mcc", ["-S", src])
+    assert rc == 1 and "-S is not supported" in se, se
+    rc, so, se = U.host("mcc", ["nonexistent-file.c"])
+    assert rc == 1 and "cannot open" in se, se
+    rc, so, se = U.host("mcc", ["-c", "build/mcc-out/h.o", "-o", "build/mcc-out/x.o"])
+    assert rc == 1 and "not a C source file" in se, se
+    # mld alone: the undefined reference is reported with the name and Marisa's remark
+    (out / "undef.c").write_text("int missing(void);
+int main(void) { return missing(); }
+")
+    rc, so, se = U.host("mcc", ["-c", "build/mcc-out/undef.c", "-o", "build/mcc-out/undef.o"])
+    assert rc == 0, se
+    rc, so, se = U.host("mcc", ["build/mcc-out/undef.o", "-o", "build/mcc-out/undef"])
+    assert rc == 1 and "undefined reference to 'missing'" in se and "Marisa" in se, se
+    # two definitions of a function
+    (out / "dup1.c").write_text("int twice(void) { return 1; }
+")
+    (out / "dup2.c").write_text("int twice(void) { return 2; }
+int main(void) { return twice(); }
+")
+    rc, so, se = U.host("mcc", ["build/mcc-out/dup1.c", "build/mcc-out/dup2.c", "-o", "build/mcc-out/dup"])
+    assert rc == 1 and "multiple definition of 'twice'" in se, se
+
+
 # ------------------------------------------------------------------------------------------------------------ the guest
 
 def boot_with(extra, name, cmdline="text", **kw):
@@ -313,3 +385,24 @@ def mld_relinks_clang():
         out3, rc3 = U.run(vm, "/bin/fstest 2>&1 | tail -3", timeout=240)
         out4, rc4 = U.run(vm, "/mcc-tests/fstest-mld 2>&1 | tail -3", timeout=240)
         assert out3 == out4, (out3, out4)
+
+
+@test
+def mcc_libgap():
+    """libgap compiled by mcc (every file but math.c and setjmp.asm) links with utest compiled by mcc and passes the OS's own utest suite."""
+    prepare()
+    import case_threads
+    r = subprocess.run(["wsl.exe", "-e", "bash", U.wsl_path(ROOT / "tools" / "mcc_build_libgap.sh")], capture_output=True, text=True, cwd=ROOT)
+    assert r.returncode == 0 and "built build/mcc-libgap/libgap.a" in r.stdout, r.stdout + r.stderr
+    env_root = U.wsl_path(ROOT / "build" / "mcc-root2")
+    r = subprocess.run(["wsl.exe", "-e", "env", f"MCC_ROOT={env_root}", U.wsl_path(U.HOST / "mcc"), "user/bin/utest.c", "-lkappa", "-lfairy", "-laudio",
+                        "-limg", "-lz", "-o", "build/mcc-out/utest"], capture_output=True, text=True, cwd=ROOT)
+    assert r.returncode == 0, r.stdout + r.stderr
+    esp = U.make_esp("t-mcc-libgap", {"bin/utest": U.OUT / "utest"})
+    with Qemu(cmdline="utest", name="t-mcc-libgap", esp=esp) as vm:
+        vm.expect(r"UTEST (PASS|FAIL)", timeout=240)
+        text = vm.text()
+        assert "UTEST PASS" in text, text[-2500:]
+        for section in case_threads.THREAD_SECTIONS:
+            assert f"utest: threads: {section}" in text, f"thread section did not run: {section}"
+        assert vm.wait_exit(10) == 0

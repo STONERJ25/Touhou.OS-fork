@@ -67,6 +67,10 @@ Prompt: `reimu@gensokyo ~ $`. See [ACCOUNTS.md](ACCOUNTS.md).
 - `init` logs in the voice of the shrine: `the shrine opens for the day`, `reimu left the shrine; the gate closes behind them`.
 - The window server's last resort (Ctrl+Alt+Backspace) opens the text door instead of handing out a shell.
 - Out of memory: `Yuyuko is hungry.`
+- The compiler speaks like Marisa, but the technical fact comes first and stays conventional: `mcc` prints `file:line: error: text`,
+  the source line, a caret and a remark (`^ Marisa: I never borrowed that one, ze. Did you declare it?`), and ends with
+  `mcc: 1 error -- nothing was built, ze.`; `mld` reports `undefined reference to 'x' -- Marisa: that book isn't in the library, ze`;
+  a successful build prints nothing. `mcc --version` says who she is.
 - `rm` -> Netherworld, `shutdown` -> "Yukari opens a gap...", `fortune`/`omikuji` -> shrine fortune slips, `saisen` -> offering box.
 
 ## Desktop (HakureiDE)

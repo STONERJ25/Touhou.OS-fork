@@ -346,11 +346,15 @@ static Token *parse_attributes(Token *tok, AttrSet *as) {
     return tok;
 }
 
-/* `asm ("label")` after a declarator renames the symbol; we skip it */
+/* `asm ("label")` after a declarator renames the symbol (ignored); for a local `register` variable it names the register */
+static char *last_asm_label;
+
 static Token *skip_asm_label(Token *tok) {
+    last_asm_label = NULL;
     while (equal(tok, "asm") || equal(tok, "__attribute__")) {
         if (equal(tok, "asm")) {
             tok = skip(tok->next, "(");
+            if (tok->kind == TK_STR) last_asm_label = tok->str;
             while (!equal(tok, ")") && tok->kind != TK_EOF) tok = tok->next;
             tok = skip(tok, ")");
         } else {
@@ -1592,6 +1596,7 @@ static Node *declaration(Token **rest, Token *tok, Type *basety, VarAttr *attr) 
         }
 
         Obj *var = new_lvar_noalloc(get_ident(ty->name), ty);
+        var->asm_reg = last_asm_label;
         if (attr && attr->align) var->align = attr->align;
 
         if (equal(tok, "=")) {

@@ -223,6 +223,7 @@ struct Obj {
     bool is_local;
     int align;
     int offset; /* locals: rbp offset */
+    char *asm_reg; /* register long r10 __asm__("r10"): the register an asm operand wants */
     /* globals and functions */
     bool is_function;
     bool is_definition;
@@ -302,7 +303,29 @@ struct Node {
     /* inline asm, builtins */
     char *str;
     int op;
+    void *asm_info;
 };
+
+/* inline asm operands (parse.inc fills them in, asm.inc uses them) */
+typedef struct {
+    char *cons;
+    Node *expr;
+    char *name;
+    int kind; /* 1 register, 2 immediate, 3 memory */
+    int reg;
+    bool rw;       /* "+": read and written */
+    bool is_out;
+    int match;     /* input tied to output #match, or -1 */
+    int mem_disp;  /* a frame variable used as a memory operand: its rbp offset */
+    bool direct_mem;
+} AsmOperand;
+
+typedef struct {
+    AsmOperand *ops;
+    int nout, nin;
+    char **clobbers;
+    int nclob;
+} AsmInfo;
 
 /* type.inc */
 extern Type *ty_void, *ty_bool, *ty_char, *ty_short, *ty_int, *ty_long, *ty_uchar, *ty_ushort, *ty_uint, *ty_ulong,

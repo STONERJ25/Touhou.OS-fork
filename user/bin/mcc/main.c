@@ -17,6 +17,7 @@
 #include "expr.inc"
 #include "x86.inc"
 #include "gen.inc"
+#include "asm.inc"
 #include "obj.inc"
 #include "ld.inc"
 #include "ar.inc"

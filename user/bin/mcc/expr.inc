@@ -1265,14 +1265,56 @@ static Node *asm_stmt(Token **rest, Token *tok) {
     node->str = tok->str;
     tok = tok->next;
 
-    int level = 1;
-    while (level > 0) {
-        if (tok->kind == TK_EOF) error_tok(tok, "unterminated asm");
-        if (equal(tok, "(")) level++;
-        else if (equal(tok, ")")) level--;
-        if (level > 0) tok = tok->next;
+    if (equal(tok, ")")) {
+        *rest = skip(tok->next, ";");
+        return node;
     }
-    tok = tok->next;
+
+    /* extended asm:  : outputs : inputs : clobbers */
+    AsmInfo *ai = xcalloc(sizeof(AsmInfo));
+    AsmOperand *ops = xcalloc(24 * sizeof(AsmOperand));
+    int n = 0;
+    for (int section = 0; section < 2; section++) {
+        tok = skip(tok, ":");
+        bool first = true;
+        while (!equal(tok, ":") && !equal(tok, ")")) {
+            if (!first) tok = skip(tok, ",");
+            first = false;
+            if (n >= 24) error_tok(tok, "too many asm operands");
+            char *name = NULL;
+            if (equal(tok, "[")) {
+                name = get_ident(tok->next);
+                tok = skip(tok->next->next, "]");
+            }
+            if (tok->kind != TK_STR) error_tok(tok, "expected a constraint string");
+            ops[n].cons = tok->str;
+            ops[n].name = name;
+            tok = skip(tok->next, "(");
+            ops[n].expr = expr(&tok, tok);
+            tok = skip(tok, ")");
+            add_type(ops[n].expr);
+            n++;
+        }
+        if (section == 0) ai->nout = n;
+        else ai->nin = n - ai->nout;
+        if (equal(tok, ")")) break;
+    }
+    if (equal(tok, ":")) {
+        tok = tok->next;
+        bool first = true;
+        while (!equal(tok, ":") && !equal(tok, ")")) {
+            if (!first) tok = skip(tok, ",");
+            first = false;
+            if (tok->kind != TK_STR) error_tok(tok, "expected a clobber string");
+            ai->clobbers = xrealloc(ai->clobbers, (size_t)(ai->nclob + 1) * sizeof(char *));
+            ai->clobbers[ai->nclob++] = tok->str;
+            tok = tok->next;
+        }
+        if (equal(tok, ":")) error_tok(tok, "asm goto is not supported by mcc");
+    }
+    ai->ops = ops;
+    node->asm_info = ai;
+    tok = skip(tok, ")");
     *rest = skip(tok, ";");
     return node;
 }

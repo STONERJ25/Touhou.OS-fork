@@ -17,6 +17,7 @@ static int ret_label;
 
 static void gen_expr(Node *node);
 static void gen_stmt(Node *node);
+static void gen_asm(Node *node);
 
 static void push(void) {
     push_r(RAX);
@@ -1561,11 +1562,9 @@ static void gen_stmt(Node *node) {
     case ND_EXPR_STMT:
         gen_expr(node->lhs);
         return;
-    case ND_ASM: {
-        for (const char *p = node->str; *p; p++)
-            if (!isspace((u8)*p)) error_tok(node->tok, "inline assembly is not supported by mcc");
+    case ND_ASM:
+        gen_asm(node);
         return;
-    }
     default:
         break;
     }

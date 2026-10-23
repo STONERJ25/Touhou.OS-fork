@@ -1,0 +1,78 @@
+.page mcc 1 Marisa's C compiler
+.alias cc
+
+# SYNOPSIS
+*mcc* [*-c*] [*-E*] [*-o* _FILE_] [*-I* _DIR_] [*-D* _NAME_[=_VALUE_]] [*-U* _NAME_] _FILE_...
+*mcc* [*-nostdlib*] [*-s*] [*-M*] [*-l* _LIB_] [*-L* _DIR_] _FILE_.c _FILE_.o _FILE_.a ...
+*mcc* *-fsyntax-only* | *--version* | *--help*
+
+# DESCRIPTION
+`mcc` is a C compiler that runs on TouhouOS and makes TouhouOS programs. It reads C11 source (without variable-length arrays and complex numbers), compiles it straight to x86-64 machine code, and links the result with `mld` into a static executable that starts like every other program of the system: crt0.o, your code, libgap, and whatever libraries you name. There is no assembler step and no temporary file; `cc` is the same program under a shorter name.
+
+The compiler is small and simple on purpose: every expression is evaluated in a few registers with the operands kept on the stack, so the code is correct and readable rather than fast. It can compile itself (see /ScarletDevilMansion/src/mcc), and so it can compile much of the rest of the system: all of kappabox is built with it in the test suite.
+
+Each _FILE_ ending in .c is compiled. Files ending in .o and .a are handed to the linker as they are. With *-c* only the objects are written (_FILE_.o next to where you are, or *-o* for a single file); without it the program is linked into `a.out` or the name given with *-o*, and its mode is set to executable.
+
+# OPTIONS
+@ *-c*
+    Compile, do not link.
+@ *-E*
+    Preprocess only and write the tokens, one line per source line, to standard output (or to *-o*).
+@ *-o* _FILE_
+    Name of the output.
+@ *-I* _DIR_
+    Look for headers in _DIR_ first. *-isystem* _DIR_ adds a directory after those; *-nostdinc* leaves out the system directories.
+@ *-D* _NAME_[=_VALUE_]
+    Define a macro (the value is 1 if omitted). *-U* _NAME_ removes one, *-include* _FILE_ reads _FILE_ before the source.
+@ *-l* _LIB_
+    Link with the library libNAME.a, where NAME is the argument; it is searched for in the *-L* directories and then in the system lib directory. libgap (the C library, mathematics and pthreads together) is always linked; *-lm*, *-lpthread* and *-lc* are accepted and mean nothing. The graphics and sound libraries are *-lkappa*, *-lfairy*, *-laudio*, *-limg* and *-lz*.
+@ *-nostdlib*
+    No crt0.o and no libgap: the program brings its own _start.
+@ *-s*
+    Do not write a symbol table into the executable. *-M* prints a link map (the address of every symbol) to standard output.
+@ *-fsyntax-only*
+    Check the program and produce nothing.
+@ *--version*, *--help*
+    Who is speaking, and a summary of the options.
+
+Options such as *-O2*, *-g*, *-Wall*, *-std=c11*, *-static*, *-pthread*, *-m64* and *-fPIC* are accepted so that existing command lines work, and they change nothing. *-S* is refused: mcc has no assembly text, it writes machine code. *-shared* is refused: TouhouOS has no dynamic linking.
+
+# THE LANGUAGE
+`mcc` understands C11 with these exceptions and additions.
+
+- Integer types of 1, 2, 4 and 8 bytes, `_Bool`, enums, bit-fields, float and double. `long double` is a double.
+- All declarators, structs, unions, anonymous members, flexible array members, designated and nested initializers, compound literals, statement expressions, case ranges, `typeof`, `_Generic`, `_Static_assert`, `_Alignas`, `_Alignof`, `__func__` and `_Thread_local`.
+- Calls follow the System V AMD64 convention, so objects from clang link with mcc objects: arguments in registers, structs by value (up to 16 bytes in registers), variadic functions with a real `va_list`.
+- The preprocessor has `#include_next`, `#pragma once`, `__COUNTER__`, `__VA_OPT__`, `, ## __VA_ARGS__` and `__has_include`. The predefined names include `__x86_64__`, `__STDC_VERSION__` (201112L), `__TOUHOU__` and `__MCC__`.
+- `__builtin_va_*`, `__builtin_offsetof`, `__builtin_expect`, `__builtin_bswap*`, `__builtin_clz*`, `__builtin_ctz*`, `__builtin_popcount*`, `__builtin_thread_pointer`, `__atomic_*` and `__sync_*` are built in.
+- `__attribute__`, `asm` labels and `register` are parsed; only `packed`, `aligned` and `weak` have an effect. Inline assembly with a template that is not empty is not supported (an empty one, used as a barrier, is fine).
+- Not supported: variable-length arrays, complex numbers, `alloca`, computed goto, K&R function definitions.
+
+# FILES
+@ /ScarletDevilMansion/include
+    The headers of libgap and of the system libraries.
+@ /ScarletDevilMansion/lib/mcc/include
+    The freestanding headers that belong to the compiler: stddef.h, stdarg.h, stdint.h, limits.h, float.h, stdbool.h.
+@ /ScarletDevilMansion/lib
+    crt0.o, libgap.a and the other static libraries.
+@ /ScarletDevilMansion/src/mcc
+    The source of the compiler. *cd* there and run *mcc main.c -o mcc2*; the result is byte for byte the program that built it.
+
+# ENVIRONMENT
+@ MCC_ROOT
+    Replaces /ScarletDevilMansion as the root of the include and lib directories.
+
+# DIAGNOSTICS
+A mistake is reported as `file:line: error: text`, followed by the source line, a caret and a remark from Marisa; compilation stops at the first error and no object is written. The plain text in front is the real message.
+
+# EXIT STATUS
+0 when everything was built, 1 after an error in the program, the options or the link.
+
+# EXAMPLES
+    mcc hello.c -o hello && ./hello
+    mcc -O2 -Wall -c util.c main.c && mcc util.o main.o -lm -o tool
+    mcc -E -DDEBUG=1 prog.c | less
+    cd /ScarletDevilMansion/src/mcc && mcc main.c -o /tmp/mcc2
+
+# SEE ALSO
+mld(1), mar(1), gensokyo(7)

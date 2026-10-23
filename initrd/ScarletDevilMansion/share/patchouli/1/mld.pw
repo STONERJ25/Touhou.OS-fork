@@ -1,0 +1,35 @@
+.page mld 1 Marisa's linker
+
+# SYNOPSIS
+*mld* [*-o* _FILE_] [*-e* _SYMBOL_] [*-s*] [*-M*] [*-L* _DIR_] [*-l* _LIB_] _FILE_...
+
+# DESCRIPTION
+`mld` links ELF64 relocatable objects (made by mcc or by clang) and `ar` archives into a static TouhouOS executable. It does what the linker script of the system's programs says, and nothing else: the code is placed at 0x400000 in a read-and-execute segment, followed by read-only data, writable data and bss in their own page-aligned segments, and a PT_TLS segment describes the template of the thread-local variables. The entry point is `_start`.
+
+Objects are always included. A member of an archive is taken only when it defines a symbol that something already included needs, and that is repeated until nothing new is wanted, so the order of the libraries on the command line does not matter. A strong definition beats a weak one; two strong definitions are an error; COMMON symbols are allocated in bss. Relocations of the kinds clang and mcc produce are applied: absolute, PC-relative, PLT, GOT-relative, and the local-exec thread-local offsets (the same formula that libgap's thread start-up uses).
+
+The linker defines `__tls_init_image`, `__tls_init_size`, `__tls_mem_size` and `__tls_align` for libgap, and `_end`, `_etext`, `_edata` and `__bss_start` if they are referenced. The output starts with its mode set to 755. It carries a section table and a symbol table so that objdump can read it, unless *-s* is given.
+
+# OPTIONS
+@ *-o* _FILE_
+    Name of the executable (default a.out).
+@ *-e* _SYMBOL_
+    Entry point (default `_start`).
+@ *-l* _LIB_, *-L* _DIR_
+    The library libNAME.a (NAME being the argument), searched for in the *-L* directories and then in /ScarletDevilMansion/lib.
+@ *-s*
+    Strip the symbol table.
+@ *-M*
+    Print a map: the address and name of every defined symbol, in address order.
+@ *-static*, *-nostdlib*, *-z* ..., *-m* ...
+    Accepted and ignored.
+
+# EXIT STATUS
+0 on success, 1 if something could not be read, was defined twice, or was needed and not found. Every problem is listed before the linker gives up, with a remark from Marisa.
+
+# EXAMPLES
+    mld -o hello /ScarletDevilMansion/lib/crt0.o hello.o -lgap
+    mcc -c a.c b.c && mld -o prog /ScarletDevilMansion/lib/crt0.o a.o b.o -lkappa -lgap
+
+# SEE ALSO
+mcc(1), mar(1)
