@@ -4,6 +4,7 @@ import re
 from harness import test, Qemu
 
 THREAD_SECTIONS = [
+    "C11 threads.h: thrd, mtx, cnd, tss, call_once, thread_local",
     "create, join, return values",
     "many threads, one mutex, one atomic",
     "/proc shows the threads",

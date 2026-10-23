@@ -22,6 +22,7 @@ honest backlog.
 | libc: pthread create/join/detach/exit/self/equal/kill/sigmask, attributes (stack size, guard, detach state) | `user/libc/src/pthread.c` |
 | libc: mutexes (normal, recursive, errorcheck, trylock, timedlock), condition variables (wait, timedwait, signal, broadcast), rwlocks, barriers, spin locks, `pthread_once`, thread-specific data with destructors, cleanup handlers, `pthread_atfork` | same |
 | libc: POSIX semaphores (`sem_*`), `sched_yield`, `gettid` | same |
+| libc: `_Thread_local` / `__thread` (static TLS: `PT_TLS` segment in `user.ld`, one block per thread), C11 `<threads.h>` | `user/user.ld`, `pthread.c`, `cthreads.c`, `threads.h` |
 | libc: per-thread `errno`; thread-safe `malloc`/`free`/`realloc` and stdio; `fork()` holds both locks across the call | `errno.h`, `stdlib.c`, `stdio.c`, `sys.c` |
 | guard page below every thread stack (a stack overflow is a SIGSEGV that ends the process) | `pthread_create` |
 | tests: `utest` thread section (17 parts), kernel self test for the futex queues, `tests/case_threads.py` | `user/bin/utest_threads.inc`, `kernel/sys/futex.c` |
@@ -104,8 +105,13 @@ The kernel has one CPU, so "a lock" is either interrupt disabling (short section
 ## libc
 
 * `errno` is `(*__errno_location())`, a word in the thread's control block, found through `%fs:0` (the control block
-  starts with a pointer to itself, as the x86-64 TLS ABI wants, then `errno`). Startup (`__libc_start`) gives the main
-  thread a static block and calls `set_tls` before anything can fail.
+  starts with a pointer to itself, as the x86-64 TLS ABI wants, then `errno`). Startup (`__libc_start`) maps the main
+  thread's TLS block and control block and calls `set_tls` before anything can fail.
+* **Static TLS** (`_Thread_local`, `__thread`, `thread_local`): `user/user.ld` defines a `PT_TLS` segment from `.tdata` and
+  `.tbss` and exports `__tls_init_image/size`, `__tls_mem_size`, `__tls_align`. Each thread gets a block directly below its
+  control block (x86-64 variant II, local-exec model: the linker bakes negative offsets from the thread pointer into the
+  code); `.tdata` is copied in, `.tbss` is the zeroed rest of a fresh mapping. The block is placed with the linker's own
+  formula, so any alignment the linker accepts works. There is no dynamic loader, so no other TLS models exist.
 * `pthread_create` maps `guard + stack + control block` in one block (default stack 256 KiB, 4 KiB guard, `PROT_NONE`);
   the control block is at the top, the stack grows down below it. The new thread starts on that stack through
   `thread_create`, so there is no assembly stub. `pthread_join` waits on the thread's tid word and then unmaps the block.
@@ -158,9 +164,6 @@ The kernel has one CPU, so "a lock" is either interrupt disabling (short section
 
 ## Not done
 
-* **`_Thread_local` / `__thread`:** there is no `PT_TLS` segment and no static TLS block yet (`user.ld` is unchanged);
-  only `errno` and the pthread control block are per thread. `pthread_getspecific` is the way to get thread-local data.
-* **C11 `<threads.h>`** wrappers are not written.
 * **Stack reuse:** user thread stacks are mapped and unmapped for every thread, and kernel stacks take fresh virtual
   addresses; page-table pages of the retired ranges stay until the process exits (about 100 KiB over the 25-iteration
   stress test, which allows 1 MiB). No pages leak after the process ends.

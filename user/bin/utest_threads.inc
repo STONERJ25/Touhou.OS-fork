@@ -764,7 +764,58 @@ static void test_threads_proc(void) {
     for (int i = 0; i < 3; i++) pthread_join(t[i], NULL);
 }
 
+/* ---- C11 <threads.h> ---- */
+
+#include <threads.h>
+
+static mtx_t c11_m;
+static cnd_t c11_c;
+static int c11_flag, c11_once_runs;
+static once_flag c11_once = ONCE_FLAG_INIT;
+static thread_local int c11_tl = 5;
+
+static int c11_worker(void *arg) { return (int)(long)arg * 3; }
+static void c11_once_fn(void) { c11_once_runs++; }
+static int c11_signaller(void *arg) {
+    (void)arg;
+    mtx_lock(&c11_m);
+    c11_flag = 1;
+    cnd_signal(&c11_c);
+    mtx_unlock(&c11_m);
+    c11_tl = 9;
+    return 0;
+}
+
+static void test_threads_c11(void) {
+    TH_SECTION("C11 threads.h: thrd, mtx, cnd, tss, call_once, thread_local");
+    thrd_t t;
+    int res = 0;
+    CHECK(thrd_create(&t, c11_worker, (void *)14) == thrd_success && thrd_join(t, &res) == thrd_success && res == 42);
+    CHECK(mtx_init(&c11_m, mtx_plain) == thrd_success && cnd_init(&c11_c) == thrd_success);
+    CHECK(thrd_create(&t, c11_signaller, NULL) == thrd_success);
+    mtx_lock(&c11_m);
+    while (!c11_flag) cnd_wait(&c11_c, &c11_m);
+    mtx_unlock(&c11_m);
+    CHECK(thrd_join(t, NULL) == thrd_success && c11_tl == 5);       /* the thread's thread_local write was its own */
+    call_once(&c11_once, c11_once_fn);
+    call_once(&c11_once, c11_once_fn);
+    CHECK(c11_once_runs == 1);
+    mtx_t rm;
+    CHECK(mtx_init(&rm, mtx_recursive | mtx_timed) == thrd_success);
+    CHECK(mtx_lock(&rm) == thrd_success && mtx_lock(&rm) == thrd_success && mtx_unlock(&rm) == thrd_success && mtx_unlock(&rm) == thrd_success);
+    struct timespec ts;
+    th_abs_after(&ts, 20);
+    mtx_lock(&c11_m);
+    CHECK(cnd_timedwait(&c11_c, &c11_m, &ts) == thrd_timedout);
+    mtx_unlock(&c11_m);
+    tss_t k;
+    CHECK(tss_create(&k, NULL) == thrd_success && tss_set(k, (void *)5) == thrd_success && tss_get(k) == (void *)5);
+    tss_delete(k);
+    CHECK(thrd_equal(thrd_current(), thrd_current()));
+}
+
 static void test_threads(void) {
+    test_threads_c11();
     test_threads_basic();
     test_threads_proc();
     test_threads_sync();
