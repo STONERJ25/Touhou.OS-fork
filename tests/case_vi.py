@@ -26,7 +26,7 @@ def ctrl(c):
 class Guest:
     def __init__(self, vm):
         self.vm = vm
-        vm.expect(PROMPT, timeout=300)
+        vm.expect(PROMPT, timeout=120)
 
     def run(self, cmd, timeout=40):
         self.vm.send(f"echo __BE''GIN__; {cmd}; echo __EN''D__$?\n")
@@ -123,7 +123,7 @@ def cases(g, rows):
 @test
 def vi_basic():
     """vi: insert, delete, change, yank and put, undo and redo, search, counts, saving."""
-    with Qemu(cmdline="", name="t-vi-basic") as vm:
+    with Qemu(cmdline="text", name="t-vi-basic") as vm:
         g = Guest(vm)
         cases(g, [
             ("insert text", "", "ihello world" + ESC, "hello world\n"),

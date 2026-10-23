@@ -428,7 +428,7 @@ void reg_set(int name, const char *s, size_t n, int type, int is_delete) {
     } else {
         reg_store(&regs[idx], s, n, type);
     }
-    if (idx != R_UNNAMED) reg_store(&regs[R_UNNAMED], s, n, type);
+    reg_store(&regs[R_UNNAMED], s, n, type);             /* the unnamed register always holds the latest text */
 }
 
 Reg *reg_get(int name) {
