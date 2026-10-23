@@ -17,6 +17,9 @@ NORETURN void panic(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
 void selftest_run(void);
 
+/* Gensokyo commentary for fatal errors (incident.c). */
+const char *incident_quip(u64 vector, u64 cr2, u64 error);
+
 extern BootInfo g_boot;
 
 /* Physical <-> higher-half direct map. Only valid for RAM. */

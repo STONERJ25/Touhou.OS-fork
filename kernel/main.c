@@ -9,21 +9,34 @@
 #include "mm.h"
 #include "irq.h"
 #include "task.h"
+#include "yinyang.h"
+#include "input.h"
+#include "tty.h"
+#include "vfs.h"
+#include "serial.h"
+#include "ktime.h"
+#include "random.h"
 
 u64 g_hhdm;
 u64 g_kernel_phys, g_kernel_virt;
 BootInfo g_boot;
 
 extern char __kernel_start[], __kernel_end[];
+void kshell_main(void *arg);
 
+#define SHRINE_RED   0xC8102E
+#define CONSOLE_BG   0x0B0B14
+
+/* Yin-yang orb on the left, title block on the right; the log starts below. */
 static void print_banner(void) {
-    printk("\x1b[1;35m");
-    printk("  _____                _                ___  ____\n");
-    printk(" |_   _|__  _   _ | |__   ___  _   _ / _ \\/ ___|\n");
-    printk("   | |/ _ \\| | | || '_ \\ / _ \\| | | | | | \\___ \\\n");
-    printk("   | | (_) | |_| || | | | (_) | |_| | |_| |___) |\n");
-    printk("   |_|\\___/ \\__,_||_| |_|\\___/ \\__,_|\\___/|____/\n");
-    printk("\x1b[0m\n");
+    static u32 orb[64 * 64];
+    yinyang_render(orb, 64, 64, 0xF2F2F2, SHRINE_RED, CONSOLE_BG);
+    fb_blit(10, 8, 64, 64, orb, 64);
+    printk("\x1b[1;12H\x1b[1m\x1b[38;2;200;16;46mTouhou\x1b[38;2;242;242;242mOS\x1b[0m");
+    printk("\x1b[2;12H\x1b[96mGensokyo kernel %s\x1b[0m  \"%s\"", KERNEL_VERSION, KERNEL_CODENAME);
+    printk("\x1b[3;12H\x1b[90man unofficial Touhou Project fan OS -- the shrine gate is open\x1b[0m");
+    printk("\x1b[4;12H\x1b[90m%s\x1b[0m", "────────────────────────────────────────");
+    printk("\x1b[6;1H");
 }
 
 static void crash_test(const char *kind) {
@@ -90,13 +103,27 @@ NORETURN void kmain(BootInfo *bi) {
     sched_init();
     pic_init();
     timer_init();
+    tty_console_init();
+    input_init();
     sti();
     klog("Sakuya", "interrupts enabled, scheduler running");
+    rtc_init();
+    random_init();
 
     if (cmdline_value("crash", crash, sizeof crash) && strncmp(crash, "early-", 6)) crash_test(crash);
     if (cmdline_flag("selftest")) selftest_run();
 
+    vfs_init();
+    layout_create();
+    keyboard_init();
+    serial_rx_init();
+    if (g_boot.initrd_phys && g_boot.initrd_size) {
+        initrd_unpack(phys_to_virt(g_boot.initrd_phys), g_boot.initrd_size);
+        pmm_add_region(g_boot.initrd_phys, ALIGN_UP(g_boot.initrd_size, PAGE_SIZE));    /* contents now live in tmpfs */
+    }
+
     klog("Gensokyo", "boot complete");
     printk("\n\x1b[1;35m Welcome to Gensokyo. \x1b[0m\n");
-    for (;;) hlt();
+    task_create_detached("kshell", kshell_main, NULL);
+    for (;;) task_sleep_ms(1000);
 }

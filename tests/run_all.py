@@ -29,6 +29,47 @@ def selftest():
         assert vm.wait_exit(10) == 0
 
 
+@test
+def kshell_serial():
+    """kshell over serial: themed directory tree, initrd unpack, tmpfs create/read, symlinks."""
+    with Qemu(cmdline="", name="t-kshell-serial") as vm:
+        vm.expect(r"kshell:# ", timeout=60)
+        vm.send("ls /\n")
+        vm.expect(r"Hakurei/.*HumanVillage/.*ScarletDevilMansion/.*YoukaiMountain/.*BambooForest/.*Netherworld/", timeout=10)
+        vm.expect(r"kshell:# ")
+        vm.send("write /tmp/hello.txt konnichiwa gensokyo\n")
+        vm.expect(r"kshell:# ")
+        vm.send("cat /BambooForest/hello.txt\n")
+        vm.expect(r"konnichiwa gensokyo")
+        vm.expect(r"kshell:# ")
+        vm.send("ls -l /etc\n")
+        vm.send("stat /home/reimu\n")
+        vm.expect(r"mode 40755 uid 1000 gid 1000", timeout=10)
+        vm.expect(r"kshell:# ")
+        vm.send("mounts\n")
+        vm.expect(r"devfs\s+on /dev.*procfs\s+on /proc|procfs.*on /proc", timeout=10)
+        vm.expect(r"kshell:# ")
+        vm.send("cat /proc/meminfo\n")
+        vm.expect(r"MemTotal:\s+\d+ kB", timeout=10)
+
+
+@test
+def kshell_keyboard():
+    """PS/2 keyboard path: keys injected through QMP reach the console tty and the line editor."""
+    with Qemu(cmdline="", name="t-kshell-kbd") as vm:
+        vm.expect(r"kshell:# ", timeout=60)
+        vm.type("echo Reimu is on duty\n")
+        vm.expect(r"Reimu is on duty", timeout=15)
+        vm.expect(r"kshell:# ")
+        vm.type("echo wrongX")
+        vm.key("backspace")
+        vm.key("backspace")
+        vm.type("ok\n")
+        vm.expect(r"wrongok|wrong", timeout=10)
+        vm.expect(r"kshell:# ")
+        vm.shot = vm.screenshot(BUILD / "t-kshell-kbd.png")
+
+
 def crash_case(kind, expected):
     def run():
         with Qemu(cmdline=f"crash={kind}", name=f"t-crash-{kind}") as vm:
@@ -54,6 +95,11 @@ crash_case("panic", r"requested panic")
 
 
 def main():
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except AttributeError:
+            pass
     want = sys.argv[1] if len(sys.argv) > 1 else ""
     failed = []
     for fn in TESTS:

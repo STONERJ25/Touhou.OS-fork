@@ -20,3 +20,6 @@ docs/AI_SUMMARY.md
 *.user
 Thumbs.db
 .DS_Store
+
+# Local, user-supplied files (never committed)
+assets/local/

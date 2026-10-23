@@ -199,7 +199,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st) {
 
     serial_init();
     g_bs->SetWatchdogTimer(0, 0, 0, 0);
-    log_str("Gensokyo loader 0.1\n");
+    log_str("Hakurei torii (loader) 0.1 -- opening the gate to Gensokyo\n");
 
     /* --- boot volume --- */
     EFI_LOADED_IMAGE_PROTOCOL *li = 0;

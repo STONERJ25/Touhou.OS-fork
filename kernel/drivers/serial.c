@@ -1,6 +1,8 @@
-/* 16550 UART on COM1: the kernel's first and last-resort output. */
+/* 16550 UART on COM1: the kernel's first and last-resort output; input feeds the console tty. */
 #include "serial.h"
 #include "cpu.h"
+#include "irq.h"
+#include "tty.h"
 
 #define COM1 0x3F8
 
@@ -31,4 +33,21 @@ void serial_write(const char *s, size_t n) {
 int serial_getc(void) {
     if (!g_ready || !(inb(COM1 + 5) & 0x01)) return -1;
     return inb(COM1);
+}
+
+static void serial_irq(int irq, void *ctx) {
+    (void)irq; (void)ctx;
+    for (int i = 0; i < 64; i++) {
+        int c = serial_getc();
+        if (c < 0) break;
+        u8 b = (u8)c;
+        tty_receive(tty_console(), &b, 1);
+    }
+}
+
+void serial_rx_init(void) {
+    while (serial_getc() >= 0) { }
+    irq_register(4, serial_irq, NULL);
+    outb(COM1 + 1, 0x01);   /* interrupt on received data */
+    irq_unmask(4);
 }

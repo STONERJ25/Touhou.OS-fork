@@ -43,6 +43,7 @@ NORETURN void panic_frame(const TrapFrame *tf, const char *fmt, ...) {
     vprintk(fmt, ap);
     printk("\n");
     va_end(ap);
+    printk("\x1b[90m%s\x1b[0m\n", incident_quip(tf->vector, read_cr2(), tf->error));
     task_print_current();
     dump_trapframe(tf);
     dump_backtrace(tf->rip, tf->rbp);

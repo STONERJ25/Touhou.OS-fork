@@ -13,6 +13,7 @@ As a library (tests/*.py):
       vm.screenshot("build/shot.png")
 """
 import argparse
+import codecs
 import json
 import os
 import re
@@ -29,6 +30,10 @@ QEMU_DIR = Path(r"C:\Program Files\qemu")
 QEMU = QEMU_DIR / "qemu-system-x86_64.exe"
 OVMF_CODE = QEMU_DIR / "share" / "edk2-x86_64-code.fd"
 OVMF_VARS = QEMU_DIR / "share" / "edk2-i386-vars.fd"
+
+
+_ANSI = re.compile(r"\x1b\[[0-9;?=]*[A-Za-z]|\x1b[()][A-Za-z0-9]|\x1b[=>]")
+_PARTIAL_ESC = re.compile(r"\x1b(\[[0-9;?=]*)?$")
 
 
 def free_port():
@@ -153,6 +158,10 @@ class Qemu:
         return self
 
     def _serial_reader(self):
+        """Collects serial output: raw bytes go to the log file, a UTF-8 decoded copy with ANSI codes stripped
+        goes to self.serial (what expect() matches against)."""
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        pending = ""
         with open(self.serial_path, "ab", buffering=0) as log:
             while True:
                 try:
@@ -162,8 +171,16 @@ class Qemu:
                 if not data:
                     break
                 log.write(data)
+                pending += decoder.decode(data)
+                m = _PARTIAL_ESC.search(pending)        # hold back an escape sequence split across reads
+                hold = ""
+                if m:
+                    hold = pending[m.start():]
+                    pending = pending[:m.start()]
+                clean = _ANSI.sub("", pending).replace("\r", "")
+                pending = hold
                 with self._lock:
-                    self.serial += data.decode("utf-8", errors="replace").replace("\r", "")
+                    self.serial += clean
 
     def alive(self):
         return self.proc is not None and self.proc.poll() is None
@@ -266,6 +283,10 @@ class Qemu:
         for ch in text:
             q, shift = char_to_key(ch)
             self.key(q, shift=shift, hold=delay)
+
+    def send(self, text):
+        """Types text into the guest over the serial port (reaches the console tty like a keyboard would)."""
+        self._serial_sock.sendall(text.encode("utf-8"))
 
     def mouse_move(self, dx, dy):
         self.qmp("input-send-event", events=[

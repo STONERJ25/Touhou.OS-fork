@@ -4,6 +4,7 @@
 
 #include "types.h"
 #include "arch.h"
+#include "abi.h"
 
 #define KSTACK_SIZE  (16 * 1024)
 #define SCHED_SLICE  10         /* ticks (ms) */
@@ -32,6 +33,7 @@ typedef struct Task {
     u64  wake_ms;               /* for SLEEPING, and for BLOCKED with a timeout */
     bool timed;
     bool timed_out;
+    bool intr;                  /* blocked in an interruptible wait: signals may wake it */
     int  exit_code;
     u64  cpu_ticks;
     int  slice;
@@ -64,6 +66,11 @@ NORETURN void task_exit(int code);
 void  task_yield(void);
 void  task_sleep_ms(u64 ms);
 void  task_for_each(void (*fn)(Task *t, void *ctx), void *ctx);
+void  task_interrupt(Task *t);                      /* wake a task blocked in an interruptible wait */
+
+/* Set by the process layer: true if the current task has a deliverable signal. */
+extern bool (*g_signal_pending_hook)(void);
+static inline bool signal_pending(void) { return g_signal_pending_hook && g_signal_pending_hook(); }
 int   task_count(void);
 Task *task_by_tid(int tid);
 

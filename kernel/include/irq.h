@@ -13,6 +13,7 @@ void irq_register(int irq, irq_handler_t handler, void *ctx);
 void irq_mask(int irq);
 void irq_unmask(int irq);
 void irq_dispatch(int irq, TrapFrame *tf);
+u64  irq_count(int irq);
 
 /* PIT-driven system tick */
 #define TIMER_HZ 1000

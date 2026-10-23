@@ -39,5 +39,7 @@ const char *ksym_lookup(u64 addr, u64 *offset);
 
 /* Exit QEMU through the isa-debug-exit device (status = (code << 1) | 1); no-op on real hardware. */
 NORETURN void qemu_exit(int code);
+NORETURN void machine_poweroff(void);
+NORETURN void machine_reboot(void);
 
 #endif

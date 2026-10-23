@@ -9,6 +9,7 @@
 extern char boot_stack_top[];
 
 Task *g_current;
+bool (*g_signal_pending_hook)(void);
 static Task g_boot_task;
 static Task *g_idle;
 static Task *g_list;
@@ -140,6 +141,15 @@ static void wq_unlink(Task *t) {
     }
     t->wq = NULL;
     t->wq_next = NULL;
+}
+
+void task_interrupt(Task *t) {
+    u64 f = irq_save();
+    if (t->intr && (t->state == TASK_BLOCKED || t->state == TASK_SLEEPING)) {
+        if (t->state == TASK_BLOCKED) wq_unlink(t);
+        t->state = TASK_READY;
+    }
+    irq_restore(f);
 }
 
 void sched_tick(void) {
