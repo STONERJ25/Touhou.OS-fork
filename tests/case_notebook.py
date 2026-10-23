@@ -206,6 +206,134 @@ def notebook_line_endings():
 
 
 @test
+def notebook_eol_switch():
+    """Clicking the line ending in the status bar switches LF to CRLF; the page counts as modified and saves with CRLF."""
+    with session("t-notebook-eolsw") as (vm, g):
+        make_demo(g)
+        launch(vm, "/tmp/demo.c")
+        g.click(714, 566)                                # the "LF" segment of the status bar
+        vm.expect(r"nb: msg Line endings will be CRLF", timeout=10)
+        vm.expect(r"nb: title Notebook - \*demo.c", timeout=10)
+        g.key("s", ctrl=True)
+        vm.expect(r"nb: saved /tmp/demo.c bytes=292", timeout=10)
+        expect_file(g, "/tmp/demo.c", DEMO_BYTES.replace(b"\n", b"\r\n"), "converted to CRLF")
+        g.click(714, 566)                                # and back
+        vm.expect(r"nb: msg Line endings will be LF", timeout=10)
+        g.key("s", ctrl=True)
+        vm.expect(r"nb: saved /tmp/demo.c bytes=280", timeout=10)
+        expect_file(g, "/tmp/demo.c", DEMO_BYTES, "converted back to LF")
+
+
+def file_menu(g, y):
+    g.click(69, 68)                                      # File
+    time.sleep(0.4)
+    g.click(95, y)
+
+
+@test
+def notebook_menus_and_recent():
+    """File menu with the mouse: Save As, Close, a recent file, Open... and Quit; New with unsaved text asks first."""
+    with session("t-notebook-menus") as (vm, g):
+        launch(vm, "")                                   # no argument: an untitled page
+        g.type("menu text")
+        vm.expect(r"nb: title Notebook - \*untitled", timeout=10)
+        file_menu(g, 182)                                # Save As...
+        vm.expect(r"nb: dialog save-as", timeout=10)
+        time.sleep(0.8)
+        g.key("a", ctrl=True)
+        g.type("/tmp/m2.txt")
+        g.key("ret")
+        vm.expect(r"nb: saved /tmp/m2.txt", timeout=10)
+        expect_file(g, "/tmp/m2.txt", b"menu text", "Save As from the menu")
+        file_menu(g, 204)                                # Close: nothing unsaved, so no question
+        vm.expect(r"nb: msg Page closed", timeout=10)
+        vm.expect(r"nb: title Notebook - untitled", timeout=10)
+        file_menu(g, 255)                                # the recent file list: entry 1
+        vm.expect(r"nb: open /tmp/m2.txt lines=1 bytes=9", timeout=10)
+        g.type("!")
+        file_menu(g, 94)                                 # New: the page is modified, so it asks
+        vm.expect(r"nb: dialog Unsaved changes", timeout=10)
+        time.sleep(0.8)
+        g.click(585, 413)                                # Don't save
+        vm.expect(r"nb: msg A fresh page", timeout=10)
+        assert md5_of(g, "/tmp/m2.txt") == hashlib.md5(b"menu text").hexdigest(), "Don't save changed the file"
+        file_menu(g, 138)                                # Open...
+        vm.expect(r"nb: dialog open", timeout=10)
+        time.sleep(0.8)
+        g.key("esc")
+        time.sleep(0.4)
+        g.key("esc")
+        time.sleep(0.5)
+        file_menu(g, 226)                                # Quit
+        vm.expect(r"nb: quit", timeout=10)
+
+
+@test
+def notebook_confirm_dialogs():
+    """Saving over another file and over a file that changed on disk asks first; Esc keeps the other file, Enter replaces."""
+    with session("t-notebook-confirm") as (vm, g):
+        g.sh("echo AAA > /tmp/a.txt")
+        g.sh("echo BBB > /tmp/b.txt")
+        launch(vm, "/tmp/a.txt")
+        for answer in ("esc", "ret"):
+            g.key("s", ctrl=True, shift=True)
+            vm.expect(r"nb: dialog save-as", timeout=10)
+            time.sleep(0.8)
+            g.key("a", ctrl=True)
+            g.type("/tmp/b.txt")
+            g.key("ret")
+            vm.expect(r"nb: dialog replace", timeout=10)
+            time.sleep(0.8)
+            g.key(answer)
+            if answer == "esc":
+                time.sleep(0.8)
+                expect_file(g, "/tmp/b.txt", b"BBB\n", "Cancel must keep the other file")
+            else:
+                vm.expect(r"nb: saved /tmp/b.txt", timeout=10)
+                expect_file(g, "/tmp/b.txt", b"AAA\n", "Replace overwrites the other file")
+        g.sh("sleep 2")                                  # modification times have a resolution of one second (of guest time)
+        g.sh("echo external > /tmp/b.txt")
+        g.type("x")
+        for answer in ("esc", "ret"):
+            g.key("s", ctrl=True)
+            vm.expect(r"nb: dialog changed-on-disk", timeout=10)
+            time.sleep(0.8)
+            g.key(answer)
+            if answer == "esc":
+                time.sleep(0.8)
+                expect_file(g, "/tmp/b.txt", b"external\n", "Cancel must keep what is on disk")
+            else:
+                vm.expect(r"nb: saved /tmp/b.txt", timeout=10)
+                expect_file(g, "/tmp/b.txt", b"xAAA\n", "Overwrite writes the page")
+
+
+@test
+def notebook_paths_and_windows():
+    """Relative paths, spaces and dots in paths, New Window starts a second editor."""
+    with session("t-notebook-paths") as (vm, g):
+        g.sh("mkdir -p '/tmp/dir with space'")
+        g.sh("echo spaced > '/tmp/dir with space/my notes.txt'")
+        g.sh("echo rel > /tmp/rel.txt")
+        g.sh("cd /tmp")
+        vm.send("notebook rel.txt &\n")
+        vm.expect(r"nb: open /tmp/rel.txt lines=2 bytes=4", timeout=20)
+        time.sleep(1.0)
+        g.key("n", ctrl=True, shift=True)                # New Window
+        vm.expect(r"nb: start", timeout=20)
+        time.sleep(1.5)
+        pids = g.sh("pidof notebook").split()
+        assert len([p for p in pids if p.isdigit()]) == 2, f"expected two notebook processes, pidof said {pids}"
+        g.key("q", ctrl=True)                            # the new, empty window
+        vm.expect(r"nb: quit", timeout=10)
+        time.sleep(0.8)
+        g.key("q", ctrl=True)                            # the first one
+        vm.expect(r"nb: quit", timeout=10)
+        vm.send('notebook "/tmp/dir with space/../dir with space/./my notes.txt" &\n')
+        vm.expect(r"nb: open /tmp/dir with space/my notes.txt lines=2 bytes=7", timeout=20)
+        vm.expect(r"nb: title Notebook - my notes.txt", timeout=10)
+
+
+@test
 def notebook_unsaved_close():
     """Closing a modified page asks Save / Don't save / Cancel; Esc keeps editing, Don't save leaves the file alone."""
     with session("t-notebook-close") as (vm, g):
@@ -263,6 +391,12 @@ def notebook_big_file():
         for _ in range(5):
             g.key("pgdn")
         vm.expect(r"nb: pos 141 1 ", timeout=15)
+        for _ in range(3):                               # the mouse wheel scrolls three rows per notch (the PS/2 driver of the kernel
+            vm.mouse_button("wheel-down", True)          # reports the direction the wrong way round, so accept either direction)
+            vm.mouse_button("wheel-down", False)
+        vm.expect(r"nb: top (132|150)\b", timeout=15)
+        g.drag(44 + 711, 56 + 36, 44 + 711, 56 + 236)    # the scroll bar thumb, at the top of its track
+        vm.expect(r"nb: top \d{5}\b", timeout=15)
         g.key("end", ctrl=True)
         g.type("tail")
         vm.expect(r"nb: pos 100001 5 mod=1", timeout=15)
@@ -339,6 +473,29 @@ def notebook_bad_input():
         time.sleep(0.5)
         g.click(585, 413)
         vm.expect(r"nb: quit", timeout=10)
+
+
+@test
+def notebook_context_menu():
+    """A right click opens the context menu next to the pointer; keys or the mouse choose; Esc closes it."""
+    with session("t-notebook-ctx") as (vm, g):
+        make_demo(g)
+        launch(vm, "/tmp/demo.c")
+        g.right_click(44 + 200, 56 + 100)
+        vm.expect(r"nb: context menu", timeout=10)
+        time.sleep(0.5)
+        g.shot("ctx")
+        assert g.pixel_near(44 + 230, 56 + 106, (0xEC, 0xE6, 0xD6), tol=10), "no menu on screen"
+        g.key("esc")
+        time.sleep(0.5)
+        assert not g.pixel_near(44 + 230, 56 + 106, (0xEC, 0xE6, 0xD6), tol=10), "the menu is still there after Esc"
+        g.right_click(44 + 200, 56 + 100)
+        vm.expect(r"nb: context menu", timeout=10)
+        time.sleep(0.4)
+        g.key("down")                                    # Cut, Copy and the history are disabled: Paste first, then Select All
+        g.key("down")
+        g.key("ret")
+        vm.expect(r"nb: pos 13 1 mod=0 lines=13 sel=280", timeout=10)
 
 
 @test

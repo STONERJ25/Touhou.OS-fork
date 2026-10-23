@@ -673,6 +673,12 @@ static size_t ed_hit(Editor *e, int mx, int my) {
     return off_at_col(e, line, sub, col);
 }
 
+/* the byte offset under a window position; clicks on the gutter count as the start of that line */
+size_t ed_offset_at(Editor *e, int mx, int my) {
+    if (mx < e->text.x) mx = e->text.x + 1;
+    return ed_hit(e, mx, my);
+}
+
 /* ---------------------------------------------------------------- keyboard */
 
 static bool is_text_key(const KKey *k) {
@@ -707,6 +713,7 @@ bool ed_key(Editor *e, KUI *ui, const KKey *k) {
             if (sel) do_replace(e, lo, hi - lo, "", 0, lo, DK_OTHER);
             else { size_t p = doc_word_right(d, d->caret); do_replace(e, d->caret, p - d->caret, "", 0, d->caret, DK_OTHER); }
             return true;
+        case KEY_INSERT: ed_copy(e, false); return true;
         case KEY_D: if (shift) { ed_duplicate_line(e); return true; } break;
         case KEY_K: if (shift) { ed_delete_line(e); return true; } break;
         case KEY_LBRACKET: ed_indent(e, true); return true;

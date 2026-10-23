@@ -161,6 +161,7 @@ void   ed_delete_line(Editor *e);
 void   ed_move_lines(Editor *e, int dir);
 void   ed_invalidate(Editor *e);                                  /* options changed: drop layout and highlight caches */
 int    ed_rows_in_line(Editor *e, int line);
+size_t ed_offset_at(Editor *e, int mx, int my);                     /* text offset under a window position (as of the last draw) */
 bool   ed_replace_range(Editor *e, size_t pos, size_t del, const char *ins, size_t n, size_t caret_after);   /* one undo step */
 int    ed_wrap_count(const char *t, size_t s, size_t e, int cols, int tw, size_t *rs, int cap);             /* word wrap rules (tested by --selftest) */
 

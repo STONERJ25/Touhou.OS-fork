@@ -302,6 +302,7 @@ static void on_saveas_path(const char *path, void *user) {
             char msg[NB_PATH_MAX + 120];
             snprintf(msg, sizeof msg, "%s already exists. Do you want to replace it?", full);
             nb_modal_enter();
+            nb_trace("dialog replace");
             k_confirm_dialog(A.app, "Replace file?", msg, KI_WARNING, "Replace", "Cancel", on_overwrite, NULL);
             return;
         }
@@ -336,10 +337,12 @@ static void act_save(void) {
     if (!A.has_path) { g_pend.valid = false; begin_save_as(); return; }
     if (A.readonly) { msg_set("This file is read-only. Choose a new name to keep your changes."); g_pend.valid = false; begin_save_as(); return; }
     struct stat st;
+    if (A.trace && stat(A.path, &st) == 0) nb_trace("mtime disk=%lld loaded=%lld", (long long)st.st_mtime, (long long)A.mtime);
     if (A.mtime && stat(A.path, &st) == 0 && st.st_mtime != A.mtime) {
         char msg[NB_PATH_MAX + 160];
         snprintf(msg, sizeof msg, "%s was changed by something else after you opened it. Save anyway and overwrite those changes?", A.name);
         nb_modal_enter();
+        nb_trace("dialog changed-on-disk");
         k_confirm_dialog(A.app, "File changed on disk", msg, KI_WARNING, "Overwrite", "Cancel", on_changed_on_disk, NULL);
         return;
     }
@@ -713,6 +716,100 @@ static void draw_status(KUI *ui, KRect r) {
     }
 }
 
+/* ---------------------------------------------------------------- context menu (right click in the text) */
+
+typedef struct { const char *label, *keys; int act; bool sep; } CxItem;
+static const CxItem g_cx_items[] = {
+    { "Undo", "Ctrl+Z", MA_UNDO, false }, { "Redo", "Ctrl+Y", MA_REDO, false }, { "", NULL, 0, true },
+    { "Cut", "Ctrl+X", MA_CUT, false }, { "Copy", "Ctrl+C", MA_COPY, false }, { "Paste", "Ctrl+V", MA_PASTE, false }, { "", NULL, 0, true },
+    { "Select All", "Ctrl+A", MA_SELALL, false },
+};
+#define CX_N ((int)(sizeof g_cx_items / sizeof g_cx_items[0]))
+static struct { bool open; int x, y, w, h, hover; int key_act; } g_cx;
+
+static bool cx_enabled(int act) {
+    bool sel = ed_has_selection(&A.ed);
+    switch (act) {
+    case MA_UNDO: return !A.readonly && doc_can_undo(&A.ed.doc);
+    case MA_REDO: return !A.readonly && doc_can_redo(&A.ed.doc);
+    case MA_CUT: return !A.readonly && sel;
+    case MA_COPY: return sel;
+    case MA_PASTE: return !A.readonly;
+    default: return true;
+    }
+}
+
+static void cx_open(KUI *ui, int W, int H) {
+    g_cx.open = true;
+    g_cx.w = 200;
+    g_cx.h = 4;
+    for (int i = 0; i < CX_N; i++) g_cx.h += g_cx_items[i].sep ? 7 : 22;
+    g_cx.x = ui->mx;
+    g_cx.y = ui->my;
+    if (g_cx.x + g_cx.w > W) g_cx.x = W - g_cx.w;
+    if (g_cx.y + g_cx.h > H) g_cx.y = H - g_cx.h;
+    if (g_cx.x < 0) g_cx.x = 0;
+    if (g_cx.y < 0) g_cx.y = 0;
+    g_cx.hover = -1;
+    g_cx.key_act = 0;
+    nb_trace("context menu");
+}
+
+static void cx_step(int dir) {
+    int i = g_cx.hover;
+    for (int tries = 0; tries < CX_N; tries++) {
+        i = (i + dir + CX_N) % CX_N;
+        if (i < 0) i = CX_N - 1;
+        if (!g_cx_items[i].sep && cx_enabled(g_cx_items[i].act)) { g_cx.hover = i; return; }
+    }
+}
+
+static void cx_key(const KKey *k) {
+    if (k->code == KEY_ESC) g_cx.open = false;
+    else if (k->code == KEY_DOWN) cx_step(1);
+    else if (k->code == KEY_UP) cx_step(-1);
+    else if ((k->code == KEY_ENTER || k->code == KEY_KPENTER) && g_cx.hover >= 0) g_cx.key_act = g_cx_items[g_cx.hover].act;
+}
+
+/* Handles the pointer and draws the menu; returns the chosen action (or 0). */
+static int cx_run(KUI *ui) {
+    if (!g_cx.open) return 0;
+    KCanvas *cv = &ui->cv;
+    const KTheme *th = ui->theme;
+    KRect box = kr(g_cx.x, g_cx.y, g_cx.w, g_cx.h);
+    int act = g_cx.key_act;
+    g_cx.key_act = 0;
+    int y = box.y + 2, over = -1;
+    KRect rects[CX_N];
+    for (int i = 0; i < CX_N; i++) {
+        rects[i] = kr(box.x + 2, y, box.w - 4, g_cx_items[i].sep ? 5 : 22);
+        y += g_cx_items[i].sep ? 7 : 22;
+        if (!g_cx_items[i].sep && ui->mouse_inside && kr_contains(rects[i], ui->mx, ui->my)) over = i;
+    }
+    if (over >= 0 && (ui->mx != g_cx.x || ui->my != g_cx.y)) g_cx.hover = over;
+    bool close = act != 0;
+    if (ui->released[0] && over >= 0 && cx_enabled(g_cx_items[over].act)) { act = g_cx_items[over].act; close = true; }
+    else if ((ui->pressed[0] || ui->pressed[1] || ui->pressed[2]) && !kr_contains(box, ui->mx, ui->my)) close = true;
+    if (!g_cx.open) close = true;
+    if (close) {
+        g_cx.open = false;
+        kapp_redraw(A.app);
+        return act;
+    }
+    kc_fill(cv, kr(box.x + 3, box.y + 3, box.w, box.h), kc_shade(th->window_bg, 55));
+    kc_panel(cv, box, KB_RAISED, th->window_bg);
+    for (int i = 0; i < CX_N; i++) {
+        const CxItem *it = &g_cx_items[i];
+        if (it->sep) { k_separator(ui, kr(rects[i].x + 4, rects[i].y + 1, rects[i].w - 8, 2)); continue; }
+        bool en = cx_enabled(it->act), hot = en && g_cx.hover == i;
+        if (hot) kc_fill(cv, rects[i], th->select_bg);
+        uint32_t fg = !en ? th->text_dim : hot ? th->select_text : th->text;
+        kc_text(cv, rects[i].x + 12, rects[i].y + 3, it->label, fg);
+        if (it->keys) kc_text(cv, rects[i].x + rects[i].w - 8 - kc_text_width(it->keys), rects[i].y + 3, it->keys, fg);
+    }
+    return 0;
+}
+
 /* ---------------------------------------------------------------- the window */
 
 static void trace_state(void) {
@@ -728,6 +825,8 @@ static void trace_state(void) {
         pl = line; pc = col; pm = m; pn = nl; ps = hi - lo;
         nb_trace("pos %d %d mod=%d lines=%d sel=%zu", line + 1, col + 1, m, nl, hi - lo);
     }
+    static int ptop = -1;
+    if (A.ed.top_line != ptop) { ptop = A.ed.top_line; nb_trace("top %d", ptop + 1); }
 }
 
 static void draw(KApp *app, KUI *ui, void *user) {
@@ -748,15 +847,6 @@ static void draw(KApp *app, KUI *ui, void *user) {
     bool modal = A.modal > 0;
     if (modal) ui->input_blocked = true;
 
-    /* keys, in the order they arrived: application shortcuts first, the rest goes to the editor */
-    for (int i = 0; i < ui->nkeys; i++) {
-        KKey *k = &ui->keys[i];
-        if (!k->down || !k->code) continue;
-        if (modal) { k->down = 0; k->code = 0; continue; }
-        if (app_shortcut(ui, k)) { k->down = 0; k->code = 0; continue; }
-        if (ui->focus == ED_ID && !ui->menu_open && ed_key(&A.ed, ui, k)) { k->down = 0; k->code = 0; }
-    }
-
     int mb_h = 24;
     int sb_h = A.show_status ? 22 : 0;
     int fb_h = findbar_height();
@@ -765,6 +855,28 @@ static void draw(KApp *app, KUI *ui, void *user) {
     KRect fbr = kr(0, edr.y + edr.h, W, fb_h);
     KRect sbr = kr(0, H - sb_h, W, sb_h);
 
+    /* keys, in the order they arrived: application shortcuts first, the rest goes to the editor */
+    for (int i = 0; i < ui->nkeys; i++) {
+        KKey *k = &ui->keys[i];
+        if (!k->down || !k->code) continue;
+        if (modal) { k->down = 0; k->code = 0; continue; }
+        if (g_cx.open) { cx_key(k); k->down = 0; k->code = 0; continue; }
+        if (app_shortcut(ui, k)) { k->down = 0; k->code = 0; continue; }
+        if (ui->focus == ED_ID && !ui->menu_open && ed_key(&A.ed, ui, k)) { k->down = 0; k->code = 0; }
+    }
+
+    /* a right click in the text opens the context menu (and moves the caret there unless it hit the selection) */
+    if (!modal && !g_cx.open && !ui->menu_open && ui->pressed[1] && ui->mouse_inside && kr_contains(edr, ui->mx, ui->my) &&
+        ui->mx < edr.x + edr.w - 16) {
+        size_t off = ed_offset_at(&A.ed, ui->mx, ui->my), lo, hi;
+        ed_selection(&A.ed, &lo, &hi);
+        if (off < lo || off > hi) ed_set_selection(&A.ed, off, off);
+        ui->focus = ED_ID;
+        cx_open(ui, W, H);
+    }
+
+    bool inside = ui->mouse_inside;
+    if (g_cx.open) ui->input_blocked = true;                    /* the menu owns the pointer while it is open */
     bool blocked = modal || ui->input_blocked;
     ed_draw(&A.ed, ui, edr, ui->focus == ED_ID, blocked);
     findbar_draw(ui, fbr);
@@ -775,9 +887,8 @@ static void draw(KApp *app, KUI *ui, void *user) {
     build_menus();
     static const char *const titles[] = { "File", "Edit", "View", "Help" };
     const KMenuItem *menus[4] = { g_items[0], g_items[1], g_items[2], g_items[3] };
-    bool inside = ui->mouse_inside;
     int menu_before = ui->menu_open;
-    if (modal) ui->mouse_inside = false;
+    if (modal || g_cx.open) ui->mouse_inside = false;
     int pick = k_menubar(ui, kr(0, 0, W, mb_h), titles, menus, g_count, 4);
     ui->mouse_inside = inside;
     if (menu_before && !ui->menu_open) kapp_redraw(A.app);        /* the closing frame still shows the drop-down: paint again */
@@ -786,6 +897,11 @@ static void draw(KApp *app, KUI *ui, void *user) {
         if (m >= 0 && m < 4 && it >= 0 && it < g_count[m]) do_action(g_acts[m][it]);
         if (A.want_editor_focus) { ui->focus = ED_ID; A.want_editor_focus = false; }
         if (!A.find_open) ui->focus = ED_ID;
+    }
+    if (g_cx.open) {
+        ui->mouse_inside = inside;
+        int cact = cx_run(ui);
+        if (cact) { do_action(cact); if (!A.find_open) ui->focus = ED_ID; }
     }
     update_title();
     trace_state();
