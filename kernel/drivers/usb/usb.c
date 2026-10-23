@@ -25,6 +25,7 @@
 
 bool g_usb_debug;
 bool g_usb_hidreport;
+bool g_usb_stalltest;
 static UsbHc *g_hcs[MAX_BUSES];
 static int g_nhc;
 static UsbHub *g_hubs;
@@ -472,6 +473,15 @@ static UsbDevice *usb_setup_device(UsbHub *hub, int port, const UsbPortStatus *s
         return NULL;
     }
     fetch_strings(dev);
+    if (g_usb_stalltest) {
+        /* A vendor request that no device implements: the device answers with a STALL, which halts the control endpoint. The next
+         * request only works if our recovery (Reset Endpoint + Set TR Dequeue Pointer) put the pipe back in business. */
+        u8 junk[8];
+        UsbDeviceDesc again;
+        int r1 = usb_control(dev, USB_DIR_IN | USB_TYPE_VENDOR, 0x77, 0, 0, junk, sizeof junk, CTRL_TIMEOUT);
+        int r2 = usb_get_descriptor(dev, USB_DT_DEVICE, 0, 0, &again, 18);
+        klog("Kappa", "usb %s: stall test: bogus request returned %d, device descriptor afterwards returned %d", dev->path, r1, r2);
+    }
     klog("Kappa", "usb %s: new %s device %04x:%04x \"%s%s%s\"", dev->path, usb_speed_name(dev->speed), dev->desc.idVendor, dev->desc.idProduct,
          dev->manufacturer, dev->manufacturer[0] && dev->product[0] ? " " : "", dev->product);
     proc_update();
@@ -625,6 +635,7 @@ void usb_init(void) {
         }
         if (!strcmp(opt, "debug")) g_usb_debug = true;
         if (!strcmp(opt, "hidreport")) { g_usb_debug = true; g_usb_hidreport = true; }
+        if (!strcmp(opt, "stalltest")) { g_usb_debug = true; g_usb_stalltest = true; }
     }
     for (PciDev *d = pci_find_class(0x0C, 0x03, 0x30, NULL); d && g_nhc < MAX_BUSES; d = pci_find_class(0x0C, 0x03, 0x30, d)) {
         UsbHc *hc = xhci_create(d, g_nhc + 1);

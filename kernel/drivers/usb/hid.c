@@ -266,7 +266,7 @@ static void emit_key(u8 code, bool down) {
 }
 
 static void key_change(u8 code, bool down) {
-    if (!code) return;
+    if (!code) return;                                                  /* a usage we have no key for (PrintScreen, Pause, ...) */
     if (down) {
         if (g_key_refs[code]++ != 0) return;
         g_stats.key_down++;
@@ -297,7 +297,10 @@ static void keys_apply(HidDev *h, const u8 *cur) {
         for (unsigned u = 1; u < 256; u++) {
             bool mod = u >= 0xE0 && u <= 0xE7;
             if ((pass == 0 && !mod) || (pass == 1 && mod)) continue;
-            if (!bit_get(h->keys, u) && bit_get(cur, u)) key_change(usage_to_key((u8)u), true);
+            if (!bit_get(h->keys, u) && bit_get(cur, u)) {
+                if (!usage_to_key((u8)u)) usb_dbg("hid: keyboard usage %#x has no key code", u);
+                key_change(usage_to_key((u8)u), true);
+            }
         }
     memcpy(h->keys, cur, 32);
 }
