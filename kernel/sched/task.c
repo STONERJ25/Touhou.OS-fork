@@ -49,6 +49,7 @@ static Task *task_create_common(const char *name, void (*entry)(void *), void *a
 
 /* Threads of a process hang off Process.threads. Both helpers run with interrupts disabled (the lock of this data). */
 static void thread_link(Process *p, Task *t) {
+    t->tgid = p->pid;
     t->thread_next = p->threads;
     p->threads = t;
     p->nthreads++;

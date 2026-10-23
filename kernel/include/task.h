@@ -46,6 +46,7 @@ typedef struct Task {
     /* user threads (see docs/THREADS.md): one Task per thread, all threads of a process share its Process */
     struct Task *thread_next;   /* next thread of the same process (list head: Process.threads) */
     int  utid;                  /* thread id seen by user space (gettid); the first thread's id is the pid */
+    int  tgid;                  /* pid of the process this thread belongs to (0 for kernel threads); stays valid after the Process is gone */
     u64  fs_base;               /* TLS base, loaded into IA32_FS_BASE when this thread runs */
     u64  clear_tid;             /* user address that is zeroed and futex-woken when the thread exits (0 = none) */
     u32  sig_blocked;           /* per-thread signal mask */

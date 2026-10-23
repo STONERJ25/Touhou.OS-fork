@@ -6,6 +6,7 @@ from harness import test, Qemu
 THREAD_SECTIONS = [
     "create, join, return values",
     "many threads, one mutex, one atomic",
+    "/proc shows the threads",
     "producer/consumer with condition variables",
     "rwlock",
     "barrier",

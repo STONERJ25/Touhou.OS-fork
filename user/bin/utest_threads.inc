@@ -546,8 +546,41 @@ static void test_threads_stress(void) {
     close(g_th_stress_pipe[1]);
 }
 
+static void test_threads_proc(void) {
+    TH_SECTION("/proc shows the threads");
+    sem_init(&g_th_hold, 0, 0);
+    pthread_t t[3];
+    for (int i = 0; i < 3; i++) pthread_create(&t[i], NULL, th_hold, NULL);
+    char buf[2048];
+    int fd = open("/proc/self/threads", O_RDONLY);
+    ssize_t n = fd >= 0 ? read(fd, buf, sizeof buf - 1) : -1;
+    if (fd >= 0) close(fd);
+    CHECK(n > 0);
+    int lines = 0, has_main = 0;
+    if (n > 0) {
+        buf[n] = 0;
+        for (char *p = buf; *p; p++) if (*p == '\n') lines++;
+        char first[16];
+        snprintf(first, sizeof first, "%d ", (int)getpid());
+        has_main = strstr(buf, first) != NULL;
+    }
+    CHECK(lines == 4 && has_main);
+    fd = open("/proc/self/status", O_RDONLY);
+    n = fd >= 0 ? read(fd, buf, sizeof buf - 1) : -1;
+    if (fd >= 0) close(fd);
+    CHECK(n > 0 && (buf[n] = 0, strstr(buf, "Threads:\t4") != NULL));
+    fd = open("/proc/tasks", O_RDONLY);
+    char big[4096];
+    n = fd >= 0 ? read(fd, big, sizeof big - 1) : -1;
+    if (fd >= 0) close(fd);
+    CHECK(n > 0 && (big[n] = 0, strstr(big, " tid=") != NULL));
+    for (int i = 0; i < 3; i++) sem_post(&g_th_hold);
+    for (int i = 0; i < 3; i++) pthread_join(t[i], NULL);
+}
+
 static void test_threads(void) {
     test_threads_basic();
+    test_threads_proc();
     test_threads_sync();
     test_threads_local();
     test_threads_many();
