@@ -654,10 +654,9 @@ void dlg_properties(char **paths, int n) {
         }
         struct statfs sf;
         if (statfs(p0, &sf) == 0 && sf.f_blocks) {
-            char fr[40], tt[40];
+            char fr[40];
             fmt_size(fr, sizeof fr, (int64_t)(sf.f_bavail * sf.f_bsize));
-            fmt_size(tt, sizeof tt, (int64_t)(sf.f_blocks * sf.f_bsize));
-            snprintf(d->volume, sizeof d->volume, "%s on %s, %s free of %s", sf.f_fstypename, sf.f_mntonname, fr, tt);
+            snprintf(d->volume, sizeof d->volume, "%s at %s, %s free", sf.f_fstypename, sf.f_mntonname, fr);
         }
     }
     if (d->is_dir || d->multi) {

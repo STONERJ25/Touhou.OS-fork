@@ -104,6 +104,63 @@ follows the window width.
   `--page N` opens on a page, `--trace` logs page turns and puzzle moves. The same date always gives the same gossip.
 * Reads: `/proc/{uptime,meminfo,mounts,pci,partitions,usb}`, `/proc/<pid>/stat`, `/dev/kmsg`, `/etc/passwd`. All text is original.
 
+## Gensokyo Explorer (file manager): `explorer`
+
+```
+explorer [path]          open a folder (a file: its folder with the file selected); no path: the home folder
+explorer --selftest      model and job engine tests on the console (no window server needed)
+```
+
+Start menu: **Gensokyo Explorer**; the panel's folder button and the desktop icons run `explorer`, `explorer <home>`,
+`explorer /Netherworld` and `explorer /`. Window title: `Explorer - /tmp/x`. Design notes, platform facts and the problems found
+along the way are in [EXPLORER.md](EXPLORER.md); the manual page is `man explorer`.
+
+* **Window**: menu bar (File, Edit, View, Go, Help, keyboard driven like the Notebook's), toolbar (back, forward, up, refresh,
+  address field, list and icon buttons, new folder), places (Home, the root, the Netherworld, and the volumes of `/proc/mounts`),
+  the folder, and a status bar (items, hidden, selection and its size, messages, free space from `statfs`).
+* **List view**: Name, Size, Modified, Type, Permissions, Owner (columns drop out from the right when the window is narrow);
+  click a heading to sort, again to reverse; folders always first, natural order for numbers. **Icon view**: 96 x 84 cells with
+  two-line labels. Only the rows or cells on screen are drawn. Hidden files (Ctrl+H), the view and the sort are remembered in
+  `~/.config/explorer.conf`.
+* **Folders are read in slices** (about 20 ms per frame) into one model and sorted at the end, so a folder of thousands of
+  files appears at once and the window answers all the time. Refreshing (F5, after every job, and by itself when the folder's
+  time stamp changes) reads into a second model and swaps, so nothing flickers and scroll position and selection stay.
+* **Selecting**: click, Ctrl+click, Shift+click, a rubber band (also with Ctrl/Shift; scrolls at the edges), Ctrl+A, the arrows with
+  Shift/Ctrl, Home, End, Page Up/Down, type-ahead find (letters typed within a second), Esc.
+* **File jobs** (`fileops.c`): copy, move, send to the Netherworld, delete for good, restore and measure are jobs on a queue, worked
+  in slices of one directory entry or 64 KiB. A job that lasts more than 0.4 s gets a progress window with Cancel (a cancelled copy
+  removes its half-written file); errors are collected and listed once at the end; a name that is taken asks (Keep both, Replace,
+  Skip, all with "do this for all"; Esc cancels); folders of the same name merge; copies keep permissions and modification times.
+  Move tries `rename`, and on `EXDEV` (another volume, such as `/tmp` against the home folder) copies and removes each source item
+  right after its copy succeeded. A folder cannot go into itself; `/`, `/Netherworld` and mount points cannot be moved or deleted.
+* **The Netherworld**: Delete renames into `/Netherworld` (copying across volumes, refusing files too big for the free memory) under a
+  free name (`name`, `name.1`, ...) and writes `/Netherworld/.trashinfo/<name>.info` (`path=` and `time=`). Inside it a banner offers
+  Restore (parent folders are recreated; things without a note go to `$HOME`) and Empty it; Delete for Good and Empty ask first.
+* **Clipboard**: Ctrl+C / Ctrl+X / Ctrl+V; a file in `/tmp` (`.explorer-clip-<uid>`), so it also works between two windows. Cut items
+  are drawn faded. **Drag and drop** onto a folder of the list, a place or the Netherworld: move on the same volume, copy across
+  volumes, Ctrl copies, Shift moves (between two Explorer windows is not done).
+* **Rename** in place (F2; New Folder and New File start it too), **Properties** (Alt+Enter: type, location, size measured in the
+  background for folders, times, volume, permission check boxes with chmod, owner and group with chown for the superuser), a
+  **context menu** drawn inside the window (the server cannot say where a moved window is, so there are no popup windows).
+* **Open**: folders are entered, text (by extension or by looking at the first bytes) goes to `notebook`, `.ppm .pgm .pbm .bmp` to
+  `sketchbook`, programs run in `gapterm -e` (waits for Enter at the end), anything else asks to open it as text.
+
+| Keys | Action |
+|------|--------|
+| Enter, Backspace, Alt+Left, Alt+Right, Alt+Up, Alt+Home | open, up, back, forward, up, home |
+| F5, Ctrl+L / F6 / Alt+D, Ctrl+H, Ctrl+1, Ctrl+2 | read again, address field, hidden files, list, icons |
+| Delete, Shift+Delete, F2, Alt+Enter | to the Netherworld, delete for good, rename, properties |
+| Ctrl+C, Ctrl+X, Ctrl+V, Ctrl+A | copy, cut, paste, select all |
+| Ctrl+N, Ctrl+Shift+N, Ctrl+Shift+F, Ctrl+W | new window, new folder, new file, close |
+| Alt+F E V G H, F10, F1 | menus, the list of keys |
+
+Notes for developers: source in `user/bin/explorer/` (`util.c` paths, formats and file types; `model.c`; `fileops.c` and `trash.c`
+the job engine, which needs no window and is what `--selftest` exercises; `view.c`; `menus.c`; `dialogs.c`; `main.c`).
+`EXPLORER_TRACE=1` prints `ex: ...` lines on stdout (folder read, selection, sort order, jobs, dialogs) that the tests wait for.
+Tests: `python tests/run_all.py explorer` (`tests/case_explorer.py`): the self test (about 120 checks, also across volumes), navigation
+and sorting, selection and keyboard, the Netherworld, copy / move / conflicts, drag and drop, rename and properties, a folder of
+3000 files, and opening in the other applications.
+
 ## Developer tools
 
 * `kappa-warp X Y` puts the pointer at an exact position through the window server (`FM_WARP_POINTER`) and returns when the

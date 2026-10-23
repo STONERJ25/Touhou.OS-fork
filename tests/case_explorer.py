@@ -494,3 +494,173 @@ def explorer_drag_drop():
         job_done(vm, m, 0, 1, 1)
         assert shell_has(g, "/HumanVillage/reimu/run.sh") and shell_has(g, "/tmp/x/run.sh")
     gui_test("t-explorer-dnd", body)
+
+
+def dialog_origin(w, h):
+    """Screen position of the content of a dialog of w x h pixels: the server centres it in the work area (1024 x 732)."""
+    return (1024 - (w + 8)) // 2 + 4, (732 - (h + 30)) // 2 + 26
+
+
+@test
+def explorer_rename_properties():
+    """New Folder and F2 rename in place (the extension stays, a taken name is refused, Esc cancels); Properties changes permissions; Ctrl+H shows hidden files; icons; the context menu."""
+    def body(vm, g):
+        launch(vm, g)
+        # New Folder makes "New Folder" and starts renaming it
+        m = mark(vm)
+        g.click(*win(*NEWF_BTN))
+        wait_after(vm, m, r"ex: created /tmp/x/New Folder")
+        wait_after(vm, m, r"ex: rename start New Folder")
+        time.sleep(0.6)
+        g.shot("newfolder")
+        g.type("Gate")
+        key_wait(vm, g, "ret", r"ex: renamed New Folder -> Gate")
+        assert shell_has(g, "/tmp/x/Gate") and not shell_has(g, "/tmp/x/New Folder")
+        # now: Alpha Beta Gate link-to-alpha a.txt numbers.dat pic.ppm prog.c run.sh
+        click_wait(vm, g, row(4), r"ex: sel 1 first=a.txt")
+        key_wait(vm, g, "f2", r"ex: rename start a.txt")
+        time.sleep(0.4)
+        g.type("doc")                                                        # only "a" was selected: the extension stays
+        key_wait(vm, g, "ret", r"ex: renamed a.txt -> doc.txt")
+        assert shell_has(g, "/tmp/x/doc.txt") and not shell_has(g, "/tmp/x/a.txt")
+        # a name that is taken is refused with a dialog
+        click_wait(vm, g, row(7), r"ex: sel 1 first=prog.c")
+        key_wait(vm, g, "f2", r"ex: rename start prog.c")
+        time.sleep(0.4)
+        g.key("a", ctrl=True)
+        g.type("Beta")
+        m = mark(vm)
+        g.key("ret")
+        wait_after(vm, m, r"ex: dialog Cannot rename")
+        time.sleep(0.8)
+        g.key("esc")
+        time.sleep(0.5)
+        assert shell_has(g, "/tmp/x/prog.c") and shell_has(g, "/tmp/x/Beta/inner.txt")
+        # Esc cancels a rename
+        click_wait(vm, g, row(8), r"ex: sel 1 first=run.sh")
+        key_wait(vm, g, "f2", r"ex: rename start run.sh")
+        time.sleep(0.4)
+        g.type("zzz")
+        m = mark(vm)
+        g.key("esc")
+        never_after(vm, m, r"ex: renamed", wait=1.0)
+        assert shell_has(g, "/tmp/x/run.sh")
+        # Properties of run.sh (mode 755, still selected): take away the owner's execute bit
+        m = mark(vm)
+        g.key("ret", alt=True)
+        wait_after(vm, m, r"ex: dialog Properties")
+        time.sleep(1.2)
+        g.shot("properties")
+        ox, oy = dialog_origin(440, 442)                                     # a file on a volume: 420 + the volume row
+        m = mark(vm)
+        g.click(ox + 285, oy + 242)                                          # Owner / Execute
+        time.sleep(0.4)
+        g.key("ret")
+        wait_after(vm, m, r"ex: properties applied mode=0?[0-7]*")
+        assert g.sh("ls -l /tmp/x/run.sh").strip().startswith("-rw-r-xr-x"), g.sh("ls -l /tmp/x/run.sh")
+        # hidden files
+        m = mark(vm)
+        g.key("h", ctrl=True)
+        wait_after(vm, m, r"ex: hidden 1 items=10")
+        time.sleep(0.4)
+        assert ".secret" in order_of(vm, m)
+        m = mark(vm)
+        g.key("h", ctrl=True)
+        wait_after(vm, m, r"ex: hidden 0 items=9")
+        # the icon view and the list view again
+        click_wait(vm, g, ICONS_BTN, r"ex: view icons")
+        time.sleep(0.4)
+        g.shot("icons")
+        click_wait(vm, g, cell(1, 0), r"ex: sel 1 first=Beta")
+        # an icon can be renamed too
+        key_wait(vm, g, "f2", r"ex: rename start Beta")
+        time.sleep(0.4)
+        g.shot("icon-rename")
+        g.key("esc")
+        time.sleep(0.4)
+        key_wait(vm, g, "1", r"ex: view list", ctrl=True)
+        # the context menu: right click a file, Up wraps to the last entry (Properties), Enter picks it
+        m = mark(vm)
+        g.right_click(*win(*row(4)))
+        wait_after(vm, m, r"ex: context menu 12 items")
+        time.sleep(0.5)
+        g.shot("context")
+        g.key("up")
+        m = mark(vm)
+        g.key("ret")
+        wait_after(vm, m, r"ex: dialog Properties")
+        time.sleep(0.8)
+        g.key("esc")
+    gui_test("t-explorer-rename", body)
+
+
+@test
+def explorer_big_folder():
+    """A folder of 3000 files is read in slices and navigated at once: select all, End, Page Down and type-ahead work."""
+    def body(vm, g):
+        g.sh("mkdir -p /tmp/big; cd /tmp/big; seq 1 3000 | xargs -n 250 touch; ls | wc -l")
+        m = mark(vm)
+        vm.send("explorer /tmp/big &\n")
+        found = wait_after(vm, m, r"ex: dir /tmp/big items=3000 hidden=0 ms=(\d+)", timeout=120)
+        print(f"  3000 entries read in {found.group(1)} ms", flush=True)
+        o = order_of(vm, m)
+        assert o[:5] == ["1", "2", "3", "4", "5"] and o[9] == "10", o               # natural order, not 1, 10, 100
+        time.sleep(3.0)
+        g.shot("big")
+        key_wait(vm, g, "a", r"ex: sel 3000", ctrl=True)
+        click_wait(vm, g, row(2), r"ex: sel 1 first=3")
+        key_wait(vm, g, "end", r"ex: sel 1 first=3000")
+        key_wait(vm, g, "home", r"ex: sel 1 first=1\n")
+        m = mark(vm)
+        g.key("pgdn")
+        wait_after(vm, m, r"ex: sel 1 first=2[0-9]\n")                       # about a page further down (row 21)
+        time.sleep(0.5)
+        m = mark(vm)
+        g.type("2999")
+        wait_after(vm, m, r"ex: find 2999 -> 2999")
+        time.sleep(0.6)
+        g.shot("big-end")
+        # the window still draws while it is at the end of the list: the row of 2999 is highlighted somewhere in the view
+        assert g.count_pixels((OX + 154, OY + 86, 640, 440), (0xB5, 0x12, 0x2B), tol=8, step=3) > 50
+    gui_test("t-explorer-big", body, mem="1024M")
+
+
+@test
+def explorer_open_apps():
+    """Enter opens text in the Notebook, pictures in the Sketchbook and programs in a terminal window."""
+    def body(vm, g):
+        g.sh("printf '#!/bin/sh\\necho ran > /tmp/x/ran.flag\\n' > /tmp/x/run.sh; chmod 755 /tmp/x/run.sh")
+        launch(vm, g)
+        # a program: a terminal opens, runs it, and waits for Enter
+        click_wait(vm, g, row(7), r"ex: sel 1 first=run.sh")
+        m = mark(vm)
+        g.key("ret")
+        wait_after(vm, m, r"ex: open /tmp/x/run.sh with terminal")
+        deadline = time.time() + 40
+        while time.time() < deadline and not shell_has(g, "/tmp/x/ran.flag"):
+            time.sleep(1.0)
+        assert shell_has(g, "/tmp/x/ran.flag"), "the program did not run in the terminal"
+        time.sleep(1.0)
+        g.shot("terminal")
+        g.key("ret")                                                         # the terminal closes when Enter is pressed
+        time.sleep(1.5)
+        # text goes to the Notebook
+        click_wait(vm, g, row(3), r"ex: sel 1 first=a.txt")
+        m = mark(vm)
+        g.key("ret")
+        wait_after(vm, m, r"ex: open /tmp/x/a.txt with notebook")
+        wait_after(vm, m, r"nb: open /tmp/x/a.txt lines=\d+ bytes=6", timeout=40)
+        time.sleep(1.0)
+        g.shot("notebook")
+        m = mark(vm)
+        g.key("q", ctrl=True)
+        wait_after(vm, m, r"nb: quit")
+        time.sleep(1.0)
+        # a picture goes to the Sketchbook
+        click_wait(vm, g, row(5), r"ex: sel 1 first=pic.ppm")
+        m = mark(vm)
+        g.key("ret")
+        wait_after(vm, m, r"ex: open /tmp/x/pic.ppm with sketchbook")
+        time.sleep(4.0)
+        assert "sketchbook" in g.sh("ps"), "the Sketchbook is not running"
+    gui_test("t-explorer-open", body)

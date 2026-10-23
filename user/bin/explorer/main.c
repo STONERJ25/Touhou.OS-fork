@@ -30,7 +30,7 @@ void (*g_job_done_hook)(Job *) = NULL;
 
 static char g_addr[EX_PATH];
 static char g_free_text[96];
-static uint64_t g_free_ms, g_tick_ms;
+static uint64_t g_free_ms, g_tick_ms, g_scan_t0;
 static struct { char select[EX_NAME]; bool restore_sel; int scroll; char rename[EX_NAME]; } PEND = { .scroll = -1 };
 static int g_last_nsel = -1;
 static char g_title[160];
@@ -303,7 +303,7 @@ static void on_scan_done(void) {
         PEND.rename[0] = 0;
     }
     update_free();
-    ex_trace("dir %s items=%d hidden=%d", X.m.path, X.m.nshown, X.m.nhidden);
+    ex_trace("dir %s items=%d hidden=%d ms=%lld", X.m.path, X.m.nshown, X.m.nhidden, (long long)(k_now_ms() - g_scan_t0));
     trace_order();
 }
 
@@ -332,6 +332,7 @@ static bool open_folder(const char *abs, const char *select_name, int scroll, bo
     }
     abort_refresh();
     view_reset();
+    g_scan_t0 = k_now_ms();
     PEND.restore_sel = false;
     PEND.scroll = scroll;
     PEND.rename[0] = 0;
@@ -427,6 +428,7 @@ void ex_refresh(const char *select_name) {
         g_rm.show_hidden = X.m.show_hidden;
         if (model_open(&g_rm, path)) {
             g_refreshing = true;
+            g_scan_t0 = k_now_ms();
             PEND.restore_sel = true;
             PEND.scroll = -1;
             snprintf(PEND.select, sizeof PEND.select, "%s", select_name ? select_name : "");
@@ -498,11 +500,34 @@ static void spawn_terminal(const char *title, const char *cmd) {
     spawn("/bin/gapterm", argv);
 }
 
+/* A script whose #! line names a shell that does not exist here (there is no /bin/sh) is handed to gapsh instead. */
+static bool script_needs_gapsh(const char *path) {
+    FILE *f = fopen(path, "r");
+    if (!f) return false;
+    char line[200];
+    bool need = false;
+    if (fgets(line, sizeof line, f) && line[0] == '#' && line[1] == '!') {
+        char *interp = line + 2;
+        while (*interp == ' ') interp++;
+        char *end = interp;
+        while (*end && *end != ' ' && *end != '\n' && *end != '\r') end++;
+        *end = 0;
+        const char *base = path_base(interp);
+        if (access(interp, X_OK) != 0 && (!strcmp(base, "sh") || !strcmp(base, "bash") || !strcmp(base, "gapsh") || !strcmp(base, "ash") || !strcmp(base, "dash"))) need = true;
+    }
+    fclose(f);
+    return need;
+}
+
 static void run_in_terminal(const char *path) {
-    char dir[EX_PATH], qdir[EX_PATH * 2], qprog[EX_PATH * 2], qmsg[EX_NAME * 2 + 80], msg[EX_NAME + 80], cmd[EX_PATH * 5], title[EX_NAME + 16];
+    char dir[EX_PATH], qdir[EX_PATH * 2], qprog[EX_PATH * 2 + 16], qmsg[EX_NAME * 2 + 80], msg[EX_NAME + 80], cmd[EX_PATH * 5], title[EX_NAME + 16];
     path_parent(path, dir, sizeof dir);
     sh_quote(qdir, sizeof qdir, dir);
-    sh_quote(qprog, sizeof qprog, path);
+    if (script_needs_gapsh(path)) {
+        char q[EX_PATH * 2];
+        sh_quote(q, sizeof q, path);
+        snprintf(qprog, sizeof qprog, "gapsh %s", q);
+    } else sh_quote(qprog, sizeof qprog, path);
     snprintf(msg, sizeof msg, "[%s finished - press Enter to close]", path_base(path));
     sh_quote(qmsg, sizeof qmsg, msg);
     snprintf(cmd, sizeof cmd, "cd %s && %s; echo; echo %s; read _k", qdir, qprog, qmsg);
