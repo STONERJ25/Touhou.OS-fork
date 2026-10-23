@@ -561,7 +561,7 @@ class View:
 
 def launch(g, args):
     g.sh("pkill gallery; true")
-    time.sleep(0.5)
+    wait_for(lambda: "gallery" not in g.sh("ps"), 60, what="the previous Gallery to quit")
     g.vm.send(f"gallery {args} &\n")
     v = View(g)
     v.locate()
