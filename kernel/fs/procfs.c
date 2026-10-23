@@ -382,6 +382,10 @@ static VNode *make_proclink(Mount *m, int pid, int kind, int fd) {
     pl->kind = kind;
     pl->fd = fd;
     v->priv = pl;
+    u64 f = irq_save();                             /* the link belongs to the user of the process, as ls -l shows it */
+    Process *p = process_by_pid(pid);
+    if (p) { v->uid = p->cred.uid; v->gid = p->cred.gid; }
+    irq_restore(f);
     v->ino = 0x10000 + (u64)pid * 8 + 2 + (u64)(kind == PL_FD ? 0x100 + (u64)fd : (u64)kind);
     return v;
 }
