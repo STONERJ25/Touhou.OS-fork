@@ -153,7 +153,9 @@ file itself (not what a final symlink points to), refuses directories (`EPERM`),
 reference to the node, `st_nlink` counts the entries, `unlink` and `rename` over a name drop one, and the data goes away with
 the last entry *and* the last open descriptor (an unlinked-but-open file reports `st_nlink == 0`). The root filesystem,
 `/tmp` and `/dev` are tmpfs instances, each its own mount, so a link across them fails with `EXDEV`. FAT has no hard links.
-The `ln` applet makes them without `-s`.
+The `ln` applet makes them without `-s`. Like Linux's `protected_hardlinks`, a user other than root may only link files they
+own or could already read *and* write, and never set-user-id or set-group-id programs (`EPERM`): a link would keep an old
+vulnerable copy of `su` alive after the owner replaced it.
 
 ## /proc/<pid>/fd, cwd and exe
 

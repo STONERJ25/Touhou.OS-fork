@@ -814,6 +814,10 @@ static void test_links(void) {
     struct stat home;
     if (stat("/HumanVillage/reimu", &home) == 0 && access("/HumanVillage/reimu", W_OK) == 0)
         CHECK(link("/tmp/jl/d", "/HumanVillage/reimu/jl-x") < 0 && errno == EXDEV);       /* another mount */
+    if (getuid() != 0) {                                    /* other people's files: only those you could read and write yourself */
+        CHECK(link("/etc/passwd", "/tmp/jl/pw") < 0 && errno == EPERM);
+        CHECK(link("/bin/su", "/tmp/jl/su") < 0 && errno == EPERM);                       /* set-user-id program, owned by root */
+    }
     unlink("/tmp/jl/d"); unlink("/tmp/jl/e"); unlink("/tmp/jl/s"); unlink("/tmp/jl/s2");
 }
 

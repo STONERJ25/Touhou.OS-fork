@@ -613,6 +613,12 @@ int vfs_link(const char *from, const char *to, const Cred *c, VNode *cwd) {
     int rc = vfs_lookup(from, cwd, c, LOOKUP_NOFOLLOW, &v);
     if (rc) return rc;
     if (S_ISDIR(v->mode)) { vnode_put(v); return -EPERM; }
+    /* Like Linux's protected_hardlinks: nobody collects links to files they could not already read and write themselves, or to
+     * set-user-id programs (a link would keep an old vulnerable copy alive after the owner replaced it). */
+    if (c && c->uid != 0 && c->uid != v->uid && ((v->mode & (S_ISUID | S_ISGID)) || vfs_access(v, c, R_OK | W_OK))) {
+        vnode_put(v);
+        return -EPERM;
+    }
     if ((rc = exists_check(to, cwd, c))) { vnode_put(v); return rc; }
     if ((rc = parent_for_modify(to, cwd, c, &dir, name))) { vnode_put(v); return rc; }
     if (dir->mount != v->mount) {

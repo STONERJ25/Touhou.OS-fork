@@ -120,8 +120,12 @@ The kernel has one CPU, so "a lock" is either interrupt disabling (short section
   a sequence number: the waiter reads it before releasing the mutex and sleeps only while it is unchanged, so a signal
   between the unlock and the sleep is never lost. Timeouts are absolute `CLOCK_REALTIME` times converted to a relative
   futex timeout. Spurious wake-ups are possible (as POSIX allows).
-* `malloc`/`free`/`realloc` share one lock (`__malloc_lock`). stdio takes one recursive lock for every entry point
-  (`__stdio_lock`), so a `printf` is never interleaved with another thread's output.
+* `malloc`/`free`/`realloc` share one lock (`__malloc_lock`). Every stdio stream has its own recursive lock (`FILE.lock`),
+  taken by every call that uses the stream, so a `printf` is never interleaved with another thread's output on the same
+  stream while a thread blocked in `fgets(stdin)` does not stop the others from printing. `__stdio_list_lock` guards the list of
+  open streams. Lock order: stream, then allocator; list, then stream; `fclose` lets go of the stream before it takes the list.
+  `fork()` takes the list lock, the three standard streams and the allocator lock (in that order) around the system call, and
+  the child resets every stream's lock, because the threads that held them do not exist there.
 * **Audit of globals.** Not thread-safe by design, documented here: `strtok`, `asctime`/`ctime`/`localtime`/`gmtime`
   (static result), `getpwnam`/`getpwuid`/`getgrnam`/`getgrgid` and the shadow lookups (static result buffers), `getopt`,
   `tmpnam(NULL)`, `rand`/`srand`, `setenv`/`putenv`/`unsetenv`, `readdir` (the `DIR` is per stream; sharing one `DIR` between
@@ -156,7 +160,7 @@ The kernel has one CPU, so "a lock" is either interrupt disabling (short section
   an application can see or set (`sigprocmask`), and a new thread starts with it enabled. Cleanup handlers
   (`pthread_cleanup_push/pop`), thread-specific-data destructors and `join` all work for a cancelled thread.
   `PTHREAD_CANCEL_ASYNCHRONOUS` is accepted and behaves as deferred. stdio functions are cancellation points only through
-  `read`/`write`; a thread cancelled inside stdio releases the stdio lock on its way out.
+  `read`/`write`; a thread cancelled while blocked in a stdio read or write releases that stream's lock on its way out.
 * `sigsuspend(mask)` (113) swaps the calling thread's mask and sleeps; the handler runs under the temporary mask and
   `sigreturn` restores the original (`Task.saved_mask`). `sigtimedwait`/`sigwait` (114) accept a pending signal of the set
   without a handler; a thread waiting for a signal that every thread blocks is woken by it (`Task.sigwait_set`).
@@ -194,25 +198,23 @@ thread**, whichever thread they were aimed at (`tgkill` and `pthread_kill` inclu
 * Async cancellation, robust mutexes, priority inheritance, process-shared attributes (the futex itself is shared-memory
   capable, the attributes are not parsed) and thread names are not provided.
 
-## State when paused
+## State (updated after the merge into main)
 
-Paused on 2026-10-23 at the user's request. The branch head builds and its tree is the one that was tested.
+The threads branch was merged into main on 2026-10-23 and work went on (job control, priorities, links: see
+[JOBCONTROL.md](JOBCONTROL.md)). History: the branch was first paused with one known problem, a single stdio lock for all
+streams; that is fixed now (see "libc"; the parked edit `8493a55` was finished instead of resumed).
 
-* **Done and tested:** everything in the Status table. Last complete run (`python tests/run_all.py`, commit `a279b04`):
-  `35 tests, 0 failed`. After that only the thread-block cache and a `ps -T` row check in `utest` were added; for those
-  `python tests/run_all.py utest` (which also runs `threads_utest`) passed. The full suite was not re-run after them.
-* **Half done (parked, not in the tree):** per-stream stdio locks. Today one recursive lock (`__stdio_lock`) covers all
-  streams, so a thread blocked in `fgets(stdin)` holds it and stops every other thread from printing, and `exit()` called
-  while another thread is blocked in `read` on a stream waits for it. The unfinished edit is commit `8493a55` (it does
-  not build; `bb51167` reverts it). What is left is listed in that commit message. Resume with
-  `git show 8493a55 -- user/libc/src/stdio.c`, finish the wrappers, then run `python tests/run_all.py utest` and `shell`.
+* **Done and tested:** everything in the Status table. Tests: `python tests/run_all.py threads` (thread section of `utest`,
+  17 parts, plus the futex self test, about 20 s), `utest`, `shell` and `selftest` for the libc and kernel regressions.
 * **Not started:** kernel stack address reuse (see "Not done"), `fd_get_ref` in the remaining descriptor syscalls,
   `pthread_rwlock_timed*`, `pthread_getattr_np`, a timeout on the exec wait for a thread stuck in an uninterruptible wait.
-* **Known problems:** (1) the global stdio lock above. (2) The QEMU harness can lose the last serial bytes when the guest
-  powers off right after the verdict (seen once in a full run: `QEMU exited (code 1)` with truncated output, the guest
-  had actually finished); `tests/case_threads.py` repeats a run that ends without a verdict, other cases do not.
-  (3) A spurious `EINTR` is possible when two threads race to take a process-directed signal.
-* **How to resume:** `python tools/build.py`, then `python tests/run_all.py threads` (thread section of `utest` plus the
-  futex self test, about 15 s), then `python tests/run_all.py utest` and `shell` for the libc and userland regressions.
-  The tests in `user/bin/utest_threads.inc` are the specification of what must keep working; add a section there and to
-  `THREAD_SECTIONS` in `tests/case_threads.py` for anything new.
+* **Known problems:** (1) the QEMU harness can lose the last serial bytes when the guest powers off right after the verdict
+  (seen once in a full run: `QEMU exited (code 1)` with truncated output, the guest had actually finished);
+  `tests/case_threads.py` repeats a run that ends without a verdict, other cases do not. (2) A spurious `EINTR` is possible
+  when two threads race to take a process-directed signal. (3) `fflush(NULL)` (and so `exit()`) holds the stream-list lock
+  while it waits for each stream's lock, as glibc does; a thread blocked in `write` on one stream while another thread needs
+  the list lock (`fopen`, `fclose`) and a third calls `exit()` can deadlock.
+* **How to resume:** `python tools/build.py`, then `python tests/run_all.py threads`; the tests in
+  `user/bin/utest_threads.inc` are the specification of what must keep working. Add a section there and to
+  `THREAD_SECTIONS` in `tests/case_threads.py` for anything new. (`run_all.py` takes comma separated name prefixes now:
+  `threads,utest,jobctl`; `~text` matches anywhere in the name.)

@@ -732,6 +732,53 @@ static void test_threads_cancel(void) {
     close(g_cancel_pipe[1]);
 }
 
+/* ---- stdio: one lock per stream ---- */
+
+static FILE *g_in_file, *g_out_file;
+static volatile int g_print_done;
+
+static void *th_fgets_blocked(void *arg) {
+    char b[16];
+    (void)arg;
+    return fgets(b, sizeof b, g_in_file) ? (void *)1 : NULL;       /* sleeps in read() with this stream's lock held */
+}
+
+static void *th_printer(void *arg) {
+    (void)arg;
+    fprintf(g_out_file, "hello %d\n", 42);
+    fflush(g_out_file);
+    __atomic_store_n(&g_print_done, 1, __ATOMIC_SEQ_CST);
+    return NULL;
+}
+
+static void test_threads_stdio(void) {
+    TH_SECTION("stdio: a thread blocked in fgets on one stream does not stop output on another");
+    int in[2], out[2];
+    CHECK(pipe(in) == 0 && pipe(out) == 0);
+    g_in_file = fdopen(in[0], "r");
+    g_out_file = fdopen(out[1], "w");
+    CHECK(g_in_file && g_out_file);
+    pthread_t reader, printer;
+    CHECK(pthread_create(&reader, NULL, th_fgets_blocked, NULL) == 0);
+    usleep(100000);                                                 /* it is asleep inside fgets by now */
+    g_print_done = 0;
+    CHECK(pthread_create(&printer, NULL, th_printer, NULL) == 0);
+    for (int i = 0; i < 1000 && !g_print_done; i++) usleep(5000);
+    CHECK(g_print_done);                                            /* with one lock for all of stdio this would never finish */
+    printf("  (stdout is free too)\n");
+    struct pollfd p = { out[0], POLLIN, 0 };
+    char buf[32] = "";
+    CHECK(poll(&p, 1, 5000) == 1 && read(out[0], buf, sizeof buf - 1) == 9 && !strcmp(buf, "hello 42\n"));
+    write(in[1], "line\n", 5);                                      /* let the reader go */
+    void *ret = NULL;
+    CHECK(pthread_join(reader, &ret) == 0 && ret == (void *)1);
+    pthread_join(printer, NULL);
+    fclose(g_in_file);
+    fclose(g_out_file);
+    close(in[1]);
+    close(out[0]);
+}
+
 static void test_threads_proc(void) {
     TH_SECTION("/proc shows the threads");
     sem_init(&g_th_hold, 0, 0);
@@ -829,6 +876,7 @@ static void test_threads(void) {
     test_threads_c11();
     test_threads_basic();
     test_threads_proc();
+    test_threads_stdio();
     test_threads_sync();
     test_threads_local();
     test_threads_tls();
