@@ -16,13 +16,19 @@ void serial_init(void) {
     outb(COM1 + 3, 0x03);   /* 8N1 */
     outb(COM1 + 2, 0xC7);   /* FIFO on, cleared */
     outb(COM1 + 4, 0x0B);   /* DTR | RTS | OUT2 */
-    g_ready = true;
+    /* Many PCs have no COM1 at all and the bus answers with whatever it likes: without this check every character of the
+     * boot log could cost a long wait for a transmitter that does not exist. A real UART keeps what is written to its
+     * scratch register and never reports all line-status bits set. */
+    outb(COM1 + 7, 0xA5);
+    g_ready = inb(COM1 + 7) == 0xA5 && inb(COM1 + 5) != 0xFF;
 }
 
 void serial_putc(char c) {
     if (!g_ready) return;
     if (c == '\n') serial_putc('\r');
-    for (int i = 0; i < 200000 && !(inb(COM1 + 5) & 0x20); i++) { }
+    int i = 0;
+    while (i < 200000 && !(inb(COM1 + 5) & 0x20)) i++;
+    if (i == 200000) { g_ready = false; return; }       /* the transmitter never became ready: stop trying */
     outb(COM1, (u8)c);
 }
 

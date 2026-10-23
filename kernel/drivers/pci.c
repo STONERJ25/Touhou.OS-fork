@@ -96,6 +96,18 @@ static void probe_bars(PciDev *d, int nbars) {
 
 static void scan_bus(int bus, int depth);
 
+/* The firmware's own drivers have stopped, but a controller it left running could still write into memory the firmware
+ * owned and this kernel is about to reuse (the loader hands that memory back after the buses have been scanned). Bus
+ * mastering is switched off on the kinds of device that DMA by themselves; a driver turns it on again when it claims one. */
+static void quiesce_dma(PciDev *d) {
+    if ((d->header_type & 0x7F) != 0) return;                           /* endpoints only: bridges must keep forwarding */
+    bool dmas = d->class_code == 0x01 || d->class_code == 0x02 || d->class_code == 0x04 ||
+                (d->class_code == 0x0C && d->subclass == 0x03);         /* storage, network, audio, USB */
+    if (!dmas) return;
+    u16 cmd = pci_read16(d, 4);
+    if (cmd & PCI_CMD_MASTER) pci_write16(d, 4, (u16)(cmd & ~PCI_CMD_MASTER));
+}
+
 static void scan_function(int bus, int dev, int fn, int depth) {
     u32 id = cfg_read32((u8)bus, (u8)dev, (u8)fn, 0);
     if ((id & 0xFFFF) == 0xFFFF || id == 0) return;
@@ -109,6 +121,7 @@ static void scan_function(int bus, int dev, int fn, int depth) {
     u32 ir = cfg_read32((u8)bus, (u8)dev, (u8)fn, 0x3C);
     d->irq_line = (u8)ir; d->irq_pin = (u8)(ir >> 8);
     int kind = d->header_type & 0x7F;
+    quiesce_dma(d);
     if (kind == 0) probe_bars(d, 6);
     else if (kind == 1) probe_bars(d, 2);
     if (g_tail) g_tail->next = d; else g_head = d;

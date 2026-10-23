@@ -106,7 +106,6 @@ NORETURN void kmain(BootInfo *bi) {
     fb_remap();                         /* the loader's direct-map alias of the framebuffer is gone now */
     klog("Kappa", "framebuffer %ux%u at %#lx, write-combining", g_boot.fb.width, g_boot.fb.height,
          (unsigned long)g_boot.fb.base);
-    pmm_reclaim_boot_memory();
     klog("Boundary", "paging online: %lu MiB RAM, %lu MiB free", (unsigned long)(pmm_total_pages() >> 8),
          (unsigned long)(pmm_free_pages_count() >> 8));
     acpi_init();
@@ -132,6 +131,7 @@ NORETURN void kmain(BootInfo *bi) {
 
     /* Buses and device drivers. Each *_init is a weak no-op until a driver supplies it (see drivers/driver_stubs.c). */
     pci_init();
+    pmm_reclaim_boot_memory();          /* only now: pci_init has switched off any DMA the firmware left running into that memory */
     virtio_blk_init();
     ahci_init();
     nvme_init();
