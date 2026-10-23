@@ -10,7 +10,7 @@ this branch; update it when you change something.
 | `libz` (inflate, deflate, crc32, adler32) | **done**, tested on the host against zlib (see below) and in the guest through `gzip` |
 | `gzip`, `gunzip`, `zcat` | **done**, manual pages written, checked by hand in the guest |
 | `utimes()` system call, `<utime.h>` | **done** (`SYS_utimes` = 82, `kernel/fs/utimes.c`); `gunzip` and `gzip` restore file times with it |
-| `tar` (create, extract, list, `-z`) | not written yet |
+| `tar` (create, extract, list, `-z`, `-C`, `-v`, `-f`, `--strip-components`, `--exclude`) | **written**, manual page written; round trip (long paths, symlinks, modes, `-z`, pipes, truncated archive) checked by hand in the guest. Archives made by Python's `tarfile` (GNU and pax formats) have **not** been tried yet |
 | `zip`, `unzip` | not written yet |
 | `libimg` (PNG, JPEG, GIF, BMP, PNM, TGA decoders; PNG/BMP/PPM encoders; scaling and rotation) | not written yet |
 | Gensokyo Gallery (image viewer) | not written yet |

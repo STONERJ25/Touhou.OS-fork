@@ -206,11 +206,12 @@ int z_inflate(ZStream *s) {
     int nbits = st->nbits;
     const uint8_t *in = s->next_in;
     size_t avail = s->avail_in;
-    size_t in_start = avail, out_start = s->avail_out;
-    int rc = Z_OK;
+    size_t in_start = avail, out_start = s->avail_out, loaded = 0;
+    int rc = Z_OK, starved = 0;
 
-#define FILL() do { while (nbits <= 56 && avail) { bits |= (uint64_t)*in++ << nbits; nbits += 8; avail--; } } while (0)
-#define NEED(n) do { if (nbits < (n)) { FILL(); if (nbits < (n)) goto out; } } while (0)
+#define FILL() do { while (nbits <= 56 && avail) { bits |= (uint64_t)*in++ << nbits; nbits += 8; avail--; loaded++; } } while (0)
+#define STARVE() do { starved = 1; goto out; } while (0)
+#define NEED(n) do { if (nbits < (n)) { FILL(); if (nbits < (n)) STARVE(); } } while (0)
 #define GETBITS(n) ((uint32_t)(bits & ((1ULL << (n)) - 1)))
 #define DROP(n) do { bits >>= (n); nbits -= (n); } while (0)
 #define FAIL(code) do { st->mode = M_ERROR; st->err = (code); rc = (code); goto out; } while (0)
@@ -348,7 +349,7 @@ int z_inflate(ZStream *s) {
                     st->stored--;
                     continue;
                 }
-                if (!avail) goto out;
+                if (!avail) STARVE();
                 if (n > avail) n = avail;
                 for (size_t i = 0; i < n; i++) PUT(in[i]);
                 in += n;
@@ -388,7 +389,7 @@ int z_inflate(ZStream *s) {
                 FILL();
                 int used = 0;
                 int sym = huff_decode(&st->clen, bits, nbits, &used);
-                if (sym == -1) goto out;
+                if (sym == -1) STARVE();
                 if (sym < 0) FAIL(Z_ERR_DATA);
                 if (sym < 16) {
                     DROP(used);
@@ -396,7 +397,7 @@ int z_inflate(ZStream *s) {
                     continue;
                 }
                 int extra = sym == 16 ? 2 : sym == 17 ? 3 : 7;
-                if (nbits < used + extra) goto out;
+                if (nbits < used + extra) STARVE();
                 uint32_t rep;
                 uint8_t val = 0;
                 if (sym == 16) {
@@ -422,7 +423,7 @@ int z_inflate(ZStream *s) {
                 FILL();
                 int used = 0;
                 int sym = huff_decode(&st->lit, bits, nbits, &used);
-                if (sym == -1) goto out;
+                if (sym == -1) STARVE();
                 if (sym < 0) FAIL(Z_ERR_DATA);
                 if (sym < 256) {
                     DROP(used);
@@ -438,7 +439,7 @@ int z_inflate(ZStream *s) {
                 sym -= 257;
                 if (sym >= 29) FAIL(Z_ERR_DATA);
                 int eb = g_lext[sym];
-                if (nbits < used + eb) goto out;
+                if (nbits < used + eb) STARVE();
                 st->mlen = g_lbase[sym] + (eb ? (uint32_t)((bits >> used) & ((1u << eb) - 1)) : 0);
                 DROP(used + eb);
                 st->mode = M_DIST;
@@ -450,10 +451,10 @@ int z_inflate(ZStream *s) {
             FILL();
             int used = 0;
             int sym = huff_decode(&st->dist, bits, nbits, &used);
-            if (sym == -1) goto out;
+            if (sym == -1) STARVE();
             if (sym < 0 || sym >= 30) FAIL(Z_ERR_DATA);
             int eb = g_dext[sym];
-            if (nbits < used + eb) goto out;
+            if (nbits < used + eb) STARVE();
             st->mdist = g_dbase[sym] + (eb ? (uint32_t)((bits >> used) & ((1u << eb) - 1)) : 0);
             DROP(used + eb);
             if (st->mdist > st->written) FAIL(Z_ERR_DATA);          /* reaches back before the start of the data */
@@ -503,13 +504,17 @@ int z_inflate(ZStream *s) {
 
 out:
     flush_out(s, st);
-    /* give back the whole bytes that were read ahead */
-    {
-        int k = nbits >> 3;
-        nbits -= 8 * k;
+    /* Give back the whole bytes that were read ahead from this buffer, unless the decoder stopped for want of input
+     * (then it keeps them: handing back a byte it cannot use yet would stall a caller that feeds one byte at a time).
+     * Every suspension happens between steps that need more bits than were held, so the held bits of an earlier call
+     * are always used up before a stream ends: the bytes returned here come from the current buffer. */
+    if (!starved) {
+        size_t k = (size_t)(nbits >> 3);
+        if (k > loaded) k = loaded;
+        nbits -= (int)(8 * k);
         if (nbits) bits &= (1ULL << nbits) - 1; else bits = 0;
         in -= k;
-        avail += (size_t)k;
+        avail += k;
     }
     st->bits = bits;
     st->nbits = nbits;
@@ -521,6 +526,7 @@ out:
 }
 
 #undef FILL
+#undef STARVE
 #undef NEED
 #undef GETBITS
 #undef DROP
