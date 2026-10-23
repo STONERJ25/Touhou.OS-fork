@@ -79,6 +79,7 @@ struct VNodeOps {
     int     (*chmod)(VNode *v, u32 mode);
     int     (*chown)(VNode *v, u32 uid, u32 gid);
     int     (*sync)(VNode *v);
+    int     (*settimes)(VNode *v, u64 atime, u64 mtime);            /* utimes(): the vnode's times already changed; write them out (optional) */
     void    (*release)(VNode *v);                                    /* last reference dropped; VFS frees the VNode */
 };
 

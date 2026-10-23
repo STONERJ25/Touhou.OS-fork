@@ -662,6 +662,22 @@ static int fat_chown(VNode *vn, u32 uid, u32 gid) {
     return (uid == vn->uid && gid == vn->gid) ? 0 : -EPERM;
 }
 
+/* utimes(): the node (not the vnode) is the truth for FAT, so the new times go into the node and its directory entry. */
+static int fat_settimes(VNode *vn, u64 atime, u64 mtime) {
+    FatNode *n = vn->priv;
+    FatVol *v = n->vol;
+    vol_enter(v);
+    int rc = v->ro ? -EROFS : vol_begin_write(v);
+    if (!rc) {
+        n->atime = atime;
+        n->mtime = mtime;
+        rc = fatd_commit(n);
+        fat_node_publish(n);
+    }
+    vol_leave(v);
+    return rc;
+}
+
 static int fat_vsync(VNode *vn) {
     FatNode *n = vn->priv;
     FatVol *v = n->vol;
@@ -674,12 +690,12 @@ static int fat_vsync(VNode *vn) {
 static const VNodeOps fat_dir_ops = {
     .lookup = fat_lookup, .create = fat_create, .mkdir = fat_mkdir, .unlink = fat_unlink, .rmdir = fat_rmdir,
     .rename = fat_rename, .readdir = fat_readdir, .chmod = fat_chmod, .chown = fat_chown, .sync = fat_vsync,
-    .release = fat_release,
+    .release = fat_release, .settimes = fat_settimes,
 };
 
 static const VNodeOps fat_file_ops = {
     .read = fat_read, .write = fat_write, .truncate = fat_truncate, .chmod = fat_chmod, .chown = fat_chown,
-    .sync = fat_vsync, .release = fat_release,
+    .sync = fat_vsync, .release = fat_release, .settimes = fat_settimes,
 };
 
 /* ---------------------------------------------------------------------------------------------- mount options */

@@ -23,6 +23,7 @@ static long sys_utimes(TrapFrame *tf) {
             bool want_now = !have_times || (ts[0].tv_nsec == UTIME_NOW && ts[1].tv_nsec == UTIME_NOW);
             if (p->cred.uid != 0 && p->cred.uid != v->uid) rc = want_now ? vfs_access(v, &p->cred, W_OK) : -EPERM;
             if (rc == 0) {
+                u64 old_atime = v->atime, old_mtime = v->mtime, old_ctime = v->ctime;
                 if (!have_times) {
                     v->atime = v->mtime = now;
                 } else {
@@ -33,6 +34,10 @@ static long sys_utimes(TrapFrame *tf) {
                     }
                 }
                 v->ctime = now;
+                if (v->ops->settimes) {                                                       /* filesystems that keep their own copy */
+                    rc = v->ops->settimes(v, v->atime, v->mtime);
+                    if (rc) { v->atime = old_atime; v->mtime = old_mtime; v->ctime = old_ctime; }   /* it did not stick (read-only volume) */
+                }
             }
             vnode_put(v);
         }
