@@ -115,6 +115,13 @@ APPLET(beep) {
     }
     (void)wf;
 
+    /* Render the whole sound first when it fits in memory, so the real-time part is only copying (a slow machine must not
+     * starve the sound card while this program is busy computing samples). */
+    size_t frame_bytes = (size_t)channels * (bits / 8);
+    uint8_t *pre = NULL;
+    size_t pre_len = 0, pre_pos = 0;
+    if (!whole && total * frame_bytes <= 16u * 1024 * 1024) pre = malloc(total * frame_bytes + 16);
+
     AudioOsc osc = { 0, 0 };
     size_t done = 0;
     int status = 0;
@@ -132,7 +139,10 @@ APPLET(beep) {
             if (g < 1.0) { tmp[2 * i] = (int16_t)(tmp[2 * i] * g); tmp[2 * i + 1] = (int16_t)(tmp[2 * i + 1] * g); }
         }
         size_t bytes = convert(tmp, n, channels, bits, conv);
-        if (whole) {
+        if (pre) {
+            memcpy(pre + pre_len, conv, bytes);
+            pre_len += bytes;
+        } else if (whole) {
             memcpy(whole + whole_len, conv, bytes);
             whole_len += bytes;
         } else {
@@ -141,6 +151,13 @@ APPLET(beep) {
         }
         done += n;
     }
+    while (pre && pre_pos < pre_len && !g_stop && !status) {
+        size_t n = pre_len - pre_pos < 16384 ? pre_len - pre_pos : 16384;
+        ssize_t w = audio_write(a, pre + pre_pos, n);
+        if (w < 0) { no_device("write failed", (int)w); status = 1; break; }
+        pre_pos += (size_t)w;
+    }
+    free(pre);
     if (whole) {
         int rc = audio_wav_save(wavfile, rate, channels, bits, whole, whole_len);
         if (rc) { kb_error("%s: %s", wavfile, strerror(-rc)); status = 1; }
@@ -213,24 +230,25 @@ static int play_stream(Audio *a, int fd, size_t chunk, bool quiet, const char *n
 
 APPLET(play) {
     unsigned rate = 44100, channels = 2, bits = 16;
-    int volume = -1;
+    int volume = -1, gap_ms = 0;
     bool quiet = false, forced = false;
     int c;
     optind = 1;
-    while ((c = getopt(argc, argv, "r:c:b:v:q")) != -1) {
+    while ((c = getopt(argc, argv, "r:c:b:v:g:q")) != -1) {
         switch (c) {
         case 'r': rate = (unsigned)atoi(optarg); forced = true; break;
         case 'c': channels = (unsigned)atoi(optarg); forced = true; break;
         case 'b': bits = (unsigned)atoi(optarg); forced = true; break;
         case 'v': volume = atoi(optarg); break;
+        case 'g': gap_ms = atoi(optarg); break;
         case 'q': quiet = true; break;
         default:
-            fprintf(stderr, "usage: play [-q] [-v PERCENT] FILE.wav ...\n       play -r RATE -c 1|2 -b 8|16|24|32 FILE.raw   (raw samples; - is standard input)\n");
+            fprintf(stderr, "usage: play [-q] [-v PERCENT] [-g MS] FILE.wav ...\n       play -r RATE -c 1|2 -b 8|16|24|32 FILE.raw   (raw samples; - is standard input)\n");
             return 2;
         }
     }
     (void)forced;
-    if (optind >= argc) { fprintf(stderr, "usage: play [-q] [-v PERCENT] FILE.wav ...\n"); return 2; }
+    if (optind >= argc) { fprintf(stderr, "usage: play [-q] [-v PERCENT] [-g MS] FILE.wav ...\n"); return 2; }
     Audio *a = audio_open(0);
     if (!a) { no_device("cannot play", errno); return 1; }
     signal(SIGINT, on_signal);
@@ -259,7 +277,8 @@ APPLET(play) {
             if (fd) close(fd);
         }
         if (rc) { kb_error("%s: %s", path, audio_strerror(rc)); status = 1; }
-        if (!g_stop) audio_drain(a);
+        if (!g_stop && gap_ms > 0 && i + 1 < argc) usleep((useconds_t)gap_ms * 1000);     /* the stream stays open and runs dry */
+        else if (!g_stop) audio_drain(a);
     }
     if (g_stop) audio_flush(a);
     audio_close(a);

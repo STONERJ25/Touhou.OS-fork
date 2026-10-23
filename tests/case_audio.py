@@ -128,8 +128,7 @@ def audio_underrun_is_silence():
         vm.expect(test_shell.PROMPT, timeout=90)
         sh(vm, "volume 100")
         sh(vm, "beep -f 440 -l 500 -o /tmp/a.wav; beep -f 880 -l 500 -o /tmp/b.wav")
-        sh(vm, "dd if=/tmp/a.wav of=/tmp/a.raw bs=44 skip=1 status=none; dd if=/tmp/b.wav of=/tmp/b.raw bs=44 skip=1 status=none")
-        out, rc = sh(vm, "(cat /tmp/a.raw; sleep 2; cat /tmp/b.raw) | play -q -r 48000 -c 2 -b 16 -", timeout=120)
+        out, rc = sh(vm, "play -q -g 2000 /tmp/a.wav /tmp/b.wav", timeout=120)      # -g: wait 2 s between the files with the stream still open
         assert rc == 0, out
         out, rc = sh(vm, "cat /proc/audio")
         assert re.search(r"underruns [1-9]", out), "the underrun was not counted:\n" + out
