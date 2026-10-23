@@ -203,6 +203,24 @@ def make_gif(w, h, rows, palette, interlace=False, transparent=None):
     return data
 
 
+def many_scans_jpeg(w=64, h=64, copies=100):
+    """A progressive JPEG whose third scan (the chroma AC scan, a few bytes of end-of-block runs) is repeated `copies` times. Storing a
+    scan costs almost nothing and decoding it is a pass over every block of the picture, so a decoder must cap the number of scans."""
+    b = io.BytesIO()
+    Image.new("RGB", (w, h), (120, 130, 140)).save(b, "JPEG", quality=80, progressive=True, optimize=True, subsampling=0)
+    data = b.getvalue()
+    pos, scans = 2, []
+    while pos + 4 <= len(data) and data[pos + 1] != 0xD9:
+        end = pos + 2 + ((data[pos + 2] << 8) | data[pos + 3])
+        if data[pos + 1] == 0xDA:                                  # entropy-coded data runs up to the next real marker
+            while not (data[end] == 0xFF and data[end + 1] not in (0, 0xFF) and not 0xD0 <= data[end + 1] <= 0xD7):
+                end += 1
+            scans.append((pos, end))
+        pos = end
+    start, stop = scans[2]
+    return data[:stop] + data[start:stop] * copies + data[stop:]
+
+
 def pnm_variants():
     out = {}
     px = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (10, 20, 30), (40, 50, 60), (70, 80, 90)]

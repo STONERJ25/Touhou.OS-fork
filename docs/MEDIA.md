@@ -61,7 +61,8 @@ shrinking, weighted by alpha so transparent edges do not turn dark), `img_rotate
 
 **Hostile input.** Every length, offset, dimension and table is checked against the data that is really there. Sizes are capped before
 anything is allocated (16384 per side, 64 million pixels, 256 MiB per file). JPEG arithmetic is done in 64 bits so absurd
-coefficients cannot overflow. A truncated or damaged file gives `IMG_E_TRUNC` / `IMG_E_CORRUPT`; the partial picture is not returned.
+coefficients cannot overflow, and a JPEG may have at most 64 scans (a progressive scan made of end-of-block runs costs a few bytes to store and a pass over the
+whole picture to decode, so thousands of them would keep the decoder busy for minutes). A truncated or damaged file gives `IMG_E_TRUNC` / `IMG_E_CORRUPT`; the partial picture is not returned.
 Not supported: arithmetic-coded, lossless or 12-bit JPEG, JPEG with a frame height of 0 (DNL), interlaced or animated PNG beyond the
 first image, ICC profiles, CMYK TIFF-style tricks, GIF frames larger than the pixel cap. There is no decode-time downscaling: a very
 large photograph is decoded in full (a 24 megapixel 4:2:0 JPEG needs about 36 MB of planes plus 96 MB of pixels) and then scaled.
@@ -150,7 +151,7 @@ cache between frames (one `k_image_thumbnail` per idle iteration), because decod
     pictures only one to five pixels wide, EXIF orientations; GIF static, transparent, interlaced and animated; BMP including RLE4, RLE8 and 565 top-down; PNM P1 to P6 and 16-bit;
     TGA raw and RLE). `imginfo -s` must agree with the reference on format, size, alpha, frame count and the CRC of the pixels.
   * `media_encoders`: `convert` writes PNG (levels 0, 1, 6, 9), BMP, PPM, rotates, flips and scales; Pillow reads every result and finds the expected pixels.
-  * `media_hostile_files`: about 150 truncated, bit-flipped and absurd files; `imginfo` must answer 0 or 1 for each, and the kernel log must not gain a fault.
+  * `media_hostile_files`: about 150 truncated, bit-flipped and absurd files, and a progressive JPEG with 200 repeated scans; `imginfo` must answer 0 or 1 for each (1 for the last), and the kernel log must not gain a fault.
   * `media_archives`: tar (GNU, pax, ustar), tgz, zip, gzip made on the host unpack in the guest with the right bytes, modes, times and symlinks; archives made in the guest are
     read by `tarfile`, `zipfile` and `gzip`; corrupt and truncated archives are refused.
   * `media_utimes_fat`: `tar -x` and `unzip` restore times on a FAT volume (a disk image from `tools/mkdisk.py`); the independent FAT checker reads them back from the image.

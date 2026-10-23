@@ -23,7 +23,7 @@ import harness
 import test_shell
 from guitools import Gui, near, SHRINE_RED, PAPER
 from harness import Qemu, BUILD
-from imgdata import make_png, expect_png, photo, build_corpus, mutate, clear_transparent, make_gif
+from imgdata import make_png, expect_png, photo, build_corpus, mutate, clear_transparent, make_gif, many_scans_jpeg
 from PIL import Image, ImageOps
 
 MTIME = 1700000000                                   # 2023-11-14 22:13:20 UTC
@@ -249,6 +249,7 @@ def media_hostile_files():
     out["media/fuzz/huge.png"] = big[:16] + struct.pack(">II", 0x7FFFFFFF, 0x7FFFFFFF) + big[24:]
     out["media/fuzz/empty.bin"] = b""
     out["media/fuzz/text.bin"] = b"this is not a picture\n" * 5
+    out["media/fuzz/manyscans.jpg"] = many_scans_jpeg(64, 64, 200)       # 200 repeated scans: refused after 64, not decoded for as long as it takes
     esp = media_esp(out, "esp-media-fuzz")
     with Qemu(cmdline="text", name="t-media-fuzz", esp=esp, mem="768M") as vm:
         vm.expect(test_shell.PROMPT, timeout=120)
@@ -263,6 +264,8 @@ def media_hostile_files():
         faults_after, _ = test_shell.run(vm, "dmesg | grep -c -i -E 'boundary violation|incident|general protection'")
         assert faults_before.strip() == faults_after.strip(), "the kernel logged a fault while the pictures were decoded:\n" + test_shell.run(vm, "dmesg | tail -8")[0]
         assert codes.get(1, 0) > 20, f"expected many files to be refused: {codes}"
+        text, rc = test_shell.run(vm, "imginfo -s /media/fuzz/manyscans.jpg; echo st=$?")
+        assert "error" in text and "st=1" in text, f"a JPEG with 200 scans must be refused: {text}"
         print(f"\n     {len(out)} hostile files: {codes.get(0, 0)} decoded without complaint, {codes.get(1, 0)} refused, 0 crashes")
 
 

@@ -20,7 +20,7 @@ from pathlib import Path
 from PIL import Image, ImageOps
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from imgdata import make_png, expect_png, photo, build_corpus, mutate  # noqa: E402
+from imgdata import make_png, expect_png, photo, build_corpus, mutate, many_scans_jpeg  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent.parent
 OUT = REPO / "build" / os.environ.get("IMGTEST_DIR", "host-img")      # a separate IMGTEST_DIR lets two runs go side by side
@@ -409,6 +409,17 @@ def test_corpus():
         check(f"corpus {name} probe", out.split()[1:3] == [str(w), str(h)] and (alpha is None or out.split()[3] == ("1" if alpha else "0")) and int(out.split()[4]) == frames, out)
 
 
+def test_many_scans():
+    """A progressive JPEG with thousands of repeated end-of-block scans is refused quickly: the number of scans is capped."""
+    import time
+    (OUT / "ms.jpg").write_bytes(many_scans_jpeg(8192, 4096, 3000))
+    t0 = time.time()
+    rc, out, err = tool("try", OUT / "ms.jpg", timeout=300)
+    took = time.time() - t0
+    check("many scans: refused", rc == 0 and len(out.split()) == 2 and out.split()[1] != "0", f"{out!r} {err[-200:]!r}")
+    check("many scans: quickly", took < 30, f"{took:.1f} s")
+
+
 def test_fuzz():
     rnd = random.Random(int(os.environ.get("FUZZ_SEED", "2024")))
     corpus = [data for data in build_corpus()[0].values() if len(data) > 8]       # every picture the guest test decodes
@@ -464,9 +475,9 @@ def test_fuzz():
 
 def main():
     build()
-    tests = (test_png, test_jpeg, test_gif, test_bmp_pnm_tga, test_writers, test_scale_quality, test_corpus, test_fuzz)
+    tests = (test_png, test_jpeg, test_gif, test_bmp_pnm_tga, test_writers, test_scale_quality, test_corpus, test_many_scans, test_fuzz)
     if os.environ.get("ONLY") == "corpus":
-        tests = (test_corpus, test_scale_quality)
+        tests = (test_corpus, test_scale_quality, test_many_scans)
     if os.environ.get("ONLY") == "fuzz":                      # ONLY=fuzz FUZZ_N=6000 FUZZ_SEED=7 for a long hostile-input run
         tests = (test_fuzz,)
     for fn in tests:

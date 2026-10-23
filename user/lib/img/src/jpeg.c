@@ -10,6 +10,7 @@
 
 #define MAXCOMP 4
 #define MAX_COEF_BYTES (256u << 20)
+#define MAX_SCANS 64      /* real files have about ten; with EOB runs a repeated progressive scan costs a few bytes to store and a full pass over the picture to decode */
 
 typedef struct {
     uint16_t fast[512];                  /* (length << 8) | symbol for codes of up to 9 bits, 0 = longer */
@@ -576,7 +577,7 @@ static int parse(Jpeg *j, int headers_only) {
             break;
         case 0xDA:
             if (headers_only) return 0;
-            if (!j->have_frame) { rc = IMG_E_CORRUPT; break; }
+            if (!j->have_frame || scans >= MAX_SCANS) { rc = IMG_E_CORRUPT; break; }
             if (!j->c[0].plane) { rc = alloc_planes(j); if (rc) break; }
             rc = decode_scan(j, p, pl);
             if (!rc) scans++;
