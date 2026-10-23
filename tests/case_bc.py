@@ -26,6 +26,11 @@ def exact(text):
     return ("==", text)
 
 
+def raw(text):
+    """The output without the final newline (n and P do not print one)."""
+    return ("raw", text)
+
+
 def bc(prog, flags="", env=""):
     """A shell command that feeds PROG (one line, no single quotes) to bc."""
     return f"printf '%s\\n' '{prog}' | {env}bc {flags}".replace("bc  ", "bc ").rstrip()
@@ -240,7 +245,8 @@ def check(vm, cmd, expect, status):
     out = norm(out)
     if isinstance(expect, tuple):
         want = expect[1]
-        want = want + "\n" if want else ""
+        if expect[0] == "==":
+            want = want + "\n" if want else ""
         assert out == want, f"expected exactly {want!r}, got {out!r}"
     else:
         assert expect in out, f"expected {expect!r} in {out!r}"
@@ -263,3 +269,146 @@ def run_table(name, table):
 def bc_language():
     """bc: arithmetic, scale, bases, statements, functions, wrapping and error handling."""
     run_table("t-bc", BC)
+
+
+def bcl(prog):
+    return bc(prog, flags="-l")
+
+
+PI50 = "3.14159265358979323846264338327950288419716939937510"
+PI100 = "3.1415926535897932384626433832795028841971693993751058209749445923078164062862089986280348253421170679"
+
+def four_atan1(scale):
+    """4*a(1) the way bc -l computes it: the arc tangent of 1 cut at SCALE digits, times 4 (GNU bc prints
+    3.14159265358979323844 at scale 20, the last digits are not those of pi)."""
+    n = int(PI100.replace(".", "")[:scale + 1])
+    s = str(4 * (n // 4))
+    return s[0] + "." + s[1:]
+
+
+MATH = [
+    (bcl("4*a(1)"), exact(four_atan1(20)), 0),
+    (bcl("e(1)"), exact("2.71828182845904523536"), 0),
+    (bcl("s(1)"), exact(".84147098480789650665"), 0),
+    (bcl("c(1)"), exact(".54030230586813971740"), 0),
+    (bcl("l(2)"), exact(".69314718055994530941"), 0),
+    (bcl("j(0,1)"), exact(".76519768655796655144"), 0),
+    (bcl("a(1)"), exact(".78539816339744830961"), 0),
+    (bcl("e(2)"), exact("7.38905609893065022723"), 0),
+    (bcl("e(-1)"), exact(".36787944117144232159"), 0),
+    (bcl("l(10)"), exact("2.30258509299404568401"), 0),
+    (bcl("e(0)"), exact("1.00000000000000000000"), 0),
+    (bcl("s(0)"), exact("0"), 0),
+    (bcl("l(1)"), exact("0"), 0),
+    (bcl("a(0)"), exact("0"), 0),
+    (bcl("scale=10; s(1)"), exact(".8414709848"), 0),
+    (bcl("scale=50; 4*a(1)"), exact(four_atan1(50)), 0),
+    (bc("scale=100; 4*a(1)", flags="-l", env="BC_LINE_LENGTH=0 "), exact(four_atan1(100)), 0),
+    # pi itself is right to 100 digits when two more digits are computed
+    (bc("scale=102; 4*a(1)", flags="-l", env="BC_LINE_LENGTH=0 ") + " | head -c 102", raw(PI100), 0),
+    (bcl("scale=30; e(1)"), exact("2.718281828459045235360287471352"), 0),
+    (bcl("scale"), exact("20"), 0),
+    ("bc --mathlib -e 'e(0)+1'", exact("2.00000000000000000000"), 0),
+]
+
+
+def dc(prog, flags=""):
+    return f"printf '%s\\n' '{prog}' | dc {flags}".rstrip()
+
+
+DC = [
+    (dc("2 3 ^ p"), exact("8"), 0),
+    (dc("10 k 2 v p"), exact("1.4142135623"), 0),
+    (dc("1 2 + p"), exact("3"), 0),
+    (dc("5 3 - p"), exact("2"), 0),
+    (dc("6 7 * p"), exact("42"), 0),
+    (dc("7 2 / p"), exact("3"), 0),
+    (dc("5 k 7 2 / p"), exact("3.50000"), 0),
+    (dc("2 k 1 3 / p"), exact(".33"), 0),
+    (dc("17 5 % p"), exact("2"), 0),
+    (dc("17 5 ~ f"), exact("2\n3"), 0),
+    (dc("_5 p"), exact("-5"), 0),
+    (dc("16 o 255 p"), exact("FF"), 0),
+    (dc("16 i FF p"), exact("255"), 0),
+    (dc("2 o 10 p"), exact("1010"), 0),
+    (dc("3 4 5 f"), exact("5\n4\n3"), 0),
+    (dc("1 2 3 z p"), exact("3"), 0),
+    (dc("3 d * p"), exact("9"), 0),
+    (dc("1 2 r f"), exact("1\n2"), 0),
+    (dc("[hello]p"), exact("hello"), 0),
+    (dc("[hi]n"), raw("hi"), 0),
+    (dc("5 sa 6 la + p"), exact("11"), 0),
+    (dc("[2 3 +]x p"), exact("5"), 0),
+    (dc("[[yes]p]sa 3 5 >a"), exact("yes"), 0),
+    (dc("[[yes]p]sa 5 3 >a"), exact(""), 0),
+    (dc("[[eq]p]sa 4 4 =a"), exact("eq"), 0),
+    (dc("[[ne]p]sa 4 5 !=a"), exact("ne"), 0),
+    (dc("[dn1-d0<a]sa 5 lax"), raw("54321"), 0),
+    (dc("5 [d1-d1<f*]sf lfx p"), exact("120"), 0),
+    (dc("20 [d1-d1<f*]sf lfx p"), exact(str(math.factorial(20))), 0),
+    (dc("[1+d100000>a]sa 0 lax p"), exact("100000"), 0),
+    (dc("2 100 ^ p"), exact("1267650600228229401496703205376"), 0),
+    (dc("7 3:a 3;a p"), exact("7"), 0),
+    (dc("1 2 3 c z p"), exact("0"), 0),
+    (dc("12345 Z p"), exact("5"), 0),
+    (dc("1.25 X p"), exact("2"), 0),
+    (dc("4 13 497 | p"), exact("445"), 0),
+    (dc("65 a p"), exact("A"), 0),
+    (dc("K p"), exact("0"), 0),
+    (dc("5 k K p"), exact("5"), 0),
+    (dc("I p"), exact("10"), 0),
+    (dc("O p"), exact("10"), 0),
+    (dc("1 2 3 4 5 R R p"), exact("3"), 0),
+    ("printf '2 3 +\\np\\n' | dc", exact("5"), 0),
+    (dc("[a]P"), raw("a"), 0),
+    (dc("2 1000 ^ p"), exact(wrap(str(2 ** 1000))), 0),
+    (dc("10 k 1 3 / p"), exact(".3333333333"), 0),
+    (dc(".5 .25 + p"), exact(".75"), 0),
+    (dc("1.5 2 * p"), exact("3.0"), 0),
+    (dc("1 Sa 2 Sa La p La p"), exact("2\n1"), 0),
+    (dc("1 p q 2 p"), exact("1"), 0),
+    (dc("[1 p 1 Q 2 p]x 3 p"), exact("1\n3"), 0),
+    (dc("[[1 p q 2 p]x 3 p]x 4 p"), exact("1\n4"), 0),
+    ("dc -e '2 3 + p'", exact("5"), 0),
+    ("dc -e '2 sa' -e 'la 4 * p'", exact("8"), 0),
+    ("echo '6 7 * p' > /tmp/f.dc; dc -f /tmp/f.dc", exact("42"), 0),
+    ("echo '6 7 * p' > /tmp/f.dc; dc /tmp/f.dc", exact("42"), 0),
+    ("echo '5 p' | dc -e '1 p' -", exact("1\n5"), 0),
+    ("dc -V", "dc", 0),
+    (dc("+") + " 2>&1", "stack empty", 0),
+    (dc("1 0 / p") + " 2>&1", "division by zero", 0),
+    (dc("1 0 % p") + " 2>&1", "by zero", 0),
+    (dc("0 Q") + " 2>&1", "Q command requires a number >= 1", 0),
+    (dc("[a] 1 +") + " 2>&1", "non-numeric", 0),
+    (dc("1 2 + p y 5 p") + " 2>&1", "5", 0),
+    (dc("_1 v") + " 2>&1", "negative", 0),
+    ("dc /tmp/no-such-file; echo status=$?", "status=1", None),
+    ("dc --bogus 2>&1; echo status=$?", "status=1", None),
+    ("echo '5' | dc -e '? p'", exact("5"), 0),
+    (dc("3 4 + p # comment"), exact("7"), 0),
+    (dc("[x]sa [y]sb la p lb p"), exact("x\ny"), 0),
+    (dc("2 1 <a z p") + " 2>&1", "empty", 0),
+]
+
+
+@test
+def bc_mathlib():
+    """bc -l: sine, cosine, arc tangent, logarithm, exponential and Bessel values, pi to 100 digits."""
+    run_table("t-bc-math", MATH)
+
+
+@test
+def dc_stack_machine():
+    """dc: arithmetic, scale and bases, registers, arrays, macros and loops, quit levels, errors, options."""
+    run_table("t-dc", DC)
+
+
+@test
+def bc_dc_manual_pages():
+    """bc and dc: the manual pages exist, parse and are listed."""
+    with Qemu(cmdline="text", name="t-bc-man") as vm:
+        vm.expect(test_shell.PROMPT, timeout=90)
+        out, rc = test_shell.run(vm, "patchouli --check-all", timeout=90)
+        assert rc == 0 and "0 problems" in out, out
+        out, rc = test_shell.run(vm, "patchouli -l | grep -E '^(bc|dc)[(]'")
+        assert "bc(1)" in out and "dc(1)" in out, out
