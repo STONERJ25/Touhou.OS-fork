@@ -4,10 +4,25 @@
 
 1. OVMF (UEFI) starts `\EFI\BOOT\BOOTX64.EFI` from the FAT volume (`build/esp`).
 2. The loader (`boot/`, PE/COFF, MS ABI) reads `kernel.elf`, `initrd.img` and `cmdline.txt`, selects a GOP mode
-   (default 1024x768, override with `video=WxH` on the command line), copies the ELF's PT_LOAD segments into one
+   (default 1024x768; `video=WxH`, `video=native` (keep the firmware's mode) or `video=max` on the command line), copies the ELF's PT_LOAD segments into one
    physically contiguous block, exits boot services, converts the UEFI memory map to `BootMemRegion[]`, builds boot page
    tables and jumps to the kernel with a `BootInfo*` (see `shared/bootinfo.h`).
 3. The kernel (`kernel/`, ELF64, SysV ABI, `-mcmodel=kernel`, linked at `0xFFFFFFFF80000000`) takes over.
+
+## Where things are documented
+
+| Topic | Page |
+|-------|------|
+| Window system, toolkit, desktop, writing a GUI app | [DESKTOP.md](DESKTOP.md) |
+| Users, groups, login screen, screen lock, sudo | [ACCOUNTS.md](ACCOUNTS.md) |
+| ACPI, power button, time zones, the clock chip | [POWER_AND_TIME.md](POWER_AND_TIME.md) |
+| FAT32, mount policy, disk images, `df` | [STORAGE.md](STORAGE.md) |
+| SATA and NVMe | [BLOCKDEVICES.md](BLOCKDEVICES.md) |
+| USB (xHCI, hubs, HID) | [USB.md](USB.md) |
+| Editor, pager, manual pages, shrine applets | [TOOLS.md](TOOLS.md) |
+| Booting a real PC from a stick | [REAL_HARDWARE.md](REAL_HARDWARE.md) |
+| Theming rules | [THEMING.md](THEMING.md) |
+| What is left, unmerged branches | [NEXT.md](NEXT.md), [ROADMAP.md](ROADMAP.md) |
 
 ## Virtual address space
 

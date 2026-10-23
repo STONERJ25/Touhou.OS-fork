@@ -2,8 +2,13 @@
 
 TouhouOS is a hobby x86-64 operating system inspired by Touhou Project. This fork of the learning-first project drops
 the teaching constraints and builds the system as far as possible: a UEFI loader, a higher-half ELF kernel written in C,
-and (as milestones land) a scheduler, virtual memory, ring-3 processes, a VFS, drivers, a window system and applications.
-Current progress is tracked in [docs/STATUS.md](docs/STATUS.md); the design is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+a scheduler, virtual memory, ring-3 processes, a VFS, drivers (PCI, SATA, NVMe, USB, FAT32), accounts and a login screen,
+a window system with a desktop and applications, and a C library, shell and ~120 command-line tools of its own.
+Current progress is tracked in [docs/STATUS.md](docs/STATUS.md); the design is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md);
+what is unfinished and where the unmerged branches are is in [docs/NEXT.md](docs/NEXT.md).
+
+To try it on a real PC from a USB stick, read [docs/REAL_HARDWARE.md](docs/REAL_HARDWARE.md) first: `python tools/mkimage.py`
+builds the image, and by default the OS may not write to any internal disk.
 
 ## Build and run (Windows, PowerShell)
 
