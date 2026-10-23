@@ -153,6 +153,11 @@ static bool load_path(const char *path_in, bool must_exist) {
     }
     FileInfo fi;
     size_t n = nb_normalize(data, len, &fi);
+    if (fi.lf + fi.crlf + fi.cr > 16000000) {                   /* the line index costs 8 bytes a line */
+        free(data);
+        error_box("File too large", "This file has more than 16 million lines, too many for the Notebook:", path, 0);
+        return false;
+    }
     if (!doc_set_text(&A.ed.doc, data, n)) {
         free(data);
         error_box("Cannot open file", "Out of memory while reading:", path, 0);
@@ -450,7 +455,7 @@ static void act_goto(void) {
     int line, col;
     ed_caret_pos(&A.ed, &line, &col);
     snprintf(prompt, sizeof prompt, "Line number (1-%d) or line:column:", doc_nlines(&A.ed.doc));
-    snprintf(initial, sizeof initial, "%s", "");
+    initial[0] = 0;
     (void)line;
     nb_modal_enter();
     k_input_dialog(A.app, "Go to line", prompt, initial, on_goto, NULL);
@@ -670,7 +675,11 @@ static bool app_shortcut(KUI *ui, KKey *k) {
 
 static void update_title(void) {
     char name[64];
-    if (strlen(A.name) > 36) snprintf(name, sizeof name, "%.33s...", A.name); else snprintf(name, sizeof name, "%s", A.name);
+    if (strlen(A.name) > 36) {                                  /* shorten on a character boundary */
+        size_t cut = 33;
+        while (cut > 0 && (((unsigned char)A.name[cut]) & 0xC0) == 0x80) cut--;
+        snprintf(name, sizeof name, "%.*s...", (int)cut, A.name);
+    } else snprintf(name, sizeof name, "%s", A.name);
     char t[160];
     snprintf(t, sizeof t, "Notebook - %s%s%s", is_modified() ? "*" : "", name, A.readonly ? " (read-only)" : "");
     if (strcmp(t, A.title)) {
