@@ -47,6 +47,7 @@
 #define MSC_MAX_BYTES    (1ull << 50)           /* a device that claims more than a pebibyte is lying */
 #define READY_TIMEOUT_MS 20000                  /* how long a unit may stay "not ready" before it is given up on */
 #define NOMEDIA_POLL_MS  2000
+#define FIRST_COMMAND_DELAY_MS 400              /* between SET_CONFIGURATION and the first INQUIRY */
 
 #define T_CTRL           3000                   /* control requests (GET MAX LUN, reset recovery) */
 
@@ -705,7 +706,7 @@ static void lun_step(Msc *m, MscLun *l) {
             lun_drop(l, LS_FAILED, "not a disk");
         } else if (fatal_rc(rc) || rc == -ENODEV) {
             msc_died(m, "no answer to INQUIRY");
-        } else if (now - l->started_at > 3000) {
+        } else if (now - l->started_at > 5000) {
             klog("Kappa", "usb-storage %s lun %u: INQUIRY keeps failing (%d) -- ignored", m->path, l->lun, rc);
             lun_drop(l, LS_FAILED, "INQUIRY failed");
         } else {
@@ -839,7 +840,7 @@ static int msc_probe(UsbDevice *dev, UsbInterface *intf) {
         m->lun[i].lun = (u8)i;
         m->lun[i].state = LS_START;
         m->lun[i].started_at = now;
-        m->lun[i].next_at = now + i * 20;
+        m->lun[i].next_at = now + FIRST_COMMAND_DELAY_MS + i * 20;           /* many cheap sticks lock up when they are spoken to the moment they are configured (Linux waits 1 s) */
     }
     m->next = NULL;                                                             /* oldest first: sticks are brought up (and named) in the order they were found */
     Msc **tail = &g_msc;
