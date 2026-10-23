@@ -49,6 +49,7 @@ argument). Start menu: **Patchouli's Notebook**. Window title: `Notebook - repor
 | Ctrl+N / Ctrl+Shift+N | new page / new window |
 | Ctrl+O | open (file dialog) |
 | Ctrl+S / Ctrl+Shift+S | save / save as |
+| F5 | reload the file from disk (asks first when there are unsaved changes) |
 | Ctrl+W | close the page (the window stays, empty) |
 | Ctrl+Q | quit |
 | Ctrl+Z / Ctrl+Y or Ctrl+Shift+Z | undo / redo |

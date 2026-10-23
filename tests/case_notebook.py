@@ -245,10 +245,10 @@ def notebook_menus_and_recent():
         g.key("ret")
         vm.expect(r"nb: saved /tmp/m2.txt", timeout=10)
         expect_file(g, "/tmp/m2.txt", b"menu text", "Save As from the menu")
-        file_menu(g, 204)                                # Close: nothing unsaved, so no question
+        file_menu(g, 226)                                # Close: nothing unsaved, so no question
         vm.expect(r"nb: msg Page closed", timeout=10)
         vm.expect(r"nb: title Notebook - untitled", timeout=10)
-        file_menu(g, 255)                                # the recent file list: entry 1
+        file_menu(g, 277)                                # the recent file list: entry 1
         vm.expect(r"nb: open /tmp/m2.txt lines=1 bytes=9", timeout=10)
         g.type("!")
         file_menu(g, 94)                                 # New: the page is modified, so it asks
@@ -264,7 +264,7 @@ def notebook_menus_and_recent():
         time.sleep(0.4)
         g.key("esc")
         time.sleep(0.5)
-        file_menu(g, 226)                                # Quit
+        file_menu(g, 248)                                # Quit
         vm.expect(r"nb: quit", timeout=10)
 
 
@@ -324,6 +324,35 @@ def notebook_confirm_dialogs():
                 vm.expect(r"nb: saved /tmp/b.txt", timeout=10)
                 vm.expect(r"nb: quit", timeout=10)
                 expect_file(g, "/tmp/b.txt", b"xyAAA\n", "Overwrite, then quit")
+
+
+@test
+def notebook_reload():
+    """Reload from Disk (F5) picks up changes made elsewhere and asks before throwing away unsaved text."""
+    with session("t-notebook-reload") as (vm, g):
+        g.sh("echo one > /tmp/r.txt")
+        launch(vm, "/tmp/r.txt")
+        g.sh("echo two-lines > /tmp/r.txt")
+        g.sh("echo second >> /tmp/r.txt")
+        g.key("f5")
+        vm.expect(r"nb: open /tmp/r.txt lines=3 bytes=17", timeout=10)
+        g.type("X")
+        vm.expect(r"nb: title Notebook - \*r.txt", timeout=10)
+        g.key("f5")
+        vm.expect(r"nb: dialog reload", timeout=10)
+        time.sleep(0.8)
+        g.key("esc")                                     # Cancel: the page keeps its text
+        time.sleep(0.8)
+        g.key("s", ctrl=True)
+        vm.expect(r"nb: saved /tmp/r.txt", timeout=10)
+        expect_file(g, "/tmp/r.txt", b"Xtwo-lines\nsecond\n", "Cancel kept the typed text")
+        g.type("Y")
+        g.key("f5")
+        vm.expect(r"nb: dialog reload", timeout=10)
+        time.sleep(0.8)
+        g.key("ret")                                     # Reload
+        vm.expect(r"nb: open /tmp/r.txt lines=3 bytes=18", timeout=10)
+        vm.expect(r"nb: title Notebook - r.txt", timeout=10)
 
 
 @test
