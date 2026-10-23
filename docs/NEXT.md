@@ -20,12 +20,14 @@ New kappabox applets need a manual page (`initrd/ScarletDevilMansion/share/patch
 
 | Branch (worktree-agent-...) | Area | Notes |
 |-----------------------------|------|-------|
-| a2a5636a2291d096d (and whatever sub-agent branches it started) | Gensokyo Explorer (file manager) | not finished when the session ended; `tests/guitools.py` came from this agent. Notebook and Sketchbook were its sub-agents and are merged |
-| a46f2d415c0a1a9ca | networking: NIC drivers, TCP/IP, sockets, DHCP/DNS, tools | `docs/NETWORK.md` |
-| a3d380c78d6285728 | audio: HDA, AC97, mixer, Jukebox | `docs/AUDIO.md` |
-| a651f6420dbc8cc2c | libz, gzip/tar/zip, PNG/JPEG/GIF decoders, Gallery viewer, wallpaper, PNG screenshots | `docs/MEDIA.md` |
-| a4adbf8e4aa5804b3 | threads: clone, futex, pthreads | `docs/THREADS.md` |
-| abec503ce2c98467a | awk, diff, patch, vi, bc ... and gapsh conformance | `docs/UTILITIES.md` |
+| a2a5636a2291d096d | Gensokyo Explorer (file manager) | not finished when the session ended; `tests/guitools.py` came from this agent (Notebook and Sketchbook were its sub-agents and are merged) |
+| a46f2d415c0a1a9ca | networking: virtio-net/e1000/e1000e/rtl NIC drivers, TCP/IP, sockets, DHCP/DNS, tools | `docs/NETWORK.md` on the branch |
+| a3d380c78d6285728 | audio: kernel mixer, HDA, AC97, `play`, Jukebox | `docs/AUDIO.md` on the branch |
+| a651f6420dbc8cc2c | libz, gzip/tar/zip, PNG/JPEG/GIF decoders, Gallery viewer, wallpaper, PNG screenshots | `docs/MEDIA.md` on the branch |
+| a4adbf8e4aa5804b3 | threads: clone, futex, pthreads | `docs/THREADS.md` on the branch |
+| abec503ce2c98467a (parent) with a8e93238212e069d8 (awk), ac04a73bcf43119ad (diff, patch), a1fd026321d1dbac3 (bc, dc), aa2e138ddaa272338 (vi) | userland utilities | each child branch is a separate piece; `docs/UTILITIES.md` on the branch(es) |
+
+All of these branches are also on the Forgejo copy of the repository (`origin`).
 
 The agents were told to commit working states before the session ended; a branch may stop mid-task. `git log -1 <branch>` and
 the doc of the area say how far it got. An agent that is still resumable can be sent a message with the same id.
