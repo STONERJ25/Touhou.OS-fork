@@ -15,7 +15,8 @@
  *      }
  *      img_free(&im);
  *
- * Formats read: PNG (all colour types and bit depths, Adam7, tRNS), BMP (1/4/8/16/24/32 bit, RLE, bitfields).
+ * Formats read: PNG (all colour types and bit depths, Adam7, tRNS), JPEG (baseline and progressive, EXIF orientation),
+ * GIF (first frame, or all frames through ImgAnim), BMP (1/4/8/16/24/32 bit, RLE, bitfields), PNM (P1..P7), TGA.
  * Formats written: PNG, BMP, PPM.
  */
 #ifndef GAP_IMG_H
@@ -67,6 +68,17 @@ int  img_decode(const void *data, size_t len, Image *out);
 int  img_load(const char *path, Image *out);
 void img_free(Image *im);
 int  img_alloc(Image *im, int w, int h);                       /* zeroed pixels; checks the limits */
+
+/* Animated GIFs: frames are composed onto the logical screen as the file asks (disposal methods, transparency). The data
+ * passed to img_anim_open must stay valid until img_anim_close. img_anim_next returns the next frame (a pointer into the
+ * animation, valid until the next call) and how long to show it; after the last frame it starts again. Other formats
+ * have a single frame and are not handled here: use img_decode. */
+typedef struct ImgAnim ImgAnim;
+int  img_anim_open(const void *data, size_t len, ImgAnim **out);
+void img_anim_close(ImgAnim *a);
+void img_anim_info(const ImgAnim *a, int *w, int *h, int *frames, int *loops);       /* loops: 0 = forever */
+void img_anim_rewind(ImgAnim *a);
+int  img_anim_next(ImgAnim *a, const Image **frame, int *delay_ms);
 
 /* Transformations; `out` receives a new image (it may not be `src`). */
 typedef enum { IMG_NEAREST, IMG_BILINEAR, IMG_AREA } ImgScale;

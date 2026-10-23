@@ -1,7 +1,4 @@
-/* Format detection, loading, and the pixel transformations (scale, rotate, flip, composite).
- *
- * WORK IN PROGRESS: written but never run. The decoders it dispatches to (png_decode, bmp_decode, ...) do not exist yet,
- * and scale_area() is a first draft that needs a careful re-read and tests (see docs/MEDIA.md, "State when paused"). */
+/* Format detection, loading, and the pixel transformations (scale, rotate, flip, composite). */
 #include "imgint.h"
 #include <stdio.h>
 #include <unistd.h>
@@ -76,9 +73,12 @@ int img_probe(const void *data, size_t len, ImgInfo *info) {
     info->frames = 1;
     switch (info->format) {
     case IMG_PNG: return png_probe(data, len, info);
+    case IMG_JPEG: return jpeg_probe(data, len, info);
+    case IMG_GIF: return gif_probe(data, len, info);
     case IMG_BMP: return bmp_probe(data, len, info);
-    case IMG_UNKNOWN: return IMG_E_FORMAT;
-    default: return IMG_E_UNSUPPORTED;
+    case IMG_PNM: return pnm_probe(data, len, info);
+    case IMG_TGA: return tga_probe(data, len, info);
+    default: return IMG_E_FORMAT;
     }
 }
 
@@ -87,9 +87,12 @@ int img_decode(const void *data, size_t len, Image *out) {
     int rc;
     switch (img_sniff(data, len)) {
     case IMG_PNG: rc = png_decode(data, len, out); break;
+    case IMG_JPEG: rc = jpeg_decode(data, len, out); break;
+    case IMG_GIF: rc = gif_decode(data, len, out); break;
     case IMG_BMP: rc = bmp_decode(data, len, out); break;
-    case IMG_UNKNOWN: return IMG_E_FORMAT;
-    default: return IMG_E_UNSUPPORTED;
+    case IMG_PNM: rc = pnm_decode(data, len, out); break;
+    case IMG_TGA: rc = tga_decode(data, len, out); break;
+    default: return IMG_E_FORMAT;
     }
     if (rc) img_free(out);
     return rc;
@@ -229,7 +232,6 @@ static int scale_area(const Image *s, Image *o) {
                 if (dr <= right) dx++; else break;                       /* this destination column is done with this source pixel */
                 if (dr == right) break;
             }
-            if (right >= (int64_t)(dx) * sw + sw && dx < dw && (int64_t)(dx) * sw + sw <= right) { /* defensive: skip finished columns */ }
         }
         /* vertical pass: this source row covers [sy*dh, (sy+1)*dh) in a grid of sh*dh cells */
         int64_t top = (int64_t)sy * dh, bottom = top + dh;
@@ -245,7 +247,7 @@ static int scale_area(const Image *s, Image *o) {
                 uint32_t *dst = o->px + (size_t)j * dw;
                 for (int x = 0; x < dw; x++) {
                     uint64_t a = acc[x * 4], r = acc[x * 4 + 1], g = acc[x * 4 + 2], b = acc[x * 4 + 3];
-                    uint64_t half = total * 255 / 2;                     /* a, r, g, b are scaled by 255 (alpha) or 1 */
+                    uint64_t half = 0;
                     if (s->has_alpha) {
                         uint32_t oa = (uint32_t)((a + total / 2) / total);
                         uint32_t orr = 0, og = 0, ob = 0;
@@ -256,7 +258,7 @@ static int scale_area(const Image *s, Image *o) {
                         dst[x] = ARGB(oa, orr, og, ob);
                     } else {
                         (void)half;
-                        uint32_t orr = (uint32_t)((r / 255 + total / 2) / total), og = (uint32_t)((g / 255 + total / 2) / total), ob = (uint32_t)((b / 255 + total / 2) / total);
+                        uint32_t orr = (uint32_t)((r + total / 2) / total), og = (uint32_t)((g + total / 2) / total), ob = (uint32_t)((b + total / 2) / total);
                         dst[x] = ARGB(255, orr > 255 ? 255 : orr, og > 255 ? 255 : og, ob > 255 ? 255 : ob);
                     }
                 }

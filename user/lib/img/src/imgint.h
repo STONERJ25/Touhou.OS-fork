@@ -20,5 +20,13 @@ int png_probe(const uint8_t *d, size_t n, ImgInfo *info);
 int png_decode(const uint8_t *d, size_t n, Image *out);
 int bmp_probe(const uint8_t *d, size_t n, ImgInfo *info);
 int bmp_decode(const uint8_t *d, size_t n, Image *out);
+int pnm_probe(const uint8_t *d, size_t n, ImgInfo *info);
+int pnm_decode(const uint8_t *d, size_t n, Image *out);
+int tga_probe(const uint8_t *d, size_t n, ImgInfo *info);
+int tga_decode(const uint8_t *d, size_t n, Image *out);
+int gif_probe(const uint8_t *d, size_t n, ImgInfo *info);
+int gif_decode(const uint8_t *d, size_t n, Image *out);
+int jpeg_probe(const uint8_t *d, size_t n, ImgInfo *info);
+int jpeg_decode(const uint8_t *d, size_t n, Image *out);
 
 #endif
