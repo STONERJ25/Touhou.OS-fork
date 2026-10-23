@@ -602,7 +602,7 @@ static void fmt_time(unsigned long ticks, char *out, size_t n) {
 }
 
 APPLET(ps) {
-    int full = 0, wide = 0, aux = 0;
+    int full = 0, wide = 0, aux = 0, threads = 0;
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
         if (a[0] == '-') a++;
@@ -611,11 +611,37 @@ APPLET(ps) {
             else if (*a == 'a' || *a == 'x' || *a == 'e' || *a == 'A') { }
             else if (*a == 'u') aux = 1;
             else if (*a == 'w') wide = 1;
+            else if (*a == 'T') threads = 1;
         }
     }
     int n;
     ProcInfo *v = list_procs(&n, full || aux);
     qsort(v, (size_t)n, sizeof *v, cmp_pid);
+    if (threads) {                                  /* -T: one row per thread (the first thread's TID is the PID) */
+        printf("%5s %5s %-8s %s %6s  %s\n", "PID", "TID", "USER", "S", "TIME", "COMMAND");
+        for (int i = 0; i < n; i++) {
+            char path[64], buf[8192];
+            snprintf(path, sizeof path, "/proc/%d/threads", v[i].pid);
+            int fd = open(path, O_RDONLY);
+            if (fd < 0) continue;
+            ssize_t got = read(fd, buf, sizeof buf - 1);
+            close(fd);
+            if (got <= 0) continue;
+            buf[got] = 0;
+            for (char *line = strtok(buf, "\n"); line; line = strtok(NULL, "\n")) {
+                int tid;
+                char st[4];
+                unsigned long ticks;
+                char name[32] = "";
+                if (sscanf(line, "%d %3s %lu %31s", &tid, st, &ticks, name) < 3) continue;
+                char tm[16];
+                fmt_time(ticks, tm, sizeof tm);
+                printf("%5d %5d %-8s %s %6s  %s\n", v[i].pid, tid, kb_user_name(v[i].uid), st, tm, name);
+            }
+        }
+        free(v);
+        return 0;
+    }
     int cols = kb_term_cols();
     if (aux) printf("%-8s %5s %5s %7s %6s  %s %6s  %s\n", "USER", "PID", "PPID", "VSZ", "RSS", "S", "TIME", "COMMAND");
     else if (full) printf("%-8s %5s %5s %s %6s  %s\n", "UID", "PID", "PPID", "S", "TIME", "COMMAND");

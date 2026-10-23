@@ -93,7 +93,7 @@ const char  *file_save(const char *path, const Doc *d);
 
 typedef struct Sk {
     KApp *app;
-    char path[512];                    /* "" = never named */
+    char path[1100];                   /* "" = never named */
     char name[160];                    /* what the title bar shows */
     uint32_t saved_version;
     bool saved_once;

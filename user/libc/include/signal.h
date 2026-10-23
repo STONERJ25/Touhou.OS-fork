@@ -18,7 +18,12 @@ struct sigaction {
 #define SA_RESTART 0x10000000
 sighandler_t signal(int sig, sighandler_t h);
 int sigaction(int sig, const struct sigaction *act, struct sigaction *old);
-int sigprocmask(int how, const sigset_t *set, sigset_t *old);
+int sigprocmask(int how, const sigset_t *set, sigset_t *old);       /* the mask belongs to the calling thread */
+int sigsuspend(const sigset_t *mask);
+int sigwait(const sigset_t *set, int *sig);
+struct timespec;
+int sigtimedwait(const sigset_t *set, void *info, const struct timespec *timeout);
+int sigpending(sigset_t *set);
 int sigemptyset(sigset_t *s);
 int sigfillset(sigset_t *s);
 int sigaddset(sigset_t *s, int sig);

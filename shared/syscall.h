@@ -10,11 +10,11 @@
 #define SHARED_SYSCALL_H
 
 /* Gensokyo extensions registered by their own subsystems (kernel/fs/socket.c, kernel/drivers/pty.c) */
-#define SYS_socket        70      /* (domain, type, protocol) -> fd; AF_UNIX / SOCK_STREAM only */
-#define SYS_bind          71      /* (fd, path) */
+#define SYS_socket        70      /* (domain, type, protocol) -> fd; AF_UNIX streams and AF_INET streams / datagrams */
+#define SYS_bind          71      /* (fd, sockaddr*, len) */
 #define SYS_listen        72      /* (fd, backlog) */
-#define SYS_accept        73      /* (fd) -> new fd */
-#define SYS_connect       74      /* (fd, path) */
+#define SYS_accept        73      /* (fd, sockaddr*, len*) -> new fd; the address is only filled in for AF_INET */
+#define SYS_connect       74      /* (fd, sockaddr*, len) */
 #define SYS_shutdown      75      /* (fd, how) */
 #define SYS_socketpair    76      /* (type, int sv[2]) */
 #define SYS_getgroups     77      /* (n, gid_t list[]) -> count; n == 0 only counts */
@@ -22,6 +22,9 @@
 #define SYS_geteuid       79
 #define SYS_getegid       80      /* getuid/getgid return the real ids, these the effective ones */
 #define SYS_settime       81      /* (ms since the epoch, rtc epoch or 0): set the wall clock, and the clock chip if the second is not 0; root only */
+#define SYS_utimes        82      /* (path, struct gtimespec times[2] or NULL, flags): access and modification time; flags & 1 = do not follow a final symlink */
+#define UTIME_NOW         0x3fffffff     /* tv_nsec values with a meaning, as in utimensat() */
+#define UTIME_OMIT        0x3ffffffe
 
 #define SYS_exit          0
 #define SYS_read          1
@@ -91,8 +94,34 @@
 #define SYS_gettime_ms    65      /* wall clock, milliseconds since the epoch */
 #define SYS_tcsetpgrp     66
 #define SYS_statfs        67      /* statfs(path, struct gstatfs *buf): size and free space of the filesystem holding path (abi.h) */
+/* Networking (kernel/net/sock.c): the AF_INET side of the socket calls. 70-76 above also serve AF_INET sockets. */
+#define SYS_sendto        90      /* (fd, buf, len, flags, sockaddr*, addrlen) */
+#define SYS_recvfrom      91      /* (fd, buf, len, flags, sockaddr*, addrlen*) */
+#define SYS_getsockname   92      /* (fd, sockaddr*, addrlen*) */
+#define SYS_getpeername   93      /* (fd, sockaddr*, addrlen*) */
+#define SYS_setsockopt    94      /* (fd, level, name, value*, len) */
+#define SYS_getsockopt    95      /* (fd, level, name, value*, len*) */
+#define SYS_netctl        96      /* (cmd, arg*): interfaces, routes, neighbours; see netabi.h */
 /* Number ranges for subsystems that register their own calls: networking 90-99, audio 100-105, threads 106-115, free 116-127. */
+/* Threads (kernel/sys/thread.c, kernel/sys/futex.c); see docs/THREADS.md */
+#define SYS_thread_create 106     /* (flags, stack_top, tls_base, tid_addr, entry, arg) -> new tid; the thread starts in entry(arg) on stack_top */
+#define SYS_thread_exit   107     /* (status): ends the calling thread only; zeroes *tid_addr and wakes it; the last thread out ends the process */
+#define SYS_gettid        108
+#define SYS_futex         109     /* (uaddr, op, val, timeout, uaddr2, val3) */
+#define SYS_tgkill        110     /* (pid, tid, sig): signal one thread */
+#define SYS_exit_group    111     /* (status): ends every thread (SYS_exit does the same) */
+#define SYS_set_tls       112     /* (base): sets the calling thread's FS base */
+#define SYS_sigsuspend    113     /* (mask): replace the thread's mask and sleep until a handler has run; returns -EINTR */
+#define SYS_sigtimedwait  114     /* (set, timeout): accept one pending signal of set without a handler; returns its number, -EAGAIN on timeout */
+#define SYS_sigpending    115     /* (u32 *set): signals pending and blocked */
 #define SYS_nsyscalls     128
+
+#define FUTEX_WAIT        0       /* sleep while *uaddr == val; timeout is a struct gtimespec* (relative) or NULL */
+#define FUTEX_WAKE        1       /* wake up to val waiters */
+#define FUTEX_CMP_REQUEUE 4       /* if *uaddr == val3: wake val waiters, move up to (long)timeout waiters to uaddr2 */
+#define FUTEX_CANCELLABLE 0x100   /* or-ed into op: this wait is a cancellation point (a pending pthread_cancel ends it with -ECANCELED) */
+#define THREADS_PER_PROC_MAX 256
+#define THREADS_TOTAL_MAX    1024
 
 struct gpollfd {
     int   fd;

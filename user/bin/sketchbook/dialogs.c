@@ -150,7 +150,7 @@ static void size_draw(KApp *app, KUI *ui, void *user) {
     }
     if (d->err[0]) kc_text_in(cv, kr(16, y, w - 32, 16), d->err, ui->theme->accent, KA_LEFT);
     int by = cv->h - 40;
-    bool ok = k_button(ui, kr(w - 2 * 88 - 20, by, 88, 26), "OK") || e1 || e2;
+    bool ok = k_button(ui, kr(w - 2 * 88 - 20, by, 88, 26), "OK") || e1 || e2 || k_key_pressed(ui, KEY_ENTER);
     bool cancel = k_button(ui, kr(w - 88 - 12, by, 88, 26), "Cancel");
     if (cancel) { dlg_close(d); return; }
     if (!ok) return;

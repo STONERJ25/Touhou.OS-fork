@@ -153,6 +153,11 @@ static bool load_path(const char *path_in, bool must_exist) {
     }
     FileInfo fi;
     size_t n = nb_normalize(data, len, &fi);
+    if (fi.lf + fi.crlf + fi.cr > 16000000) {                   /* the line index costs 8 bytes a line */
+        free(data);
+        error_box("File too large", "This file has more than 16 million lines, too many for the Notebook:", path, 0);
+        return false;
+    }
     if (!doc_set_text(&A.ed.doc, data, n)) {
         free(data);
         error_box("Cannot open file", "Out of memory while reading:", path, 0);
@@ -245,20 +250,21 @@ static void perform(ActKind k, const char *path) {
 }
 
 static void begin_save_as(void);
+static void save_flow(void);
+
+/* Called after a save that was part of "save, then carry on". */
+static void pending_done(void) {
+    if (!g_pend.valid) return;
+    g_pend.valid = false;
+    perform(g_pend.kind, g_pend.path);
+}
 
 static void on_unsaved(int choice, void *user) {
     (void)user;
     if (!g_pend.valid) return;
-    ActKind k = g_pend.kind;
-    char path[NB_PATH_MAX];
-    snprintf(path, sizeof path, "%s", g_pend.path);
-    if (choice == 0) {                                          /* Save, then carry on */
-        if (A.has_path && !A.readonly) {
-            if (write_to(A.path, false)) { g_pend.valid = false; perform(k, path); }
-            else g_pend.valid = false;
-        } else begin_save_as();                                 /* keeps g_pend: the save-as flow finishes the job */
-    } else if (choice == 1) { g_pend.valid = false; perform(k, path); }
-    else g_pend.valid = false;
+    if (choice == 0) save_flow();                               /* Save, then carry on (g_pend stays valid until the save is done) */
+    else if (choice == 1) pending_done();                       /* Don't save: just carry on */
+    else g_pend.valid = false;                                  /* Cancel */
 }
 
 /* Runs the action once unsaved changes are dealt with. */
@@ -279,8 +285,7 @@ static void guard(ActKind k, const char *path) {
 static char g_ow_path[NB_PATH_MAX];
 
 static void finish_save_as(const char *full) {
-    bool ok = write_to(full, true);
-    if (ok && g_pend.valid) { g_pend.valid = false; perform(g_pend.kind, g_pend.path); }
+    if (write_to(full, true)) pending_done();
     else g_pend.valid = false;
 }
 
@@ -332,12 +337,15 @@ static void begin_save_as(void) {
 static void on_changed_on_disk(bool yes, void *user) {
     (void)user;
     nb_modal_leave();
-    if (yes) write_to(A.path, false);
+    if (yes && write_to(A.path, false)) pending_done();
+    else g_pend.valid = false;
 }
 
-static void act_save(void) {
-    if (!A.has_path) { g_pend.valid = false; begin_save_as(); return; }
-    if (A.readonly) { msg_set("This file is read-only. Choose a new name to keep your changes."); g_pend.valid = false; begin_save_as(); return; }
+/* Saves the page (asking where to when it has no file, and before overwriting something that changed on disk). A pending
+ * action (g_pend) is carried out once the page is safe. */
+static void save_flow(void) {
+    if (!A.has_path) { begin_save_as(); return; }
+    if (A.readonly) { msg_set("This file is read-only. Choose a new name to keep your changes."); begin_save_as(); return; }
     struct stat st;
     if (A.trace && stat(A.path, &st) == 0) nb_trace("mtime disk=%lld loaded=%lld", (long long)st.st_mtime, (long long)A.mtime);
     if (A.mtime && stat(A.path, &st) == 0 && st.st_mtime != A.mtime) {
@@ -348,9 +356,11 @@ static void act_save(void) {
         k_confirm_dialog(A.app, "File changed on disk", msg, KI_WARNING, "Overwrite", "Cancel", on_changed_on_disk, NULL);
         return;
     }
-    write_to(A.path, false);
+    if (write_to(A.path, false)) pending_done();
+    else g_pend.valid = false;
 }
 
+static void act_save(void) { g_pend.valid = false; save_flow(); }
 static void act_save_as(void) { g_pend.valid = false; begin_save_as(); }
 
 /* ---------------------------------------------------------------- the other file actions */
@@ -374,6 +384,32 @@ static void act_open(void) {
     nb_modal_enter();
     k_file_dialog(A.app, 0, "Open file", dir, "", on_open_path, NULL);
     nb_trace("dialog open");
+}
+
+static void do_reload(void) {
+    if (!A.has_path) return;
+    int line, col;
+    ed_caret_pos(&A.ed, &line, &col);
+    char path[NB_PATH_MAX];
+    snprintf(path, sizeof path, "%s", A.path);
+    if (load_path(path, true)) {
+        ed_goto(&A.ed, line + 1, col + 1);
+        msg_set("Reloaded %s from disk.", A.name);
+    }
+}
+
+static void on_reload(bool yes, void *user) {
+    (void)user;
+    nb_modal_leave();
+    if (yes) do_reload();
+}
+
+static void act_reload(void) {
+    if (!A.has_path) { msg_set("This page has no file on disk to reload."); return; }
+    if (!is_modified()) { do_reload(); return; }
+    nb_modal_enter();
+    nb_trace("dialog reload");
+    k_confirm_dialog(A.app, "Reload from disk?", "Your unsaved changes will be lost. Reload the file anyway?", KI_WARNING, "Reload", "Cancel", on_reload, NULL);
 }
 
 static void act_new(void) { guard(ACT_NEW, NULL); }
@@ -419,7 +455,7 @@ static void act_goto(void) {
     int line, col;
     ed_caret_pos(&A.ed, &line, &col);
     snprintf(prompt, sizeof prompt, "Line number (1-%d) or line:column:", doc_nlines(&A.ed.doc));
-    snprintf(initial, sizeof initial, "%s", "");
+    initial[0] = 0;
     (void)line;
     nb_modal_enter();
     k_input_dialog(A.app, "Go to line", prompt, initial, on_goto, NULL);
@@ -429,7 +465,7 @@ static void act_goto(void) {
 /* ---------------------------------------------------------------- menus */
 
 enum {
-    MA_NONE, MA_NEW, MA_NEWWIN, MA_OPEN, MA_SAVE, MA_SAVEAS, MA_CLOSE, MA_QUIT, MA_CLEAR_RECENT,
+    MA_NONE, MA_NEW, MA_NEWWIN, MA_OPEN, MA_SAVE, MA_SAVEAS, MA_RELOAD, MA_CLOSE, MA_QUIT, MA_CLEAR_RECENT,
     MA_UNDO, MA_REDO, MA_CUT, MA_COPY, MA_PASTE, MA_SELALL, MA_FIND, MA_FINDNEXT, MA_FINDPREV, MA_REPLACE, MA_GOTO,
     MA_DUP, MA_DELLINE, MA_INDENT, MA_UNINDENT,
     MA_LINENUM, MA_WRAP, MA_TAB2, MA_TAB4, MA_TAB8, MA_SPACES, MA_STATUS, MA_SYNTAX,
@@ -486,10 +522,11 @@ static void build_menus(void) {
     mitem(0, "Open...", "Ctrl+O", MA_OPEN, false, false);
     mitem(0, "Save", "Ctrl+S", MA_SAVE, false, false);
     mitem(0, "Save As...", "Ctrl+Shift+S", MA_SAVEAS, false, false);
+    mitem(0, "Reload from Disk", "F5", MA_RELOAD, !A.has_path, false);
     mitem(0, "Close", "Ctrl+W", MA_CLOSE, false, false);
     mitem(0, "Quit", "Ctrl+Q", MA_QUIT, false, false);
     int avail = (A.mainui ? A.mainui->cv.h : 400) - 26 - 6;       /* the drop-down must fit into the window */
-    int room = avail - (4 + 22 * 7);
+    int room = avail - (4 + 22 * 8);
     int nshow = 0;
     if (A.nrecent > 0 && room >= 7 + 22 + 7 + 22) nshow = (room - 7 - 7 - 22) / 22 < A.nrecent ? (room - 7 - 7 - 22) / 22 : A.nrecent;
     if (nshow > 0) {
@@ -561,6 +598,7 @@ static void do_action(int a) {
     case MA_OPEN: act_open(); break;
     case MA_SAVE: act_save(); break;
     case MA_SAVEAS: act_save_as(); break;
+    case MA_RELOAD: act_reload(); break;
     case MA_CLOSE: act_close(); break;
     case MA_QUIT: act_quit(); break;
     case MA_CLEAR_RECENT: recent_clear(); break;
@@ -622,6 +660,7 @@ static bool app_shortcut(KUI *ui, KKey *k) {
             return true;
         }
         if (k->code == KEY_F1) { dlg_help(A.app); return true; }
+        if (k->code == KEY_F5) { act_reload(); return true; }
         if (k->code == KEY_F10) { mb_open(ui, ui->menu_open ? 0 : 1); return true; }
         if (k->code == KEY_ESC && A.find_open && !ui->menu_open) { find_close(); return true; }
     }
@@ -636,7 +675,11 @@ static bool app_shortcut(KUI *ui, KKey *k) {
 
 static void update_title(void) {
     char name[64];
-    if (strlen(A.name) > 36) snprintf(name, sizeof name, "%.33s...", A.name); else snprintf(name, sizeof name, "%s", A.name);
+    if (strlen(A.name) > 36) {                                  /* shorten on a character boundary */
+        size_t cut = 33;
+        while (cut > 0 && (((unsigned char)A.name[cut]) & 0xC0) == 0x80) cut--;
+        snprintf(name, sizeof name, "%.*s...", (int)cut, A.name);
+    } else snprintf(name, sizeof name, "%s", A.name);
     char t[160];
     snprintf(t, sizeof t, "Notebook - %s%s%s", is_modified() ? "*" : "", name, A.readonly ? " (read-only)" : "");
     if (strcmp(t, A.title)) {

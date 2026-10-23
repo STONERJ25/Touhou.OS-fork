@@ -67,12 +67,26 @@ Everything a PCI driver needs already exists; look at `kernel/include/pci.h`, `b
   `/proc/partitions` (`lsblk`). Filesystems take a `BlockDev` by name (`blk_find("sda1")`, `blk_find_label("HUMANVILLAGE")`).
   The virtio-blk driver, the FAT32/FAT16 filesystem, the HUMANVILLAGE mount policy, `df`/`statfs` and `tools/mkdisk.py`
   (image builder and fsck) are described in [STORAGE.md](STORAGE.md).
+- **Network cards:** fill in a `NetDev` (`kernel/include/net.h`: MAC, MTU, `tx(frame)`, `poll()` that calls `net_rx(frame)`), set
+  `NDF_LINK` when the carrier is up and `netdev_register("eth", d)`; the stack, DHCP and `/proc/net` do the rest, all under one
+  network lock so the driver needs none. Call `pci_enable(dev, PCI_CMD_MEM | PCI_CMD_MASTER)` first. See [NETWORK.md](NETWORK.md)
+  (design, sockets, tools, tunables, tests, current state); `kernel/net/` holds the stack, `kernel/drivers/{virtio_net,e1000}.c` the cards.
 - **Input:** USB HID turns reports into `input_key(KEY_*, down)` and `input_mouse(dx, dy, wheel, buttons)`; the same path as
   the PS/2 driver feeds the console tty and `/dev/input/events`. Repeat is generated in the input layer.
+- **Sound:** a sound driver (`kernel/drivers/audio/hda.c`, `ac97.c`) fills in an `AudioBackend` (`kernel/include/audiodev.h`: a
+  looping 48 kHz 16-bit stereo DMA ring plus "where is the hardware now?") and calls `audio_register()`; the core in
+  `audio.c` owns `/dev/audio`, the mixer thread and `/proc/audio`. See [AUDIO.md](AUDIO.md).
 - **/proc files:** `procfs_register("name", gen)` adds a text file generated on each read.
 - **Logging:** `klog("Kappa", ...)` for hardware (see THEMING.md for tags). Never `printk` raw from a driver.
 - **Safety:** never write to a disk or partition on your own initiative. Only the explicit mount path and `/dev` writes by root
   may modify storage.
+
+## Processes and threads
+
+A `Process` (`kernel/include/process.h`) owns the address space, descriptors, cwd, credentials and signal dispositions; each
+user `Task` (`kernel/include/task.h`) is one thread inside it, with its own kernel stack, FS base (TLS), signal mask and
+thread id. System calls 106-115 are the thread calls and the futex that user space builds every lock on; the pthread library is
+`user/libc/src/pthread.c`. Design, ABI, locking rules, limits and the list of what is missing: [THREADS.md](THREADS.md).
 
 ## Testing
 

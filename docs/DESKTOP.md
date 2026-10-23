@@ -103,3 +103,12 @@ myapp &
 Automated tests go in `tests/case_<name>.py`; see `tests/case_desktop.py` (`Qemu.screen_ppm()` and `Qemu.pixel()` inspect the
 framebuffer, serial output is available through `vm.text()`). A program's stdout/stderr when started from the panel goes to
 `/tmp/<name>.log`.
+
+## Sound
+
+Programs make sound through libaudio (`#include <audio.h>`, linked automatically): `audio_open()` returns NULL when the machine
+has no sound device, and every program must cope with that. `audio_event(AUDIO_EV_DIALOG)` (also `AUDIO_EV_LOGIN`,
+`AUDIO_EV_ERROR`, `AUDIO_EV_SHUTDOWN`) plays one of the short system sounds and returns at once; it does nothing when the user
+has switched the system sounds off (`/etc/hakurei/sounds` or `$HAKUREI_SOUNDS`). Status: the functions work, but the shell,
+the greeter, the lock screen and the Kappa dialogs do not call them yet, and Reimu's Jukebox is not written. See
+[AUDIO.md](AUDIO.md) for the design and for what is done.

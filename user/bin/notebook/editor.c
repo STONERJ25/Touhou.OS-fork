@@ -1125,6 +1125,12 @@ void ed_draw(Editor *e, KUI *ui, KRect r, bool active, bool blocked) {
     }
     cv->clip = old;
 
+    if (doc_len(d) == 0 && !A.has_path && th_h >= 3 * CH) {                  /* an empty page says what to do */
+        kc_set_clip(cv, kr_intersect(e->text, old));
+        kc_text(cv, e->text.x + PADX, in.y + 2 * CH, "A blank page. Start typing, or press Ctrl+O to open a file.", th->text_dim);
+        cv->clip = old;
+    }
+
     /* scroll bars */
     int pos, maxpos;
     if (e->wrap) {

@@ -118,7 +118,7 @@ static long sys_waitpid(TrapFrame *tf) {
 static long sys_kill(TrapFrame *tf) {
     long pid = (long)A0(tf);
     int sig = (int)A1(tf);
-    if (sig < 0 || sig >= NSIG) return -EINVAL;
+    if (sig < 0 || sig >= NSIG || sig == SIGCANCEL) return -EINVAL;      /* SIGCANCEL is thread-directed only (tgkill) */
     Process *self = me();
     if (pid > 0) {
         Process *t = process_by_pid((int)pid);
@@ -250,16 +250,15 @@ static long sys_open(TrapFrame *tf) {
 static long sys_close(TrapFrame *tf) { return fd_close(me(), (int)A0(tf)); }
 
 static long sys_read(TrapFrame *tf) {
-    File *f = fd_get(me(), (int)A0(tf));
+    File *f = fd_get_ref(me(), (int)A0(tf));          /* a reference, taken under the table lock: another thread may close the fd */
     if (!f) return -EBADF;
     size_t n = A2(tf), total = 0;
     u8 *ubuf = (u8 *)A1(tf);
-    if (!user_range_ok(ubuf, n)) return -EFAULT;
+    if (!user_range_ok(ubuf, n)) { file_put(f); return -EFAULT; }
     size_t chunk = MIN(n, (size_t)IO_CHUNK);
     u8 *kbuf = kmalloc(chunk ? chunk : 1);
-    if (!kbuf) return -ENOMEM;
+    if (!kbuf) { file_put(f); return -ENOMEM; }
     long rc = 0;
-    file_get(f);
     while (total < n) {
         size_t want = MIN(n - total, chunk);
         ssize_t r = vfs_read(f, kbuf, want);
@@ -276,16 +275,15 @@ static long sys_read(TrapFrame *tf) {
 }
 
 static long sys_write(TrapFrame *tf) {
-    File *f = fd_get(me(), (int)A0(tf));
+    File *f = fd_get_ref(me(), (int)A0(tf));
     if (!f) return -EBADF;
     size_t n = A2(tf), total = 0;
     const u8 *ubuf = (const u8 *)A1(tf);
-    if (!user_range_ok(ubuf, n)) return -EFAULT;
+    if (!user_range_ok(ubuf, n)) { file_put(f); return -EFAULT; }
     size_t chunk = MIN(n, (size_t)IO_CHUNK);
     u8 *kbuf = kmalloc(chunk ? chunk : 1);
-    if (!kbuf) return -ENOMEM;
+    if (!kbuf) { file_put(f); return -ENOMEM; }
     long rc = 0;
-    file_get(f);
     while (total < n) {
         size_t want = MIN(n - total, chunk);
         if (copy_from_user(kbuf, ubuf + total, want)) { rc = total ? (long)total : -EFAULT; break; }
@@ -431,7 +429,18 @@ static long sys_chdir(TrapFrame *tf) {
         rc = vfs_lookup(path, p->cwd, &p->cred, LOOKUP_DIR, &v);
         if (rc == 0 && (rc = vfs_access(v, &p->cred, X_OK)) != 0) vnode_put(v);
         if (rc == 0) {
-            if (p->cwd) vnode_put(p->cwd);
+            /* Another thread may be resolving a relative path against the old directory right now, so a threaded process keeps
+             * the old reference in a small ring and drops the oldest one instead (everything is released at exit). */
+            VNode *old = p->cwd;
+            if (old && p->nthreads > 1) {
+                u64 f = irq_save();
+                VNode *drop = p->old_cwd[0];
+                for (unsigned i = 0; i + 1 < ARRAY_SIZE(p->old_cwd); i++) p->old_cwd[i] = p->old_cwd[i + 1];
+                p->old_cwd[ARRAY_SIZE(p->old_cwd) - 1] = old;
+                irq_restore(f);
+                old = drop;
+            }
+            if (old) vnode_put(old);
             p->cwd = v;
             char norm[256];
             path_normalize(p->cwd_path, path, norm, sizeof norm);
@@ -556,7 +565,7 @@ static long sys_poll(TrapFrame *tf) {
 
 /* ------------------------------------------------------------------ memory */
 
-static long sys_brk(TrapFrame *tf) {
+static long do_brk(TrapFrame *tf) {
     AddrSpace *as = &me()->as;
     u64 want = A0(tf);
     if (want == 0 || want < as->brk_start || want > as->brk_start + (1UL << 30)) return (long)as->brk;
@@ -570,7 +579,7 @@ static long sys_brk(TrapFrame *tf) {
     return (long)want;
 }
 
-static long sys_mmap(TrapFrame *tf) {
+static long do_mmap(TrapFrame *tf) {
     AddrSpace *as = &me()->as;
     u64 addr = A0(tf), len = A1(tf);
     u32 prot = (u32)A2(tf);
@@ -630,17 +639,33 @@ static long sys_mmap(TrapFrame *tf) {
     return (long)addr;
 }
 
-static long sys_munmap(TrapFrame *tf) {
+static long do_munmap(TrapFrame *tf) {
     u64 addr = A0(tf), len = ALIGN_UP(A1(tf), PAGE_SIZE);
     if (addr & (PAGE_SIZE - 1) || !len) return -EINVAL;
     return uvm_unmap(&me()->as, addr, len);
 }
 
-static long sys_mprotect(TrapFrame *tf) {
+static long do_mprotect(TrapFrame *tf) {
     u64 addr = A0(tf), len = ALIGN_UP(A1(tf), PAGE_SIZE);
     if (addr & (PAGE_SIZE - 1)) return -EINVAL;
     return uvm_protect(&me()->as, addr, len, (u32)A2(tf));
 }
+
+/* The mappings of a process are shared by all its threads: every call that changes them (and fork's copy, and the page
+ * fault handler) holds the address space lock, a sleeping mutex, for its whole duration. */
+#define MM_LOCKED(name, impl)                                  \
+    static long name(TrapFrame *tf) {                          \
+        AddrSpace *as = &me()->as;                             \
+        mutex_lock(&as->lock);                                 \
+        long r = impl(tf);                                     \
+        mutex_unlock(&as->lock);                               \
+        return r;                                              \
+    }
+
+MM_LOCKED(sys_brk, do_brk)
+MM_LOCKED(sys_mmap, do_mmap)
+MM_LOCKED(sys_munmap, do_munmap)
+MM_LOCKED(sys_mprotect, do_mprotect)
 
 /* ------------------------------------------------------------------ system */
 
@@ -755,14 +780,13 @@ static long sys_sigaction(TrapFrame *tf) {
     return 0;
 }
 
-static long sys_sigprocmask(TrapFrame *tf) {
-    Process *p = me();
-    u32 old = p->sig_blocked;
+static long sys_sigprocmask(TrapFrame *tf) {            /* the mask belongs to the calling thread */
+    u32 old = current->sig_blocked;
     u32 set = (u32)A1(tf) & ~((1U << SIGKILL) | (1U << SIGSTOP));
     switch (A0(tf)) {
-    case SIG_BLOCK: p->sig_blocked |= set; break;
-    case SIG_UNBLOCK: p->sig_blocked &= ~set; break;
-    case SIG_SETMASK: p->sig_blocked = set; break;
+    case SIG_BLOCK: current->sig_blocked |= set; break;
+    case SIG_UNBLOCK: current->sig_blocked &= ~set; break;
+    case SIG_SETMASK: current->sig_blocked = set; break;
     default: return -EINVAL;
     }
     if (A2(tf) && copy_to_user((void *)A2(tf), &old, sizeof old)) return -EFAULT;
@@ -803,6 +827,7 @@ void syscall_dispatch(TrapFrame *tf) {
     u64 nr = tf->rax;
     long ret = -ENOSYS;
     if (nr < SYS_nsyscalls && g_table[nr]) ret = g_table[nr](tf);
+    if (ret == -EINTR && current->proc && signal_cancel_pending(current)) ret = -ECANCELED;      /* pthread_cancel: see signal.c */
     if (nr != SYS_sigreturn) tf->rax = (u64)ret;
     task_on_trap_return(tf);                /* reschedule if due, deliver signals */
     cli();

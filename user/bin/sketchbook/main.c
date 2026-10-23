@@ -63,7 +63,7 @@ static bool do_save(const char *path) {
     tools_commit_all();
     const char *err = file_save(path, &g_doc);
     if (err) {
-        char msg[700];
+        char msg[1400];
         snprintf(msg, sizeof msg, "%s\n\n%s", err, path);
         dlg_message("Cannot save picture", msg, KI_ERROR);
         return false;
@@ -96,7 +96,7 @@ static void on_save_as(const char *path, void *u) {
     (void)u;
     dlg_modal_leave();
     if (!path) { clear_after(); return; }
-    char full[600];
+    char full[1100];
     make_abs(path, full, sizeof full);
     if (file_format_for(full) == FMT_UNKNOWN) {
         const char *base = strrchr(full, '/');
@@ -109,7 +109,7 @@ static void on_save_as(const char *path, void *u) {
     }
     struct stat st;
     if (stat(full, &st) == 0) {
-        char msg[700];
+        char msg[1400];
         snprintf(msg, sizeof msg, "%s already exists. Do you want to replace it?", full);
         char *copy = strdup(full);
         if (copy) { dlg_ask("Replace file", msg, KI_QUESTION, "Replace", "Cancel", NULL, replace_answer, copy); return; }
@@ -120,7 +120,7 @@ static void on_save_as(const char *path, void *u) {
 void app_cmd_save_as(void) {
     if (tools_dragging()) return;
     tools_commit_all();
-    char dir[512], name[160];
+    char dir[1100], name[160];
     save_dir_and_name(dir, sizeof dir, name, sizeof name);
     dlg_modal_enter();
     k_file_dialog(S.app, 1, "Save picture as", dir, name, on_save_as, NULL);
@@ -178,7 +178,7 @@ static bool load_into_doc(const char *path, bool named) {
     int w, h;
     const char *err = file_load(path, &px, &w, &h);
     if (err) {
-        char msg[700];
+        char msg[1400];
         snprintf(msg, sizeof msg, "%s\n\n%s", err, path);
         dlg_message("Cannot open picture", msg, KI_ERROR);
         return false;
@@ -193,18 +193,18 @@ static bool load_into_doc(const char *path, bool named) {
 }
 
 void app_open_path(const char *path, bool is_arg) {
-    char full[600];
+    char full[1100];
     make_abs(path, full, sizeof full);
     struct stat st;
     if (stat(full, &st) != 0) {
         if (is_arg && errno == ENOENT) { set_named(full); return; }            /* a new picture with that name */
-        char msg[700];
+        char msg[1400];
         snprintf(msg, sizeof msg, "The file does not exist: %s", full);
         dlg_message("Cannot open picture", msg, KI_ERROR);
         return;
     }
     if (S_ISDIR(st.st_mode)) {
-        char msg[700];
+        char msg[1400];
         snprintf(msg, sizeof msg, "%s is a folder, not a picture.", full);
         dlg_message("Cannot open picture", msg, KI_ERROR);
         return;
@@ -220,7 +220,7 @@ static void on_open_file(const char *path, void *u) {
 
 static void open_dialog_now(void *u) {
     (void)u;
-    char dir[512], name[160];
+    char dir[1100], name[160];
     save_dir_and_name(dir, sizeof dir, name, sizeof name);
     dlg_modal_enter();
     k_file_dialog(S.app, 0, "Open picture", dir, "", on_open_file, NULL);

@@ -350,8 +350,11 @@ static void test_ipc(void) {
     close(ev);
 }
 
+#include "utest_threads.inc"
+
 int main(void) {
     printf("utest: the shrine's test suite begins\n");
+    test_threads();
     test_ipc();
     test_stdio();
     test_memory();
