@@ -133,6 +133,11 @@ static void run_one(BlockDev *d, bool rw) {
     if (ok && bigsec > 1) read_check(&c, 1, bigsec - 1, 2, pat_a);
     if (ok && bigsec > 1) read_check(&c, 1, bigsec - 1, 1, pat_a);
 
+    if (rw && c.problems) {
+        /* A device that does not hold the test pattern is not a test device: never write to it. */
+        klog("Kappa", "selftest %s: the device does not hold the test pattern; refusing to write to it", d->name);
+        rw = false;
+    }
     if (rw) {
         /* 3. overwrite what we can reach with pattern B, using ragged request sizes and alignments */
         u64 limit = MIN(total, (u64)(24u << 20) / ss);

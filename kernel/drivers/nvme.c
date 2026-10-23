@@ -85,6 +85,8 @@ _Static_assert(sizeof(NvmeCqe) == 16, "NVMe completion entries are 16 bytes");
 #define NVME_BOUNCE_BYTES  (128u << 10)
 #define NVME_MAX_NS        32
 
+#define NVME_RETRIES       3                    /* extra attempts for a command that failed with the do-not-retry bit clear */
+
 #define T_ADMIN_MS         15000
 #define T_IO_MS            15000
 #define T_FLUSH_MS         30000
@@ -139,7 +141,7 @@ struct NvmeCtrl {
     bool   dead;
     NvmeNs *ns[NVME_MAX_NS];
     int    nns;
-    u32    n_cmds, n_errors, n_flushes;
+    u32    n_cmds, n_errors, n_flushes, n_bounced;
     NvmeCtrl *next;
 };
 
@@ -155,6 +157,7 @@ static u32  g_io_timeout = T_IO_MS;             /* nvme.iotimeout=N ms to wait f
 static u32  g_drop_after;                       /* nvme.dropcmd=N   never ring the doorbell for the N-th read/write batch (a lost command) */
 static u32  g_batches;
 static bool g_nosync;                           /* nvme.nosync      do not flush the write cache after every write request */
+static u64  g_data_limit = DMA_LIMIT;           /* blk.dmalimit_mb=N  treat caller memory above N MiB as unreachable (tests the bounce path) */
 
 #define REG32(c, off)       mmio_r32((c)->regs, (off))
 #define WREG32(c, off, v)   mmio_w32((c)->regs, (off), (v))
@@ -201,8 +204,8 @@ static bool queue_alloc(NvmeCtrl *c, NvmeQueue *q, u16 id, u16 depth) {
     q->id = id;
     q->depth = depth;
     q->phase = 1;
-    q->sq = dma_alloc((size_t)depth * sizeof(NvmeCmd), &q->sq_phys);
-    q->cq = dma_alloc((size_t)depth * sizeof(NvmeCqe), &q->cq_phys);
+    q->sq = dma_alloc_low((size_t)depth * sizeof(NvmeCmd), &q->sq_phys);
+    q->cq = dma_alloc_low((size_t)depth * sizeof(NvmeCqe), &q->cq_phys);
     if (!q->sq || !q->cq) return false;
     q->sq_db = (volatile u32 *)(c->regs + NVME_DB + (2u * id) * c->db_stride);
     q->cq_db = (volatile u32 *)(c->regs + NVME_DB + (2u * id + 1) * c->db_stride);
@@ -215,13 +218,23 @@ static bool wait_cqe(NvmeCtrl *c, NvmeQueue *q, u32 timeout_ms) {
     return cq_ready(q);
 }
 
-/* Stops the controller so that nothing DMAs into memory we are about to reuse, and makes every later request fail fast. */
+/*
+ * Stops the controller so that nothing DMAs into memory we are about to reuse. A hung controller may ignore CC.EN = 0 for a
+ * long time, but a PCI function with bus mastering disabled cannot issue memory requests whatever its firmware is doing, so
+ * that goes first; CC = 0 then resets the controller so that whoever comes next finds it sane.
+ */
+static void ctrl_stop_dma(NvmeCtrl *c) {
+    pci_write16(c->pci, 4, pci_read16(c->pci, 4) & (u16)~PCI_CMD_MASTER);
+    WREG32(c, NVME_CC, 0);
+    BLK_POLL(!(REG32(c, NVME_CSTS) & CSTS_RDY), c->ready_timeout_ms);
+}
+
+/* Makes every later request fail fast and stops the controller. */
 static void ctrl_fail(NvmeCtrl *c, const char *why) {
     if (c->dead) return;
     c->dead = true;
     klog("Kappa", "nvme%d: %s (CSTS %#x); giving up on this controller", c->index, why, REG32(c, NVME_CSTS));
-    WREG32(c, NVME_CC, 0);
-    BLK_POLL(!(REG32(c, NVME_CSTS) & CSTS_RDY), 2000);
+    ctrl_stop_dma(c);
 }
 
 static const char *admin_name(u8 opc) {
@@ -238,6 +251,7 @@ static const char *admin_name(u8 opc) {
 static int nvme_admin(NvmeCtrl *c, NvmeCmd *cmd, u32 *result, u32 timeout_ms) {
     if (c->dead) return -EIO;
     mutex_lock(&c->admin_lock);
+    if (c->dead) { mutex_unlock(&c->admin_lock); return -EIO; }
     NvmeQueue *q = &c->admin;
     cmd->cid = ++c->admin_cid;
     sq_submit(q, cmd);
@@ -300,10 +314,30 @@ static void log_io_error(NvmeNs *ns, bool write, u64 lba, u32 n, u32 st) {
          (unsigned long)lba, ns->nsid, (st >> 8) & 7, st & 0xFF, (st & 0x4000) ? " (do not retry)" : "");
 }
 
+typedef struct {
+    u64 lba;
+    u32 n;
+    u8 *buf;
+    u8  tries;                                      /* how often this command was resubmitted after a retryable error */
+} WindowSlot;
+
+static void fill_rw(NvmeCmd *cmd, NvmeCtrl *c, const NvmeNs *ns, unsigned s, const WindowSlot *w, bool write) {
+    memset(cmd, 0, sizeof *cmd);
+    cmd->opc = write ? NVM_WRITE : NVM_READ;
+    cmd->cid = (u16)s;
+    cmd->nsid = ns->nsid;
+    build_prps(c, s, w->buf, (size_t)w->n * ns->sector_size, &cmd->prp1, &cmd->prp2);
+    cmd->cdw10 = lo32(w->lba);
+    cmd->cdw11 = hi32(w->lba);
+    cmd->cdw12 = w->n - 1;
+}
+
 /*
  * Reads or writes count sectors between the namespace and buf (dword aligned). Keeps up to c->window commands in flight:
  * submit while there is room, wait for a completion, reap everything that has completed, repeat. After the first error
  * nothing new is submitted but the commands already in flight are drained, because their PRPs point into the caller's buffer.
+ * A command that fails with the do-not-retry bit clear (a busy namespace, a transient media error) is submitted again a few
+ * times, as Linux does, before the request fails.
  */
 static int rw_direct(NvmeNs *ns, u64 lba, u32 count, u8 *buf, bool write) {
     NvmeCtrl *c = ns->ctrl;
@@ -311,7 +345,7 @@ static int rw_direct(NvmeNs *ns, u64 lba, u32 count, u8 *buf, bool write) {
     u32 ss = ns->sector_size;
     u32 max_sec = MAX(1u, c->max_xfer / ss);
     u32 free_mask = (c->window >= 32 ? 0xFFFFFFFFu : (1u << c->window) - 1);
-    struct { u64 lba; u32 n; } slot[NVME_WINDOW_MAX];
+    WindowSlot slot[NVME_WINDOW_MAX];
     unsigned inflight = 0;
     int err = 0;
 
@@ -321,17 +355,9 @@ static int rw_direct(NvmeNs *ns, u64 lba, u32 count, u8 *buf, bool write) {
             unsigned s = (unsigned)__builtin_ctz(free_mask);
             u32 n = MIN(count, max_sec);
             NvmeCmd cmd;
-            memset(&cmd, 0, sizeof cmd);
-            cmd.opc = write ? NVM_WRITE : NVM_READ;
-            cmd.cid = (u16)s;
-            cmd.nsid = ns->nsid;
-            build_prps(c, s, buf, (size_t)n * ss, &cmd.prp1, &cmd.prp2);
-            cmd.cdw10 = lo32(lba);
-            cmd.cdw11 = hi32(lba);
-            cmd.cdw12 = n - 1;
+            slot[s] = (WindowSlot){ .lba = lba, .n = n, .buf = buf, .tries = 0 };
+            fill_rw(&cmd, c, ns, s, &slot[s], write);
             sq_submit(q, &cmd);
-            slot[s].lba = lba;
-            slot[s].n = n;
             free_mask &= ~(1u << s);
             inflight++;
             c->n_cmds++;
@@ -347,29 +373,50 @@ static int rw_direct(NvmeNs *ns, u64 lba, u32 count, u8 *buf, bool write) {
             ctrl_fail(c, (REG32(c, NVME_CSTS) & CSTS_CFS) ? "controller fatal status" : "I/O command timed out");
             return -EIO;
         }
+        u32 retry_mask = 0;
         while (cq_ready(q)) {
             NvmeCqe e;
             cq_pop(q, &e);
             unsigned s = e.cid;
-            if (s >= c->window || (free_mask & (1u << s))) {
+            if (s >= c->window || (free_mask & (1u << s)) || (retry_mask & (1u << s))) {
                 ctrl_fail(c, "completion for a command that is not in flight");
                 return -EIO;
             }
-            free_mask |= 1u << s;
-            inflight--;
             u32 st = e.status >> 1;
-            if (st & 0x7FF) {
+            if (!(st & 0x7FF)) {
+                free_mask |= 1u << s;
+                inflight--;
+            } else if (!(st & 0x4000) && slot[s].tries < NVME_RETRIES && !err) {
+                slot[s].tries++;
+                klog("Kappa", "nvme%d: %s of %u blocks at lba %lu on nsid %u: status type %u code %#x, trying again (%u of %u)", c->index,
+                     write ? "write" : "read", slot[s].n, (unsigned long)slot[s].lba, ns->nsid, (st >> 8) & 7, st & 0xFF, slot[s].tries, NVME_RETRIES);
+                retry_mask |= 1u << s;              /* the slot stays busy */
+            } else {
                 if (!err) log_io_error(ns, write, slot[s].lba, slot[s].n, st);
                 err = -EIO;
+                free_mask |= 1u << s;
+                inflight--;
             }
         }
         cq_ring(q);
+        if (retry_mask) {
+            task_sleep_ms(2);                       /* give a busy namespace a moment */
+            while (retry_mask) {
+                unsigned s = (unsigned)__builtin_ctz(retry_mask);
+                retry_mask &= retry_mask - 1;
+                NvmeCmd cmd;
+                fill_rw(&cmd, c, ns, s, &slot[s], write);
+                sq_submit(q, &cmd);
+                c->n_cmds++;
+            }
+            sq_ring(q);
+        }
     }
     return err;
 }
 
 static bool ensure_bounce(NvmeCtrl *c) {
-    if (!c->bounce) c->bounce = dma_alloc(NVME_BOUNCE_BYTES, &c->bounce_phys);
+    if (!c->bounce) c->bounce = dma_alloc_low(NVME_BOUNCE_BYTES, &c->bounce_phys);
     return c->bounce != NULL;
 }
 
@@ -380,9 +427,10 @@ static int nvme_rw(NvmeNs *ns, u64 lba, u32 count, void *buf, bool write) {
     if (c->dead) return -EIO;
 
     mutex_lock(&c->io_lock);
+    if (c->dead) { mutex_unlock(&c->io_lock); return -EIO; }
     int rc = 0;
     u32 ss = ns->sector_size;
-    if (!g_force_bounce && !((u64)buf & 3)) {
+    if (!g_force_bounce && !((u64)buf & 3) && buf_dma_low(buf, (size_t)count * ss, g_data_limit)) {
         rc = rw_direct(ns, lba, count, buf, write);
     } else if (!ensure_bounce(c)) {
         rc = -ENOMEM;
@@ -391,6 +439,7 @@ static int nvme_rw(NvmeNs *ns, u64 lba, u32 count, void *buf, bool write) {
         u32 chunk = NVME_BOUNCE_BYTES / ss;
         while (count && !rc) {
             u32 n = MIN(count, chunk);
+            c->n_bounced++;
             if (write) memcpy(c->bounce, cur, (size_t)n * ss);
             rc = rw_direct(ns, lba, n, c->bounce, write);
             if (rc) break;
@@ -411,6 +460,7 @@ static int nvme_blk_flush(BlockDev *d) {
     NvmeCtrl *c = ns->ctrl;
     if (c->dead) return -EIO;
     mutex_lock(&c->io_lock);
+    if (c->dead) { mutex_unlock(&c->io_lock); return -EIO; }
     NvmeQueue *q = &c->io;
     NvmeCmd cmd;
     memset(&cmd, 0, sizeof cmd);
@@ -458,6 +508,10 @@ static int nvme_blk_write(BlockDev *d, u64 lba, u32 count, const void *buf) {
 /* Disables the controller and waits for it to say so. */
 static bool ctrl_disable(NvmeCtrl *c) {
     u32 cc = REG32(c, NVME_CC);
+    if ((cc & CC_EN) && !(REG32(c, NVME_CSTS) & CSTS_RDY)) {
+        /* Enabled but not ready yet: the firmware was interrupted mid-initialisation, and clearing EN now has undefined results. */
+        BLK_POLL((REG32(c, NVME_CSTS) & (CSTS_RDY | CSTS_CFS)) != 0, c->ready_timeout_ms);
+    }
     if (cc & CC_EN) WREG32(c, NVME_CC, cc & ~CC_EN);
     return BLK_POLL(!(REG32(c, NVME_CSTS) & CSTS_RDY), c->ready_timeout_ms);
 }
@@ -538,6 +592,7 @@ static void register_namespace(NvmeCtrl *c, u32 nsid) {
     bd->read = nvme_blk_read;
     bd->write = nvme_blk_write;
     bd->flush = nvme_blk_flush;
+    bd->readonly = blk_ro_requested();
     bd->priv = ns;
     if (c->nns < NVME_MAX_NS) c->ns[c->nns++] = ns;
     klog("Kappa", "nvme%d: nsid %u: %lu MiB, %lu blocks of %u bytes", c->index, nsid, (unsigned long)(ns->sectors * ns->sector_size >> 20),
@@ -568,7 +623,7 @@ static void ctrl_probe(PciDev *pci) {
     }
     c->mqes = (u32)(c->cap & 0xFFFF) + 1;
     u32 to = (u32)((c->cap >> 24) & 0xFF);
-    c->ready_timeout_ms = to * 500 < 2000 ? 2000 : (to * 500 > 30000 ? 30000 : to * 500);
+    c->ready_timeout_ms = to * 500 < 2000 ? 2000 : to * 500;
     c->db_stride = 4u << ((c->cap >> 32) & 0xF);
     u32 css = (u32)((c->cap >> 37) & 0xFF);
     u32 mpsmin = (u32)((c->cap >> 48) & 0xF);
@@ -588,10 +643,15 @@ static void ctrl_probe(PciDev *pci) {
 
     /* Whatever state the firmware left the controller in, start from a disabled one. */
     if (REG32(c, NVME_CSTS) & CSTS_CFS) klog("Kappa", "nvme%d: the controller was already in a fatal state; resetting it", c->index);
-    if (!ctrl_disable(c)) { klog("Kappa", "nvme%d: the controller does not stop (CSTS %#x); skipped", c->index, REG32(c, NVME_CSTS)); return; }
+    if (!ctrl_disable(c)) {
+        klog("Kappa", "nvme%d: the controller does not stop (CSTS %#x); skipped", c->index, REG32(c, NVME_CSTS));
+        ctrl_stop_dma(c);                           /* its firmware-era queues now sit in memory the kernel owns: no more bus mastering */
+        c->dead = true;
+        return;
+    }
 
-    c->ident = dma_alloc(4096, &c->ident_phys);
-    c->prp = dma_alloc((size_t)NVME_WINDOW_MAX * PAGE_SIZE, &c->prp_phys);
+    c->ident = dma_alloc_low(4096, &c->ident_phys);
+    c->prp = dma_alloc_low((size_t)NVME_WINDOW_MAX * PAGE_SIZE, &c->prp_phys);
     if (!c->ident || !c->prp || !queue_alloc(c, &c->admin, 0, NVME_ADMIN_DEPTH)) { klog("Kappa", "nvme%d: out of DMA memory", c->index); return; }
 
     WREG32(c, NVME_AQA, ((u32)(NVME_ADMIN_DEPTH - 1) << 16) | (NVME_ADMIN_DEPTH - 1));
@@ -599,7 +659,7 @@ static void ctrl_probe(PciDev *pci) {
     wreg64(c, NVME_ACQ, c->admin.cq_phys);
     if (!ctrl_enable(c)) {
         klog("Kappa", "nvme%d: the controller did not become ready (CSTS %#x); skipped", c->index, REG32(c, NVME_CSTS));
-        ctrl_disable(c);
+        ctrl_stop_dma(c);
         c->dead = true;
         return;
     }
@@ -622,10 +682,13 @@ static void ctrl_probe(PciDev *pci) {
         return;
     }
 
-    /* Active namespaces: the id list (NVMe 1.1+), falling back to namespace 1 for older controllers. */
+    /* Active namespaces: the id list (Identify CNS 2, NVMe 1.1+). Older controllers read CNS as a single bit and would answer with
+     * namespace data, so they are scanned id by id; a 1.1+ controller that refuses the list is tried with namespace 1. */
     u32 ids[NVME_MAX_NS];
     unsigned nids = 0;
-    if (nvme_identify(c, 2, 0) == 0) {
+    if (c->vs < 0x00010100) {
+        for (u32 id = 1; id <= c->nn && nids < NVME_MAX_NS; id++) ids[nids++] = id;
+    } else if (nvme_identify(c, 2, 0) == 0) {
         const u8 *list = c->ident;
         for (unsigned i = 0; i < 1024 && le32(list + 4 * i); i++) {
             if (nids < NVME_MAX_NS) ids[nids++] = le32(list + 4 * i);
@@ -647,9 +710,9 @@ fail:
 static size_t gen_proc_nvme(char *buf, size_t cap) {
     size_t n = 0;
     for (NvmeCtrl *c = g_head; c && n + 300 < cap; c = c->next) {
-        n += (size_t)snprintf(buf + n, cap - n, "nvme%d %02x:%02x.%x %04x:%04x \"%s\" serial %s fw %s version %u.%u cmds %u errors %u flushes %u%s\n", c->index,
+        n += (size_t)snprintf(buf + n, cap - n, "nvme%d %02x:%02x.%x %04x:%04x \"%s\" serial %s fw %s version %u.%u cmds %u errors %u flushes %u bounced %u%s\n", c->index,
                               c->pci->bus, c->pci->dev, c->pci->fn, c->pci->vendor, c->pci->device, c->model, c->serial, c->firmware, c->vs >> 16,
-                              (c->vs >> 8) & 0xFF, c->n_cmds, c->n_errors, c->n_flushes, c->dead ? "  DEAD" : "");
+                              (c->vs >> 8) & 0xFF, c->n_cmds, c->n_errors, c->n_flushes, c->n_bounced, c->dead ? "  DEAD" : "");
         for (int i = 0; i < c->nns && n + 200 < cap; i++)
             n += (size_t)snprintf(buf + n, cap - n, "  nsid %u %s %lu x %u\n", c->ns[i]->nsid, c->ns[i]->bd->name, (unsigned long)c->ns[i]->sectors,
                                   c->ns[i]->sector_size);
@@ -666,6 +729,7 @@ static void read_knobs(void) {
     if ((v = cmdline_int("nvme.depth", 0)) > 0) g_depth = (u32)v;
     g_force_bounce = cmdline_flag("nvme.bounce");
     g_nosync = cmdline_flag("nvme.nosync");
+    if ((v = cmdline_int("blk.dmalimit_mb", 0)) > 0) g_data_limit = (u64)v << 20;
     if ((v = cmdline_int("nvme.iotimeout", 0)) > 0) g_io_timeout = (u32)v;
     if ((v = cmdline_int("nvme.dropcmd", 0)) > 0) g_drop_after = (u32)v;
 }

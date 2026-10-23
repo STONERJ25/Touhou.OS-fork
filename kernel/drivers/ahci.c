@@ -111,7 +111,9 @@ void blk_selftest(const char *driver);          /* blk_selftest.c: optional in-k
 
 #define T_ENGINE_MS        500                  /* spec: CR/FR must clear within 500 ms */
 #define T_LINK_MS          2000                 /* link up after COMRESET */
-#define T_READY_MS         6000                 /* BSY clear after reset */
+#define T_READY_PROBE_MS   20000                /* BSY clear at boot: a spun-down disk can need this long (the ATA limit is 31 s) */
+#define T_READY_RESET_MS   10000                /* BSY clear after a reset during error recovery */
+#define AHCI_RETRIES       2                    /* extra attempts for a command that failed for a transient reason */
 #define T_IDENTIFY_MS      5000
 #define T_IO_MS            15000
 #define T_FLUSH_MS         30000
@@ -147,7 +149,7 @@ typedef struct AhciPort {
     u32      phys_shift;                        /* log2(logical sectors per physical sector) */
     BlockDev *bd;
 
-    u32      n_cmds, n_errors, n_resets, n_flushes;     /* for /proc/ahci */
+    u32      n_cmds, n_errors, n_resets, n_flushes, n_bounced;      /* for /proc/ahci */
 } AhciPort;
 
 struct AhciHba {
@@ -156,6 +158,7 @@ struct AhciHba {
     int      index;
     u32      cap, cap2, vs, pi;
     bool     s64a;
+    bool     just_reset;                    /* GHC.HR was used: every link is renegotiating, so a quiet port may still be coming up */
     AhciPort *port[32];
     AhciHba *next;
 };
@@ -175,6 +178,7 @@ static u32  g_io_timeout = T_IO_MS;             /* ahci.iotimeout=N ms to wait f
 static u32  g_drop_after;                       /* ahci.dropcmd=N   never issue the N-th read/write, so it times out for real */
 static u32  g_rw_count;
 static bool g_nosync;                           /* ahci.nosync      do not flush the write cache after every write request */
+static u64  g_data_limit = DMA_LIMIT;           /* blk.dmalimit_mb=N  treat caller memory above N MiB as unreachable (tests the bounce path) */
 
 #define PR(p, off)      mmio_r32((p)->regs, (off))
 #define PW(p, off, v)   mmio_w32((p)->regs, (off), (v))
@@ -267,7 +271,7 @@ static void ahci_identify_selftest(void) {
     id[117] = id[118] = 0;
     id[83] = 0x4000 | BIT(10) | BIT(12);                                /* only the older FLUSH CACHE */
     id[217] = 7200;
-    id[128] = BIT(1) | BIT(2);                                          /* security supported and locked */
+    id[128] = BIT(1) | BIT(2);                                          /* security enabled and locked */
     ata_parse_identify(id, &a);
     EXPECT(a.sector_size == 512 && a.phys_shift == 3);
     EXPECT(a.flush_cmd == ATA_FLUSH && !a.ssd && a.locked);
@@ -328,9 +332,11 @@ static void port_start_engine(AhciPort *p) {
 
 static void port_program_lists(AhciPort *p) {
     PW(p, PX_CLB, lo32(p->clb_phys));
-    PW(p, PX_CLBU, hi32(p->clb_phys));
     PW(p, PX_FB, lo32(p->fis_phys));
-    PW(p, PX_FBU, hi32(p->fis_phys));
+    if (p->hba->s64a) {                                         /* the upper halves are reserved on a 32-bit controller; our memory is below 4 GiB anyway */
+        PW(p, PX_CLBU, hi32(p->clb_phys));
+        PW(p, PX_FBU, hi32(p->fis_phys));
+    }
     PW(p, PX_CMD, PR(p, PX_CMD) | CMD_FRE);
     (void)PR(p, PX_CMD);
 }
@@ -340,16 +346,29 @@ static bool port_ready(AhciPort *p) {
     return !(tfd & (TFD_BSY | TFD_DRQ));
 }
 
-/* COMRESET: hold DET=1 for at least a millisecond, release, then wait for the PHY to report an established link. */
+/*
+ * COMRESET: hold DET=1 for at least a millisecond, release, give the PHY 200 ms to settle (some react badly to SStatus being
+ * read straight away), then require DET=3 to hold for 100 ms within T_LINK_MS before trusting the link.
+ */
 static int port_comreset(AhciPort *p) {
     u32 sctl = PR(p, PX_SCTL) & 0x0F0u;                         /* keep the speed limit, force IPM=3 (no partial/slumber) */
     PW(p, PX_SCTL, sctl | 0x301u);
     (void)PR(p, PX_SCTL);
     task_sleep_ms(2);
     PW(p, PX_SCTL, sctl | 0x300u);
-    if (!BLK_POLL((PR(p, PX_SSTS) & 0xF) == 3, T_LINK_MS)) return -ENODEV;
-    task_sleep_ms(20);                                          /* debounce: the link must stay up */
-    if ((PR(p, PX_SSTS) & 0xF) != 3) return -ENODEV;
+    task_sleep_ms(200);
+    u64 end = uptime_ms() + T_LINK_MS, stable_since = 0;
+    for (;;) {
+        u64 now = uptime_ms();
+        if ((PR(p, PX_SSTS) & 0xF) == 3) {
+            if (!stable_since) stable_since = now;
+            if (now - stable_since >= 100) break;
+        } else {
+            stable_since = 0;
+        }
+        if (now >= end) return -ENODEV;
+        task_sleep_ms(10);
+    }
     PW(p, PX_SERR, 0xFFFFFFFFu);
     return 0;
 }
@@ -395,7 +414,9 @@ static void port_recover(AhciPort *p, const char *why);
 
 /*
  * Runs one command on slot 0 and waits for it. The caller holds p->lock and has filled the PRDT (nprd entries).
- * Any failure resets the link (port_recover) and returns -EIO; the caller never sees a half-finished command.
+ * Any failure resets the link (port_recover). Returns 0; -EAGAIN if the command failed for a reason that a retry may cure
+ * (timeout, interface or host bus error, CRC error) and the port is alive again; -EIO otherwise (a media or command error,
+ * or the port is gone). The caller never sees a half-finished command: after the recovery nothing of it is left in the HBA.
  */
 static int ahci_issue(AhciPort *p, const AtaCmd *c, u32 nprd, u32 timeout_ms) {
     if (p->dead) return -EIO;
@@ -404,7 +425,7 @@ static int ahci_issue(AhciPort *p, const AtaCmd *c, u32 nprd, u32 timeout_ms) {
         klog("Kappa", "ahci%d port %d: device busy before command %02x (TFD %#x)", p->hba->index, p->num, c->cmd, PR(p, PX_TFD));
         p->n_errors++;
         port_recover(p, "busy");
-        return -EIO;
+        return p->dead ? -EIO : -EAGAIN;
     }
 
     build_cfis(p->ctbl, c);
@@ -423,33 +444,62 @@ static int ahci_issue(AhciPort *p, const AtaCmd *c, u32 nprd, u32 timeout_ms) {
 
     u32 is = 0;
     bool done = BLK_POLL(({ is = PR(p, PX_IS); (is & IS_ERRORS) || (!lost && !(PR(p, PX_CI) & 1)); }), timeout_ms);
+    barrier();                                                     /* the data the HBA wrote is read only after PxCI said it was done */
     u32 tfd = PR(p, PX_TFD);
 
     const char *why = NULL;
-    if (!done) why = "timeout";
-    else if (is & IS_ERRORS) why = (is & IS_TFES) ? "device reported an error" : "interface or host bus error";
-    else if (tfd & (TFD_ERR | TFD_DF)) why = "device reported an error";
+    bool transient = false;
+    if (!done) {
+        why = "timeout";
+        transient = true;
+    } else if (is & IS_ERRORS) {
+        why = (is & IS_TFES) ? "device reported an error" : "interface or host bus error";
+        transient = !(is & IS_TFES) || ((tfd >> 8) & 0x80);        /* link and bus errors, or a UDMA CRC error (ICRC) from the device */
+    } else if (tfd & (TFD_ERR | TFD_DF)) {
+        why = "device reported an error";
+        transient = ((tfd >> 8) & 0x80) != 0;
+    }
     if (!why) return 0;
 
     klog("Kappa", "ahci%d port %d: command %02x (lba %lu, %u sectors) failed: %s -- IS %#x TFD %#x SERR %#x", p->hba->index, p->num, c->cmd,
          (unsigned long)c->lba, (unsigned)c->count, why, is, tfd, PR(p, PX_SERR));
     p->n_errors++;
     port_recover(p, why);
-    return -EIO;
+    return (transient && !p->dead) ? -EAGAIN : -EIO;
 }
 
-/* Stops the engine (which also abandons the failed command), COMRESETs the link and restarts; gives up on the port otherwise. */
+/* ahci_issue with up to AHCI_RETRIES more attempts when the failure looks transient. */
+static int ahci_issue_retry(AhciPort *p, const AtaCmd *c, u32 nprd, u32 timeout_ms) {
+    int rc = ahci_issue(p, c, nprd, timeout_ms);
+    for (int i = 0; rc == -EAGAIN && i < AHCI_RETRIES; i++) {
+        klog("Kappa", "ahci%d port %d: retrying command %02x (attempt %d)", p->hba->index, p->num, c->cmd, i + 2);
+        rc = ahci_issue(p, c, nprd, timeout_ms);
+    }
+    return rc == -EAGAIN ? -EIO : rc;
+}
+
+/*
+ * Brings the port back after a failed command: stop the engine (which abandons the command), reset the link, wait for the
+ * disk and restart. If the engine will not stop, the port reset is tried anyway (that is the spec's next step); if the engine
+ * still runs after that, it could finish the abandoned command into a buffer the caller is about to free, and the only way to
+ * be sure it cannot is to stop the whole controller (hba_halt).
+ */
+static void hba_halt(AhciHba *h, const char *why);
+
 static void port_recover(AhciPort *p, const char *why) {
     (void)why;
     p->n_resets++;
-    if (port_stop_engine(p)) {
-        klog("Kappa", "ahci%d port %d: command engine will not stop; giving up on this disk", p->hba->index, p->num);
-        p->dead = true;
-        return;
-    }
+    bool stopped = port_stop_engine(p) == 0;
+    if (!stopped) klog("Kappa", "ahci%d port %d: command engine will not stop; trying a link reset", p->hba->index, p->num);
     PW(p, PX_SERR, 0xFFFFFFFFu);
     PW(p, PX_IS, 0xFFFFFFFFu);
-    if (port_comreset(p) != 0 || !BLK_POLL(port_ready(p), T_READY_MS)) {
+    int rc = port_comreset(p);
+    if (!stopped && port_stop_engine(p) != 0) {
+        p->dead = true;
+        hba_halt(p->hba, "a command engine will not stop");
+        return;
+    }
+    if (rc != 0 || !BLK_POLL(port_ready(p), T_READY_RESET_MS)) {
         klog("Kappa", "ahci%d port %d: the disk did not come back after a link reset; giving up on it", p->hba->index, p->num);
         p->dead = true;
         return;
@@ -464,7 +514,7 @@ static void port_recover(AhciPort *p, const char *why) {
  * Describes up to n sectors of buf in the command table's PRDT, one entry per physically contiguous run (at most g_prd_len
  * bytes each). Returns the number of whole sectors described (0: the buffer cannot be used directly, bounce it).
  */
-static u32 prdt_build(AhciPort *p, const u8 *buf, u32 n, u32 *nprd) {
+static u32 prdt_build(AhciPort *p, const u8 *buf, u32 n, u32 *nprd, u64 limit) {
     u32 ss = p->sector_size;
     size_t want = (size_t)n * ss, done = 0;
     volatile u32 *prd = (volatile u32 *)(p->ctbl + 0x80);
@@ -472,7 +522,7 @@ static u32 prdt_build(AhciPort *p, const u8 *buf, u32 n, u32 *nprd) {
     while (done < want && e < g_prd_max) {
         paddr_t ph;
         size_t run = phys_run(buf + done, want - done, g_prd_len, &ph);
-        if (!p->hba->s64a && ph + run > 0x100000000ull) return 0;       /* 32-bit controller: needs a low bounce buffer */
+        if (ph + run > limit) return 0;                          /* above 4 GiB (or the test limit): bounce it */
         prd[4 * e + 0] = lo32(ph);
         prd[4 * e + 1] = hi32(ph);
         prd[4 * e + 2] = 0;
@@ -491,12 +541,7 @@ static u32 prdt_build(AhciPort *p, const u8 *buf, u32 n, u32 *nprd) {
 }
 
 static bool ensure_bounce(AhciPort *p) {
-    if (p->bounce) return true;
-    p->bounce = dma_alloc(AHCI_BOUNCE_BYTES, &p->bounce_phys);
-    if (p->bounce && !p->hba->s64a && p->bounce_phys + AHCI_BOUNCE_BYTES > 0x100000000ull) {
-        dma_free(p->bounce, AHCI_BOUNCE_BYTES);
-        p->bounce = NULL;
-    }
+    if (!p->bounce) p->bounce = dma_alloc_low(AHCI_BOUNCE_BYTES, &p->bounce_phys);
     return p->bounce != NULL;
 }
 
@@ -515,18 +560,19 @@ static int ahci_rw(AhciPort *p, u64 lba, u32 count, void *buf, bool write) {
         u32 n = MIN(count, max_sectors), nprd = 0;
         bool bounce = g_force_bounce || ((u64)cur & 1);
         if (!bounce) {
-            u32 got = prdt_build(p, cur, n, &nprd);
+            u32 got = prdt_build(p, cur, n, &nprd, g_data_limit);
             if (got) n = got; else bounce = true;
         }
         if (bounce) {
             if (!ensure_bounce(p)) { rc = -ENOMEM; break; }
-            u32 got = prdt_build(p, p->bounce, MIN(n, (u32)(AHCI_BOUNCE_BYTES / ss)), &nprd);
+            u32 got = prdt_build(p, p->bounce, MIN(n, (u32)(AHCI_BOUNCE_BYTES / ss)), &nprd, DMA_LIMIT);
             if (!got) { rc = -EIO; break; }
+            p->n_bounced++;
             n = got;
             if (write) memcpy(p->bounce, cur, (size_t)n * ss);
         }
         AtaCmd c = { .cmd = write ? ATA_WRITE_DMA_EXT : ATA_READ_DMA_EXT, .device = 0x40, .lba = lba, .count = (u16)n, .write = write };
-        rc = ahci_issue(p, &c, nprd, g_io_timeout);
+        rc = ahci_issue_retry(p, &c, nprd, g_io_timeout);
         if (rc) break;
         if (bounce && !write) memcpy(cur, p->bounce, (size_t)n * ss);
         cur += (size_t)n * ss;
@@ -544,7 +590,7 @@ static int ahci_blk_flush(BlockDev *d) {
     if (!p->flush_cmd) return 0;
     mutex_lock(&p->lock);
     AtaCmd c = { .cmd = p->flush_cmd, .device = 0x40 };
-    int rc = ahci_issue(p, &c, 0, T_FLUSH_MS);
+    int rc = ahci_issue_retry(p, &c, 0, T_FLUSH_MS);
     p->n_flushes++;
     mutex_unlock(&p->lock);
     return rc;
@@ -552,13 +598,14 @@ static int ahci_blk_flush(BlockDev *d) {
 
 /*
  * A write that returns is on stable media: nothing above the block layer calls blk_flush yet (sync is a no-op, power-off does not
- * flush), and a PC that is reset or powered off with data in a disk's volatile cache loses it. So when the disk has a write
- * cache that is on, every write request is followed by FLUSH CACHE (one flush per request, however large). "ahci.nosync" skips it.
+ * flush), and a PC that is reset or powered off with data in a disk's volatile cache loses it. So whenever the disk can flush,
+ * every write request is followed by FLUSH CACHE (one flush per request, however large; cheap if the cache is off, and a link
+ * reset puts a disk's cache setting back to its default, so IDENTIFY's answer is not trusted). "ahci.nosync" skips it.
  */
 static int ahci_blk_write(BlockDev *d, u64 lba, u32 count, const void *buf) {
     AhciPort *p = d->priv;
     int rc = ahci_rw(p, lba, count, (void *)buf, true);
-    if (!rc && count && p->wcache && !g_nosync) rc = ahci_blk_flush(d);
+    if (!rc && count && p->flush_cmd && !g_nosync) rc = ahci_blk_flush(d);
     return rc;
 }
 
@@ -590,6 +637,10 @@ static PortProbe port_detect(AhciPort *p) {
     if (port_stop_engine(p) || port_stop_fis(p)) return PORT_STUCK;
 
     u32 sctl = PR(p, PX_SCTL);
+    if ((sctl & 0xF) == 4 && !p->hba->just_reset) {                            /* DET=4: the firmware switched this interface off */
+        klog("Kappa", "ahci%d port %d: the interface was switched off by the firmware (SCTL %#x); left alone", p->hba->index, p->num, sctl);
+        return PORT_EMPTY;
+    }
     if ((sctl & 0xF0F) != 0x300) PW(p, PX_SCTL, (sctl & 0x0F0) | 0x300);       /* DET=0 (no reset requested), IPM=3 */
     PW(p, PX_SERR, 0xFFFFFFFFu);
     PW(p, PX_IS, 0xFFFFFFFFu);
@@ -606,7 +657,8 @@ static PortProbe port_detect(AhciPort *p) {
     if (want != cmd) PW(p, PX_CMD, want);
     if (p->hba->cap2 & CAP2_SDS) PW(p, PX_DEVSLP, PR(p, PX_DEVSLP) & ~DEVSLP_ADSE);
     if (PR(p, PX_SSTS) & 0xF) return PORT_PRESENT;
-    return powered_before ? PORT_EMPTY : PORT_POWERING;            /* a port we just powered gets a moment to answer (see hba_probe) */
+    /* A port we just powered, or whose HBA was just reset, gets a moment to answer (see hba_probe). */
+    return (powered_before && !p->hba->just_reset) ? PORT_EMPTY : PORT_POWERING;
 }
 
 /*
@@ -624,9 +676,9 @@ static bool port_link_ready(AhciPort *p) {
         if ((ssts & 0xF) == 3 && ((ssts >> 8) & 0xF) == 1) break;
         if (attempt || port_comreset(p)) return false;
     }
-    if (BLK_POLL(port_ready(p), T_READY_MS)) return true;
+    if (BLK_POLL(port_ready(p), T_READY_PROBE_MS)) return true;
     klog("Kappa", "ahci%d port %d: device is not ready (TFD %#x); resetting the link", p->hba->index, p->num, PR(p, PX_TFD));
-    return port_comreset(p) == 0 && BLK_POLL(port_ready(p), T_READY_MS);
+    return port_comreset(p) == 0 && BLK_POLL(port_ready(p), T_READY_PROBE_MS);
 }
 
 static void port_free(AhciPort *p) {
@@ -635,22 +687,21 @@ static void port_free(AhciPort *p) {
     kfree(p);
 }
 
-/* Idles the port (the HBA must not touch the memory any more) and releases everything. */
+/* Idles the port (the HBA must not touch the memory any more) and releases everything; if the port will not idle, the memory is leaked on purpose. */
 static void port_teardown(AhciPort *p) {
-    port_stop_engine(p);
-    port_stop_fis(p);
+    if (port_stop_engine(p) || port_stop_fis(p)) {
+        klog("Kappa", "ahci%d port %d: the port will not stop; its memory is left alone", p->hba->index, p->num);
+        p->dead = true;
+        return;
+    }
     PW(p, PX_CLB, 0); PW(p, PX_CLBU, 0); PW(p, PX_FB, 0); PW(p, PX_FBU, 0);
     port_free(p);
 }
 
 static bool port_alloc(AhciPort *p) {
     p->mem_size = 0x1000 + 0x80 + (size_t)AHCI_MAX_PRD * 16;
-    p->mem = dma_alloc(p->mem_size, &p->mem_phys);
+    p->mem = dma_alloc_low(p->mem_size, &p->mem_phys);          /* below 4 GiB, so a 32-bit-only controller can use it too */
     if (!p->mem) return false;
-    if (!p->hba->s64a && p->mem_phys + p->mem_size > 0x100000000ull) {
-        klog("Kappa", "ahci%d port %d: the controller is 32-bit only and its buffers landed above 4 GiB", p->hba->index, p->num);
-        return false;
-    }
     u8 *m = p->mem;
     p->clb = m;                      p->clb_phys = p->mem_phys;                 /* 1 KiB aligned (page aligned) */
     p->fis = m + 0x400;              p->fis_phys = p->mem_phys + 0x400;         /* 256 B aligned */
@@ -692,11 +743,9 @@ static void port_bringup(AhciHba *h, AhciPort *p) {
 
     port_start_engine(p);
     AtaInfo info;
-    int rc = port_identify(p, &info);
-    if (rc && !p->dead) {                           /* once more after a link reset */
-        port_recover(p, "identify");
-        if (!p->dead) rc = port_identify(p, &info);
-    }
+    int rc = -EIO;
+    for (int attempt = 0; attempt < 2 && rc && !p->dead; attempt++)        /* a failed attempt has already reset the link */
+        rc = port_identify(p, &info);
     if (rc) {
         klog("Kappa", "ahci%d port %d: IDENTIFY DEVICE failed (%d); ignoring this port", h->index, n, rc);
         goto reject;
@@ -730,8 +779,9 @@ static void port_bringup(AhciHba *h, AhciPort *p) {
          p->serial[0] ? p->serial : "-", p->firmware[0] ? p->firmware : "-");
     klog("Kappa", "ahci%d port %d: %lu MiB, %lu sectors of %u bytes%s%s", h->index, n, (unsigned long)(p->sectors * p->sector_size >> 20),
          (unsigned long)p->sectors, p->sector_size, p->phys_shift ? " (512e: larger physical sectors)" : "",
-         p->wcache ? (g_nosync ? ", volatile write cache (nosync: not flushed)" : ", volatile write cache (flushed after every write)")
-                   : p->flush_cmd ? ", write cache off" : ", no cache flush command");
+         !p->flush_cmd ? ", no cache flush command"
+         : g_nosync ? ", write cache not flushed after writes (nosync)"
+         : p->wcache ? ", volatile write cache (flushed after every write)" : ", write cache off (still flushed after every write)");
 
     BlockDev *bd = kzalloc(sizeof *bd);
     if (!bd) return;
@@ -743,6 +793,7 @@ static void port_bringup(AhciHba *h, AhciPort *p) {
     bd->read = ahci_blk_read;
     bd->write = ahci_blk_write;
     bd->flush = ahci_blk_flush;
+    bd->readonly = blk_ro_requested();
     bd->priv = p;
     p->bd = bd;
     blk_register(bd);
@@ -783,10 +834,23 @@ static int hba_reset(AhciHba *h) {
     u32 saved_pi = h->pi;
     hba_enable_ahci(h);
     HW(h, HBA_GHC, HR(h, HBA_GHC) | GHC_HR);
+    h->just_reset = true;
     if (!BLK_POLL(!(HR(h, HBA_GHC) & GHC_HR), 1000)) return -EIO;
     hba_enable_ahci(h);
-    if (HR(h, HBA_PI) == 0 && saved_pi) HW(h, HBA_PI, saved_pi);        /* PI is write-once on some chips and reads 0 after a reset */
+    /* CAP and PI have bits the firmware writes once; a reset may put them back to hardware defaults (libahci restores both). */
+    if (HR(h, HBA_CAP) != h->cap) HW(h, HBA_CAP, h->cap);
+    if (HR(h, HBA_PI) == 0 && saved_pi) HW(h, HBA_PI, saved_pi);
     return 0;
+}
+
+/* Last resort when a command engine cannot be stopped: it may still DMA into memory that is about to be reused. */
+static void hba_halt(AhciHba *h, const char *why) {
+    klog("Kappa", "ahci%d: %s; stopping the whole controller", h->index, why);
+    HW(h, HBA_GHC, HR(h, HBA_GHC) | GHC_HR);
+    BLK_POLL(!(HR(h, HBA_GHC) & GHC_HR), 1000);
+    pci_write16(h->pci, 4, pci_read16(h->pci, 4) & (u16)~PCI_CMD_MASTER);       /* no bus mastering: no more DMA, whatever the HBA thinks */
+    for (int i = 0; i < 32; i++)
+        if (h->port[i]) h->port[i]->dead = true;
 }
 
 static void hba_probe(PciDev *pci) {
@@ -867,7 +931,8 @@ static void hba_probe(PciDev *pci) {
         cand[n] = p;
     }
     if (powering) {
-        BLK_POLL(({ u32 up = 0; for (u32 k = 0; k < 32; k++) if (cand[k] && (powering & (1u << k)) && (PR(cand[k], PX_SSTS) & 0xF)) up |= 1u << k; up == powering; }), 500);
+        BLK_POLL(({ u32 up = 0; for (u32 k = 0; k < 32; k++) if (cand[k] && (powering & (1u << k)) && (PR(cand[k], PX_SSTS) & 0xF)) up |= 1u << k; up == powering; }),
+                 h->just_reset ? 2000 : 500);
         for (u32 n = 0; n < 32; n++) {
             if (!cand[n] || !(powering & (1u << n)) || (PR(cand[n], PX_SSTS) & 0xF)) continue;
             empty |= 1u << n;
@@ -898,9 +963,9 @@ static size_t gen_proc_ahci(char *buf, size_t cap) {
         for (int i = 0; i < 32 && n + 300 < cap; i++) {
             AhciPort *p = h->port[i];
             if (!p) continue;
-            n += (size_t)snprintf(buf + n, cap - n, "  port %d %s \"%s\" serial %s fw %s %lu x %u%s  cmds %u errors %u resets %u flushes %u%s\n", i, p->bd ? p->bd->name : "-",
+            n += (size_t)snprintf(buf + n, cap - n, "  port %d %s \"%s\" serial %s fw %s %lu x %u%s  cmds %u errors %u resets %u flushes %u bounced %u%s\n", i, p->bd ? p->bd->name : "-",
                                   p->model, p->serial, p->firmware, (unsigned long)p->sectors, p->sector_size, p->ssd ? " ssd" : "", p->n_cmds,
-                                  p->n_errors, p->n_resets, p->n_flushes, p->dead ? "  DEAD" : "");
+                                  p->n_errors, p->n_resets, p->n_flushes, p->n_bounced, p->dead ? "  DEAD" : "");
         }
     }
     return n;
@@ -916,6 +981,7 @@ static void read_knobs(void) {
     g_force_bounce = cmdline_flag("ahci.bounce");
     g_force_hba_reset = cmdline_flag("ahci.hbareset");
     g_nosync = cmdline_flag("ahci.nosync");
+    if ((v = cmdline_int("blk.dmalimit_mb", 0)) > 0) g_data_limit = (u64)v << 20;
     if ((v = cmdline_int("ahci.iotimeout", 0)) > 0) g_io_timeout = (u32)v;
     if ((v = cmdline_int("ahci.dropcmd", 0)) > 0) g_drop_after = (u32)v;
 }

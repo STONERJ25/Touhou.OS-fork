@@ -13,6 +13,7 @@
 #include "task.h"
 #include "pci.h"
 #include "mm.h"
+#include "cmdline.h"
 
 /* ---- MMIO (the mapping is uncached, so ordering between volatile accesses is the hardware's problem, not ours) ---- */
 static inline u32  mmio_r32(const volatile void *base, u32 off) { return *(const volatile u32 *)((const volatile u8 *)base + off); }
@@ -57,6 +58,39 @@ static inline size_t phys_run(const void *p, size_t len, size_t max, paddr_t *ph
     }
     return MIN(run, max);
 }
+
+/*
+ * Nothing above 4 GiB is ever handed to a storage controller: the drivers' own structures come from dma_alloc_low (a dma_alloc
+ * block that is checked to lie below 4 GiB), and a caller's buffer is used for DMA only if all of it is below the limit, otherwise
+ * the data goes through a bounce buffer from dma_alloc_low. That holds whether or not the controller says it can do 64-bit DMA
+ * (AHCI CAP.S64A), so a 32-bit-only controller and a 64-bit one are driven identically.
+ */
+#define DMA_LIMIT 0x100000000ull
+
+static inline void *dma_alloc_low(size_t size, paddr_t *phys) {
+    paddr_t p;
+    void *v = dma_alloc(size, &p);
+    if (!v) return NULL;
+    if (p + ALIGN_UP(size, (size_t)PAGE_SIZE) > DMA_LIMIT) { dma_free(v, size); return NULL; }
+    *phys = p;
+    return v;
+}
+
+/* True if every byte of the kernel buffer [buf, buf+len) lies below limit (physical). */
+static inline bool buf_dma_low(const void *buf, size_t len, u64 limit) {
+    const u8 *b = buf;
+    while (len) {
+        paddr_t ph;
+        size_t run = phys_run(b, len, len, &ph);
+        if (ph + run > limit) return false;
+        b += run;
+        len -= run;
+    }
+    return true;
+}
+
+/* "blk.ro" on the kernel command line: every disk these drivers register is read-only (blk_write returns -EROFS). */
+static inline bool blk_ro_requested(void) { return cmdline_flag("blk.ro"); }
 
 /* ---- identify strings ---- */
 

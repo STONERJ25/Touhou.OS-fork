@@ -314,7 +314,7 @@ def blk_nvme_read():
         assert (n1["size"], n1["ss"], n1["ro"], n1["parent"], n1["driver"], n1["model"]) == (size, 512, 0, "-", "nvme", "QEMU NVMe Ctrl"), n1
         must(g.ok("lsblk"), r"(?m)^nvme0n1\s+4\.0M\s+0\s+disk\s+nvme\s+QEMU NVMe Ctrl\s*$")
         check_reads(g, "nvme0n1", size)
-        must(g.ok("cat /proc/nvme"), r'nvme0 00:02\.0 1b36:0010 "QEMU NVMe Ctrl" serial TOUHOU01 fw \S+ version \d+\.\d+ cmds \d+ errors 0 flushes \d+\s+nsid 1 nvme0n1 8192 x 512')
+        must(g.ok("cat /proc/nvme"), r'nvme0 00:02\.0 1b36:0010 "QEMU NVMe Ctrl" serial TOUHOU01 fw \S+ version \d+\.\d+ cmds \d+ errors 0 flushes \d+ bounced \d+\s+nsid 1 nvme0n1 8192 x 512')
 
 
 # -------------------------------------------------------------------------------------------------- writes and copies
@@ -382,7 +382,12 @@ def blk_write_flush():
     for nosync in (False, True):
         with Guest(f"t-blk-flush-{int(nosync)}", extra, cmdline="ahci.nosync nvme.nosync" if nosync else "") as g:
             log = g.log()
-            must(log, r"volatile write cache" + ("" if nosync else r" \(flushed after every write\)"))
+            if nosync:
+                must(log, r"ahci0 port 1: 2 MiB, 4096 sectors of 512 bytes, write cache not flushed after writes \(nosync\)")
+                must(log, r'nvme0: "QEMU NVMe Ctrl".*volatile write cache \(nosync: not flushed\)')
+            else:
+                must(log, r"ahci0 port 1: 2 MiB, 4096 sectors of 512 bytes, volatile write cache \(flushed after every write\)")
+                must(log, r'nvme0: "QEMU NVMe Ctrl".*volatile write cache \(flushed after every write\)')
             def flushes():
                 a = int(must(g.ok("cat /proc/ahci"), r'"WF-SATA".* flushes (\d+)').group(1))
                 n = int(must(g.ok("cat /proc/nvme"), r'"QEMU NVMe Ctrl".* flushes (\d+)').group(1))
@@ -502,7 +507,7 @@ def blk_sata_errors():
         must(out, r"error writing '/dev/\w+': Input/output error")
         g.ok(f"dd if=/dev/zero of=/dev/{dev} bs=512 seek=201 count=2 conv=notrunc status=none")
         g.ok(f"dd if=/dev/zero of=/dev/{dev} bs=512 seek=198 count=2 conv=notrunc status=none")
-        stats = must(g.ok("cat /proc/ahci"), r"port 1 \w+ \"FLAKY-SATA\".*cmds \d+ errors (\d+) resets (\d+) flushes \d+(\s+DEAD)?")
+        stats = must(g.ok("cat /proc/ahci"), r"port 1 \w+ \"FLAKY-SATA\".*cmds \d+ errors (\d+) resets (\d+) flushes \d+ bounced \d+(\s+DEAD)?")
         assert int(stats.group(1)) >= 2 and int(stats.group(2)) >= 2 and not stats.group(3), stats.group(0)
         g.ok("sync")
     img = src.read_bytes()
@@ -524,7 +529,7 @@ def blk_sata_timeout():
         must(text, r"ahci0 port 1: command 25 \(lba \d+, \d+ sectors\) failed: timeout")
         must(text, r"ahci0 port 1: link reset done, disk is back")
         assert g.sha_of(f"sha256sum /dev/{dev}") == sha(data), "the disk must read back correctly after the recovery"
-        stats = must(g.ok("cat /proc/ahci"), r"port 1 \w+ \"TIMEOUT-SATA\".*errors (\d+) resets (\d+) flushes \d+(\s+DEAD)?")
+        stats = must(g.ok("cat /proc/ahci"), r"port 1 \w+ \"TIMEOUT-SATA\".*errors (\d+) resets (\d+) flushes \d+ bounced \d+(\s+DEAD)?")
         assert int(stats.group(2)) >= 1 and not stats.group(3), stats.group(0)
 
 
@@ -547,7 +552,7 @@ def blk_nvme_errors():
         must(out, r"error writing '/dev/nvme0n1': Input/output error")
         must(out, r"nvme0: write of 1 blocks at lba 200 on nsid 1 failed: status type \d code 0x[0-9a-f]+")
         g.ok("dd if=/dev/zero of=/dev/nvme0n1 bs=512 seek=201 count=2 conv=notrunc status=none")
-        stats = must(g.ok("cat /proc/nvme"), r"cmds \d+ errors (\d+) flushes \d+(\s+DEAD)?")
+        stats = must(g.ok("cat /proc/nvme"), r"cmds \d+ errors (\d+) flushes \d+ bounced \d+(\s+DEAD)?")
         assert int(stats.group(1)) >= 3 and not stats.group(2), stats.group(0)
         g.ok("sync")
     img = src.read_bytes()
@@ -572,7 +577,7 @@ def blk_nvme_timeout():
         out, rc = g.run("dd if=/dev/nvme0n1 of=/dev/null bs=4096 count=1")
         assert time.time() - t0 < 6, "a dead controller must fail requests immediately, not wait again"
         must(out, r"Input/output error")
-        must(g.ok("cat /proc/nvme"), r"nvme0 .*errors \d+ flushes \d+\s+DEAD")
+        must(g.ok("cat /proc/nvme"), r"nvme0 .*errors \d+ flushes \d+ bounced \d+\s+DEAD")
         assert g.sha_of(f"sha256sum /dev/{sata}") == sha(sdata), "the SATA disk must be unaffected by the dead NVMe controller"
         assert g.ok("echo still-alive").strip() == "still-alive"
 
@@ -675,6 +680,44 @@ def blk_nvme_mdts():
         text = g.log()
         must(text, r"max transfer 8 KiB per command")
         must(text, r"selftest nvme0n1: PASS \(0 problems\), 8192 KiB requests")
+
+
+@test
+def blk_readonly_switch():
+    """'blk.ro' on the kernel command line makes every SATA and NVMe disk (and its partitions) read-only: writes fail, images stay untouched."""
+    ssd = gpt_image("ro-sata", 4, [(64, 4000, "RO-ONE")])
+    nvm = pattern_image("ro-nvme", 4)
+    before = (ssd.read_bytes(), nvm.read_bytes())
+    extra = sata_disk("s0", ssd, "ide.1", model="RO-SATA") + nvme_ctrl("ro", "RO0001", [(nvm, 1)])
+    with Guest("t-blk-readonly", extra, cmdline="blk.ro") as g:
+        parts = g.partitions()
+        sdb = device_by_model(parts, "RO-SATA")
+        for name in (sdb, f"{sdb}1", "nvme0n1"):
+            assert parts[name]["ro"] == 1, f"{name} should be read-only: {parts[name]}"
+        must(g.ok("lsblk"), rf"(?m)^{sdb}\s+4\.0M\s+1\s+disk")
+        for dev in (sdb, f"{sdb}1", "nvme0n1"):
+            out, rc = g.run(f"dd if=/dev/zero of=/dev/{dev} bs=512 count=4 seek=100 conv=notrunc")
+            must(out, r"error writing", f"(a write to read-only /dev/{dev} must fail)")
+        assert g.sha_of(f"dd if=/dev/nvme0n1 bs=512 skip=2 count=4 status=none | sha256sum") == sha(pattern_slice(1024, 2048)), "reads still work"
+        stats = g.ok("cat /proc/ahci") + g.ok("cat /proc/nvme")
+        assert "flushes 0" in stats, "nothing was written, so nothing was flushed"
+    assert (ssd.read_bytes(), nvm.read_bytes()) == before, "a read-only disk was modified"
+
+
+@test
+def blk_dma_below_4g():
+    """Caller memory the controllers may not reach (above the 'blk.dmalimit_mb' test limit, standing in for 4 GiB) is bounced; data stays correct."""
+    sata = pattern_image("lim-sata", 8)
+    n512 = pattern_image("lim-n1", 8)
+    n4k = pattern_image("lim-n2", 8)
+    extra = sata_disk("s0", sata, "ide.1", model="LIM-SATA") + nvme_ctrl("lm", "LIM001", [(n512, 1), (n4k, 2, {"logical_block_size": 4096, "physical_block_size": 4096})])
+    with Guest("t-blk-dmalimit", extra, cmdline="blk.dmalimit_mb=48 blkselftest=sdb:rw,nvme0n1:rw,nvme0n2:rw") as g:
+        text = g.log()
+        for dev in ("sdb", "nvme0n1", "nvme0n2"):
+            must(text, rf"selftest {dev}: PASS \(0 problems\)")
+        out = g.ok("cat /proc/ahci") + g.ok("cat /proc/nvme")
+        bounced = [int(x) for x in re.findall(r"bounced (\d+)", out)]
+        assert any(b > 0 for b in bounced), f"buffers above the limit must have been bounced: {out}"
 
 
 # ------------------------------------------------------------------------------- the rest of the system, with and without
