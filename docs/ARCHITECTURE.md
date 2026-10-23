@@ -59,10 +59,12 @@ Everything a PCI driver needs already exists; look at `kernel/include/pci.h`, `b
 
 ## Testing
 
-`python tools/build.py` builds everything into `build/`; `python tests/run_all.py` runs the whole suite in QEMU
-(`tools/qemu.py` is the harness: serial console over TCP, QMP input injection, `screendump`). `Qemu(extra=[...])` appends
-QEMU arguments (devices, drives); `Qemu(disk=path)` attaches a virtio-blk disk. `tests/test_shell.py` shows how to drive
-the shell and check output; `tests/debug_shell.py` prints what the console says for a list of lines.
+`python tools/build.py` builds everything into `build/`; `python tests/run_all.py [name-filter]` runs the whole suite in QEMU
+(`tools/qemu.py` is the harness: serial console over TCP, QMP input injection, `screendump`). Tests are plain functions
+registered with `@test` (from `tests/harness.py`) in files named `tests/case_*.py`, which `run_all.py` discovers, so a new
+feature adds its own file and edits nothing shared. `Qemu(extra=[...])` appends QEMU arguments (devices, drives);
+`Qemu(disk=path)` attaches a virtio-blk disk. `tests/test_shell.py` shows how to drive the shell and check each command's
+output and exit status; `tests/debug_shell.py lines.txt` prints what the console says for a file of command lines.
 
 ## Conventions
 
