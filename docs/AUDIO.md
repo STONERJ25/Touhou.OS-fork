@@ -302,6 +302,12 @@ it plays). The harness (`tools/qemu.py`) takes
 than wall time, so tests never depend on how long the guest takes: they find the loud stretches of the recording and measure
 those. `tests/guitext.py` finds text on a screenshot by rendering it with the desktop's own 8x16 font.
 
+A host that is busy with other things can starve the guest for longer than the mixer's 100 ms lead; the hardware then plays
+silence (that is the design: an underrun is silence), and the recording has gaps and jumps that are not faults. The tests
+that look at the waveform ask the guest for the `underruns` counter in `/proc/audio` before they stop it, and a test that
+fails while the counter is not zero is run again, up to three times (`starved_retry` in `tests/case_audio.py`); a real fault
+repeats every time. The GUI tests (`audio_jukebox`, `audio_desktop_sounds`, `audio_panel_volume`) are not wrapped that way.
+
 * `audio_hda_tone` -- a 440 Hz `beep` has the right pitch, level (0.5 at volume 100) and purity; `/proc/audio` names the card.
 * `audio_mix_two_clients` -- two programs at once: both frequencies are present; two full-scale tones that beat against each
   other are limited below full scale and never wrap around.

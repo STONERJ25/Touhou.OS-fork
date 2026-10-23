@@ -3,6 +3,7 @@
 QEMU's sound card plays into a WAV file (Qemu(audio=...)); the tests measure that file on the host with numpy. The guest
 clock can be several times slower than wall time, so nothing here depends on how long a sound lasts: tests wait for the
 shell to come back, stop the VM, and look at the loud stretches of the recording."""
+import functools
 import re
 import time
 
@@ -18,11 +19,36 @@ def sh(vm, cmd, timeout=90):
     return test_shell.run(vm, cmd, timeout=timeout)
 
 
-def capture(vm):
-    """Stops the VM so QEMU finishes the WAV, and returns (rate, mono samples)."""
+STARVED = [False]
+
+
+def capture(vm, check=False, mono=True):
+    """Stops the VM so QEMU finishes the WAV, and returns (rate, samples): mono, or stereo with mono=False. With check=True
+    the guest is asked first whether its mixer ever ran dry (underruns in /proc/audio); starved_retry() uses the answer."""
+    if check:
+        out, _rc = sh(vm, "cat /proc/audio", timeout=30)
+        m = re.search(r"underruns (\d+)", out)
+        if m and int(m.group(1)) > 0:
+            STARVED[0] = True
     vm.stop()
     rate, x = at.load(vm.audio_path)
-    return rate, at.mono(x)
+    return rate, (at.mono(x) if mono else x)
+
+
+def starved_retry(fn):
+    """A busy host can starve the guest for a moment: its mixer is late and the hardware plays silence, which is the design
+    (an underrun is silence) but shows up as jumps and gaps in a recording. A test that fails while the guest reported such
+    dry spells is run again, up to three times; a real fault would repeat every time."""
+    @functools.wraps(fn)
+    def run():
+        for attempt in range(3):
+            STARVED[0] = False
+            try:
+                return fn()
+            except AssertionError:
+                if not STARVED[0] or attempt == 2:
+                    raise
+    return run
 
 
 def loudest(x, rate, **kw):
@@ -34,6 +60,7 @@ def loudest(x, rate, **kw):
 
 
 @test
+@starved_retry
 def audio_hda_tone():
     """Intel HDA: beep plays a 440 Hz tone; the sound card output has that pitch and the expected level."""
     with Qemu(cmdline="text", name="t-audio-hda", audio="hda") as vm:
@@ -44,7 +71,7 @@ def audio_hda_tone():
         assert rc == 0, out
         out, rc = sh(vm, "cat /proc/audio")
         assert re.search(r"underruns \d+", out), out
-        rate, x = capture(vm)
+        rate, x = capture(vm, check=True)
     assert rate == 48000, rate
     segs = at.segments(x, rate)
     assert segs, "nothing was played"
@@ -58,6 +85,7 @@ def audio_hda_tone():
 
 
 @test
+@starved_retry
 def audio_mix_two_clients():
     """Two programs play at the same time: both tones are in the output, and loud sums are limited, never wrapped."""
     with Qemu(cmdline="text", name="t-audio-mix", audio="hda") as vm:
@@ -66,7 +94,7 @@ def audio_mix_two_clients():
         assert "both-done" in out, out
         out, rc = sh(vm, "sleep 1; beep -f 440 -l 4000 -a 100 & beep -f 441 -l 4000 -a 100 & wait; echo loud-done")
         assert "loud-done" in out, out
-        rate, x = capture(vm)
+        rate, x = capture(vm, check=True)
     segs = at.segments(x, rate, merge_ms=400)
     assert len(segs) >= 2, f"expected two sounds, found {segs}"
     a, b = segs[0]
@@ -83,6 +111,7 @@ def audio_mix_two_clients():
 
 
 @test
+@starved_retry
 def audio_volume_and_mute():
     """volume sets the master level (quadratic curve) and mute silences the output; the settings read back."""
     with Qemu(cmdline="text", name="t-audio-vol", audio="hda") as vm:
@@ -102,7 +131,7 @@ def audio_volume_and_mute():
         assert "Master volume: 100%" in out, out
         out, rc = sh(vm, "volume loud; echo rc=$?")
         assert "rc=2" in out, out
-        rate, x = capture(vm)
+        rate, x = capture(vm, check=True)
     segs = at.segments(x, rate, threshold=0.005, merge_ms=400)
     assert len(segs) == 2, f"expected two audible sounds (the muted one is silent), found {segs}"
     full = at.peak(at.trimmed(x[segs[0][0]:segs[0][1]], rate))
@@ -112,6 +141,7 @@ def audio_volume_and_mute():
 
 
 @test
+@starved_retry
 def audio_format_conversion():
     """A mono 22050 Hz 8-bit stream is converted to 48 kHz stereo 16-bit at the right pitch; 44100 Hz 16-bit too."""
     with Qemu(cmdline="text", name="t-audio-conv", audio="hda") as vm:
@@ -123,7 +153,7 @@ def audio_format_conversion():
         assert rc == 0, out
         out, rc = sh(vm, "sleep 1; beep -r 11025 -c 1 -b 24 -f 300 -l 1200 -a 50")
         assert rc == 0, out
-        rate, x = capture(vm)
+        rate, x = capture(vm, check=True)
     segs = at.segments(x, rate, merge_ms=400)
     assert len(segs) == 3, f"expected three sounds, found {segs}"
     for (a, b), want in zip(segs, (440, 1000, 300)):
@@ -189,6 +219,7 @@ def audio_hda_no_codec():
 
 
 @test
+@starved_retry
 def audio_hda_micro_codec():
     """QEMU's third codec, hda-micro (a speaker pin and a microphone pin): the planner picks the speaker and the tone is right."""
     with Qemu(cmdline="text", name="t-audio-micro", audio="hda-micro") as vm:
@@ -198,7 +229,7 @@ def audio_hda_micro_codec():
         assert "other pin 0x05: mic" in out, out                 # the microphone is listed, and not driven
         out, rc = sh(vm, "volume 100 && beep -f 523 -l 1000 -a 50")
         assert rc == 0, out
-        rate, x = capture(vm)
+        rate, x = capture(vm, check=True)
     tone = at.trimmed(loudest(x, rate), rate)
     assert abs(at.dominant_freq(tone, rate) - 523) < 6, at.dominant_freq(tone, rate)
     assert 0.42 < at.peak(tone) < 0.55, at.peak(tone)
@@ -216,6 +247,7 @@ def audio_hda_graph():
 
 
 @test
+@starved_retry
 def audio_hda_fallbacks():
     """The duplex codec works, and so do the fallbacks: immediate commands instead of CORB/RIRB, the position buffer instead of LPIB."""
     with Qemu(cmdline="text hda.imm hda.posbuf hda.dump", name="t-audio-fallback", audio="hda-duplex") as vm:
@@ -227,7 +259,7 @@ def audio_hda_fallbacks():
         assert out.count("hda:  0x") >= 4 and "type 4" in out and "config 00004010" in out, out        # hda.dump: every widget of the codec
         out, rc = sh(vm, "volume 100 && beep -f 660 -l 1500 -a 50")
         assert rc == 0, out
-        rate, x = capture(vm)
+        rate, x = capture(vm, check=True)
     tone = at.trimmed(loudest(x, rate), rate)
     assert abs(at.dominant_freq(tone, rate) - 660) < 7, at.dominant_freq(tone, rate)
     assert 0.42 < at.peak(tone) < 0.55, at.peak(tone)
@@ -262,6 +294,7 @@ def audio_songs():
 
 
 @test
+@starved_retry
 def audio_song_timing_and_pitch():
     """A song written in the notation plays at the right tempo and pitch: four quarter notes at 120 bpm, A4 to C5, FM and triangle."""
     with Qemu(cmdline="text", name="t-audio-pitch", audio="hda") as vm:
@@ -273,7 +306,7 @@ def audio_song_timing_and_pitch():
         sh(vm, "printf 'tms 1\\ntempo 120\\nchannel a inst=fm-epiano\\npattern P\\n  a: o5 e1\\norder P\\n' > /tmp/fm.tms")
         out, rc = sh(vm, "sleep 1; play -q /tmp/fm.tms", timeout=120)
         assert rc == 0, out
-        rate, x = capture(vm)
+        rate, x = capture(vm, check=True)
     segs = at.segments(x, rate, threshold=0.004, merge_ms=60, min_ms=100)
     assert len(segs) >= 5, f"expected four notes and a long one, found {segs}"
     notes, longer = segs[:4], segs[4]
@@ -309,6 +342,7 @@ def rms(x):
 
 
 @test
+@starved_retry
 def audio_mod_module():
     """A ProTracker module plays at the right pitch, speed and side; arpeggio, pattern delay and seeking work; junk is refused."""
     mod = mt.make_module()
@@ -332,8 +366,7 @@ def audio_mod_module():
         assert rc == 0, out
         out, rc = sh(vm, "sleep 1; play -q -s 1.56 -t 0.96 /tmp/test.mod", timeout=180)          # seek to the start of pattern 1
         assert rc == 0, out
-        vm.stop()
-        rate, x = at.load(vm.audio_path)
+        rate, x = capture(vm, check=True, mono=False)
     left, right = x[:, 0], x[:, 1]
     segs = at.segments(x, rate, threshold=0.01, merge_ms=300)
     assert len(segs) == 2, f"expected the module and the part played after the seek, found {segs}"
@@ -364,6 +397,7 @@ def audio_mod_module():
 
 
 @test
+@starved_retry
 def audio_mod_effects():
     """Module effects follow a tick by tick model: slides, portamento, vibrato, tremolo, volume, speed, tempo, cut, delay, retrigger, offset, loop, finetune, jump."""
     mod = mt.make_effects_module()
@@ -377,8 +411,7 @@ def audio_mod_effects():
         sh(vm, "volume 100")
         out, rc = sh(vm, "play -q /tmp/fx.wav", timeout=300)
         assert rc == 0, out
-        vm.stop()
-        rate, x = at.load(vm.audio_path)
+        rate, x = capture(vm, check=True, mono=False)
     left, mono = x[:, 0], at.mono(x)
     segs = at.segments(x, rate, threshold=0.01, merge_ms=200, min_ms=20)
     names = mt.FX_SECTIONS
@@ -572,6 +605,7 @@ def audio_jukebox():
 
 
 @test
+@starved_retry
 def audio_system_sounds():
     """System sounds honour the switch: silent with 'nosounds', on with HAKUREI_SOUNDS=on, off with =off; beep -e forces one."""
     with Qemu(cmdline="text", name="t-audio-snd-off", audio="hda") as vm:                 # the harness adds "nosounds"
@@ -583,7 +617,7 @@ def audio_system_sounds():
         assert "rc=0" in out, out
         out, rc = sh(vm, "beep -E nonsense; echo rc=$?")
         assert "rc=2" in out and "no system sound called" in out, out
-        rate, x = capture(vm)
+        rate, x = capture(vm, check=True)
     segs = at.segments(x, rate, threshold=0.003, merge_ms=300)
     assert len(segs) == 1, f"only the HAKUREI_SOUNDS=on bell should be audible, found {segs}"
     f = at.dominant_freq(at.trimmed(x[segs[0][0]:segs[0][1]], rate, ms=20), rate)
@@ -595,7 +629,7 @@ def audio_system_sounds():
         sh(vm, "beep -E error")                                                          # on by default when nothing says otherwise
         sh(vm, "sleep 1; HAKUREI_SOUNDS=off beep -E dialog")                             # silent
         sh(vm, "sleep 1; HAKUREI_SOUNDS=off beep -e shutdown")                           # -e plays whatever the switch says
-        rate, x = capture(vm)
+        rate, x = capture(vm, check=True)
     segs = at.segments(x, rate, threshold=0.003, merge_ms=300)
     assert len(segs) == 2, f"expected the error buzz and the forced shutdown tune, found {segs}"
     low = at.dominant_freq(at.trimmed(x[segs[0][0]:segs[0][1]], rate, ms=20), rate)
@@ -665,6 +699,7 @@ def audio_panel_volume():
 
 
 @test
+@starved_retry
 def audio_ac97_tone():
     """AC'97 fallback: a card without HDA works through the same /dev/audio, at the right pitch and level."""
     with Qemu(cmdline="text", name="t-audio-ac97", audio="ac97") as vm:
@@ -675,7 +710,7 @@ def audio_ac97_tone():
         assert rc == 0, out
         out, rc = sh(vm, "sleep 1; beep -r 22050 -c 1 -b 8 -f 880 -l 1200 -a 40")
         assert rc == 0, out
-        rate, x = capture(vm)
+        rate, x = capture(vm, check=True)
     segs = at.segments(x, rate, merge_ms=400)
     assert len(segs) == 2, f"expected two sounds, found {segs}"
     for (a, b), want, level in zip(segs, (523, 880), (0.5, 0.4)):

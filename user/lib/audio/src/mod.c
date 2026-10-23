@@ -149,7 +149,8 @@ fail:
 /* ------------------------------------------------------------------ the player */
 
 typedef struct {
-    int sample;                                 /* 1..31, 0 = none */
+    int sample;                                 /* the sample the channel has been given (1..31, 0 = none): the next note uses it */
+    int playing;                                /* the sample that is sounding now: a new sample number does not cut in until a note starts */
     double pos;                                 /* in sample bytes */
     int period;                                 /* the note's period with slides applied */
     int out_period;                             /* what is mixed: with arpeggio and vibrato */
@@ -220,7 +221,8 @@ static void do_cell(ModPlayer *p, Chan *ch, const ModCell *cell) {
         else {
             ch->period = per;
             ch->pos = 0;
-            ch->active = ch->sample != 0;
+            ch->playing = ch->sample;
+            ch->active = ch->playing != 0;
             if (ch->vib_wave < 4) ch->vib_pos = 0;
             if (ch->trem_wave < 4) ch->trem_pos = 0;
         }
@@ -235,7 +237,7 @@ static void do_cell(ModPlayer *p, Chan *ch, const ModCell *cell) {
     case 0x7: if (par >> 4) ch->trem_speed = par >> 4; if (par & 15) ch->trem_depth = par & 15; break;
     case 0x9:
         if (par) ch->offset_mem = par;
-        if (cell->period || cell->sample) ch->pos = (double)ch->offset_mem * 256.0;
+        if (cell->period && ch->active) ch->pos = (double)ch->offset_mem * 256.0;       /* only a note that starts takes the offset */
         break;
     case 0xB: p->jump_order = par; break;
     case 0xC: ch->vol = par > 64 ? 64 : par; break;
@@ -356,7 +358,7 @@ static void tick_effects(ModPlayer *p) {
             ch->out_vol = ch->vol;
             break;
         case 0xE:
-            if ((par >> 4) == 0x9 && ch->retrig && p->tick % ch->retrig == 0) { ch->pos = 0; ch->active = ch->sample != 0; }     /* the sample starts again, even if it had ended */
+            if ((par >> 4) == 0x9 && ch->retrig && p->tick % ch->retrig == 0) { ch->pos = 0; ch->playing = ch->sample; ch->active = ch->playing != 0; }     /* the sample starts again, even if it had ended */
             if ((par >> 4) == 0xC && p->tick == (par & 15)) { ch->vol = 0; ch->out_vol = 0; }
             break;
         default: break;
@@ -434,8 +436,8 @@ static void mix_frame(ModPlayer *p, float *l, float *r) {
     float left = 0, right = 0;
     for (int c = 0; c < s->nch; c++) {
         Chan *ch = &p->ch[c];
-        if (!ch->active || !ch->sample || ch->out_period < 1) continue;
-        const ModSample *m = &s->smp[ch->sample - 1];
+        if (!ch->active || !ch->playing || ch->out_period < 1) continue;
+        const ModSample *m = &s->smp[ch->playing - 1];
         if (!m->data || m->length < 2) { ch->active = false; continue; }
         bool looped = m->loop_len > 2;
         uint32_t end = looped ? m->loop_start + m->loop_len : m->length;
@@ -484,7 +486,7 @@ size_t mod_render(ModPlayer *p, int16_t *out, size_t frames) {
 static void skip_frames(ModPlayer *p, uint64_t frames) {
     for (int c = 0; c < p->song->nch; c++) {
         Chan *ch = &p->ch[c];
-        if (ch->active && ch->sample && ch->out_period >= 1) ch->pos += (double)frames * PAL_CLOCK / (double)ch->out_period / (double)p->rate;
+        if (ch->active && ch->playing && ch->out_period >= 1) ch->pos += (double)frames * PAL_CLOCK / (double)ch->out_period / (double)p->rate;
     }
 }
 
