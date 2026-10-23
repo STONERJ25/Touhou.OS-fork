@@ -105,10 +105,11 @@ NORETURN void kmain(BootInfo *bi) {
 
     boot_mmap_save(bi);
     pmm_init();
+    boot_mmap_report();
     vmm_init();
     fb_remap();                         /* the loader's direct-map alias of the framebuffer is gone now */
-    klog("Kappa", "framebuffer %ux%u at %#lx, write-combining", g_boot.fb.width, g_boot.fb.height,
-         (unsigned long)g_boot.fb.base);
+    klog("Kappa", "framebuffer %ux%u at %#lx, pitch %u bytes, %s", g_boot.fb.width, g_boot.fb.height, (unsigned long)g_boot.fb.base,
+         g_boot.fb.pitch, g_fb.ready ? fb_cache_name() : "none (no graphics output was found)");
     klog("Boundary", "paging online: %lu MiB RAM, %lu MiB free", (unsigned long)(pmm_total_pages() >> 8),
          (unsigned long)(pmm_free_pages_count() >> 8));
     acpi_init();
@@ -117,6 +118,7 @@ NORETURN void kmain(BootInfo *bi) {
     pic_init();
     lapic_virtual_wire();
     timer_init();
+    fb_report(timer_tsc_mhz());         /* how fast the first full-screen fill was: tells a write-combining mapping from an uncached one */
     tty_console_init();
     input_init();
     sti();

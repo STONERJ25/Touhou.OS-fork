@@ -122,7 +122,10 @@ static void scan_function(int bus, int dev, int fn, int depth) {
     d->irq_line = (u8)ir; d->irq_pin = (u8)(ir >> 8);
     int kind = d->header_type & 0x7F;
     quiesce_dma(d);
-    if (kind == 0) probe_bars(d, 6);
+    /* Sizing a BAR means switching the device's memory decoding off and writing all ones into it. The display adapter is scanning
+     * out the screen this kernel is drawing on, through the very window those BARs describe, so it is left strictly alone (Linux
+     * does the same for the boot display: "mmio_always_on"). No driver here wants its BARs; the framebuffer comes from the loader. */
+    if (kind == 0 && d->class_code != 0x03) probe_bars(d, 6);
     else if (kind == 1) probe_bars(d, 2);
     if (g_tail) g_tail->next = d; else g_head = d;
     g_tail = d;

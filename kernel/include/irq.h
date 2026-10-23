@@ -26,6 +26,7 @@ u64  irq_count(int irq);
 void     timer_init(void);
 void     timer_verify(void);             /* with interrupts on: no tick from the PIT within 200 ms -> switch to the local APIC timer */
 bool     timer_is_lapic(void);
+u64      timer_tsc_mhz(void);            /* TSC ticks per microsecond */
 u64      timer_ticks(void);
 u64      uptime_ms(void);
 void     udelay(u32 us);                 /* busy wait, calibrated against the TSC after timer_init */

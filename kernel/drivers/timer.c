@@ -142,6 +142,7 @@ void timer_verify(void) {
 }
 
 bool timer_is_lapic(void) { return g_tick_lapic; }
+u64 timer_tsc_mhz(void) { return g_tsc_per_us; }
 
 void udelay(u32 us) {
     u64 end = rdtsc() + (u64)us * g_tsc_per_us;

@@ -3,7 +3,7 @@
 #include "kernel.h"
 #include "cpu.h"
 
-#define MAX_REGIONS 256
+#define MAX_REGIONS 512             /* real firmware describes 50-300 regions; the loader merges neighbours of the same type */
 #define NIL 0xFFFFFFFFu
 
 static BootMemRegion g_regions[MAX_REGIONS];
@@ -25,6 +25,34 @@ void boot_mmap_save(const BootInfo *bi) {
     const BootMemRegion *src = phys_to_virt(bi->mmap_phys);
     g_nregions = bi->mmap_count > MAX_REGIONS ? MAX_REGIONS : bi->mmap_count;
     memcpy(g_regions, src, g_nregions * sizeof(BootMemRegion));
+    if (bi->mmap_count > MAX_REGIONS)           /* the list is sorted by address: what is lost is the highest memory */
+        klog("Boundary", "the firmware's memory map has %u regions; only the first %u are used", bi->mmap_count, MAX_REGIONS);
+}
+
+static bool is_ram_type(u32 t);
+
+/* A log line on the shape of memory: what a photograph of the screen needs to tell a machine with 16 GiB and a big hole
+ * below 4 GiB from one the loader misread. */
+void boot_mmap_report(void) {
+    u64 usable = 0, loader = 0, acpi = 0, rsvd = 0, mmio = 0, high = 0, top = 0;
+    for (u32 i = 0; i < g_nregions; i++) {
+        const BootMemRegion *r = &g_regions[i];
+        u64 end = r->base + r->length;
+        switch (r->type) {
+        case BOOTMEM_USABLE: usable += r->length; break;
+        case BOOTMEM_BOOT_RECLAIMABLE: case BOOTMEM_KERNEL: case BOOTMEM_MODULE: loader += r->length; break;
+        case BOOTMEM_ACPI_RECLAIMABLE: case BOOTMEM_ACPI_NVS: acpi += r->length; break;
+        case BOOTMEM_MMIO: mmio += r->length; break;
+        default: rsvd += r->length; break;
+        }
+        if (is_ram_type(r->type) || r->type == BOOTMEM_ACPI_NVS) {
+            if (end > top) top = end;
+            if (end > (4ULL << 30)) high += end - (r->base > (4ULL << 30) ? r->base : (4ULL << 30));
+        }
+    }
+    klog("Boundary", "memory map: %u regions, %lu MiB usable + %lu MiB loader + %lu MiB ACPI, %lu MiB reserved, %lu MiB device; RAM reaches %#lx, "
+         "%lu MiB of it above 4 GiB", g_nregions, (unsigned long)(usable >> 20), (unsigned long)(loader >> 20), (unsigned long)(acpi >> 20),
+         (unsigned long)(rsvd >> 20), (unsigned long)(mmio >> 20), (unsigned long)top, (unsigned long)(high >> 20));
 }
 
 static bool is_ram_type(u32 t) {

@@ -3,6 +3,7 @@
 #include "cpu.h"
 #include "kernel.h"
 #include "acpi.h"
+#include "fbcon.h"
 
 NORETURN void qemu_exit(int code) {
     outb(0xF4, (u8)code);               /* isa-debug-exit: QEMU exits with (code << 1) | 1 */
@@ -15,6 +16,9 @@ NORETURN void machine_poweroff(void) {
     outw(0x604, 0x2000);                /* QEMU q35 / ACPI PM1a_CNT shortcut */
     outw(0xB004, 0x2000);               /* older QEMU / Bochs */
     outw(0x4004, 0x3400);               /* VirtualBox */
+    /* Still running: none of the ways to switch off worked. Whoever is looking at a frozen desktop deserves to be told. */
+    fbcon_force_on();
+    printk("\n\x1b[1;33m[Gensokyo] the machine did not switch itself off (ACPI S5 failed). It is safe to hold the power button now.\x1b[0m\n");
     for (;;) hlt();
 }
 

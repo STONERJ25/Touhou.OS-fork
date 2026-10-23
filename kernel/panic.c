@@ -2,12 +2,14 @@
 #include "cpu.h"
 #include "arch.h"
 #include "task.h"
+#include "fbcon.h"
 
 static int g_depth;
 
 NORETURN void panic(const char *fmt, ...) {
     cli();
     if (++g_depth > 1) for (;;) hlt();
+    fbcon_force_on();                   /* the window server may own the screen: a panic must be readable (there is no serial port on a PC) */
     va_list ap;
     va_start(ap, fmt);
     printk("\n\x1b[1;31m*** INCIDENT: KERNEL PANIC ***\x1b[0m\n");

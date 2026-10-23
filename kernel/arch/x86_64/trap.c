@@ -4,6 +4,7 @@
 #include "cpu.h"
 #include "irq.h"
 #include "task.h"
+#include "fbcon.h"
 
 static const char *const exc_name[32] = {
     "Divide Error (#DE)", "Debug (#DB)", "Non-Maskable Interrupt", "Breakpoint (#BP)",
@@ -37,6 +38,7 @@ void dump_trapframe(const TrapFrame *tf) {
 NORETURN void panic_frame(const TrapFrame *tf, const char *fmt, ...) {
     cli();
     if (++g_panic_depth > 1) for (;;) hlt();
+    fbcon_force_on();                   /* the window server may own the screen: a panic must be readable (there is no serial port on a PC) */
     va_list ap;
     va_start(ap, fmt);
     printk("\n\x1b[1;31m*** INCIDENT: KERNEL PANIC ***\x1b[0m\n");
