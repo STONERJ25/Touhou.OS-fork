@@ -7,6 +7,7 @@ The kernel exposes two text files for these tests: /proc/usb (the device tree, w
 
 The keyboard and mouse scenarios run twice: with the devices on root ports and behind a (full-speed) usb-hub.
 """
+import os
 import re
 import time
 
@@ -27,6 +28,9 @@ NEW_DEVICE = r"\[Kappa\] usb \S+: new \S+ device"
 # ---------------------------------------------------------------- helpers
 
 def usb_vm(devices, cmdline="", name="t-usb", xhci=True):
+    ring = os.environ.get("USB_RING")                    # USB_RING=16 python tests/run_all.py usb_  runs everything on 15 entry rings
+    if ring and "usbring" not in cmdline:
+        cmdline = (cmdline + f" usbring={ring}").strip()
     return Qemu(cmdline=cmdline, extra=(XHCI if xhci else []) + list(devices), name=name)
 
 
@@ -312,13 +316,16 @@ def usb_key_repeat(devs, hubs, name):
         boot(vm, hubs=hubs)
         s0 = stat(vm)
         key_event(vm, "x", True)
-        time.sleep(4.0)
+        # The repeat starts after 500 ms of *guest* time, which runs slower than the wall clock when the host is busy: wait for it.
+        end = time.time() + 120
+        while time.time() < end and not re.search(r"\$ x{6,}", vm.text()):
+            time.sleep(0.25)
         key_event(vm, "x", False)
         time.sleep(0.5)
         text = vm.text()
         runs = [len(r) for r in re.findall(r"\$ (x{1,300})", text)]
         longest = max(runs) if runs else 0
-        assert longest >= 4, f"expected a repeated run of x on the command line, longest run {longest}:\n" + text[-400:]
+        assert longest >= 6, f"expected a repeated run of x on the command line, longest run {longest}:\n" + text[-400:]
         clear_line(vm)
         s1 = stat(vm)
         assert s1["key_down"] == s0["key_down"] + 1 and s1["keys_held"] == 0, (s0, s1)
@@ -371,25 +378,44 @@ def usb_mouse(devs, hubs, name):
 
 @test
 def usb_ring_wrap():
-    """Hundreds of mouse and keyboard reports: transfer rings (255 TRBs) and the event ring (256) wrap several times without losing any."""
-    with usb_vm(KBD + MOUSE, name="t-usb-wrap") as vm:
+    """usbring=16 leaves 15 usable TRBs per ring: command, control, interrupt and event rings wrap over and over, nothing is lost."""
+    with usb_vm(KBD + MOUSE, cmdline="usbring=16", name="t-usb-wrap") as vm:
         boot(vm)
         vm.select_mouse("HID")
         s0 = stat(vm)
-        n = 1500
-        for _ in range(n):
-            vm.mouse_move(1, 2)
-            time.sleep(0.004)
-        time.sleep(1.0)
-        s1 = stat(vm)
-        assert s1["mouse_dx"] - s0["mouse_dx"] == n and s1["mouse_dy"] - s0["mouse_dy"] == 2 * n, (s0, s1)
-        assert s1["mouse_reports"] - s0["mouse_reports"] > 600, (s0, s1)       # well over two laps of a 255 entry ring
-        for k in "abcdefghij" * 14:
-            vm.key(k, hold=0.012)
-        time.sleep(1.0)
+        sent = 0
+        s1 = s0
+        # keep moving until the guest has seen several laps of the 15 entry rings (QEMU merges moves that arrive between two polls)
+        while s1["mouse_reports"] - s0["mouse_reports"] < 80 and sent < 6000:
+            for _ in range(40):
+                vm.mouse_move(1, 2)
+                time.sleep(0.02)
+            sent += 40
+            s1 = stat(vm)
+        end = time.time() + 60
+        while time.time() < end and s1["mouse_dx"] - s0["mouse_dx"] != sent:           # let the last reports drain
+            time.sleep(0.5)
+            s1 = stat(vm)
+        assert s1["mouse_dx"] - s0["mouse_dx"] == sent and s1["mouse_dy"] - s0["mouse_dy"] == 2 * sent, (sent, s0, s1)
+        assert s1["mouse_reports"] - s0["mouse_reports"] >= 80, (s0, s1)
+        keys = "abcdefghij" * 5
+        for k in keys:
+            vm.key(k, hold=0.02)
+        end = time.time() + 120
+        while time.time() < end and not re.search(r"\$ (?:abcdefghij){5}", vm.text()):       # all of it has reached the command line
+            time.sleep(0.5)
         clear_line(vm)
         s2 = stat(vm)
-        assert s2["key_down"] - s1["key_down"] == 140 and s2["keys_held"] == 0, (s1, s2)
+        assert s2["key_down"] - s1["key_down"] == len(keys) and s2["keys_held"] == 0, (s1, s2)
+        # unplug and plug again: more commands and control transfers through the tiny command and control rings
+        for i in range(3):
+            vm.qmp("device_del", id="umouse" if i == 0 else f"m{i}")
+            wait_count(vm, GONE, i + 1, timeout=60)
+            vm.qmp("device_add", driver="usb-mouse", id=f"m{i + 1}", bus="xhci.0")
+            wait_count(vm, MOUSE_UP, i + 2, timeout=60)
+        time.sleep(0.5)
+        assert len(devices(vm)) == 2
+        type_run(vm, "echo $((6*7))\n", r"\n42\r?\n")
         no_errors(vm)
 
 

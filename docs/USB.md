@@ -2,7 +2,7 @@
 
 USB host support exists so that a keyboard and a mouse work on machines that have no PS/2 port (the target is an Intel
 Kaby Lake desktop whose only keyboard controller is the PCH xHCI, `8086:a12f`). It is written for real silicon first and
-verified against QEMU's two xHCI models (`qemu-xhci`, `nec-usb-xhci`) with 27 scripted tests in `tests/case_usb.py`.
+verified against QEMU's two xHCI models (`qemu-xhci`, `nec-usb-xhci`) with 29 scripted tests in `tests/case_usb.py`.
 
 Scope: xHCI host controller, enumeration, hubs (USB 2 with transaction translators, USB 3), HID boot keyboards and mice
 (plus report-descriptor driven mice and keyboards), bulk transfers as a primitive. Not covered: EHCI/OHCI/UHCI (the old
@@ -38,6 +38,9 @@ they keep draining the event ring (`wait_flag`, `usb_msleep`), so keystrokes fro
 delayed by an enumeration in progress. Callbacks (HID report handlers) run inside that draining and therefore never start control
 transfers; the only deferred work is keyboard LED writes (`hid_service`) and endpoint error recovery (`xhci_service`).
 
+Other threads never call into the stack directly: `usb_call(fn, arg)` runs `fn(arg)` in the usbd thread between two polling rounds
+and the caller sleeps until it is done (see "Writing another class driver" below).
+
 Every wait has a timeout: commands 5 s (Linux's value), control transfers 2.5-3 s, port resets 1.5 s (warm 4 s), BIOS hand-off 1 s,
 HCRST 2 s. If the controller itself stops answering (all-ones register reads, `HSE`/`HCE`, unexpected halt, command ring that cannot be
 stopped) `x_die()` prints one line, clears `RUN`, marks the bus dead, releases all keys, and drops every device without freeing memory the
@@ -64,6 +67,8 @@ controller might still write to.
 9. Issue a No-Op command: a controller whose command ring does not answer is not used.
 10. Power every port that is not powered, wait 150 ms, wait 100 ms more for USB 2 debounce and USB 3 link training, then look at every
     port once, clear stale change bits, and queue ports with something attached. After that Port Status Change events drive everything.
+    Two seconds later one more look at all ports catches a connect whose event was lost and USB 3 links stuck in Polling or
+    compliance mode (those get a warm reset, as Linux does for ports without Cold Attach Status).
 
 ### Rings and contexts
 
@@ -89,7 +94,7 @@ it is never written back. USB 2 resets use `PR`; USB 3 ports use `PR` (hot reset
 Port change (event or initial scan) -> `port_event`: read PORTSC (or hub class status), acknowledge change bits, disconnect the
 old device if the connection changed or the port was disabled, then for a connected port with no device `port_connect`:
 
-1. Debounce (100 ms stable, 1.5 s limit; skipped for USB 3 links that need a warm reset).
+1. Debounce (100 ms stable, 2 s limit, Linux's HUB_DEBOUNCE_STABLE / TIMEOUT; skipped for USB 3 links that need a warm reset).
 2. Port reset; up to four attempts, each starts with a fresh reset. Speed comes from PORTSC (root) or the hub's port status.
 3. Enable Slot (protocol slot type), allocate output/input contexts and the default control ring, `DCBAA[slot]`.
 4. Attempts 1-2 use the **new scheme**: Address Device with BSR (slot goes to Default, no SET_ADDRESS yet), read the first 8 bytes
@@ -127,9 +132,9 @@ their children first), Disable Slot, free contexts and rings, remove from the tr
 
 * Hub descriptor (type 0x29, or 0x2A for SuperSpeed). High-speed hubs whose *device* descriptor says protocol 2 (one translator per
   port) get alternate setting 1 selected. SuperSpeed hubs get SET_HUB_DEPTH.
-* The controller learns about the hub through the slot context (Hub, MTT, Number of Ports, TT think time): Evaluate Context first,
-  verified by reading the output context, then Configure Endpoint as a fallback (Linux uses Evaluate Context, the specification
-  describes Configure Endpoint; QEMU ignores both).
+* The controller learns about the hub through the slot context (Hub, MTT, Number of Ports, TT think time) with the command Linux's
+  `xhci_update_hub_device()` uses: Configure Endpoint for xHCI 1.0 and later, Evaluate Context for 0.95. The output context is read
+  back and the other command tried if the Hub bit did not stick (QEMU ignores both). SET_HUB_DEPTH follows, then port power.
 * All ports are powered (SET_FEATURE PORT_POWER), then 2 x bPwrOn2PwrGood (at least 100 ms) is waited out. The status change
   endpoint is polled by the controller driver; it marks ports (bit n = port n) and hub-level changes (bit 0, acknowledged).
 * Port status is converted from the USB 2 or USB 3 layout (power at bit 8 vs 9, speed bits, link state, BH reset) into
@@ -184,7 +189,9 @@ Bus 1 Port 7.2: ID 0627:0001 QEMU QEMU USB Keyboard, full-speed, class 00, drive
 | `usb=hidreport` | debug + parse report descriptors even for boot interfaces (exercises the descriptor-driven paths) |
 | `usb=stalltest` | debug + send a request every device must STALL and verify the control pipe recovers |
 | `usb=bulktest` | SCSI INQUIRY / READ CAPACITY / 64 KiB READ(10) on any bulk-only mass storage device (read only, no disk is registered) |
+| `usb=parsertest` | run the HID report descriptor parser and decoders against built-in descriptors at boot (one log line with the result) |
 | `usbfault=ctl:N`, `usbfault=cmd:N` | never ring the doorbell for the Nth control transfer / command (counted from boot; the start-up No-Op is command 1) |
+| `usbring=N` | use only N (16..256) entries of every ring, so cycle-bit / link TRB wrap-around happens after N-1 TRBs; `USB_RING=16 python tests/run_all.py usb_` runs the whole USB suite that way |
 
 ## Real hardware: what was handled and what to know
 
@@ -245,7 +252,8 @@ Boot with a serial console or photograph the screen; the USB lines are tagged `K
 
 ```
 python tools/build.py
-python tests/run_all.py usb        # the 27 USB tests, about 4 minutes
+python tests/run_all.py usb        # the 29 USB tests, about 5 minutes (QEMU's guest clock slows down when the host is busy; the tests wait for events, not for time)
+USB_RING=16 python tests/run_all.py usb_   # the same on 15 entry rings
 python tests/run_all.py            # everything
 ```
 
@@ -260,6 +268,28 @@ Harness notes: QMP `input-send-event` with a `device` argument names a *display*
 `Qemu._input` no longer forwards it. Default routing already works: a usb-kbd becomes the default keyboard when it is created or
 plugged, and the guest's polling activates a usb-mouse (`Qemu.select_mouse("HID")` forces it through the monitor's `mouse_set`).
 A guest USB keyboard that nothing polls swallows injected keys, which is why the `usb=off` test attaches only a mouse.
+
+## Writing another class driver (for example USB mass storage -> block layer)
+
+A class driver is a `UsbDriver` (`usb.h`): `match`, `probe`, `disconnect`, `label`. Add it to `g_drivers[]` at the top of `usb.c`
+(the only edit outside the driver's own file). For mass storage:
+
+1. `match(dev, intf)`: interface class 8, subclass 6 (SCSI), protocol 0x50 (bulk-only transport), one bulk-IN and one bulk-OUT
+   endpoint in `intf->ep[]`. Look at descriptors only; no traffic. If `match` says yes the core configures **all bulk and interrupt-IN
+   endpoints of that interface** with Configure Endpoint before SET_CONFIGURATION (`endpoint->hc` then holds the controller state).
+2. `probe(dev, intf)`: runs in the usbd thread after SET_CONFIGURATION. Control requests: `usb_control(dev, 0xA1, 0xFE, 0, intf->number,
+   buf, 1, ms)` for GET MAX LUN, `usb_control(dev, 0x21, 0xFF, 0, intf->number, NULL, 0, ms)` for the bulk-only reset. Bulk I/O:
+   `usb_bulk(dev, ep, buf, len, timeout_ms)` moves up to 64 KiB per call and returns the byte count or -errno; `-EPIPE` is a stall:
+   call `usb_clear_halt(dev, ep)` (the controller side was already reset) and read the CSW. `msc_command()` in `usb.c` (the
+   `usb=bulktest` self test) is a complete CBW / data / CSW exchange to copy from.
+3. Register the disk: allocate a `BlockDev` (`blk.h`), set `read`/`write`/`flush`, `blk_register()`.
+4. **Thread rule.** The block layer calls `read`/`write` from arbitrary tasks, while the whole USB stack belongs to the usbd thread and
+   has no locks. Wrap each request in a function and run it with `usb_call(fn, arg)`: it executes in the usbd thread between two polling
+   rounds and the caller sleeps until it returns (a request can therefore wait behind an enumeration for a few seconds in the worst
+   case). Inside `probe`, `disconnect` and interrupt callbacks you are already in the usbd thread and may call the API directly (callbacks
+   must not start control or bulk transfers).
+5. `disconnect(dev, intf)`: runs when the device is unplugged; stop accepting requests (fail them with -ENODEV) before returning,
+   because the endpoints and the slot are freed right after. `blk.h` has no unregister call yet.
 
 ## Limitations and risks
 

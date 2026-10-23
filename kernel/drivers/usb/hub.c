@@ -201,7 +201,6 @@ static int hub_probe(UsbDevice *dev, UsbInterface *intf) {
     if (dev->speed == USB_SPEED_HIGH && dev->desc.bDeviceProtocol == 2 &&
         usb_control(dev, USB_RECIP_IFACE, USB_REQ_SET_INTERFACE, 1, intf->number, NULL, 0, HUB_TIMEOUT) >= 0)
         hi->hub.mtt = true;
-    if (ss) usb_control(dev, RT_HUB_OUT, HUB_REQ_SET_DEPTH, dev->depth, 0, NULL, 0, HUB_TIMEOUT);       /* failure is not fatal */
 
     rc = dev->hc->ops->update_hub(dev->hc, dev, hi->hub.nports, (hi->chars >> 5) & 3, hi->hub.mtt);
     if (rc) {
@@ -210,6 +209,9 @@ static int hub_probe(UsbDevice *dev, UsbInterface *intf) {
         kfree(hi);
         return rc;
     }
+    /* SuperSpeed hubs are told how deep they sit (number of hubs between them and the root), after the controller knows about the
+     * hub and before the ports are powered, as in Linux's hub_activate(). */
+    if (ss) usb_control(dev, RT_HUB_OUT, HUB_REQ_SET_DEPTH, dev->depth, 0, NULL, 0, HUB_TIMEOUT);       /* failure is not fatal */
 
     dev->hub = &hi->hub;
     intf->drv_data = hi;

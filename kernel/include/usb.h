@@ -258,6 +258,10 @@ int usb_int_start(UsbDevice *dev, UsbEndpoint *ep, UsbIntCb cb, void *ctx);
 /* Bulk endpoints (not needed by the hub and HID drivers; here for a future mass-storage driver). Endpoints must first be handed to
  * the controller with usb_add_endpoints(). usb_bulk() moves up to 64 KiB and returns the byte count or -errno; after -EPIPE the
  * halt must be cleared with usb_clear_halt(). */
+/* Thread rule: the whole stack (usb_control, usb_bulk, ...) belongs to the usbd thread and has no locks. Class driver probe /
+ * disconnect functions and interrupt callbacks already run there. Anything else (a block device read, a syscall) must wrap its USB
+ * work in a function and run it with usb_call(): fn(arg) executes in the usbd thread, the caller sleeps until it returns. */
+int usb_call(int (*fn)(void *arg), void *arg);
 int usb_add_endpoints(UsbDevice *dev, UsbEndpoint **eps, int n);
 int usb_bulk(UsbDevice *dev, UsbEndpoint *ep, void *buf, u32 len, u32 timeout_ms);
 int usb_clear_halt(UsbDevice *dev, UsbEndpoint *ep);

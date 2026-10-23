@@ -179,6 +179,11 @@ static void bulk_selftest(UsbDevice *dev) {
     kfree(big);
 }
 
+/* The self test is started from a separate kernel thread and handed to the usbd thread with usb_call(), the way a block device
+ * driver would do its I/O. */
+static int bulk_job(void *dev) { bulk_selftest(dev); return 0; }
+static void bulk_thread(void *dev) { usb_call(bulk_job, dev); }
+
 /* UTF-16LE string descriptor -> printable ASCII. */
 static int fetch_string(UsbDevice *dev, u8 idx, u16 lang, char *out, size_t cap) {
     u8 buf[128];
@@ -493,8 +498,10 @@ static int dev_configure(UsbDevice *dev) {
             if (!g_drivers[d]->match(dev, it)) continue;
             it->driver = g_drivers[d];
             nbound++;
-            for (int e = 0; e < it->nep; e++)
-                if (it->ep[e].type == USB_EP_INT && (it->ep[e].addr & USB_DIR_IN) && neps < 30) eps[neps++] = &it->ep[e];
+            for (int e = 0; e < it->nep; e++) {             /* what a class driver can use: interrupt-IN (hub, HID) and bulk (storage) */
+                bool usable = (it->ep[e].type == USB_EP_INT && (it->ep[e].addr & USB_DIR_IN)) || it->ep[e].type == USB_EP_BULK;
+                if (usable && neps < 30) eps[neps++] = &it->ep[e];
+            }
             break;
         }
     }
@@ -573,7 +580,7 @@ static UsbDevice *usb_setup_device(UsbHub *hub, int port, const UsbPortStatus *s
     klog("Kappa", "usb %s: new %s device %04x:%04x \"%s%s%s\"", dev->path, usb_speed_name(dev->speed), dev->desc.idVendor, dev->desc.idProduct,
          dev->manufacturer, dev->manufacturer[0] && dev->product[0] ? " " : "", dev->product);
     proc_update();
-    if (g_usb_bulktest) bulk_selftest(dev);
+    if (g_usb_bulktest) task_create_detached("usbtest", bulk_thread, dev);
     return dev;
 }
 
@@ -581,7 +588,7 @@ static UsbDevice *usb_setup_device(UsbHub *hub, int port, const UsbPortStatus *s
 
 static int port_debounce(UsbHub *hub, int port, UsbPortStatus *st) {
     u32 stable = 0;
-    for (u32 total = 0; total < 1500; total += 25) {
+    for (u32 total = 0; total < 2000; total += 25) {                    /* Linux: HUB_DEBOUNCE_TIMEOUT 2000, STEP 25, STABLE 100 */
         if (hub->ops->get_status(hub, port, st)) return -ENODEV;
         if (st->change & UPC_CONNECT) { hub->ops->clear_change(hub, port, UPC_CONNECT); stable = 0; }
         else if (st->connected || st->warm_reset) stable += 25;
@@ -692,9 +699,52 @@ static void hc_teardown(UsbHc *hc) {
         if (hc->root.port[p].dev) usb_disconnect(hc->root.port[p].dev);
 }
 
+/* ---------------------------------------------------------------- calls from other threads */
+
+typedef struct UsbJob {
+    int (*fn)(void *);
+    void *arg;
+    int result;
+    Semaphore done;
+    struct UsbJob *next;
+} UsbJob;
+
+static UsbJob *g_job_head, *g_job_tail;
+static Task *g_usbd_task;
+static volatile bool g_usbd_up;
+
+/* Everything in the USB stack belongs to the usbd thread. Other threads (a block device's read callback, a syscall) get their USB
+ * work done by handing it over: fn(arg) runs in the usbd thread between two polling rounds, the caller sleeps until it is finished
+ * and receives fn's return value. From inside the usbd thread (a probe function, a callback's follow-up) it is a plain call. */
+int usb_call(int (*fn)(void *arg), void *arg) {
+    if (current == g_usbd_task) return fn(arg);
+    if (!g_usbd_up) return -ENODEV;
+    UsbJob job = { fn, arg, -ENODEV, { 0 }, NULL };
+    sem_init(&job.done, 0);
+    u64 f = irq_save();
+    if (g_job_tail) g_job_tail->next = &job; else g_job_head = &job;
+    g_job_tail = &job;
+    irq_restore(f);
+    sem_wait(&job.done);                                /* usbd's sem_post is its last access to the job */
+    return job.result;
+}
+
+static void run_jobs(bool refuse) {
+    for (;;) {
+        u64 f = irq_save();
+        UsbJob *j = g_job_head;
+        if (j) { g_job_head = j->next; if (!g_job_head) g_job_tail = NULL; }
+        irq_restore(f);
+        if (!j) return;
+        j->result = refuse ? -ENODEV : j->fn(j->arg);
+        sem_post(&j->done);
+    }
+}
+
 static void usbd_main(void *arg) {
     (void)arg;
     int alive = 0;
+    g_usbd_task = current;
     for (int i = 0; i < g_nhc; i++) {
         UsbHc *hc = g_hcs[i];
         int rc = hc->ops->start(hc);
@@ -711,6 +761,7 @@ static void usbd_main(void *arg) {
     proc_update();
     if (!alive) return;                                     /* nothing to poll */
 
+    g_usbd_up = true;
     bool hinted = false;
     for (;;) {
         for (int i = 0; i < g_nhc; i++) {
@@ -723,6 +774,7 @@ static void usbd_main(void *arg) {
         }
         service_hubs();
         hid_service();
+        run_jobs(false);
         if (!hinted && uptime_ms() > 8000) {
             /* One line for whoever is staring at a machine whose keyboard does not work: what the controllers see on their ports. */
             hinted = true;

@@ -19,6 +19,9 @@
 #include "cmdline.h"
 
 #define RING_TRBS     256               /* one 4 KiB page per ring; the last entry is the link TRB */
+/* Test aid, kernel command line "usbring=N" (16..256): use only the first N entries of every ring so that the link TRB / cycle bit
+ * wrap-around happens after N - 1 TRBs instead of 255. Rings are always allocated as a full page. */
+static u32 g_ring_trbs = RING_TRBS;
 #define CMD_TIMEOUT   5000              /* Linux XHCI_CMD_DEFAULT_TIMEOUT */
 #define CTL_BUF_SIZE  4096
 #define MAX_SLOTS_HW  255
@@ -109,6 +112,8 @@ typedef struct Xhci {
     bool need_service;
     u64  last_health;
     u32  bad_events;
+    u64  late_scan_at;                  /* uptime of the one-off second look at all ports (0 = done) */
+    u8  *stuck;                         /* [max_ports + 1] USB 3 ports whose link training never finished: warm reset them */
 } Xhci;
 
 typedef struct { u32 cc; u32 slot; } CmdResult;
@@ -188,7 +193,7 @@ static XRing *ring_alloc(Xhci *x) {
     if (!mem) { kfree(r); return NULL; }
     r->trb = mem;
     r->cycle = 1;
-    volatile Trb *l = &r->trb[RING_TRBS - 1];       /* link back to the start, toggling the cycle bit */
+    volatile Trb *l = &r->trb[g_ring_trbs - 1];     /* link back to the start, toggling the cycle bit */
     l->param_lo = (u32)r->phys;
     l->param_hi = (u32)(r->phys >> 32);
     l->control = TRB_TYPE(TRB_LINK) | TRB_TC;
@@ -210,8 +215,8 @@ static paddr_t ring_push(XRing *r, u64 param, u32 status, u32 control) {
     t->status = status;
     barrier();
     t->control = control | r->cycle;
-    if (++r->enq == RING_TRBS - 1) {                /* next entry is the link TRB: hand it over and wrap */
-        volatile Trb *l = &r->trb[RING_TRBS - 1];
+    if (++r->enq == g_ring_trbs - 1) {              /* next entry is the link TRB: hand it over and wrap */
+        volatile Trb *l = &r->trb[g_ring_trbs - 1];
         l->param_lo = (u32)r->phys;
         l->param_hi = (u32)(r->phys >> 32);
         l->status = 0;
@@ -243,7 +248,7 @@ static void process_events(Xhci *x) {
         if ((control & TRB_CYCLE) != x->evt_cycle) break;
         barrier();
         Trb ev = { t->param_lo, t->param_hi, t->status, control };
-        if (++x->evt_deq == RING_TRBS) { x->evt_deq = 0; x->evt_cycle ^= 1; }
+        if (++x->evt_deq == g_ring_trbs) { x->evt_deq = 0; x->evt_cycle ^= 1; }
         n++;
         x->hc.nevents++;
         switch (TRB_TYPE_OF(control)) {
@@ -633,12 +638,14 @@ fail:                                                                   /* nothi
     return rc;
 }
 
-/* Hub bits of the slot context. Linux uses Evaluate Context for this; the specification describes Configure Endpoint.
- * Try Evaluate first and verify in the output context that the controller took it; fall back to Configure Endpoint. */
+/* Hub bits of the slot context (Hub, MTT, Number of Ports, TT think time). Linux's xhci_update_hub_device() issues Configure
+ * Endpoint for xHCI 1.0 and later and Evaluate Context for 0.95 and earlier; the same order is used here, and since a controller
+ * may accept the command without applying the fields (QEMU does) the output context is checked and the other command tried. */
 static int xhci_update_hub(UsbHc *hc, UsbDevice *dev, int nports, int ttt, bool mtt) {
     Xhci *x = XH(hc);
     XSlot *s = dev_slot(dev);
     if (!s) return -ENODEV;
+    bool configure_first = x->hciversion > 0x95;
     for (int attempt = 0; attempt < 2; attempt++) {
         in_ctx_zero(x, s);
         volatile u32 *ctrl = ctx_in_ctrl(x, s), *slot = ctx_in_slot(x, s);
@@ -649,12 +656,13 @@ static int xhci_update_hub(UsbHc *hc, UsbDevice *dev, int nports, int ttt, bool 
         slot[1] = (slot[1] & 0x00FFFFFFu) | SLOT_DW1_NPORTS(nports);
         if (dev->speed == USB_SPEED_HIGH) slot[2] = (slot[2] & ~SLOT_DW2_TTT(3)) | SLOT_DW2_TTT(ttt & 3);
         slot[3] = 0;
-        u32 type = attempt == 0 ? TRB_CMD_EVALUATE : TRB_CMD_CONFIGURE;
+        bool use_configure = (attempt == 0) == configure_first;
+        u32 type = use_configure ? TRB_CMD_CONFIGURE : TRB_CMD_EVALUATE;
         CmdResult r;
         int rc = xhci_cmd(x, TRB_TYPE(type) | TRB_SLOT(s->id), s->in_phys, &r);
         if (rc == -ETIMEDOUT || rc == -ENODEV) return rc;
         if (rc == 0 && (ctx_out_slot(x, s)[0] & SLOT_DW0_HUB)) return 0;
-        usb_dbg("usb %s: hub bit not applied by %s (%s)", dev->path, attempt == 0 ? "Evaluate Context" : "Configure Endpoint", rc ? cc_name(r.cc) : "no effect");
+        usb_dbg("usb %s: hub bit not applied by %s (%s)", dev->path, use_configure ? "Configure Endpoint" : "Evaluate Context", rc ? cc_name(r.cc) : "no effect");
     }
     return 0;           /* the controller ignored it (QEMU does); routing through the hub works regardless there, so carry on */
 }
@@ -773,9 +781,16 @@ static void handle_transfer_event(Xhci *x, const Trb *ev) {
     }
 }
 
+static void late_port_scan(Xhci *x);
+
 static void xhci_service(UsbHc *hc) {
     Xhci *x = XH(hc);
-    if (!x->need_service || x->hc.dead) return;
+    if (x->hc.dead) return;
+    if (x->late_scan_at && uptime_ms() >= x->late_scan_at) {
+        x->late_scan_at = 0;
+        late_port_scan(x);
+    }
+    if (!x->need_service) return;
     x->need_service = false;
     for (u32 i = 1; i <= x->max_slots; i++) {
         XSlot *s = x->slots[i];
@@ -834,7 +849,7 @@ static int root_get_status(UsbHub *hub, int port, UsbPortStatus *st) {
     st->speed_id = (u8)id;
     st->speed = id ? x->speed_of[proto][id] : USB_SPEED_NONE;
     if (proto && !(st->connected && st->enabled && pls == PLS_U0))
-        st->warm_reset = (v & PORTSC_CAS) || (pls == PLS_INACTIVE) || (pls == PLS_COMPLIANCE);
+        st->warm_reset = (v & PORTSC_CAS) || (pls == PLS_INACTIVE) || (pls == PLS_COMPLIANCE) || (x->stuck[port] && !st->connected);
     if (v & PORTSC_CSC) st->change |= UPC_CONNECT;
     if (v & PORTSC_PEC) st->change |= UPC_ENABLE;
     if (v & PORTSC_PRC) st->change |= UPC_RESET;
@@ -865,6 +880,7 @@ static int root_reset(UsbHub *hub, int port, bool warm, UsbPortStatus *out) {
     u32 v = portsc_read(x, port);
     if (v == 0xFFFFFFFFu) return -ENODEV;
     if (!(v & PORTSC_CCS) && !warm) return -ENODEV;
+    if (warm) x->stuck[port] = 0;
     wr32(x->op, XOP_PORTSC(port), (v & PORTSC_PRESERVE) | (warm ? PORTSC_WPR : PORTSC_PR));
     u64 end = uptime_ms() + (warm ? 4000 : 1500);
     for (;;) {
@@ -893,6 +909,24 @@ static int root_reset(UsbHub *hub, int port, bool warm, UsbPortStatus *out) {
 }
 
 static const UsbHubOps root_ops = { root_get_status, root_clear_change, root_reset, NULL };
+
+/* One more look at every port a couple of seconds after start-up, for anything the first scan and the events missed: a connect
+ * whose event was swallowed, or a USB 3 link that sits in Polling / compliance mode and never trains (Linux warm-resets those). */
+static void late_port_scan(Xhci *x) {
+    UsbHub *root = &x->hc.root;
+    for (u32 i = 1; i <= x->max_ports; i++) {
+        UsbPortStatus st;
+        if (root_get_status(root, (int)i, &st)) continue;
+        UsbPort *pt = &root->port[i - 1];
+        if (x->proto[i].major == 3 && !st.connected && !pt->dev && (st.link_state == PLS_POLLING || st.link_state == PLS_COMPLIANCE)) {
+            usb_dbg("xhci: port %u still in link state %u two seconds after start: warm reset", i, st.link_state);
+            x->stuck[i] = 1;
+            usb_hub_mark_port(root, (int)i);
+        } else if (st.connected && !pt->dev && !pt->failed) {
+            usb_hub_mark_port(root, (int)i);
+        }
+    }
+}
 
 /* ---------------------------------------------------------------- start-up */
 
@@ -1057,7 +1091,8 @@ static int xhci_start(UsbHc *hc) {
 
     x->proto = kzalloc((x->max_ports + 1) * sizeof(XProto));
     x->slots = kzalloc((x->max_slots + 1) * sizeof(XSlot *));
-    if (!x->proto || !x->slots) FAIL(x, "out of memory");
+    x->stuck = kzalloc(x->max_ports + 1);
+    if (!x->proto || !x->slots || !x->stuck) FAIL(x, "out of memory");
     speed_tables_default(x);
     parse_ext_caps(x);
     for (u32 i = 1; i <= x->max_ports; i++) if (!x->proto[i].major) x->proto[i].major = 2;
@@ -1096,7 +1131,7 @@ static int xhci_start(UsbHc *hc) {
     x->evt_cycle = 1;
     ((u32 *)x->erst)[0] = (u32)x->evt_phys;                             /* ERST entry: segment base, size, reserved */
     ((u32 *)x->erst)[1] = (u32)(x->evt_phys >> 32);
-    ((u32 *)x->erst)[2] = RING_TRBS;
+    ((u32 *)x->erst)[2] = g_ring_trbs;
     ((u32 *)x->erst)[3] = 0;
 
     wr32(x->op, XOP_CONFIG, (rd32(x->op, XOP_CONFIG) & ~0xFFu) | x->max_slots);
@@ -1156,6 +1191,7 @@ static int xhci_start(UsbHc *hc) {
     }
     klog("Kappa", "xhci %02x:%02x.%x: %d of %u ports have something attached%s%s", p->bus, p->dev, p->fn, occupied, x->max_ports,
          occupied ? ":" : "", list);
+    x->late_scan_at = uptime_ms() + 2000;
     usb_dbg("xhci: CAPLENGTH %#x HCSPARAMS %08x %08x %08x HCCPARAMS1 %08x DBOFF %#x RTSOFF %#x USBSTS %08x", caplen, x->hcs1, x->hcs2, x->hcs3, x->hcc1,
             dboff, rtsoff, rd32(x->op, XOP_USBSTS));
     return 0;
@@ -1198,6 +1234,12 @@ UsbHc *xhci_create(PciDev *pci, int busnum) {
     x->hc.pci = pci;
     x->hc.busnum = busnum;
     snprintf(x->hc.desc, sizeof x->hc.desc, "xHCI %04x:%04x at %02x:%02x.%x", pci->vendor, pci->device, pci->bus, pci->dev, pci->fn);
+    char ringopt[8];
+    if (cmdline_value("usbring", ringopt, sizeof ringopt)) {
+        u32 n = 0;
+        for (const char *q = ringopt; *q >= '0' && *q <= '9'; q++) n = n * 10 + (u32)(*q - '0');
+        if (n >= 16 && n <= RING_TRBS) g_ring_trbs = n;
+    }
     char fault[24];
     if (cmdline_value("usbfault", fault, sizeof fault) && (!strncmp(fault, "ctl:", 4) || !strncmp(fault, "cmd:", 4))) {
         u32 n = 0;
