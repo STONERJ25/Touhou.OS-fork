@@ -361,9 +361,19 @@ APPLET(unzip) {
     off_t fsize = 0;
     ZEntry *ents = read_directory(fd, &n, &fsize);
     if (!ents) { close(fd); return 2; }
-    if (dir[0] && !u_list && !u_test && !u_pipe) {
+    if (dir[0] && !u_list && !u_test && !u_pipe) {                  /* work inside the directory, like tar -C: the symlink check then only looks below it */
+        char path[PATH_MAX];
+        snprintf(path, sizeof path, "%s", dir);
+        for (char *sl = path + 1; *sl; sl++) {
+            if (*sl != '/') continue;
+            *sl = 0;
+            mkdir(path, 0777);
+            *sl = '/';
+        }
         struct stat st;
-        if (stat(dir, &st) < 0 && mkdir(dir, 0777) < 0) { kb_error("cannot create %s: %s", dir, strerror(errno)); free_entries(ents, n); close(fd); return 2; }
+        if (stat(path, &st) < 0 && mkdir(path, 0777) < 0) { kb_error("cannot create %s: %s", dir, strerror(errno)); free_entries(ents, n); close(fd); return 2; }
+        if (chdir(path) < 0) { kb_error("cannot enter %s: %s", dir, strerror(errno)); free_entries(ents, n); close(fd); return 2; }
+        dir = "";
     }
     int shown = 0;
     uint64_t total = 0;

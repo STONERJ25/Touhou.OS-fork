@@ -171,7 +171,15 @@ APPLET(wallpaper) {
     }
     if (optind >= argc) {
         KWallConfig cfg;
-        if (k_wallpaper_config(&cfg)) printf("%s (%s)\n", cfg.path, k_wall_mode_name(cfg.mode));
+        bool have = k_wallpaper_config(&cfg);
+        if (have_mode) {                                            /* only the mode changes */
+            if (!have) { kb_error("no picture is set; give one: wallpaper -m %s IMAGE", k_wall_mode_name(mode)); return 1; }
+            int r = k_wallpaper_set(cfg.path, mode);
+            if (r) { kb_error("cannot save the setting: %s", strerror(-r)); return 1; }
+            printf("Wallpaper: %s (%s)\n", cfg.path, k_wall_mode_name(mode));
+            return 0;
+        }
+        if (have) printf("%s (%s)\n", cfg.path, k_wall_mode_name(cfg.mode));
         else puts("built-in night scene");
         return 0;
     }
