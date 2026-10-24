@@ -369,6 +369,9 @@ Branch `worktree-agent-a3d380c78d6285728`; its head is the commit that adds this
 the working tree is clean, and it builds with `python tools/build.py`. The last
 merge of `main` (up to `3265225`: USB mass storage, network drivers, Explorer, priorities, job control) is in; it merged
 without conflicts in code (one in `docs/REAL_HARDWARE.md`, resolved by keeping both sides). Nothing is pushed.
+`main` has moved on since (`6be638f`, with the media work): merging it now conflicts in one place,
+`user/bin/hakurei-shell/launch.c`, where `main` adds *Gensokyo Gallery* and this branch adds *Reimu's Jukebox* after the
+Sketchbook; keep both lines.
 
 * **Done**: everything in the Status table above: the audio core, the HDA driver with the codec graph planner and its unit
   tests, the AC'97 driver, libaudio, `beep` / `play` / `volume`, the chiptune and FM song engine with five original songs, the
