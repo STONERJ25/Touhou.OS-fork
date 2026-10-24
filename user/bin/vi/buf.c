@@ -34,10 +34,20 @@ Line *lineat(long i) { return &LN(i); }
 const char *ls(long i) { return LN(i).s ? LN(i).s : empty_str; }
 unsigned ll(long i) { return LN(i).len; }
 
+/* Moves n lines (the Line structures) from src to dst; the areas may overlap. libc's memmove copies backwards with "std; rep movsb",
+ * which crawls on an emulated CPU, and a plain loop would be turned back into a call to it: the empty asm statement stops that. */
+static void lines_copy(Line *dst, const Line *src, long n) {
+    if (dst < src) {
+        for (long i = 0; i < n; i++) { dst[i] = src[i]; __asm__ volatile ("" ::: "memory"); }
+    } else if (dst > src) {
+        for (long i = n - 1; i >= 0; i--) { dst[i] = src[i]; __asm__ volatile ("" ::: "memory"); }
+    }
+}
+
 static void gap_move(long at) {
     if (at == gap_at) return;
-    if (at < gap_at) memmove(&L[at + gap_len], &L[at], (size_t)(gap_at - at) * sizeof(Line));
-    else memmove(&L[gap_at], &L[gap_at + gap_len], (size_t)(at - gap_at) * sizeof(Line));
+    if (at < gap_at) lines_copy(&L[at + gap_len], &L[at], gap_at - at);
+    else lines_copy(&L[gap_at], &L[gap_at + gap_len], at - gap_at);
     gap_at = at;
 }
 
@@ -48,7 +58,7 @@ static void lines_reserve(long extra) {
     Line *np = realloc(L, (size_t)nc * sizeof *L);
     if (!np) pt_oom();
     long tail = nl - gap_at;                             /* the lines after the gap move to the end of the new storage */
-    if (tail > 0) memmove(&np[nc - tail], &np[gap_at + gap_len], (size_t)tail * sizeof(Line));
+    if (tail > 0) lines_copy(&np[nc - tail], &np[gap_at + gap_len], tail);
     L = np;
     lcap = nc;
     gap_len = nc - nl;
@@ -58,7 +68,7 @@ static void lines_reserve(long extra) {
 static void raw_insert(long at, const Line *src, long n) {
     lines_reserve(n);
     gap_move(at);
-    if (n) memcpy(&L[at], src, (size_t)n * sizeof(Line));
+    if (n) lines_copy(&L[at], src, n);
     gap_at += n;
     gap_len -= n;
     nl += n;
@@ -66,7 +76,7 @@ static void raw_insert(long at, const Line *src, long n) {
 
 static void raw_remove(long at, long n, Line *dst) {
     gap_move(at);
-    if (dst && n) memcpy(dst, &L[gap_at + gap_len], (size_t)n * sizeof(Line));
+    if (dst && n) lines_copy(dst, &L[gap_at + gap_len], n);
     gap_len += n;
     nl -= n;
 }
@@ -413,7 +423,7 @@ static void ln_splice(long i, size_t at, size_t del, const char *ins, size_t n) 
     Line *ln = &LN(i);
     size_t newlen = ln->len - del + n;
     if (!ln->cap || newlen + 1 > ln->cap) {
-        size_t nc = newlen * 2 + 32;
+        size_t nc = (newlen > ln->len ? newlen : ln->len) * 2 + 32;          /* the old text is copied in whole before it shrinks */
         char *np = malloc(nc);
         if (!np) pt_oom();
         if (ln->len) memcpy(np, ln->s, ln->len);

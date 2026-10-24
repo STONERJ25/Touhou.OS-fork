@@ -354,6 +354,7 @@ int ex_substitute_range(long l1, long l2, const char *pat, const char *rep, cons
     int quit_all = 0, do_all = 0;
     long end = l2;
     for (long l = l1; l <= end && l < nl && !quit_all;) {
+        if (intr_check()) { err("Interrupted"); break; }
         long cl = l;                                     /* the line being scanned (a match may have used up the ones before it) */
         size_t cpos = 0, ccopied = 0;                    /* scan position and first byte not yet copied, in line cl */
         PtBuf out = { 0 };
@@ -786,6 +787,7 @@ static void cmd_global(long l1, long l2, const char *p, int invert) {
     long hint = 0;
     char *cmdcopy = strdup(cmd);
     for (unsigned k = 1; k <= id && !quit_flag; k++) {
+        if (intr_check()) { err("Interrupted"); break; }
         if (global_dead[k - 1]) continue;
         long i = find_gid(k, hint);
         if (i < 0) continue;
@@ -1142,6 +1144,7 @@ static int ex_one_main(const char *line, char **scratch) {
         if (naddr == 0) { normal_run_keys(a, strlen(a)); return 1; }
         char *keys = strdup(a);
         for (long l = l1; l <= l2 && l <= nl; l++) {
+            if (intr_check()) { err("Interrupted"); break; }
             cur.l = l - 1;
             cur.c = 0;
             normal_run_keys(keys, strlen(keys));

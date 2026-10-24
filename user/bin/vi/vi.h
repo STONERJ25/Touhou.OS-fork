@@ -154,6 +154,7 @@ void  abbr_clear(void);
 void  abbr_list(PtBuf *out);
 const char *abbr_find(const char *w, size_t n);
 int   getkey_plain(void);                               /* a key without repainting first */
+int   intr_check(void);                                 /* 1 if a Ctrl-C was typed while something long was running */
 extern int last_typed_key;
 extern int key_from_ta;                                 /* the last key came from the type-ahead queue (macro, ".", mapping) */
 extern int script_mode;                                 /* keys come from a -s script file */

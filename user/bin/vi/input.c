@@ -452,9 +452,30 @@ int getkey_plain(void) {
 int key_from_ta;                                         /* the key returned last came from the type-ahead queue (macro, "." ...) */
 static int macro_note(int k);
 
+/* Long-running work (a macro that runs on and on, :g, :s over many lines) calls this now and then: a Ctrl-C typed meanwhile stops
+ * it, as in Vim, and the keys typed before the Ctrl-C go with it. Returns 1 when the work should stop. */
+int intr_check(void) {
+    static unsigned tick;
+    if (script_mode || pb_n > 0 || term.unget >= 0) return 0;
+    if ((++tick & 127) != 0) return 0;
+    if (term.ipos >= term.ilen && pt_fill(&term, 0) <= 0) return 0;
+    for (int i = term.ipos; i < term.ilen; i++) {
+        if (term.ibuf[i] == 3) {
+            term.ipos = i + 1;
+            ta_flush();
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* The next key. Typed keys (from the terminal or the script) are what a macro records; keys from the queue are not. */
 static int raw_next(int *from_ta) {
-    if (ta_n > 0) { *from_ta = 1; return taq[--ta_n]; }
+    if (ta_n > 0) {
+        if (intr_check()) { set_msg("Interrupted"); *from_ta = 0; return K_ESC; }
+        *from_ta = 1;
+        return taq[--ta_n];
+    }
     *from_ta = 0;
     if (normal_depth > 0) return K_ESC;                  /* :normal ran out of keys: finish like <Esc> */
     for (;;) {
