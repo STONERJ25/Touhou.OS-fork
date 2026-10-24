@@ -32,6 +32,23 @@ as the words `customtypes` and `exitmarks` for experiments. Lesson for every oth
 The debug words, all handled by the loader and (where it makes sense) the kernel: `stagehold=N` (stop after square N), `stagebeep` (N beeps for stage N,
 needs a PC speaker, this Dell has one), `exitreset`, `noexit`, `cliexit`, `quietexit`, `nomarks`, `stall3`, `usbdisc`, `ladder`, `ladderstart=N`, `strategy=N`.
 
+What the first boot that got through showed (rung 2 of the ladder; the whole log is in [logs/dell-optiplex-first-boot-2026-10-23.log](logs/dell-optiplex-first-boot-2026-10-23.log),
+read from the stick's `TOUHOU.LOG` after a clean shutdown):
+
+- Machine: Dell, Core i5-7500 at 3.40 GHz (`smap` is in its feature list, the kernel does not use it yet), 7.7 GiB of RAM, ACPI revision 5, 4 processors
+  (three parked), 2560x1440 GOP framebuffer at `0xd0000000`, write-combining through PAT: **a full-screen fill takes 1.6 ms, about 9 GB/s**, so the screen is
+  fast and the MTRR fallback correctly stayed out of the way. TSC calibrated by the PIT at 3408 MHz, matching the brand string.
+- The firmware left one I/O APIC input unmasked (masked now) and a PS/2 controller that answers neither a keyboard nor a mouse (USB it is).
+- PCI: 13 devices. xHCI `8086:a2af` (26 ports, 64-byte-context fallback not needed: 32-byte contexts, 34 scratchpad buffers) works. HDA `8086:a2f0` found a Realtek
+  codec `10ec:0255` with speaker, line out and headphone outputs. Ethernet `8086:15e3` (I219-LM5) was found and its MAC read; **no link was reported** in the
+  4.5 minutes of the log (no cable?). **SATA is in Intel RST (RAID) mode** (`8086:2822`), which hides the internal disks and any NVMe drive: harmless for a first
+  test, set AHCI in the BIOS to see them.
+- Storage: the PNY stick on xHCI port 3 was driven (`usb-storage`, 14.9 GiB, writable), `HUMANVILLAGE` mounted on `/HumanVillage`, the homes and `TOUHOU.LOG` live on the
+  stick, and the log ends with the "clean run" line after a shutdown from the desktop. Boot to desktop took 1.5 s of kernel time.
+- Input: the keyboard and mouse sit behind a USB 2.0 hub on port 5 that was not there during the first 8 seconds (the kernel's own "no USB keyboard is bound 8 s after
+  boot" line); the hub, a Corsair mouse, a Corsair keyboard and a third keyboard interface came online later and were used.
+- The wall clock reads 2025-04-30: the CMOS clock of that PC is wrong (or in another time zone convention); `sntp` will fix it once the network is up.
+
 ## What the boot log looks like now
 
 Lines added or changed for this audit, in the order they appear (the tags follow [THEMING.md](THEMING.md)):
