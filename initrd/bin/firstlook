@@ -1,0 +1,30 @@
+#!/bin/sh
+# firstlook -- everything worth sending after a first boot on a new PC, in one file.
+#
+# It only reads (disks, /proc, the kernel log), but the disks are root's, so: su marisa -c "sudo firstlook"
+# The file goes to the top of the HUMANVILLAGE volume, which is the USB stick: pull the stick (after "poweroff"), plug it into another
+# computer and open first-look.txt. With no such volume it goes to /tmp. Another file name may be given as the argument.
+out=${1:-/HumanVillage/first-look.txt}
+[ -d /HumanVillage ] || out=${1:-/tmp/first-look.txt}
+
+section() { echo; echo "===== $* ====="; }
+
+{
+    echo "TouhouOS first look, $(date)"
+    section uname;                       uname -a
+    section uptime;                      uptime
+    section memory;                      free
+    section "kernel command line";       cat /proc/cmdline
+    section lsblk;                       lsblk
+    section /proc/partitions;            cat /proc/partitions
+    section /proc/ahci;                  cat /proc/ahci
+    section /proc/nvme;                  cat /proc/nvme
+    section "install (what it thinks of each disk; it writes nothing)"; install
+    section lspci;                       lspci
+    section lsusb;                       lsusb
+    section network;                     ifconfig; ip route
+    section /proc/net/dev;               cat /proc/net/dev
+    section "the whole kernel log";      dmesg
+} > "$out" 2>&1
+
+echo "firstlook: written to $out ($(wc -l < "$out") lines)"

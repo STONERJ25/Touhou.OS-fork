@@ -9,8 +9,10 @@ $ sudo install                                   # which disks are there, and wh
 DISK            SIZE  MODEL                    STATE
 sda          14 GiB   PNY USB 3.0 FD           the system was started from this disk
 nvme0n1      238 GiB  SAMSUNG MZVLB256HAHQ     holds partitions nvme0n1p1(...) ... (needs --force) [read-only: blk.ro]
+sdb          466 GiB  ST500DM002-1BD142        holds WINDOWS (protected: needs --force and a typed sentence): partitions sdb1(EFI) ...
 $ sudo install --dry-run nvme0n1                 # the plan, nothing written
 $ sudo install --force nvme0n1                   # asks you to type "nvme0n1", then writes
+$ sudo install --force sdb                       # lists what would be lost, asks for "ERASE WINDOWS ON ST500DM002-1BD142 sdb"
 ```
 
 (The listing above is illustrative; the format is real.) The manual page is `man install`
@@ -51,8 +53,14 @@ rest stays unpartitioned.
 
 Write order: ESP data and directories, its FATs, its reserved area with the boot sector last; the same for HUMANVILLAGE; then the GPT
 (backup array and header, primary array and header, protective MBR last). A run that is cut off therefore never leaves a disk that looks
-finished. Afterwards the device cache is flushed, the files and the primary GPT header are read back and compared, and `cmdline.txt`
-names the new disk.
+finished; a write error stops the run at once and names the place (`writing sdb failed at byte 1064960 (sector 2080, the FATs of
+TOUHOUOS-ESP): Input/output error`). Afterwards the device cache is flushed (`BLKFLSBUF`; a failed flush fails the install) and **every
+byte written is read back and compared**: each write goes through a log that keeps a copy of the bytes (a pointer for the file data, a
+length for zero fills), and the read-back covers the four files, the three directories, both FATs of both volumes, the reserved areas
+(boot sector, FSInfo, their backups at sectors 6 and 7), both GPT entry arrays and headers and the protective MBR. Each area that differs
+or cannot be read is listed (`READ-BACK MISMATCH: the FATs of HUMANVILLAGE, 512 bytes at byte 68173824 (sector 133152): ...`) and the install
+fails with `*** sdb DOES NOT READ BACK AS WRITTEN ***` and exit status 1. On a 238 GiB SSD the read-back is about 75 MB (mostly the two
+HUMANVILLAGE FATs, which are zeros, and the 8 MB of boot files), a second or two. `cmdline.txt` names the new disk.
 
 The kernel's partition list for that disk is the one it read at boot; the new partitions appear after a restart.
 
@@ -102,12 +110,68 @@ All checks run before the disk is opened for writing, in this order; each refusa
 5. **Empty unless `--force`**: partitions the kernel registered, an MBR with entries, a GPT header (primary, or backup in the last sector),
    a FAT/NTFS/exFAT boot sector without a partition table, ext2/3/4, XFS, btrfs, LVM, LUKS, Linux swap, ISO 9660, and Intel RST (IMSM) RAID
    metadata near the end. A disk full of unrecognisable data counts as empty (the typed name is the last guard).
+   **A disk that holds another operating system is protected even from `--force`** (next section): it needs `--force` *and* a typed sentence.
 6. **Big enough** for both FAT32 volumes (FAT32 needs at least 65525 clusters).
 7. **The plan is shown and the name typed**: the prompt is read from `/dev/tty`, so piped input cannot answer it; anything but the exact
    name stops. For scripts `--yes-i-typed=NAME` gives the answer in advance and must be the exact name too. Without a terminal and without
    that option `install` refuses.
 8. Only then: `open(/dev/DISK, O_RDWR)`, a refusal if the medium itself is write-protected, `BLKWRUNLOCK`, the writes, `BLKWRLOCK`,
    the read-back.
+
+### Other operating systems: `--force` is not enough
+
+The owner's Dell holds an activated Windows 11 that must not be lost (owner constraint of 2026-10-24 in
+[CLOUD_AGENT_BRIEF.md](CLOUD_AGENT_BRIEF.md)), so a disk that holds another operating system is not erased by `--force` alone. `install`
+reads the partition table itself (the primary GPT, the backup GPT in the last sector when the primary header is gone, otherwise the MBR
+with its chain of logical partitions, otherwise the whole disk as one volume) and the first 72 KiB of every partition (`other_systems()` in
+`install.c`). It recognises:
+
+| System | By partition type | By what the partition holds |
+|--------|-------------------|-----------------------------|
+| WINDOWS | GPT: Microsoft reserved `E3C9E316-...`, Windows recovery `DE94BBA4-...`, LDM metadata `5808C8AA-...` and data `AF9B60A0-...`, Storage Spaces `E75CAF8F-...`, and **Microsoft basic data `EBD0A0A2-...` unless it holds a FAT file system**; MBR: `07` (unless FAT), `27`, `42` | NTFS (`NTFS    ` at byte 3), exFAT (`EXFAT   `), ReFS (`ReFS`), BitLocker (`-FVE-FS-`) |
+| LINUX | GPT: Linux filesystem `0FC63DAF-...`, root x86-64/x86/ARM64, `/usr`, `/home`, `/srv`, `/var`, swap, LVM, RAID, LUKS, extended boot, GRUB BIOS boot `21686148-...`; MBR: `82`, `83`, `8E`, `FD` | ext2/3/4 (`53 EF` at byte 1080), XFS, btrfs, Linux swap (`SWAPSPACE2` at 4086), LVM (`LABELONE`), LUKS |
+| MACOS | GPT: HFS+ `48465300-...`, APFS `7C3457EF-...`, Apple boot; MBR: `AF` | HFS+, APFS |
+| RAID | | Intel RST metadata (`Intel Raid ISM Cfg Sig.`) in the last sectors: the disk is a member of a firmware RAID set |
+| UNREADABLE DATA | | a partition, a GPT entry array or a logical-partition chain that cannot be read: what cannot be seen is treated as precious |
+
+The basic data exception keeps sticks, cameras and an earlier TouhouOS install (HUMANVILLAGE is a FAT32 basic data partition) at plain
+`--force`; Windows always has an MSR and an NTFS C: next to its FAT ESP, so a Windows disk is caught either way. An EFI System Partition by
+itself is not a sign of anything (`install` does not look inside it for `EFI/Microsoft/Boot`).
+
+For such a disk `install` first lists everything that would be lost, partition by partition (number, GPT name, size, type, file system and
+label, and which system it belongs to):
+
+```
+install: sdb (256 MiB, WIN-SSD) holds WINDOWS. Everything on it would be lost:
+install:   partition 1  "EFI system partition"            40 MiB  EFI System Partition, FAT32 "SYSTEM"
+install:   partition 2  "Microsoft reserved partition"    16 MiB  Microsoft reserved  <- WINDOWS
+install:   partition 3  "Basic data partition"           150 MiB  Microsoft basic data, NTFS  <- WINDOWS
+install:   partition 4                                    48 MiB  Windows recovery, NTFS  <- WINDOWS
+```
+
+and then goes on only with **the sentence**, typed exactly (case, spaces and all):
+
+```
+ERASE <SYSTEMS> ON <model> <disk>          e.g.  ERASE WINDOWS ON SAMSUNG MZVLB256HAHQ-000L7 nvme0n1
+                                                 ERASE WINDOWS AND LINUX ON WDC WD10EZEX-08WN4A0 sda
+                                                 ERASE WINDOWS ON vda          (a disk without a model name)
+```
+
+`<SYSTEMS>` lists every system found, joined by `AND`, in the order WINDOWS, LINUX, MACOS, RAID, UNREADABLE DATA; `<model>` is the model
+the disk reports (as in `lsblk`), `<disk>` its name. The sentence makes the user read the disk's model and the system's name aloud, so a
+wrong disk or a Windows disk the user did not know about stops the install.
+
+| Situation | Result |
+|-----------|--------|
+| no `--force` | refused; the list and the sentence are shown |
+| `--force --yes-i-typed=DISK` (no sentence) | refused: `--force and --yes-i-typed are not enough`, with the `--erase-phrase='...'` to use |
+| `--force --erase-phrase='...'` that differs in anything (case, a space, another system) | refused |
+| `--force` at a terminal | the list, then `To go on, type this sentence exactly`; anything else typed stops it |
+| `--force --dry-run` | the list, the plan, and the sentence it would ask for |
+| `--force` and the exact sentence (typed, or `--erase-phrase=`) | `the sentence matches: WINDOWS on sdb will be erased`, then the usual install |
+| `--erase-phrase=` for a disk without another system | refused (a sentence for the wrong disk is a mistake) |
+
+The other refusals (the boot disk, a mounted disk, a partition name) come first and are not affected by any sentence.
 
 ### The write unlock (instead of dropping `blk.ro`)
 
@@ -247,8 +311,17 @@ line, HUMANVILLAGE mounted read-write and (SATA, NVMe) the `blk.rw=` line.
 | `install_esp_stays_read_only` | installs on NVMe with `text user=root blk.ro`, boots the installed disk alone next to a SATA decoy: the `blk.rw=` line names `nvme0n1p2`, HUMANVILLAGE is mounted read-write and a file written there reads back, while `dd` to the installed ESP (`nvme0n1p1`), the whole-disk node and the decoy and its partition all fail with EROFS; `/proc/partitions` shows disk and ESP read-only, HUMANVILLAGE writable; on the host the ESP's bytes and the decoy are unchanged |
 | `install_refusals` | the listing (boot disk, partitions, empty); refused with nothing written: partitions without `--force`, `--yes-i-typed` with another or differently-cased name, non-root (`su reimu`), the boot disk with `--force`, a partition name, a missing disk, a disk that is too small, a mounted partition with `--force`, three wrong answers typed at the prompt (another disk, empty, extra words); `--dry-run` shows the plan and the boot partition's command line plus `blk.rw=`; no unlock happened; every image byte-identical |
 
-Results on this branch (Ubuntu 24.04, QEMU 8.2, TCG, `TOUHOU_TIMEOUT_SCALE=2`): all eight pass; the regression groups named in the report of
-the branch pass as well (see the pull request).
+| `install_other_systems` | a Windows-like disk (ESP, MSR, NTFS basic data, NTFS recovery), the same with BitLocker on C:, a Linux disk (ESP, ext4 root, swap, ext4 /home) and a whole-disk NTFS volume on virtio: the listing marks all four protected; each is refused without `--force`, with `--force --yes-i-typed`, with a lower-case or otherwise altered `--erase-phrase`, with the sentence of another system; `--dry-run` lists every partition with name, size, type and file system; four wrong answers typed at the prompt stop it; no unlock happens and every image stays byte-identical; then the Windows disk is installed with the sentence typed at the prompt and the Linux disk with `--erase-phrase`, and both check clean |
+
+The installer's failure paths are tested with injected disk errors in `tests/case_blkerr.py` (`python tests/run_all.py blk_err_install`):
+`blk_err_install_write` (a write error in the ESP's FAT on SATA: install stops there, names the place, the GPT and MBR are never written; a failing
+final flush on NVMe fails the install) and `blk_err_install_readback` (six writes silently lost through the `ahci.losewrite=` knob: the MBR, the backup
+GPT header, the ESP's reserved area, its second FAT, `kernel.elf`, HUMANVILLAGE's FAT; all six are named and the install fails). See
+[HARDWARE_AUDIT.md](HARDWARE_AUDIT.md), section 5a.
+
+Results on the installer branch (Ubuntu 24.04, QEMU 8.2, TCG, `TOUHOU_TIMEOUT_SCALE=2`): all eight pass; the regression groups named in the report of
+the branch pass as well (see the pull request). The write-path review branch added `install_other_systems` and the `blk_err_install_*` tests; results
+in its pull request.
 
 The ESP write grant has its own tests, `python tests/run_all.py espgrant_` (`tests/case_espgrant.py`). They install once onto an NVMe image
 with `text user=root blk.ro` (kept as `build/install/espgrant-base.img` until `build/esp` changes) and boot a copy of it alone:
@@ -284,6 +357,13 @@ with `text user=root blk.ro` (kept as `build/install/espgrant-base.img` until `b
 * Disks larger than 2 TiB (512-byte sectors): HUMANVILLAGE is capped at 2 TiB, the rest stays free. No exFAT.
 * The firmware's own boot entries in NVRAM are not touched; on a PC that only boots NVRAM entries (no removable-media fallback for internal
   disks) the installed disk would need an entry made from the firmware setup.
+* The recognition of other systems reads partition types and signatures; it does not look inside an ESP (a disk that holds nothing but an
+  ESP with `EFI/Microsoft/Boot` is not protected), into an LVM volume group or a RAID set, and does not know FreeBSD, ChromeOS or other rarer
+  partition types (those count as data and need only `--force`). A disk whose both GPT headers are destroyed is judged by its MBR, which on a
+  GPT disk is the protective one: then only the file system signatures at the start of the disk are left. The real Windows 11 layout on the
+  Dell has not been seen yet (DUALBOOT.md part D will show it).
+* There is no mode that keeps the other system (install into free space, task 19); until it exists the sentence is the only way, and it
+  erases the whole disk.
 
 ## Files
 
@@ -298,6 +378,7 @@ with `text user=root blk.ro` (kept as `build/install/espgrant-base.img` until `b
 | `shared/bootinfo.h`, `boot/main.c`, `boot/uefi.h` | `BootPartition boot_part` (BootInfo version 2), filled from the device path |
 | `user/bin/unlocktest.c` | the unlock rules, from user space, for the tests |
 | `tests/case_install.py` | the tests above |
+| `tests/case_blkerr.py` | the installer under injected disk errors (`blk_err_install_*`), with the drivers' and FAT's error tests |
 | `initrd/.../patchouli/1/install.pw`, `5/proc.pw` | manual pages (`install(1)`, `/proc/bootdisk` in `proc(5)`) |
 | `kernel/drivers/blk_unlock.c` (second half) | the ESP write grant: BLKESPGRANT, the eligibility check, claim/attach/detach for the mount, the release at close, the `esp` and `grant` lines of `/proc/bootdisk` |
 | `kernel/drivers/blk.c`, `kernel/include/blk.h` | `blk_write_as()` (the holder's writes), `BlockDev.grant_holder`, the grant functions |
@@ -322,6 +403,10 @@ selftest,utest,shell,manual` gave 87 passed, 1 failed (`usbstor_4k_blocks`, whic
 0 failed. Power cuts: 3 x 4 default runs, plus 16 runs cut after `replacing`: all pass. The control with the old rename order failed
 1 run in 10 (UPDATE.md).
 
+Write-path review (task 13, branch `cloud/write-path-review`): the protection of disks with another operating system (the sentence), the full read-back,
+a failed final flush failing the install and the failure message with the place are done and tested (`install_other_systems`, `blk_err_install_write`,
+`blk_err_install_readback`); `install(1)` describes them. Nothing of it has run on real hardware.
+
 ## How to resume
 
 1. Merge after `cloud/staging` (task 2): the shared-file edits are small (`blk.c` about 20 lines, `blk.h` 8, `bootinfo.h` 16, `boot/main.c` 35,
@@ -335,3 +420,7 @@ selftest,utest,shell,manual` gave 87 passed, 1 failed (`usbstor_4k_blocks`, whic
    `cloud/fat-ordering` (task 7), which rewrites `fat_rename()` as well: keep the in-place replacement (`fatd_replace_file()`) or make sure the
    new order never takes the target name out of the directory, and rerun `TOUHOU_ESP_CUT_AT=replacing TOUHOU_ESP_CUT_RUNS=16 python
    tests/run_all.py espgrant_power_cut` (the old order failed 1 run in 10, see UPDATE.md).
+4. Task 19 (install into free space next to Windows) can reuse `other_systems()` to show what stays, and the write log and `read_back()` as they
+   are (they only compare what was written); it must additionally prove that nothing outside its own partitions and the two GPT copies changed.
+   On the Dell, when the internal disk becomes visible: `sudo install` (the listing) must say `holds WINDOWS (protected ...)` for it; if it does
+   not, stop and send the output of `install --force --dry-run DISK`.

@@ -208,7 +208,8 @@ audit branch's `storage.c` is still the merged original, so none of the fixes in
 
 ## 5. AHCI and NVMe
 
-Read against AHCI 1.3.1 and NVMe 1.4 and Linux's `libahci`/`nvme-pci`. **No defect found.**
+Read against AHCI 1.3.1 and NVMe 1.4 and Linux's `libahci`/`nvme-pci`. **No defect found** in this first reading; the later write-path
+review (section 5a) found two small ones in the flush error handling and three in the layers above (sync, install).
 
 * AHCI: `BOHC` BIOS/OS handoff (`hba_handoff`), only ports in `PI` and inside the register window, stop engine/FIS with the 500 ms rule,
   `SUD`/`POD` power-up, `COMRESET` with a 200 ms settle and a 100 ms stable-link requirement, link power management switched off, `CAP.S64A`
@@ -226,6 +227,76 @@ Read against AHCI 1.3.1 and NVMe 1.4 and Linux's `libahci`/`nvme-pci`. **No defe
 * The queue depths against the controller's limits: the NVMe I/O queue was always `min(MQES+1, nvme.depth)`; the 16-entry admin queue is now
   clamped to `CAP.MQES` as well (**fixed**; every real controller has MQES >= 63, so this changes nothing on a working one). AHCI uses command
   slot 0 only (one command at a time), so there is no depth to clamp.
+
+The write, flush and error paths had a second, deeper reading before the first real install: see [5a](#5a-write-path-review-before-the-first-real-install-task-13).
+
+## 5a. Write-path review before the first real install (task 13)
+
+The first real disk writes of this OS will be the owner's install, through drivers that have never driven real hardware. This round read
+everything a write goes through, from `install` and the FAT layer down to the command the controller sees, against AHCI 1.3.1, ATA ACS-3
+(WRITE DMA EXT, FLUSH CACHE EXT, the Status and Error fields) and NVMe 1.4 (Write, Flush, completion status, PRPs, MDTS, `CAP.TO`,
+`CSTS.CFS`; NVMe 2.0 changes nothing used here), with Linux's `libahci`/`libata-eh` and `nvme-pci` as the reference where the specifications
+leave room. Then the failure paths were driven in QEMU with injected errors (`tests/case_blkerr.py`, `python tests/run_all.py blk_err`).
+
+Severity: **medium** = could lose or misreport data on the first install or the installed system; **low** = robustness or hygiene, no data at risk.
+
+| # | Area, specification | Finding | Severity | Status |
+|---|---------------------|---------|----------|--------|
+| W1 | AHCI command construction (AHCI 1.3.1 4.2.2 command header, 4.2.3 command table; ACS-3 WRITE DMA EXT 35h, READ DMA EXT 25h) | Register H2D FIS with the C bit, 48-bit LBA in the six LBA bytes, count 1-65535 (the value 0 = 65536 is never sent), device 40h (LBA), W bit and PRDTL in the header, CTBA 128-byte aligned. | - | **fine** |
+| W2 | AHCI PRDT (AHCI 1.3.1 4.2.3.3: DBC at most 4 MiB, bit 0 set = even byte count; DBA word aligned) | Entries cut at 4 MiB and at physical discontinuities (always on even offsets, since odd buffers are bounced), at most 256 entries, a table that fills in the middle of a sector is trimmed to whole sectors. | - | **fine** (`blk_selftest_exhaust`) |
+| W3 | AHCI task file errors and recovery (AHCI 1.3.1 6.2.2.1 non-queued error recovery, 10.4.2 port reset: `PxSERR` cleared, `DIAG.X` included, before the engine restarts) | `PxIS.TFES/HBFS/HBDS/IFS/OFS` or `ERR`/`DF` in `PxTFD` fail the command; `ST` cleared (CR within 500 ms), `SERR`/`IS` cleared, COMRESET, `BSY` must clear within 10 s, engine restarted; an engine that will not stop gets the HBA halted with bus mastering off. The specification needs a COMRESET only when `BSY`/`DRQ` stay set; the driver always does one (about 0.3 s more per error, heavier than libata, not wrong). Media and command errors (UNC, ABRT, IDNF) are not retried; timeouts, interface errors and ICRC are, twice. | low (heavier than needed) | **fine**, not changed (`blk_sata_errors`, `blk_sata_timeout`, `blk_err_slow_device`) |
+| W4 | AHCI FLUSH CACHE (EXT) errors (ACS-3 FLUSH CACHE EXT EAh: the disk stops at the sector it cannot write, reports it in the LBA field, and a further flush writes the rest of the cache) | A failed flush returned EIO without another flush, so the rest of the drive's cache stayed unwritten until the next write's flush (or never, at power-off). | low-medium | **fixed**: after a reported flush error the flush is sent once more (as libata's `ata_eh_maybe_retry_flush` does) and the request still fails with EIO; `ahci0 port N: the cache flush failed; flushed once more for the rest of the cache (...)`. `blk_err_flush` |
+| W5 | Timeouts (ACS-3 sets none; Linux uses 30 s per command, 60 s for a cache flush) | 15 s per read/write command, 30 s per flush, two retries after a COMRESET, so a dead disk costs at most about 75 s before EIO. A desktop disk without error recovery control may spend longer than 15 s on a weak sector; the driver then resets the link and the request fails sooner than under Linux. Nothing is lost by that; the error is reported. | low | **fine**, not changed |
+| W6 | 4K-sector disks (ACS-3 IDENTIFY words 106, 117-118; NVMe LBA format `LBADS`) | 512, 512e and 4Kn parsed; every request and the block layer's read-modify-write work in logical sectors; install aligns partitions to 1 MiB and grows the ESP to 258 MiB on 4Kn. | - | **fine**: NVMe 4 KiB namespaces tested (`install_nvme_4k` with the full read-back, `blk_partitions`); a 4Kn SATA disk cannot be presented by QEMU (only the identify parser's self test covers it) |
+| W7 | NVMe Write and Flush, FUA (NVMe 1.4 Write 01h, Flush 00h; Identify Controller VWC, byte 525) | No FUA: every write request is followed by a Flush when the controller reports a volatile write cache, which gives the same durability with one flush per request. Status checked per command (SCT/SC, DNR), phase tag, command id. | - | **fine** |
+| W8 | NVMe Flush status (NVMe 1.4 completion queue entry, status field: Do Not Retry) | Reads and writes that fail with DNR clear are resubmitted up to three times; a Flush that failed with DNR clear was not. | low | **fixed**: a Flush is retried the same way. `blk_err_flush` (QEMU answers a failed flush with write fault 0x280, DNR clear: three retries, then EIO) |
+| W9 | NVMe PRPs (NVMe 1.4 4.3: entries dword aligned, only PRP1 may carry an offset, list entries page aligned, a list that does not fit a page must chain) | Buffers that are not dword aligned are bounced; PRP1 carries the offset, every further entry is a page; at most 128 KiB per command = 33 entries in one list page, so no chaining is needed. | - | **fine** (`blk_selftest_*`, `blk_copy_matrix`) |
+| W10 | NVMe MDTS (Identify Controller byte 77, in units of `CAP.MPSMIN`) | Transfers capped at `4 KiB << MDTS` (only `MPSMIN` = 0 is accepted), 0 = no limit, never above 128 KiB. | - | **fine** (`blk_nvme_mdts`) |
+| W11 | NVMe timeouts and fatal status (NVMe 1.4 `CAP.TO`, `CSTS.CFS`, controller reset) | Waits bounded (15 s I/O, 30 s flush, 15 s admin); `CSTS.CFS` ends any wait; a timeout clears bus mastering first, then `CC.EN`, and the controller is given up (no reset-and-continue, which is conservative but safe: the abandoned commands cannot DMA into reused memory). | - | **fine** (`blk_nvme_timeout`, `blk_err_slow_device`) |
+| W12 | Shutdown notification (NVMe 1.4 7.6.2 `CC.SHN`; ATA STANDBY IMMEDIATE before power-off) | Neither driver tells the disk that power is going away. Data is safe (every write is flushed), but an SSD counts an unsafe shutdown and may take longer to start next time, and a spinning disk parks its heads the emergency way. | low | **open**: needs a shutdown hook in the kernel (`sys_reboot`, the ACPI power button and `kshell` all end in `vfs_sync_all` + `machine_poweroff`); a `blk_shutdown()` there that sends `CC.SHN = 01b` (wait for `CSTS.SHST = 10b`, at most `RTD3E`) and FLUSH + STANDBY IMMEDIATE would close it |
+| W13 | Block layer `/dev` writes (`blkdev_io`) | A request that fails after earlier chunks were written returns the short count, the next `write()` the error; `install`'s write loop treats both as a failure. | - | **fine** |
+| W14 | FAT layer write-back (`fat_cache.c`, `fat32.c`) | Data is written before the FAT and the directory, with a device flush between the classes, and a failed write stops the flush there, so the disk never gets a directory entry that points at data that was not written; the pages stay dirty and `umount` refuses (`cannot unmount ...: writing the volume back failed (-5)`). But **`sync` returned success** even when the write-back failed: the error reached only the kernel log. | medium (the user believes the data is on the disk) | **fixed**: `sync(2)` returns the first write-back error, the `sync` applet says `writing back to a disk failed: Input/output error` and exits 1; the next sync tries again. `blk_err_fat_writeback` (persistent error on SATA: sync and umount fail, the image's metadata is untouched and checks without errors; a one-off error on NVMe that outlives the driver's retries: the next sync succeeds and the volume checks clean with the file intact) |
+| W15 | `install`: the final cache flush | The result of `BLKFLSBUF` was ignored. With the drivers' flush after every write this mattered only when that flush is switched off (`nosync`) or when a disk fails only the last flush, but then a failed flush was reported as a successful install. | medium | **fixed**: a failed flush fails the install (`flushing the write cache of DISK failed: ...`, exit 1). `blk_err_install_write` |
+| W16 | `install`: read-back coverage | Only the four files and the primary GPT header's CRC were read back. The directories, both FATs, the boot sectors with FSInfo and their backups, both GPT entry arrays, the backup header and the protective MBR were not compared. | medium | **fixed**: every write goes through a log (a copy, a pointer to the file data, or "zeros"); after the flush every logged byte is read back and compared, each differing or unreadable area is named (`READ-BACK MISMATCH: the FATs of TOUHOUOS-ESP, ... sector 3089`), and the install fails with `*** DISK DOES NOT READ BACK AS WRITTEN ***`. `blk_err_install_readback` (six writes silently lost through `ahci.losewrite=`: the MBR, the backup GPT header, the ESP's reserved area, its second FAT, `kernel.elf` and HUMANVILLAGE's FAT, all six named) |
+| W17 | `install`: the message after a failed write | `errno` was read after later library calls and the message did not say where it failed. | low | **fixed**: the first failing write's byte offset, sector, area and error (`writing sdb failed at byte 1064960 (sector 2080, the FATs of TOUHOUOS-ESP): Input/output error`). `blk_err_install_write` (also: the GPT and MBR were never written) |
+
+What the error-injection tests use, and what QEMU 8.2 could not simulate:
+
+| Test | How | Shows |
+|------|-----|-------|
+| `blk_err_flush` | blkdebug `iotype=flush` on a SATA and an NVMe disk | the write that needed the flush fails with EIO; AHCI task file error then the second flush; NVMe write fault, three retries; reads keep working, nothing is given up on |
+| `blk_err_fat_writeback` | blkdebug `iotype=write` on one sector of a FAT32 volume's data area: persistent on SATA, four one-shot rules on NVMe (one more than the driver retries) | `sync` exits 1 with EIO, `umount` refuses, the file still reads from memory; on the host the volume has no errors and no entry for the file (SATA), or is clean with the file intact after the error went away (NVMe) |
+| `blk_err_slow_device` | QMP `block_set_io_throttle` (4 KiB/s for writes) switched on at run time | a 64 KiB write that would take 16 s: AHCI times out after 2 s (`ahci.iotimeout=2000`), resets the link three times, EIO, the disk stays usable; NVMe gives the controller up, later requests fail at once; the shell answers meanwhile; every sector holds the old or the new data |
+| `blk_err_install_write` | blkdebug write error in the ESP's FAT (SATA); blkdebug flush error with `nvme.nosync` (NVMe) | install stops at the failing write with its place, never writes the GPT or MBR; a failed final flush fails the install |
+| `blk_err_install_readback` | `ahci.losewrite=LBA,...` (kernel test knob: the write is reported done but never sent) | the read-back names all six damaged areas and the install fails |
+
+Not simulated: a device that never completes a command and also ignores resets (QEMU's AHCI and NVMe models wait for the outstanding backend
+request when the guest resets them, so a blkdebug breakpoint that is never resumed hangs QEMU itself; `null-co` with `latency-ns` would only
+delay every request, the boot included, and has no data to check); the driver-side knobs `ahci.dropcmd` / `nvme.dropcmd` (`blk_sata_timeout`,
+`blk_nvme_timeout`) stand in for the lost command. Also not simulated: a torn write at power loss, a controller that raises `CSTS.CFS` by itself,
+a disk that answers a flush error with a specific LBA, NCQ errors (NCQ is not used), a 4Kn SATA disk, and the long internal retries of a
+real disk with a weak sector.
+
+**Not verified on real hardware**: everything above. The first writes on the Dell remain an experiment: do the read-only first contact of
+[DUALBOOT.md](DUALBOOT.md) part D first, then install onto a disk that holds nothing of value, and keep the photographs of `dmesg` if
+anything is reported.
+
+### State when paused (write-path review)
+
+Done and tested in QEMU: W4, W8 (drivers), W14 (`sync`), W15-W17 (`install`), the five `blk_err_*` tests above, the OS recognition in `install`
+(see [INSTALL.md](INSTALL.md), "Other operating systems", test `install_other_systems`), the `ahci.losewrite` knob. Open: W12 (shutdown notification).
+Files: `kernel/drivers/ahci.c` (`ahci_blk_flush`, `lose_write`), `kernel/drivers/nvme.c` (`nvme_blk_flush`), `kernel/sys/syscalls.c` (`sys_sync`),
+`user/libc/src/sys.c` (`sync`), `user/bin/kappabox/sys.c` (the `sync` applet), `user/bin/kappabox/install.c`, `tests/case_blkerr.py`,
+`tests/case_install.py`, the pages `install(1)` and `sync(1)`.
+
+### How to resume (write-path review)
+
+1. W12: add `blk_shutdown()` (each driver registers a shutdown function; call it after the last `vfs_sync_all` in `sys_reboot`, `kshell`
+   and the ACPI power button path): NVMe `CC.SHN = 01b`, wait for `CSTS.SHST = 10b` (bounded by `RTD3E`, or 10 s); SATA FLUSH CACHE EXT then
+   STANDBY IMMEDIATE. Test with QEMU's NVMe (it reports `SHST`) by counting the log lines; QEMU's IDE ignores standby.
+2. On the Dell, before trusting writes: `blk.ro` boot, `cat /proc/ahci /proc/nvme` (errors 0, resets 0), then an install onto a disk that
+   holds nothing of value, and a reboot from it.
+3. A `fsync(2)` (syscall 119) would let a program learn about a failed write-back for its own file, not only through `sync`.
 
 ## 6. CPU, timers, interrupts
 
@@ -307,7 +378,7 @@ Read against AHCI 1.3.1 and NVMe 1.4 and Linux's `libahci`/`nvme-pci`. **No defe
 (`hwaudit_mtrr_selftest`, `hwaudit_mtrr_forced_attempt`, `hwaudit_mtrr_knob_off_and_auto`), `hwaudit_pci_selftest` (BAR sizes, D3hot to D0 with an e1000e),
 no PS/2 controller, 6 GiB of RAM, cmdline.txt encodings, missing cmdline.txt, the fbcon self test, the pixel-exact scroll check and fairyd's statistics and
 knobs. The `selftest` test includes the fbcon, MTRR and PCI checks. `tools/qemu.py` honours `TOUHOU_CPU=Skylake-Client-noTSX-IBRS` (set by another branch) if you want
-the guest to look like the target's CPU family.
+the guest to look like the target's CPU family. The write-path review (5a) has its own tests: `python tests/run_all.py blk_err,install_other`.
 
 ## State when paused
 

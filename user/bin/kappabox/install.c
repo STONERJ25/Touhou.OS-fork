@@ -10,6 +10,9 @@
  * disk that holds any partition or a recognisable partition table or file system; the user types the disk's name to go on (or gives
  * --yes-i-typed=NAME, which must be that exact name); the kernel's blk.ro is lifted for this one disk through this one open file only
  * (BLKWRUNLOCK, shared/blkabi.h) and handed back before the program ends. Nothing is written before all of that passed.
+ * A disk that holds another operating system (Windows, Linux, macOS, a RAID member: other_systems()) needs --force *and* a typed sentence
+ * that names the systems, the disk's model and its name (ERASE WINDOWS ON <model> <disk>); what would be lost is listed first.
+ * Afterwards the disk's cache is flushed (a failure fails the install) and every byte written is read back and compared (read_back()).
  */
 #include "kappabox.h"
 #include <inttypes.h>
@@ -72,27 +75,120 @@ static int read_at(int fd, u64 off, void *buf, size_t n) {
     return 0;
 }
 
-static int write_at(int fd, u64 off, const void *buf, size_t n) {
-    if (lseek(fd, (off_t)off, SEEK_SET) < 0) return -1;
-    size_t done = 0;
-    while (done < n) {
-        ssize_t r = write(fd, (const u8 *)buf + done, n - done);
-        if (r <= 0) return -1;
-        done += (size_t)r;
+/*
+ * The write log. Every byte install writes to the target is recorded here (a copy of it, a pointer to data that lives until the end, or
+ * "zeros"), so that after the flush all of it can be read back and compared: the files, the directories, both FATs, the reserved areas
+ * (boot sectors, FSInfo and their backups), both GPT entry arrays and headers, and the protective MBR.
+ */
+typedef struct { u64 off, len; const u8 *data; int owned; const char *what; } Extent;
+
+static Extent *g_ext;
+static int g_next, g_extcap;
+static const char *g_what = "the disk";                    /* what the writes that follow are, for the messages */
+static u64 g_fail_off = ~0ull;                              /* the first write that failed: where, what, why */
+static const char *g_fail_what;
+static int g_fail_errno;
+
+static void note_extent(u64 off, const void *data, u64 n, int copy) {
+    if (!n) return;
+    Extent *last = g_next ? &g_ext[g_next - 1] : NULL;
+    if (!data && last && !last->data && last->off + last->len == off && last->what == g_what) { last->len += n; return; }
+    if (g_next == g_extcap) {
+        g_extcap = g_extcap ? 2 * g_extcap : 64;
+        g_ext = realloc(g_ext, (size_t)g_extcap * sizeof *g_ext);
+        if (!g_ext) kb_die("out of memory");
     }
-    return 0;
+    Extent *e = &g_ext[g_next++];
+    e->off = off;
+    e->len = n;
+    e->what = g_what;
+    e->owned = data && copy;
+    e->data = data;
+    if (e->owned) {
+        u8 *c = malloc((size_t)n);
+        if (!c) kb_die("out of memory");
+        memcpy(c, data, (size_t)n);
+        e->data = c;
+    }
+}
+
+static int raw_write_at(int fd, u64 off, const void *buf, size_t n) {
+    size_t done = 0;
+    int ok = lseek(fd, (off_t)off, SEEK_SET) >= 0;
+    while (ok && done < n) {
+        ssize_t r = write(fd, (const u8 *)buf + done, n - done);
+        if (r <= 0) {
+            if (!r) errno = EIO;
+            ok = 0;
+        } else {
+            done += (size_t)r;
+        }
+    }
+    if (ok) return 0;
+    if (g_fail_off == ~0ull) { g_fail_off = off + done; g_fail_what = g_what; g_fail_errno = errno; }
+    return -1;
+}
+
+/* write_at copies what it wrote into the log; write_at_kept only points at it (the caller keeps buf alive until the read-back). */
+static int write_at(int fd, u64 off, const void *buf, size_t n) {
+    note_extent(off, buf, n, 1);
+    return raw_write_at(fd, off, buf, n);
+}
+
+static int write_at_kept(int fd, u64 off, const void *buf, size_t n) {
+    note_extent(off, buf, n, 0);
+    return raw_write_at(fd, off, buf, n);
 }
 
 static u8 *g_zero;                                          /* 1 MiB of zeros */
 
 static int zero_at(int fd, u64 off, u64 n) {
+    note_extent(off, NULL, n, 0);
     while (n) {
         size_t take = n > MIB ? (size_t)MIB : (size_t)n;
-        if (write_at(fd, off, g_zero, take)) return -1;
+        if (raw_write_at(fd, off, g_zero, take)) return -1;
         off += take;
         n -= take;
     }
     return 0;
+}
+
+/*
+ * Reads every logged extent back and compares it with what was written. Prints one line per extent that differs or cannot be read and
+ * returns how many did; *bytes gets the number of bytes compared.
+ */
+static int read_back(int fd, unsigned ss, u64 *bytes) {
+    u8 *buf = malloc(MIB);
+    if (!buf) kb_die("out of memory");
+    int bad = 0;
+    *bytes = 0;
+    for (int i = 0; i < g_next; i++) {
+        const Extent *e = &g_ext[i];
+        u64 done = 0, diff = ~0ull;
+        int unreadable = 0;
+        while (done < e->len && diff == ~0ull && !unreadable) {
+            size_t take = e->len - done > MIB ? (size_t)MIB : (size_t)(e->len - done);
+            if (read_at(fd, e->off + done, buf, take)) { unreadable = 1; break; }
+            const u8 *want = e->data ? e->data + done : g_zero;
+            if (memcmp(buf, want, take))
+                for (size_t k = 0; k < take; k++)
+                    if (buf[k] != want[k]) { diff = done + k; break; }
+            done += take;
+        }
+        *bytes += e->len;
+        if (!unreadable && diff == ~0ull) continue;
+        if (bad++ < 24) {
+            if (unreadable)
+                fprintf(stderr, "install: READ-BACK FAILED: %s, %llu bytes at byte %llu (sector %llu): could not be read back: %s\n", e->what,
+                        (unsigned long long)e->len, (unsigned long long)e->off, (unsigned long long)(e->off / ss), strerror(errno));
+            else
+                fprintf(stderr, "install: READ-BACK MISMATCH: %s, %llu bytes at byte %llu (sector %llu): differs from what was written, first at "
+                        "byte %llu (sector %llu)\n", e->what, (unsigned long long)e->len, (unsigned long long)e->off, (unsigned long long)(e->off / ss),
+                        (unsigned long long)(e->off + diff), (unsigned long long)((e->off + diff) / ss));
+        }
+    }
+    free(buf);
+    return bad;
 }
 
 static char *mib_text(u64 bytes, char *buf, size_t n) {
@@ -274,6 +370,299 @@ static int disk_content(int fd, const Row *d, char *what, size_t wn) {
     return found;
 }
 
+/* ------------------------------------------------------------------------------------------------ other operating systems */
+
+/*
+ * A disk that holds another operating system is not erased with --force alone: the user has to type a sentence that names the systems,
+ * the disk's model and its name (docs/INSTALL.md, "Other operating systems"). Recognised: Windows (Microsoft reserved, Windows recovery,
+ * LDM and Storage Spaces partitions, a basic data partition that does not hold a FAT file system, NTFS, exFAT, ReFS, BitLocker), Linux
+ * (its partition types, ext2/3/4, XFS, btrfs, swap, LVM, LUKS, a GRUB BIOS boot partition), macOS (HFS+, APFS) and the members of an
+ * Intel RST RAID set. What cannot be read counts as precious too.
+ */
+enum { OS_WINDOWS = 1, OS_LINUX = 2, OS_MACOS = 4, OS_RAID = 8, OS_UNKNOWN = 16 };
+static const char *const k_os_word[] = { "WINDOWS", "LINUX", "MACOS", "RAID", "UNREADABLE DATA" };
+#define OS_KINDS 5
+#define SIG_BYTES (72 * 1024)                               /* enough for every signature below (btrfs sits at 64 KiB) */
+#define MAX_LOST 64
+
+typedef struct {
+    char where[16];                                         /* "partition 3", "logical 5", "whole disk", "end of disk" */
+    char name[40];                                          /* GPT partition name */
+    u64 bytes;
+    char type[48];                                          /* partition type in words */
+    char fs[64];                                            /* what was found at its start */
+    int os;
+} Lost;
+
+static const struct { const char *guid, *name; int os; } k_gpt_types[] = {
+    { "c12a7328-f81f-11d2-ba4b-00a0c93ec93b", "EFI System Partition", 0 },
+    { "e3c9e316-0b5c-4db8-817d-f92df00215ae", "Microsoft reserved", OS_WINDOWS },
+    { "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7", "Microsoft basic data", OS_WINDOWS },        /* not when it holds FAT: see classify() */
+    { "de94bba4-06d1-4d40-a16a-bfd50179d6ac", "Windows recovery", OS_WINDOWS },
+    { "5808c8aa-7e8f-42e0-85d2-e1e90434cfb3", "Windows LDM metadata", OS_WINDOWS },
+    { "af9b60a0-1431-4f62-bc68-3311714a69ad", "Windows LDM data", OS_WINDOWS },
+    { "e75caf8f-f680-4cee-afa3-b001e56efc2d", "Windows Storage Spaces", OS_WINDOWS },
+    { "0fc63daf-8483-4772-8e79-3d69d8477de4", "Linux filesystem", OS_LINUX },
+    { "4f68bce3-e8cd-4db1-96e7-fbcaf984b709", "Linux root (x86-64)", OS_LINUX },
+    { "44479540-f297-41b2-9af7-d131d5f0458a", "Linux root (x86)", OS_LINUX },
+    { "b921b045-1df0-41c3-af44-4c6f280d3fae", "Linux root (ARM64)", OS_LINUX },
+    { "8484680c-9521-48c6-9c11-b0720656f69e", "Linux /usr (x86-64)", OS_LINUX },
+    { "933ac7e1-2eb4-4f13-b844-0e14e2aef915", "Linux /home", OS_LINUX },
+    { "3b8f8425-20e0-4f3b-907f-1a25a76f98e8", "Linux /srv", OS_LINUX },
+    { "4d21b016-b534-45c2-a9fb-5c16e091fd2d", "Linux /var", OS_LINUX },
+    { "0657fd6d-a4ab-43c4-84e5-0933c84b4f4f", "Linux swap", OS_LINUX },
+    { "e6d6d379-f507-44c2-a23c-238f2a3df928", "Linux LVM", OS_LINUX },
+    { "a19d880f-05fc-4d3b-a006-743f0f84911e", "Linux RAID", OS_LINUX },
+    { "ca7d7ccb-63ed-4c53-861c-1742536059cc", "Linux LUKS", OS_LINUX },
+    { "bc13c2ff-59e6-4262-a352-b275fd6f7172", "Linux extended boot", OS_LINUX },
+    { "21686148-6449-6e6f-744e-656564454649", "BIOS boot (GRUB)", OS_LINUX },
+    { "48465300-0000-11aa-aa11-00306543ecac", "Apple HFS+", OS_MACOS },
+    { "7c3457ef-0000-11aa-aa11-00306543ecac", "Apple APFS", OS_MACOS },
+    { "426f6f74-0000-11aa-aa11-00306543ecac", "Apple boot", OS_MACOS },
+};
+
+static const struct { u8 type; const char *name; int os; } k_mbr_types[] = {
+    { 0x01, "FAT12", 0 }, { 0x04, "FAT16", 0 }, { 0x06, "FAT16", 0 }, { 0x0B, "FAT32", 0 }, { 0x0C, "FAT32 (LBA)", 0 }, { 0x0E, "FAT16 (LBA)", 0 },
+    { 0x07, "NTFS/exFAT", OS_WINDOWS }, { 0x27, "Windows recovery", OS_WINDOWS }, { 0x42, "Windows dynamic disk", OS_WINDOWS },
+    { 0x82, "Linux swap", OS_LINUX }, { 0x83, "Linux", OS_LINUX }, { 0x8E, "Linux LVM", OS_LINUX }, { 0xFD, "Linux RAID", OS_LINUX },
+    { 0xAF, "Apple HFS+", OS_MACOS }, { 0xEF, "EFI System Partition", 0 },
+};
+
+/* What sits at the start of a volume. Returns a description ("" when nothing is recognised) and ORs the system it belongs to into *os;
+ * *fat is set for a FAT file system. */
+static const char *fs_signature(const u8 *b, size_t n, int *os, int *fat, char *buf, size_t bn) {
+    *fat = 0;
+    if (n >= 512) {
+        if (!memcmp(b + 3, "-FVE-FS-", 8)) { *os |= OS_WINDOWS; return "BitLocker-encrypted volume"; }
+        if (!memcmp(b + 3, "NTFS    ", 8)) { *os |= OS_WINDOWS; return "NTFS"; }
+        if (!memcmp(b + 3, "EXFAT   ", 8)) { *os |= OS_WINDOWS; return "exFAT"; }
+        if (!memcmp(b + 3, "ReFS", 4)) { *os |= OS_WINDOWS; return "ReFS"; }
+        if (!memcmp(b, "LUKS\xba\xbe", 6)) { *os |= OS_LINUX; return "LUKS encrypted volume"; }
+        if (!memcmp(b, "XFSB", 4)) { *os |= OS_LINUX; return "XFS"; }
+        if (!memcmp(b + 32, "NXSB", 4)) { *os |= OS_MACOS; return "APFS"; }
+        u16 bps = (u16)(b[11] | b[12] << 8);
+        if (b[510] == 0x55 && b[511] == 0xAA && (bps == 512 || bps == 1024 || bps == 2048 || bps == 4096) && b[13] && !(b[13] & (b[13] - 1)) &&
+            b[16] >= 1 && b[16] <= 4 && b[21] >= 0xF0) {
+            int f32 = !b[22] && !b[23];
+            const u8 *lab = f32 ? b + 71 : b + 43;
+            int has_label = (f32 ? b[66] : b[38]) == 0x29;
+            char l[12];
+            memcpy(l, lab, 11);
+            l[11] = 0;
+            for (int i = 10; i >= 0 && l[i] == ' '; i--) l[i] = 0;
+            for (int i = 0; l[i]; i++) if (l[i] < 32 || l[i] > 126) l[i] = '?';
+            *fat = 1;
+            snprintf(buf, bn, has_label && l[0] && strcmp(l, "NO NAME") ? "%s \"%s\"" : "%s", f32 ? "FAT32" : "FAT12/16", l);
+            return buf;
+        }
+    }
+    if (n >= 1082 && b[1080] == 0x53 && b[1081] == 0xEF) { *os |= OS_LINUX; return "ext2/3/4"; }
+    if (n >= 1026 && b[1024] == 'H' && (b[1025] == '+' || b[1025] == 'X')) { *os |= OS_MACOS; return "HFS+"; }
+    if (n >= 520 && !memcmp(b + 512, "LABELONE", 8)) { *os |= OS_LINUX; return "LVM physical volume"; }
+    if (n >= 4096 && (!memcmp(b + 4086, "SWAPSPACE2", 10) || !memcmp(b + 4086, "SWAP-SPACE", 10))) { *os |= OS_LINUX; return "Linux swap"; }
+    if (n >= 65608 && !memcmp(b + 65600, "_BHRfS_M", 8)) { *os |= OS_LINUX; return "btrfs"; }
+    return "";
+}
+
+/* Sector 0 is the boot sector of a file system that covers the whole disk (its bytes 446-509 are boot code, not partition entries). */
+static int volume_boot_sector(const u8 *b, size_t n) {
+    int os = 0, fat = 0;
+    char buf[64];
+    return (b[0] == 0xEB || b[0] == 0xE9) && fs_signature(b, n, &os, &fat, buf, sizeof buf)[0];
+}
+
+/* Looks at one partition: its type (from the table) and what it holds. */
+static void classify(int fd, unsigned ss, u64 first, u64 count, const char *type, int type_os, int basic, u8 *b, Lost *l) {
+    l->bytes = count * ss;
+    strlcpy(l->type, type, sizeof l->type);
+    size_t n = count * ss < SIG_BYTES ? (size_t)(count * ss) : SIG_BYTES;
+    int fs_os = 0, fat = 0;
+    char buf[64];
+    if (n && !read_at(fd, first * ss, b, n)) {
+        strlcpy(l->fs, fs_signature(b, n, &fs_os, &fat, buf, sizeof buf), sizeof l->fs);
+    } else {
+        strlcpy(l->fs, "could not be read", sizeof l->fs);
+        fs_os = OS_UNKNOWN;
+    }
+    /* A basic data partition is Windows' kind of partition (C:, D:, a recovery image) unless it holds FAT, which sticks, cameras and an
+     * earlier TouhouOS install (HUMANVILLAGE) use too. */
+    l->os = (basic && fat ? 0 : type_os) | fs_os;
+}
+
+static void guid_lower(const u8 g[16], char *out, size_t cap) {
+    guid_text(g, out, cap);
+    for (char *p = out; *p; p++) *p = (char)tolower((unsigned char)*p);
+}
+
+/* Fills out[] with everything on the disk that would be lost, and returns the systems found (OS_* bits). */
+static int other_systems(int fd, const Row *d, Lost *out, int max, int *nout) {
+    unsigned ss = d->ss;
+    u64 total = d->size / ss;
+    int os = 0, n = 0;
+    u8 *b = malloc(SIG_BYTES), *hdr = malloc(ss), *mbr = malloc(ss);
+    if (!b || !hdr || !mbr) kb_die("out of memory");
+#define NEXT() (n < max ? &out[n++] : &out[max - 1])
+    int gpt = 0;
+    if (!read_at(fd, ss, hdr, ss) && !memcmp(hdr, "EFI PART", 8)) gpt = 1;
+    else if (total > 2 && !read_at(fd, (total - 1) * ss, hdr, ss) && !memcmp(hdr, "EFI PART", 8)) gpt = 2;   /* primary damaged: the backup */
+    if (gpt) {
+        u64 elba = get64(hdr + 72);
+        u32 nent = get32(hdr + 80), esz = get32(hdr + 84);
+        size_t bytes = (size_t)nent * esz;
+        u8 *ents = (esz >= 128 && esz <= 1024 && nent && nent <= 1024 && bytes <= 512 * 1024 && elba < total) ? malloc(bytes) : NULL;
+        if (!ents || read_at(fd, elba * ss, ents, bytes)) {
+            Lost *l = NEXT();
+            memset(l, 0, sizeof *l);
+            strlcpy(l->where, "GPT", sizeof l->where);
+            strlcpy(l->type, gpt == 2 ? "backup GPT" : "GPT", sizeof l->type);
+            strlcpy(l->fs, "its partition entries could not be read", sizeof l->fs);
+            l->bytes = d->size;
+            l->os = OS_UNKNOWN;
+        }
+        for (u32 i = 0; ents && i < nent; i++) {
+            const u8 *e = ents + (size_t)i * esz;
+            static const u8 zero16[16];
+            if (!memcmp(e, zero16, 16)) continue;
+            u64 first = get64(e + 32), last = get64(e + 40);
+            Lost *l = NEXT();
+            memset(l, 0, sizeof *l);
+            snprintf(l->where, sizeof l->where, "partition %u", i + 1);
+            size_t k = 0;
+            for (; k < 36 && k < sizeof l->name - 1 && (e[56 + 2 * k] || e[57 + 2 * k]); k++) {
+                u16 ch = (u16)(e[56 + 2 * k] | e[57 + 2 * k] << 8);
+                l->name[k] = ch >= 32 && ch < 127 ? (char)ch : '?';
+            }
+            l->name[k] = 0;
+            char g[40];
+            guid_lower(e, g, sizeof g);
+            const char *tname = NULL;
+            int tos = 0, basic = 0;
+            for (size_t t = 0; t < sizeof k_gpt_types / sizeof k_gpt_types[0]; t++)
+                if (!strcmp(g, k_gpt_types[t].guid)) { tname = k_gpt_types[t].name; tos = k_gpt_types[t].os; basic = t == 2; }
+            char unknown[48];
+            if (!tname) { snprintf(unknown, sizeof unknown, "type %s", g); tname = unknown; }
+            if (last < first || last >= total) { strlcpy(l->type, tname, sizeof l->type); strlcpy(l->fs, "outside the disk", sizeof l->fs); l->os = tos; }
+            else classify(fd, ss, first, last - first + 1, tname, tos, basic, b, l);
+            os |= l->os;
+        }
+        free(ents);
+    } else if (!read_at(fd, 0, mbr, ss) && mbr[510] == 0x55 && mbr[511] == 0xAA && !volume_boot_sector(mbr, ss)) {
+        /* MBR: the four primary entries, and the chain of logical partitions inside an extended one */
+        u64 ext_base = 0, ebr = 0;
+        int logical = 5;
+        for (int i = 0; i < 4; i++) {
+            const u8 *e = mbr + 446 + 16 * i;
+            u8 type = e[4];
+            u64 start = get32(e + 8), count = get32(e + 12);
+            if (!type || !count || type == 0xEE) continue;
+            if (type == 0x05 || type == 0x0F || type == 0x85) { if (!ext_base) ext_base = ebr = start; continue; }
+            const char *tname = NULL;
+            int tos = 0;
+            for (size_t t = 0; t < sizeof k_mbr_types / sizeof k_mbr_types[0]; t++)
+                if (k_mbr_types[t].type == type) { tname = k_mbr_types[t].name; tos = k_mbr_types[t].os; }
+            char unknown[48];
+            if (!tname) { snprintf(unknown, sizeof unknown, "MBR type %02x", type); tname = unknown; }
+            Lost *l = NEXT();
+            memset(l, 0, sizeof *l);
+            snprintf(l->where, sizeof l->where, "partition %d", i + 1);
+            if (start + count > total) { strlcpy(l->type, tname, sizeof l->type); strlcpy(l->fs, "outside the disk", sizeof l->fs); l->os = tos; }
+            else classify(fd, ss, start, count, tname, tos, type == 0x07, b, l);
+            os |= l->os;
+        }
+        for (int hops = 0; ext_base && ebr < total && hops < 64; hops++) {
+            if (read_at(fd, ebr * ss, hdr, ss) || hdr[510] != 0x55 || hdr[511] != 0xAA) {
+                Lost *l = NEXT();
+                memset(l, 0, sizeof *l);
+                strlcpy(l->where, "extended", sizeof l->where);
+                strlcpy(l->type, "extended partition", sizeof l->type);
+                strlcpy(l->fs, "its chain of logical partitions could not be read", sizeof l->fs);
+                l->os = OS_UNKNOWN;
+                os |= l->os;
+                break;
+            }
+            const u8 *e = hdr + 446;
+            u8 type = e[4];
+            u64 start = ebr + get32(e + 8), count = get32(e + 12);
+            if (type && count) {
+                const char *tname = NULL;
+                int tos = 0;
+                for (size_t t = 0; t < sizeof k_mbr_types / sizeof k_mbr_types[0]; t++)
+                    if (k_mbr_types[t].type == type) { tname = k_mbr_types[t].name; tos = k_mbr_types[t].os; }
+                char unknown[48];
+                if (!tname) { snprintf(unknown, sizeof unknown, "MBR type %02x", type); tname = unknown; }
+                Lost *l = NEXT();
+                memset(l, 0, sizeof *l);
+                snprintf(l->where, sizeof l->where, "logical %d", logical++);
+                if (start + count > total) { strlcpy(l->type, tname, sizeof l->type); strlcpy(l->fs, "outside the disk", sizeof l->fs); l->os = tos; }
+                else classify(fd, ss, start, count, tname, tos, type == 0x07, b, l);
+                os |= l->os;
+            }
+            u64 next = get32(e + 16 + 8);
+            if (!e[16 + 4] || !next) break;
+            ebr = ext_base + next;
+        }
+    }
+    if (!n) {                                               /* no partition table: a file system over the whole disk? */
+        Lost l;
+        memset(&l, 0, sizeof l);
+        classify(fd, ss, 0, total, "no partition table", 0, 0, b, &l);
+        if (l.fs[0] || l.os) {
+            Lost *o = NEXT();
+            *o = l;
+            strlcpy(o->where, "whole disk", sizeof o->where);
+            os |= l.os;
+        }
+    }
+    if (total > 4 && !read_at(fd, (total - 3) * ss, b, 3 * (size_t)ss)) {
+        for (size_t o = 0; o + 24 <= 3 * (size_t)ss; o += 512)
+            if (!memcmp(b + o, "Intel Raid ISM Cfg Sig. ", 24)) {
+                Lost *l = NEXT();
+                memset(l, 0, sizeof *l);
+                strlcpy(l->where, "end of disk", sizeof l->where);
+                strlcpy(l->type, "Intel RST (RAID) metadata", sizeof l->type);
+                strlcpy(l->fs, "a member of a RAID set: erasing it breaks the set", sizeof l->fs);
+                l->bytes = d->size;
+                l->os = OS_RAID;
+                os |= OS_RAID;
+                break;
+            }
+    }
+#undef NEXT
+    free(b); free(hdr); free(mbr);
+    *nout = n;
+    return os;
+}
+
+static void os_words(int os, char *out, size_t n) {
+    out[0] = 0;
+    for (int i = 0; i < OS_KINDS; i++)
+        if (os & (1 << i)) {
+            if (out[0]) strlcat(out, " AND ", n);
+            strlcat(out, k_os_word[i], n);
+        }
+}
+
+/* The sentence the user has to type: ERASE WINDOWS ON <model> <disk>, e.g. "ERASE WINDOWS ON SAMSUNG MZVLB256HAHQ-000L7 nvme0n1". */
+static void erase_sentence(int os, const Row *d, const char *name, char *out, size_t n) {
+    char w[96];
+    os_words(os, w, sizeof w);
+    snprintf(out, n, "ERASE %s ON %s%s%s", w, strcmp(d->model, "-") ? d->model : "", strcmp(d->model, "-") ? " " : "", name);
+}
+
+static void print_losses(const char *name, const Row *d, const Lost *l, int n, int os) {
+    char w[96], sz[24];
+    os_words(os, w, sizeof w);
+    printf("install: %s (%s%s%s) holds %s. Everything on it would be lost:\n", name, mib_text(d->size, sz, sizeof sz),
+           strcmp(d->model, "-") ? ", " : "", strcmp(d->model, "-") ? d->model : "", w);
+    for (int i = 0; i < n; i++) {
+        char q[48], who[96] = "";
+        snprintf(q, sizeof q, "\"%s\"", l[i].name);
+        if (l[i].os) { os_words(l[i].os, who, sizeof who); }
+        printf("install:   %-12s %-30.30s %9s  %s%s%s%s%s\n", l[i].where, l[i].name[0] ? q : "", mib_text(l[i].bytes, sz, sizeof sz), l[i].type,
+               l[i].fs[0] ? ", " : "", l[i].fs, who[0] ? "  <- " : "", who);
+    }
+}
+
 /* ------------------------------------------------------------------------------------------------ layout */
 
 typedef struct { u64 first, count; } Span;
@@ -308,6 +697,7 @@ typedef struct {
     u32 *fat;                   /* entries 0 .. next_free-1 */
     u32 next_free, cap;
     char label[12];
+    char what_dir[64], what_fat[64], what_res[96];          /* names of its parts in the read-back messages */
 } Fat;
 
 static u32 default_cluster_bytes(u64 size) {                /* mkdisk.default_cluster_bytes() */
@@ -348,6 +738,9 @@ static int fat_init(Fat *v, u64 disk_off, u64 sectors, u32 bps, const char *labe
     v->next_free = 2;
     gap_getrandom(&v->volid, sizeof v->volid);
     snprintf(v->label, sizeof v->label, "%-11.11s", label);
+    snprintf(v->what_dir, sizeof v->what_dir, "the directories of %s", label);
+    snprintf(v->what_fat, sizeof v->what_fat, "the FATs of %s", label);
+    snprintf(v->what_res, sizeof v->what_res, "the boot sector, FSInfo and their backups of %s", label);
     return 0;
 }
 
@@ -398,10 +791,11 @@ static void dirent83(u8 *e, const char *name11, u8 attr, u8 ntres, u32 first, u3
     put32(e + 28, size);
 }
 
-static int write_cluster_data(int fd, const Fat *v, u32 first, const void *data, size_t n) {
+/* kept: data stays alive until the read-back (the file contents), so the write log need not copy it */
+static int write_cluster_data(int fd, const Fat *v, u32 first, const void *data, size_t n, int kept) {
     if (!n) return 0;
     u64 clusters = (n + v->cluster_bytes - 1) / v->cluster_bytes;
-    if (write_at(fd, cluster_off(v, first), data, n)) return -1;
+    if ((kept ? write_at_kept : write_at)(fd, cluster_off(v, first), data, n)) return -1;
     u64 pad = clusters * v->cluster_bytes - n;              /* no stale bytes in the tail of the last cluster */
     return pad ? zero_at(fd, cluster_off(v, first) + n, pad) : 0;
 }
@@ -412,11 +806,13 @@ static int fat_finish(int fd, Fat *v) {
     u8 *head = calloc(1, used);
     if (!head) return -1;
     for (u32 i = 0; i < v->next_free; i++) put32(head + (size_t)i * 4, v->fat[i]);
+    g_what = v->what_fat;
     for (u32 k = 0; k < v->nfats; k++) {
         u64 off = v->disk_off + (u64)(v->reserved + (u64)k * v->fatsz) * v->bps;
         if (write_at(fd, off, head, used) || zero_at(fd, off + used, (u64)v->fatsz * v->bps - used)) { free(head); return -1; }
     }
     free(head);
+    g_what = v->what_res;
     size_t rbytes = (size_t)v->reserved * v->bps;
     u8 *r = calloc(1, rbytes);
     if (!r) return -1;
@@ -545,7 +941,9 @@ static int write_gpt(int fd, u64 total, unsigned ss, const Span *esp, const Span
         put32(hdr + 84, GPT_ESIZE);
         put32(hdr + 88, ecrc);
         put32(hdr + 16, crc32_of(hdr, 92));
+        g_what = which ? "the backup GPT partition entries" : "the primary GPT partition entries";
         rc = write_at(fd, elba * ss, ents, (size_t)arr * ss);
+        g_what = which ? "the backup GPT header (last sector)" : "the primary GPT header (sector 1)";
         if (!rc) rc = write_at(fd, my * ss, hdr, ss);
     }
     if (!rc) {                                              /* protective MBR: one 0xEE entry over the whole disk */
@@ -556,6 +954,7 @@ static int write_gpt(int fd, u64 total, unsigned ss, const Span *esp, const Span
         put32(e + 8, 1);
         put32(e + 12, total - 1 > 0xFFFFFFFFull ? 0xFFFFFFFFu : (u32)(total - 1));
         mbr[510] = 0x55; mbr[511] = 0xAA;
+        g_what = "the protective MBR (sector 0)";
         rc = write_at(fd, 0, mbr, ss);
     }
     free(ents); free(hdr); free(mbr);
@@ -587,7 +986,7 @@ static int refuse(const char *fmt, ...) {
 }
 
 static void usage(void) {
-    fprintf(stderr, "usage: install [--force] [--yes-i-typed=DISK] [--from DIR] [--cmdline WORDS] [--dry-run] DISK\n"
+    fprintf(stderr, "usage: install [--force] [--yes-i-typed=DISK] [--erase-phrase=SENTENCE] [--from DIR] [--cmdline WORDS] [--dry-run] DISK\n"
                     "       install            (lists the disks and what install thinks of each)\n");
 }
 
@@ -603,8 +1002,13 @@ static void list_disks(const Boot *b) {
         else if (mounted(d->name, 1, NULL, 0, NULL, 0)) strlcpy(state, "in use (mounted)", sizeof state);
         else {
             int fd = open(path, O_RDONLY);
-            char what[400] = "";
-            if (fd >= 0 && disk_content(fd, d, what, sizeof what)) snprintf(state, sizeof state, "holds %.150s (needs --force)", what);
+            char what[400] = "", w[96];
+            Lost lost[MAX_LOST];
+            int nlost = 0, os = fd >= 0 ? other_systems(fd, d, lost, MAX_LOST, &nlost) : 0;
+            os_words(os, w, sizeof w);
+            if (fd >= 0 && disk_content(fd, d, what, sizeof what))
+                snprintf(state, sizeof state, os ? "holds %s (protected: needs --force and a typed sentence): %.110s" : "holds %s%.150s (needs --force)",
+                         os ? w : "", what);
             else if (fd < 0) snprintf(state, sizeof state, "cannot be read: %s", strerror(errno));
             else strlcpy(state, "empty", sizeof state);
             if (fd >= 0) close(fd);
@@ -615,13 +1019,14 @@ static void list_disks(const Boot *b) {
 }
 
 APPLET(install) {
-    const char *typed = NULL, *from = NULL, *cmdline = NULL, *hold = NULL, *target = NULL;
+    const char *typed = NULL, *from = NULL, *cmdline = NULL, *hold = NULL, *target = NULL, *erase = NULL;
     int force = 0, dry = 0;
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
         if (!strcmp(a, "--force")) force = 1;
         else if (!strcmp(a, "--dry-run") || !strcmp(a, "-n")) dry = 1;
         else if (!strncmp(a, "--yes-i-typed=", 14)) typed = a + 14;
+        else if (!strncmp(a, "--erase-phrase=", 15)) erase = a + 15;
         else if (!strcmp(a, "--from") && i + 1 < argc) from = argv[++i];
         else if (!strcmp(a, "--cmdline") && i + 1 < argc) cmdline = argv[++i];
         else if (!strncmp(a, "--hold=", 7)) hold = a + 7;
@@ -657,7 +1062,29 @@ APPLET(install) {
     if (rfd < 0) return refuse("%s: %s", path, strerror(errno));
     char what[600] = "";
     int busy = disk_content(rfd, d, what, sizeof what);
+    /* Another operating system on it (Windows, Linux, ...): --force is not enough, a typed sentence that names the systems, the model and the
+     * disk is needed as well (--erase-phrase=, or at the prompt). */
+    static Lost lost[MAX_LOST];
+    int nlost = 0;
+    int os = other_systems(rfd, d, lost, MAX_LOST, &nlost);
     close(rfd);
+    char osw[96], sentence[200];
+    os_words(os, osw, sizeof osw);
+    erase_sentence(os, d, target, sentence, sizeof sentence);
+    if (os) {
+        print_losses(target, d, lost, nlost, os);
+        fflush(stdout);
+        if (!force)
+            return refuse("%s holds another operating system (%s). install erases it only with --force and this sentence, typed\n"
+                          "install: exactly (see 'man install'):\ninstall:   %s", target, osw, sentence);
+        if (erase && strcmp(erase, sentence))
+            return refuse("--erase-phrase does not match. To erase %s on %s the sentence is exactly:\ninstall:   %s", osw, target, sentence);
+        if (!erase && typed)
+            return refuse("%s holds %s: --force and --yes-i-typed are not enough. Type the sentence at the prompt, or give it with\n"
+                          "install:   --erase-phrase='%s'", target, osw, sentence);
+    } else if (erase) {
+        return refuse("--erase-phrase is only for a disk that holds another operating system, and %s holds none", target);
+    }
     if (busy && !force) return refuse("%s is not empty: it holds %s. Give --force to overwrite it anyway", target, what);
 
     u64 total = d->size / d->ss;
@@ -730,16 +1157,39 @@ APPLET(install) {
     char s1[24], s2[24], s3[24];
     printf("install: the shrine is moved onto %s (%s%s%s, %s, %u-byte sectors). EVERYTHING ON IT IS LOST.\n", target, mib_text(d->size, s1, sizeof s1),
            strcmp(d->model, "-") ? ", " : "", strcmp(d->model, "-") ? d->model : "", d->driver, d->ss);
-    if (busy) printf("install: --force: it holds %s\n", what);
+    if (busy) printf("install: --force: it holds %s%s%s\n", os ? osw : "", os ? ": " : "", what);
     printf("install:   partition 1  TOUHOUOS-ESP  %s  EFI System Partition: EFI/BOOT/BOOTX64.EFI, kernel.elf, initrd.img, cmdline.txt\n",
            mib_text(esp.count * d->ss, s2, sizeof s2));
     printf("install:   partition 2  HUMANVILLAGE  %s  FAT32, %u-byte clusters, empty (the home directories are made at the first start)\n",
            mib_text(hv.count * d->ss, s3, sizeof s3), fh.cluster_bytes);
     printf("install:   files from %s; cmdline.txt: %s", from ? from : "the boot partition", newcmd);
-    if (dry) { printf("install: --dry-run: stopping here, nothing was written.\n"); return 0; }
+    if (dry) {
+        if (os) printf("install: --dry-run: going on would need this sentence, typed exactly: %s\n", sentence);
+        printf("install: --dry-run: stopping here, nothing was written.\n");
+        return 0;
+    }
 
-    /* ---- the user types the name */
-    if (typed) {
+    /* ---- the user types the sentence (another operating system on the disk) or the name */
+    if (os) {
+        if (typed && strcmp(typed, target)) return refuse("--yes-i-typed=%s does not name the disk %s", typed, target);
+        if (!erase) {
+            int tty = open("/dev/tty", O_RDWR);
+            if (tty < 0) return refuse("no terminal to ask on: give the sentence with --erase-phrase='%s' if you mean it", sentence);
+            char ask[512], answer[256];
+            int an = snprintf(ask, sizeof ask, "install: this erases %s on %s. To go on, type this sentence exactly (anything else stops):\n"
+                                               "install:   %s\n> ", osw, target, sentence);
+            if (an < 0 || an >= (int)sizeof ask) an = (int)strlen(ask);
+            fflush(stdout);
+            write(tty, ask, (size_t)an);
+            ssize_t r = read(tty, answer, sizeof answer - 1);
+            close(tty);
+            if (r < 0) r = 0;
+            answer[r] = 0;
+            answer[strcspn(answer, "\r\n")] = 0;
+            if (strcmp(answer, sentence)) return refuse("you typed '%s', not the sentence '%s'", answer, sentence);
+        }
+        printf("install: the sentence matches: %s on %s will be erased\n", osw, target);
+    } else if (typed) {
         if (strcmp(typed, target)) return refuse("--yes-i-typed=%s does not name the disk %s", typed, target);
     } else {
         int tty = open("/dev/tty", O_RDWR);
@@ -793,28 +1243,32 @@ APPLET(install) {
     fflush(stdout);
     u8 *dbuf = calloc(1, fe.cluster_bytes);
     if (!dbuf) kb_die("out of memory");
+    g_what = fe.what_dir;
     if (!rc) {
         dirent83(dbuf, "TOUHOUOS-ES", 0x28, 0, 0, 0);
         dirent83(dbuf + 32, "EFI        ", 0x10, 0, cefi, 0);
         for (int i = 1; i < 4; i++) dirent83(dbuf + 32 * (i + 1), files[i].name11, 0x20, files[i].ntres, files[i].first, (u32)files[i].size);
-        rc = write_cluster_data(fd, &fe, croot, dbuf, fe.cluster_bytes);
+        rc = write_cluster_data(fd, &fe, croot, dbuf, fe.cluster_bytes, 0);
     }
     if (!rc) {
         memset(dbuf, 0, fe.cluster_bytes);
         dirent83(dbuf, ".          ", 0x10, 0, cefi, 0);
         dirent83(dbuf + 32, "..         ", 0x10, 0, 0, 0);
         dirent83(dbuf + 64, "BOOT       ", 0x10, 0, cboot, 0);
-        rc = write_cluster_data(fd, &fe, cefi, dbuf, fe.cluster_bytes);
+        rc = write_cluster_data(fd, &fe, cefi, dbuf, fe.cluster_bytes, 0);
     }
     if (!rc) {
         memset(dbuf, 0, fe.cluster_bytes);
         dirent83(dbuf, ".          ", 0x10, 0, cboot, 0);
         dirent83(dbuf + 32, "..         ", 0x10, 0, cefi, 0);
         dirent83(dbuf + 64, files[0].name11, 0x20, files[0].ntres, files[0].first, (u32)files[0].size);
-        rc = write_cluster_data(fd, &fe, cboot, dbuf, fe.cluster_bytes);
+        rc = write_cluster_data(fd, &fe, cboot, dbuf, fe.cluster_bytes, 0);
     }
     free(dbuf);
-    for (int i = 0; i < 4 && !rc; i++) rc = write_cluster_data(fd, &fe, files[i].first, files[i].data, files[i].size);
+    for (int i = 0; i < 4 && !rc; i++) {
+        g_what = files[i].path;
+        rc = write_cluster_data(fd, &fe, files[i].first, files[i].data, files[i].size, 1);
+    }
     if (!rc) rc = fat_finish(fd, &fe);
     /* HUMANVILLAGE: an empty root directory holding the volume label. */
     if (!rc) {
@@ -824,7 +1278,8 @@ APPLET(install) {
         u8 *rb = calloc(1, fh.cluster_bytes);
         if (!rb) kb_die("out of memory");
         dirent83(rb, "HUMANVILLAG", 0x28, 0, 0, 0);
-        rc = write_cluster_data(fd, &fh, fh.root_cluster, rb, fh.cluster_bytes);
+        g_what = fh.what_dir;
+        rc = write_cluster_data(fd, &fh, fh.root_cluster, rb, fh.cluster_bytes, 0);
         free(rb);
         if (!rc) rc = fat_finish(fd, &fh);
     }
@@ -833,37 +1288,50 @@ APPLET(install) {
         fflush(stdout);
         rc = write_gpt(fd, total, d->ss, &esp, &hv, disk_guid, esp_guid, hv_guid);
     }
-    int werr = errno;
-    if (!rc) ioctl(fd, BLKFLSBUF, NULL);
+    int werr = g_fail_off != ~0ull ? g_fail_errno : errno;
+    /* The disk's write cache has to reach the medium before anything is read back; a failing flush means writes may be lost. */
+    int flush_err = 0;
+    if (!rc && ioctl(fd, BLKFLSBUF, NULL) < 0) flush_err = errno;
     ioctl(fd, BLKWRLOCK, &u);                               /* nothing below writes: hand the unlock back at once */
 
-    /* ---- read it back */
+    /* ---- read back every byte that was written (files, directories, FATs, boot sectors, both GPTs, the MBR) and compare */
     int bad = 0;
-    if (!rc) {
-        for (int i = 0; i < 4 && !bad; i++) {
-            u8 *back = malloc(files[i].size + 1);
-            if (!back || read_at(fd, cluster_off(&fe, files[i].first), back, files[i].size) || memcmp(back, files[i].data, files[i].size)) {
-                fprintf(stderr, "install: %s does not read back as written\n", files[i].path);
-                bad = 1;
-            }
-            free(back);
-        }
-        u8 *h = malloc(d->ss);
-        if (h && !read_at(fd, d->ss, h, d->ss)) {
-            u32 want = get32(h + 16);
-            put32(h + 16, 0);
-            if (memcmp(h, "EFI PART", 8) || crc32_of(h, 92) != want) { fprintf(stderr, "install: the GPT header does not read back as written\n"); bad = 1; }
-        } else bad = 1;
-        free(h);
+    u64 checked = 0;
+    if (!rc && !flush_err) {
+        printf("install: reading back and comparing everything that was written\n");
+        fflush(stdout);
+        bad = read_back(fd, d->ss, &checked);
     }
     close(fd);
     sync();
     if (rc) {
-        fprintf(stderr, "install: writing %s failed: %s. The disk is now in an unknown state; nothing else was touched.\n", target, strerror(werr));
+        if (g_fail_off != ~0ull)
+            fprintf(stderr, "install: writing %s failed at byte %llu (sector %llu, %s): %s.\n", target, (unsigned long long)g_fail_off,
+                    (unsigned long long)(g_fail_off / d->ss), g_fail_what, strerror(werr));
+        else
+            fprintf(stderr, "install: writing %s failed: %s.\n", target, strerror(werr));
+        fprintf(stderr, "install: TouhouOS is NOT installed. The partition table is written last, so %s does not look like a finished install,\n"
+                        "install: but what was on it before is partly overwritten. Nothing else was touched. dmesg has the disk's own error.\n", target);
+        gap_log("install: FAILED: a write to the target disk failed");
         return 1;
     }
-    if (bad) return 1;
-    printf("install: read back and checked. TouhouOS is installed on %s.\n", target);
+    if (flush_err) {
+        fprintf(stderr, "install: flushing the write cache of %s failed: %s. The disk may not hold what was written.\n"
+                        "install: TouhouOS is NOT reliably installed: do not start from %s. dmesg has the disk's own error.\n", target, strerror(flush_err),
+                target);
+        gap_log("install: FAILED: the cache flush of the target disk failed");
+        return 1;
+    }
+    if (bad) {
+        fprintf(stderr, "install: *** %s DOES NOT READ BACK AS WRITTEN ***\n"
+                        "install: %d of %d written areas differ or cannot be read (listed above): the disk, its cable or this system's driver for\n"
+                        "install: it lost or changed data. TouhouOS is NOT reliably installed: do not start from %s. Try once more; if it happens\n"
+                        "install: again, do not trust this disk with this system.\n", target, bad, g_next, target);
+        gap_log("install: FAILED: the target disk does not read back as written");
+        return 1;
+    }
+    printf("install: every byte written was read back and matches (%llu KiB in %d areas).\n", (unsigned long long)((checked + 1023) / 1024), g_next);
+    printf("install: TouhouOS is installed on %s.\n", target);
     printf("install: %s TOUHOUOS-ESP (boot files, read-only under blk.ro), %s HUMANVILLAGE (homes, writable: cmdline.txt says blk.rw=%s).\n", p1, p2, hg);
     printf("install: the new partitions show up here after a restart. Take the stick out, restart, and pick the disk in the firmware's\n"
            "install: boot menu (F12 on the Dell) if it does not start by itself.\n");

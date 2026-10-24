@@ -104,6 +104,8 @@ clock is hours off on the first boot, the PC's clock chip holds local time (Wind
 | `bootlog=off` | do not keep `TOUHOU.LOG` / `TOUHOU.PRV` on the stick |
 | `nonet` | leave every network card alone (no I219/RTL8168/e1000 probing at all; the loopback still works): the escape hatch if the boot stops around the network lines |
 | `noaudio` | leave the sound controller alone (HDA/AC'97 are not probed) |
+| `ahci=off` | leave the SATA controllers alone (the AHCI driver does not probe at all): the escape hatch if the boot stops while the internal disk is looked at for the first time |
+| `nvme=off` | the same for NVMe drives |
 | `text`, `nogui` | no desktop, a text shell |
 | `login` | ask who is at the door (login screen) instead of letting `reimu` in |
 | `autologin=NAME` | open NAME's desktop instead of reimu's |

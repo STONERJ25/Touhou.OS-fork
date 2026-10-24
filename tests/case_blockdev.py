@@ -317,6 +317,25 @@ def blk_nvme_read():
         must(g.ok("cat /proc/nvme"), r'nvme0 00:02\.0 1b36:0010 "QEMU NVMe Ctrl" serial TOUHOU01 fw \S+ version \d+\.\d+ cmds \d+ errors 0 flushes \d+ bounced \d+\s+nsid 1 nvme0n1 8192 x 512')
 
 
+@test
+def blk_driver_off_switches():
+    """ahci=off and nvme=off leave the controllers alone (the way past a driver that misbehaves on real hardware): no disks, one log line each."""
+    sata = pattern_image("off-sata", 4)
+    nvme = pattern_image("off-nvme", 4)
+    extra = sata_disk("d1", sata, "ide.1", model="TOUHOU-SSD") + nvme_ctrl("nvme-a", "TOUHOU01", [(nvme, 1)])
+    with Guest("t-blk-off", extra, cmdline="ahci=off nvme=off") as g:
+        log = g.log()
+        must(log, r"ahci: disabled on the kernel command line \(ahci=off\)")
+        must(log, r"nvme: disabled on the kernel command line \(nvme=off\)")
+        assert "ahci0:" not in log and "nvme0:" not in log, "a driver that was switched off still probed its controller"
+        names = sorted(g.partitions())
+        assert not [n for n in names if n.startswith("sd") or n.startswith("nvme")], f"disks appeared although both drivers are off: {names}"
+    with Guest("t-blk-off-one", extra, cmdline="nvme=off") as g:                # one switch must not affect the other driver
+        must(g.log(), r"nvme: disabled on the kernel command line")
+        names = sorted(g.partitions())
+        assert "sdb" in names and not [n for n in names if n.startswith("nvme")], f"ahci should still work with nvme=off: {names}"
+
+
 # -------------------------------------------------------------------------------------------------- writes and copies
 
 def expected_copy(dst_bytes, src_bytes, plan):

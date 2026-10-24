@@ -407,7 +407,11 @@ APPLET(shutdown) {
     return applet_poweroff(argc, argv);
 }
 
-APPLET(sync) { (void)argc; (void)argv; sync(); return 0; }
+APPLET(sync) {
+    (void)argc; (void)argv;
+    if (sync() < 0) { kb_error("writing back to a disk failed: %s (see dmesg; the data is still in memory)", strerror(errno)); return 1; }
+    return 0;
+}
 
 APPLET(dmesg) {
     int fd = open("/dev/kmsg", O_RDONLY);

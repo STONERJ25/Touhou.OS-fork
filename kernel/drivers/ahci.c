@@ -176,7 +176,10 @@ static bool g_force_hba_reset;                  /* ahci.hbareset    reset the HB
 static u32  g_io_timeout = T_IO_MS;             /* ahci.iotimeout=N ms to wait for a read/write */
 static u32  g_drop_after;                       /* ahci.dropcmd=N   never issue the N-th read/write, so it times out for real */
 static u32  g_rw_count;
-static bool g_nosync;                           /* ahci.nosync      do not flush the write cache after every write request */
+#define LOSE_MAX 8
+static u64  g_lose[LOSE_MAX];                   /* ahci.losewrite=LBA[,LBA..]  report the first write covering each LBA as done without */
+static int  g_nlose;                            /*   sending it: a disk that loses a write (tests install's read-back); each LBA once */
+static bool g_nosync;                          /* ahci.nosync      do not flush the write cache after every write request */
 static u64  g_data_limit = DMA_LIMIT;           /* blk.dmalimit_mb=N  treat caller memory above N MiB as unreachable (tests the bounce path) */
 
 #define PR(p, off)      mmio_r32((p)->regs, (off))
@@ -411,6 +414,18 @@ static void build_cfis(u8 *f, const AtaCmd *c) {
 
 static void port_recover(AhciPort *p, const char *why);
 
+/* ahci.losewrite: true (and that LBA is used up) if this write covers one of the listed LBAs. Never set in normal use. */
+static bool lose_write(AhciPort *p, const AtaCmd *c) {
+    for (int i = 0; i < g_nlose; i++) {
+        if (g_lose[i] < c->lba || g_lose[i] >= c->lba + c->count) continue;
+        klog("Kappa", "ahci%d port %d: test knob ahci.losewrite: the write of lba %lu (%u sectors) is reported done but was never sent to the disk",
+             p->hba->index, p->num, (unsigned long)c->lba, (unsigned)c->count);
+        g_lose[i] = g_lose[--g_nlose];
+        return true;
+    }
+    return false;
+}
+
 /*
  * Runs one command on slot 0 and waits for it. The caller holds p->lock and has filled the PRDT (nprd entries).
  * Any failure resets the link (port_recover). Returns 0; -EAGAIN if the command failed for a reason that a retry may cure
@@ -438,6 +453,7 @@ static int ahci_issue(AhciPort *p, const AtaCmd *c, u32 nprd, u32 timeout_ms) {
     barrier();
     bool is_rw = c->cmd == ATA_READ_DMA_EXT || c->cmd == ATA_WRITE_DMA_EXT;
     bool lost = is_rw && g_drop_after && ++g_rw_count == g_drop_after;         /* test knob: pretend this command vanished */
+    if (c->cmd == ATA_WRITE_DMA_EXT && g_nlose && lose_write(p, c)) return 0;  /* test knob: a write the disk "forgets" */
     if (!lost) PW(p, PX_CI, 1);
     p->n_cmds++;
 
@@ -584,6 +600,12 @@ static int ahci_rw(AhciPort *p, u64 lba, u32 count, void *buf, bool write) {
 
 static int ahci_blk_read(BlockDev *d, u64 lba, u32 count, void *buf) { return ahci_rw(d->priv, lba, count, buf, false); }
 
+/*
+ * FLUSH CACHE (EXT). A disk that cannot write a sector of its cache stops the flush there and reports an error (ATA ACS-3, FLUSH
+ * CACHE EXT: the LBA field names the sector); only a further flush command writes the rest of the cache. So after a reported error the flush
+ * is sent once more (one attempt), as Linux does (ata_eh_maybe_retry_flush), to get everything else onto the medium. The request
+ * still fails with -EIO: one sector of it is lost. Timeouts and link errors are already retried inside ahci_issue_retry.
+ */
 static int ahci_blk_flush(BlockDev *d) {
     AhciPort *p = d->priv;
     if (!p->flush_cmd) return 0;
@@ -591,6 +613,12 @@ static int ahci_blk_flush(BlockDev *d) {
     AtaCmd c = { .cmd = p->flush_cmd, .device = 0x40 };
     int rc = ahci_issue_retry(p, &c, 0, T_FLUSH_MS);
     p->n_flushes++;
+    if (rc && !p->dead) {
+        int again = ahci_issue(p, &c, 0, T_FLUSH_MS);          /* one attempt: a disk that keeps timing out has had its retries */
+        p->n_flushes++;
+        klog("Kappa", "ahci%d port %d: the cache flush failed; flushed once more for the rest of the cache (%s); the write is reported as failed",
+             p->hba->index, p->num, again ? "failed again" : "that went through");
+    }
     mutex_unlock(&p->lock);
     return rc;
 }
@@ -982,9 +1010,23 @@ static void read_knobs(void) {
     if ((v = cmdline_int("blk.dmalimit_mb", 0)) > 0) g_data_limit = (u64)v << 20;
     if ((v = cmdline_int("ahci.iotimeout", 0)) > 0) g_io_timeout = (u32)v;
     if ((v = cmdline_int("ahci.dropcmd", 0)) > 0) g_drop_after = (u32)v;
+    char lose[160];
+    if (cmdline_value("ahci.losewrite", lose, sizeof lose)) {
+        for (const char *s = lose; *s >= '0' && *s <= '9' && g_nlose < LOSE_MAX;) {
+            u64 lba = 0;
+            while (*s >= '0' && *s <= '9') lba = lba * 10 + (u64)(*s++ - '0');
+            g_lose[g_nlose++] = lba;
+            if (*s == ',') s++;
+        }
+    }
 }
 
 void ahci_init(void) {
+    char sw[8];
+    if (cmdline_value("ahci", sw, sizeof sw) && (!strcmp(sw, "off") || !strcmp(sw, "0") || !strcmp(sw, "no"))) {
+        klog("Kappa", "ahci: disabled on the kernel command line (ahci=off); the SATA controllers are left alone");
+        return;
+    }
     read_knobs();
     if (cmdline_flag("ahci.selftest")) ahci_identify_selftest();
     for (PciDev *d = pci_find_class(0x01, 0x06, 0x01, NULL); d; d = pci_find_class(0x01, 0x06, 0x01, d))
