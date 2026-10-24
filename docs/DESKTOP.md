@@ -145,9 +145,10 @@ an N x N block of screen pixels and the desktop looks like a 1280x720 one, only 
 * **1x is unchanged**: every scaled path is a separate branch taken only when the scale is above 1. `tests/pixel_identity.py` checks it bit
   for bit: it boots two builds at 1024x768 with the clock set to a fixed time and compares screenshots of the desktop, the start menu, a
   terminal and seven applications (Calculator, Notebook, Explorer, Minesweeper, Sketchbook, Control Panel, kdemo) byte for byte. Against
-  `origin/main` at b8f0e84 every scene matched (2026-10-24); the only differences were two figures of data, the memory in use and the
-  free space of `/tmp`, which differ by 0.1 MB between builds of different size and are blanked by the script. The existing desktop and
-  application tests pass unchanged.
+  `origin/main` at b8f0e84 and again at 395eb79 (after the job control and installer merges) every frame of every scene had an identical
+  twin in the other run (2026-10-24). Pixels that show data rather than drawing are blanked in both runs first: the panel's CPU and memory
+  meters, and the uptime, the memory in use and the free space of `/tmp` (these differ by 0.1 MB between builds of different size) on the
+  Control Panel and in Explorer. The existing desktop and application tests pass unchanged.
 * **Tests**: `tests/case_hidpi.py` (`hidpi_`): the 1x metrics, 2560x1440 (OVMF in QEMU offers it; start menu and terminal opened with
   clicks, title bar, glyphs exactly twice as large), `ui.scale=2` at 2048x1536 (the 1024x768 layout doubled) with a click into
   Minesweeper, `ui.scale=2` at 1920x1080 (where the automatic choice is 1) with 7 + 2 = clicked on the Calculator's keypad,

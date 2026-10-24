@@ -12,8 +12,9 @@ the minutes) and the pointer parked in the same place; then six frames are grabb
 ones kept (a blinking caret, or a grab in the middle of a panel repaint, gives a second or third frame). `compare` passes when every
 scene has at least one frame that is the same, byte for byte, in both runs, and prints where the other frames differ.
 
-Two figures are data, not drawing, and differ by 0.1 MB between builds of different size: the memory in use on the Control
-Panel's System page and the free space in Explorer's status bar. One digit cell of each is blanked before comparing.
+Some pixels show data, not drawing, and are blanked in both runs before comparing: the panel's CPU and memory meters (the CPU load
+of the moment), and on the Control Panel's System page the uptime and the memory in use, in Explorer's status bar the free space of
+/tmp (both differ by 0.1 MB between builds of different size).
 """
 import hashlib
 import sys
@@ -22,7 +23,9 @@ from pathlib import Path
 
 FIXED = "2026-10-24 12:00:00"
 PARK = (1000, 400)          # the pointer, parked over the wallpaper's right edge
-MASKS = {"controlpanel": (528, 392, 545, 409), "explorer": (752, 668, 769, 685)}
+MASK_ALL = [(884, 736, 936, 766)]                                       # the panel's CPU and memory meters
+MASKS = {"controlpanel": [(528, 392, 545, 409), (540, 352, 620, 370)],  # memory in use, uptime
+         "explorer": [(752, 668, 769, 685)]}                           # free space of /tmp
 
 
 def shots(checkout, out):
@@ -98,8 +101,7 @@ def compare(ref, br):
         res = {}
         for hsh in lines[1:]:
             a = np.frombuffer((d / f"{scene}-{hsh}.rgb").read_bytes(), np.uint8).reshape(h, w, 3).copy()
-            if scene in MASKS:
-                x0, y0, x1, y1 = MASKS[scene]
+            for x0, y0, x1, y1 in MASK_ALL + MASKS.get(scene, []):
                 a[y0:y1, x0:x1] = 0
             res[hashlib.sha256(a.tobytes()).hexdigest()[:16]] = a
         return res
