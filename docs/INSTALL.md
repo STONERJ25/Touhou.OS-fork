@@ -315,7 +315,12 @@ HUMANVILLAGE volume (Known gaps), an upgrade-in-place mode.
 
 The ESP write grant (task 10, branch `cloud/esp-grant`, 2026-10-24): done and tested in QEMU (the three `espgrant_` tests, power cuts in
 `espgrant_power_cut`), with the applet, its manual page and the FAT rename order it needs. Not done: the update client and the loader's
-fallback (task 5) that will use it; anything on real hardware.
+fallback (task 5) that will use it; anything on real hardware; the merge with `cloud/fat-ordering` (task 7, both rewrite `fat_rename()`,
+see How to resume item 3). Results on Ubuntu 24.04, QEMU 8.2, TCG, `TOUHOU_TIMEOUT_SCALE=3`: `espgrant_,install_,blk,storage,usbstor,
+selftest,utest,shell,manual` gave 87 passed, 1 failed (`usbstor_4k_blocks`, which also fails alone: the known QEMU 8.2 limitation in
+[LINUX.md](LINUX.md)). After merging `main` at `77d9dbd` (hi-dpi), `espgrant_,install_,blk,selftest,utest,shell,manual` gave 36 passed,
+0 failed. Power cuts: 3 x 4 default runs, plus 16 runs cut after `replacing`: all pass. The control with the old rename order failed
+1 run in 10 (UPDATE.md).
 
 ## How to resume
 
