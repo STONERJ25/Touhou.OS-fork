@@ -1043,6 +1043,7 @@ static void tx_node(Text *t, Node *n, int depth) {
             char fd[16] = "";
             if (r->fd != deffd && r->kind != R_OUTERR && r->kind != R_OUTERR_APPEND) snprintf(fd, sizeof fd, "%d", r->fd);
             tx_put(t, sep, 0); tx_put(t, fd, 0); tx_put(t, ops[r->kind], 0);
+            if (r->kind != R_DUPIN && r->kind != R_DUPOUT) tx_put(t, " ", 0);         /* "> file", but "2>&1" */
             if (r->kind == R_HEREDOC) tx_put(t, "...", 0);
             else tx_put(t, r->target, 1);
             sep = " ";

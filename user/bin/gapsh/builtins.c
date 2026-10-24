@@ -216,8 +216,8 @@ int g_exit_warned = -10;                /* the line on which `exit` last warned 
  * jobs get SIGHUP and SIGCONT (see jobs_hangup_stopped). */
 int exit_blocked_by_jobs(void) {
     if (!g_interactive || g_exit_warned >= g_line_no - 1 || !jobs_stopped()) return 0;
-    fprintf(stderr, "There are stopped jobs. Like Sakuya's knives they hang frozen in time; "
-                    "exit again to leave anyway (they get SIGHUP), or use jobs, fg and kill.\n");
+    fprintf(stderr, "There are stopped jobs: Sakuya has stopped their clocks (`jobs` lists them).\n"
+                    "Leave again at once to go anyway; they will get SIGHUP.\n");
     g_exit_warned = g_line_no;
     return 1;
 }
