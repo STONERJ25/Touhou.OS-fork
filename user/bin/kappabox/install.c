@@ -160,18 +160,21 @@ typedef struct {
     int info;                   /* the firmware said which partition it was */
     int found;                  /* ... and it is registered here, signature checked */
     char part[32], disk[32];
-    char suspects[8][32];       /* disks with a partition of the same number, start and size whose signature could not be confirmed */
+    char suspects[8][32];       /* disks with a partition of the same number, start and size that could be it too: the signature could not
+                                   be read, or matched a second time (two sticks written from one image carry the same GUIDs) */
     int nsuspects;
 } Boot;
 
+/* 1: the disk carries the boot partition's signature, 0: it carries another one (a disk with the same layout, such as an older install),
+ * -1: cannot tell. */
 static int boot_signature_matches(const char *disk, unsigned number, const char *table, const char *sig) {
     Row *d = row(disk);
-    if (!d) return 0;
+    if (!d) return -1;
     char path[48];
     snprintf(path, sizeof path, "/dev/%s", disk);
     int fd = open(path, O_RDONLY);
-    if (fd < 0) return 0;
-    int ok = 0;
+    if (fd < 0) return -1;
+    int ok = -1;
     u8 *buf = malloc(4096);
     if (buf && !strcmp(table, "mbr")) {
         if (!read_at(fd, 0, buf, 512)) {
@@ -209,11 +212,12 @@ static void find_boot(Boot *b) {
         else if (!strcmp(key, "table")) strlcpy(table, v1, sizeof table);
         else if (!strcmp(key, "signature")) strlcpy(sig, v1, sizeof sig);
         else if (!strcmp(key, "device") && n == 3) {
-            if (!b->found && boot_signature_matches(v2, number, table, sig)) {
+            int m = boot_signature_matches(v2, number, table, sig);
+            if (m == 1 && !b->found) {
                 b->found = 1;
                 strlcpy(b->part, v1, sizeof b->part);
                 strlcpy(b->disk, v2, sizeof b->disk);
-            } else if (b->nsuspects < 8) {
+            } else if (m != 0 && b->nsuspects < 8) {
                 strlcpy(b->suspects[b->nsuspects++], v2, sizeof b->suspects[0]);
             }
         }
@@ -780,7 +784,11 @@ APPLET(install) {
         files[i].first = fat_alloc(&fe, (u32)((files[i].size + fe.cluster_bytes - 1) / fe.cluster_bytes));
         if (files[i].size && !files[i].first) { rc = -1; errno = ENOSPC; }
     }
-    printf("install: writing the EFI System Partition %s1\n", target);
+    char p1[40], p2[40];                                    /* the names the kernel will give them: sdb1, nvme0n1p1 */
+    const char *sep = isdigit((unsigned char)target[strlen(target) - 1]) ? "p" : "";
+    snprintf(p1, sizeof p1, "%s%s1", target, sep);
+    snprintf(p2, sizeof p2, "%s%s2", target, sep);
+    printf("install: writing the EFI System Partition %s\n", p1);
     fflush(stdout);
     u8 *dbuf = calloc(1, fe.cluster_bytes);
     if (!dbuf) kb_die("out of memory");
@@ -809,7 +817,7 @@ APPLET(install) {
     if (!rc) rc = fat_finish(fd, &fe);
     /* HUMANVILLAGE: an empty root directory holding the volume label. */
     if (!rc) {
-        printf("install: writing the HUMANVILLAGE volume %s2\n", target);
+        printf("install: writing the HUMANVILLAGE volume %s\n", p2);
         fflush(stdout);
         fh.root_cluster = fat_alloc(&fh, 1);
         u8 *rb = calloc(1, fh.cluster_bytes);
@@ -855,7 +863,7 @@ APPLET(install) {
     }
     if (bad) return 1;
     printf("install: read back and checked. TouhouOS is installed on %s.\n", target);
-    printf("install: %s1 TOUHOUOS-ESP (boot files), %s2 HUMANVILLAGE (homes, writable: cmdline.txt says blk.rw=%s).\n", target, target, dg);
+    printf("install: %s TOUHOUOS-ESP (boot files), %s HUMANVILLAGE (homes, writable: cmdline.txt says blk.rw=%s).\n", p1, p2, dg);
     printf("install: the new partitions show up here after a restart. Take the stick out, restart, and pick the disk in the firmware's\n"
            "install: boot menu (F12 on the Dell) if it does not start by itself.\n");
     char msg[160];

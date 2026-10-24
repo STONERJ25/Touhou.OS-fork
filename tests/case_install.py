@@ -235,6 +235,61 @@ def install_unlock_rules():
     assert sha_file(wp) == before_wp
 
 
+class StickGuest(Guest):
+    """Like Guest, but the system starts from a stick image on USB (as on the owner's PC) instead of the fat: ESP."""
+
+    def __init__(self, name, stick, extra=()):
+        super().__init__(name, extra)
+        self.stick = stick
+
+    def __enter__(self):
+        self.vm = Qemu(cmdline="", name=self.name, extra=self.extra, mem=self.mem, boot_image=self.stick, boot_bus="usb")
+        self.vm.start()
+        try:
+            self.vm.expect(r"root@gensokyo \S+ # ", timeout=240)
+        except Exception:
+            self.vm.stop()
+            raise
+        return self
+
+
+@test
+def install_from_stick_over_old_install():
+    """Started from a stick image on USB (the Dell's case): the files come from the stick's FAT32 ESP; a disk with the same layout but other
+    GUIDs (an older install) is told apart from the stick and reinstalled with --force; a second copy of the stick image (same GUIDs) is
+    refused because it cannot be told apart from the disk the system started from."""
+    stick = IMG_DIR / "stick.img"
+    IMG_DIR.mkdir(parents=True, exist_ok=True)
+    out = subprocess.run([sys.executable, str(ROOT / "tools" / "mkimage.py"), "--no-build", "--out", str(stick), "--size", "256M",
+                          "--cmdline", "text user=root blk.ro"], capture_output=True, text=True)
+    assert out.returncode == 0, out.stdout[-800:] + out.stderr[-800:]
+    twin = IMG_DIR / "stick-twin.img"
+    twin.write_bytes(stick.read_bytes())
+    old = blank("old-install", 512)
+    mkdisk.build_image(str(old), 512 * MiB, [dict(name="TOUHOUOS-ESP", kind="fat32", size=64 * MiB, esp=True, files={"/kernel.elf": b"old"}),
+                                             dict(name="HUMANVILLAGE", kind="fat32", size="rest", files={"/reimu/old.txt": b"old home\n"})], seed=2)
+    twin_sha = sha_file(twin)
+    extra = nvme_ctrl("ol", "OLDINST1", [(old, 1)]) + sata_disk("tw", twin, "ide.1", model="TWIN-STICK")
+    with StickGuest("t-install-stick", stick, extra) as g:
+        boot = g.ok("cat /proc/bootdisk")
+        must(boot, r"table gpt\nstart 2048\nsize 131072\n")
+        must(boot, r"device nvme0n1p1 nvme0n1")                    # same number, start and size as the stick's ESP ...
+        parts = g.partitions()
+        twin_dev = device_by_model(parts, "TWIN-STICK")
+        stick_dev = [n for n, r in parts.items() if r["parent"] == "-" and r["driver"] == "usb-storage"]
+        assert len(stick_dev) == 1 and re.search(rf"device {stick_dev[0]}1 {stick_dev[0]}\n", boot), (stick_dev, boot)
+        listing = g.ok("install")
+        must(listing, r"(?m)^sd[a-z]+\s.*the system was started from this disk")
+        for dev in (stick_dev[0], twin_dev):           # the stick and its twin carry the same GUIDs: neither can be ruled out
+            out, rc = g.run(f"install --force --yes-i-typed={dev} {dev}")
+            assert rc == 1 and re.search(r"could not be ruled out|is the disk this system was started from", out), out
+        out = g.ok(f"install --force --yes-i-typed=nvme0n1 --cmdline '{INSTALLED_CMDLINE}' nvme0n1", timeout=600)   # ... but other GUIDs
+        assert "TouhouOS is installed on nvme0n1" in out, out
+        must(g.ok("dmesg"), r"fat32: sd[a-z]+1 mounted on /BambooForest/install-esp\.\d+, .*read-only")
+    assert sha_file(twin) == twin_sha, "the twin of the stick was modified"
+    check_installed(old)
+
+
 @test
 def install_refusals():
     """Nothing is written when: the disk has partitions (no --force), the typed name is wrong (at the terminal or --yes-i-typed), the caller

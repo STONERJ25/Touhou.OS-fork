@@ -93,7 +93,9 @@ All checks run before the disk is opened for writing, in this order; each refusa
 1. **Root only** (`geteuid`); the kernel checks again at the unlock.
 2. **A whole disk** that exists in `/proc/partitions` (`sdb1` is refused: "a partition of sdb"), with 512- or 4096-byte sectors.
 3. **Not the boot disk**: the disk holding the partition `/proc/bootdisk` points at (signature confirmed) is refused even with `--force`. A disk
-   that has a partition with the right number, start and size but whose signature could not be confirmed is refused as well. When the
+   that has a partition with the right number, start and size is refused as well when its signature cannot be read, or when it matches a
+   second time (two sticks written from one image carry the same GUIDs); a disk whose signature is a different one (an older install,
+   which has the very same layout) is not the boot disk and can be overwritten with `--force`. When the
    firmware did not say where the system came from, `--force` is not accepted at all (the boot disk, which always has partitions, cannot be
    told apart then).
 4. **Not in use**: a disk with any mounted partition (or mounted itself) is refused even with `--force` (`umount` first).
@@ -178,10 +180,11 @@ line, HUMANVILLAGE mounted read-write and (SATA, NVMe) the `blk.rw=` line.
 | `install_nvme_boots_desktop` | NVMe target, confirmation typed at the terminal prompt; boots alone from NVMe |
 | `install_virtio_boots_desktop` | virtio target holding a whole-disk FAT volume without partition table: refused without `--force`, installed with it (virtio is never read-only, so the unlock logs "it was writable anyway"); boots alone from virtio |
 | `install_nvme_4k` | NVMe namespace with 4096-byte blocks: 258 MiB ESP, checker clean, layout equal to mkdisk's 4Kn layout |
+| `install_from_stick_over_old_install` | the Dell's situation: started from a `tools/mkimage.py` stick image on USB, so the files come from the stick's FAT32 ESP; an older install on NVMe (same layout, other GUIDs, so `/proc/bootdisk` lists its partition 1 as a candidate too) is told apart by its signature and reinstalled with `--force`; a byte copy of the stick on SATA (same GUIDs) is refused like the stick itself; the copy stays unchanged |
 | `install_unlock_rules` | `user/bin/unlocktest.c` against the kernel directly: starts read-only by policy, wrong name EINVAL, read-only file EBADF, a non-root child holding the open file gets EPERM (and the Eiki line), unlock, state bits, a second open and a partition stay read-only, partition node EINVAL, a write through the unlocked file (also from a forked child) lands and reads back, BLKWRLOCK and close release it, a read-only virtio medium gives EROFS, a mounted partition gives EBUSY; on the host the one written block is the only change to the image |
 | `install_refusals` | the listing (boot disk, partitions, empty); refused with nothing written: partitions without `--force`, `--yes-i-typed` with another or differently-cased name, non-root (`su reimu`), the boot disk with `--force`, a partition name, a missing disk, a disk that is too small, a mounted partition with `--force`, three wrong answers typed at the prompt (another disk, empty, extra words); `--dry-run` shows the plan and the boot partition's command line plus `blk.rw=`; no unlock happened; every image byte-identical |
 
-Results on this branch (Ubuntu 24.04, QEMU 8.2, TCG, `TOUHOU_TIMEOUT_SCALE=2`): all six pass; the regression groups named in the report of
+Results on this branch (Ubuntu 24.04, QEMU 8.2, TCG, `TOUHOU_TIMEOUT_SCALE=2`): all seven pass; the regression groups named in the report of
 the branch pass as well (see the pull request).
 
 ## Known gaps
@@ -197,6 +200,8 @@ the branch pass as well (see the pull request).
   check of the `parked/usb-dirty-fsck` branch (not merged here) or the stick.
 * No in-place upgrade: `install` replaces the whole disk, homes included. Updating `kernel.elf`/`initrd.img` on an installed ESP is task 5
   (the update client); by hand it is `mount -t fat32 /dev/sda1 /mnt` (the installed disk is writable through `blk.rw=`) and `cp`.
+* Two disks written from one image (same GUIDs) cannot be told apart: the first one the kernel lists (SATA before USB) counts as the boot
+  disk and its ESP is where the files are copied from; both are refused as targets. The files are the same as long as the copies are.
 * The kernel does not re-read the partition table after `install`; the new partitions appear after a restart.
 * `/proc/partitions` prints a GPT name with spaces as it is (`EFI system partition`), which shifts the later columns for every reader of that
   file (`lsblk` and `install` show such a label cut at the first space). Cosmetic, older than this branch.
@@ -221,7 +226,7 @@ the branch pass as well (see the pull request).
 
 ## State when paused
 
-Done and tested in QEMU: the tool, the unlock, `blk.rw=`, `/proc/bootdisk`, the six tests, the manual page. Not done: anything on real
+Done and tested in QEMU: the tool, the unlock, `blk.rw=`, `/proc/bootdisk`, the seven tests, the manual page. Not done: anything on real
 hardware (the owner's Dell needs AHCI mode first and a decision about its internal disk), the mount-policy preference for a writable
 HUMANVILLAGE volume (Known gaps), an upgrade-in-place mode.
 
