@@ -74,7 +74,7 @@ int text_cols(void) {
 
 int vcol_of(long l, int c) {
     const char *s = ls(l);
-    int len = (int)L[l].len, v = 0, i = 0;
+    int len = (int)LN(l).len, v = 0, i = 0;
     while (i < c && i < len) {
         uint32_t cp;
         int n = pt_u8_decode((const unsigned char *)s + i, (size_t)(len - i), &cp);
@@ -86,7 +86,7 @@ int vcol_of(long l, int c) {
 
 int vcol_end(long l, int c) {
     const char *s = ls(l);
-    int len = (int)L[l].len;
+    int len = (int)LN(l).len;
     int v = vcol_of(l, c);
     if (c >= len) return v;
     uint32_t cp;
@@ -94,11 +94,11 @@ int vcol_end(long l, int c) {
     return v + glyph_w(cp, v) - 1;
 }
 
-int line_vwidth(long l) { return vcol_of(l, (int)L[l].len); }
+int line_vwidth(long l) { return vcol_of(l, (int)LN(l).len); }
 
 int byte_at_vcol(long l, int vcol) {
     const char *s = ls(l);
-    int len = (int)L[l].len, v = 0, i = 0;
+    int len = (int)LN(l).len, v = 0, i = 0;
     while (i < len) {
         uint32_t cp;
         int n = pt_u8_decode((const unsigned char *)s + i, (size_t)(len - i), &cp);
@@ -110,12 +110,14 @@ int byte_at_vcol(long l, int vcol) {
     return len;
 }
 
-static int row_count(long l) {
+int rows_of(long l) {                                    /* screen rows line l takes */
     if (!o.wrap) return 1;
     int w = line_vwidth(l) + (o.list ? 1 : 0);
     int a = text_cols();
     return w <= a ? 1 : (w + a - 1) / a;
 }
+
+static int row_count(long l) { return rows_of(l); }
 
 /* Rows used by lines first..last-1. */
 static long rows_between(long first, long last) {
@@ -124,39 +126,107 @@ static long rows_between(long first, long last) {
     return r;
 }
 
+/* The first line below the window: lines topline .. returned-1 are shown completely. */
+long win_botline(void) {
+    int th = text_rows();
+    long used = 0, l = topline;
+    if (l >= nl) return nl;
+    used = row_count(l) - topoff;
+    if (used > th) return l;                             /* a single line taller than the window */
+    l++;
+    while (l < nl) {
+        int rc = row_count(l);
+        if (used + rc > th) break;
+        used += rc;
+        l++;
+    }
+    return l;
+}
+
+/* The cursor line in the middle of the window (Vim's scroll_cursor_halfway): lines are added below and above the cursor line in
+ * turn; lines that do not exist below the end of the file count for the balance but not for the space. */
+void scroll_halfway(void) {
+    int th = text_rows();
+    long top = cur.l, bot = cur.l, used = row_count(cur.l), above = 0, below = 0;
+    topoff = 0;
+    while (top > 0) {
+        if (below <= above) {
+            if (bot < nl - 1) {
+                bot++;
+                int h = row_count(bot);
+                used += h;
+                if (used > th) break;
+                below += h;
+            } else below++;
+        }
+        if (below > above) {
+            long t = top - 1;
+            int h = row_count(t);
+            used += h;
+            if (used > th) break;
+            above += h;
+            top = t;
+        }
+    }
+    topline = top;
+}
+
+void scroll_cursor_bottom(void) {                        /* the cursor line becomes the last one in the window */
+    int th = text_rows();
+    long t = cur.l, used = row_count(cur.l);
+    topoff = 0;
+    while (t > 0 && used + row_count(t - 1) <= th) { t--; used += row_count(t); }
+    topline = t;
+}
+
 void scroll_to_cursor(void) {
     int th = text_rows();
-    if (th <= 0) return;
+    if (th <= 0) { topoff = 0; return; }
     if (topline >= nl) topline = nl - 1;
     if (topline < 0) topline = 0;
-    if (cur.l < topline) {
-        topline = topline - cur.l > th ? imax(0, cur.l - th / 2) : cur.l;
-    } else if (cur.l - topline > th + 1) {
-        topline = cur.l - th / 2;
-        if (topline < 0) topline = 0;
-        if (cur.l == nl - 1 || nl - topline < th) topline = imax(0, nl - th);
-    }
-    if (cur.l >= topline) {
-        int need = row_count(cur.l);
-        while (topline < cur.l && rows_between(topline, cur.l) + need > th) topline++;
+    if (topoff < 0) topoff = 0;
+    int avail = text_cols(), cr = row_count(cur.l), crow = 0;
+    int v = (mode == M_INSERT || mode == M_REPLACE) ? vcol_of(cur.l, cur.c) : vcol_end(cur.l, cur.c);
+    if (o.wrap) { crow = v / avail; if (crow >= cr) crow = cr - 1; }
+    int half = th / 2 - 1;
+    if (half < 2) half = 2;
+    if (topoff >= row_count(topline)) topoff = 0;
+    if (cur.l < topline || (cur.l == topline && crow < topoff)) {
+        if (cur.l < topline && topline - cur.l >= half) scroll_halfway();
+        else {
+            topline = cur.l;
+            topoff = cr > th ? crow : 0;                 /* a line taller than the window: start at the cursor's row */
+        }
+    } else if (cr > th) {                                /* the cursor line does not fit: show the part with the cursor */
+        if (cur.l != topline) { topline = cur.l; topoff = 0; }
+        if (crow < topoff) topoff = crow;
+        else if (crow >= topoff + th) topoff = crow - th + 1;
+    } else {
+        if (cur.l == topline) topoff = 0;
+        long end = (cur.l == topline ? 0 : rows_between(topline, cur.l) - topoff) + cr;     /* rows from the window top to the end of the cursor line */
+        if (end > th) {
+            long bot = win_botline();
+            long count = rows_between(bot, cur.l) + cr;
+            if (cur.l == bot || count <= th + 1) scroll_cursor_bottom();
+            else scroll_halfway();
+        }
     }
     if (!o.wrap) {
-        int a = text_cols();
-        int v = (mode == M_INSERT || mode == M_REPLACE) ? vcol_of(cur.l, cur.c) : vcol_end(cur.l, cur.c);
-        if (v < leftcol || v >= leftcol + a) { leftcol = v - a / 2; if (leftcol < 0) leftcol = 0; }
+        if (v < leftcol || v >= leftcol + avail) { leftcol = v - avail / 2; if (leftcol < 0) leftcol = 0; }
     } else leftcol = 0;
 }
 
+/* Ctrl-E (n > 0) and Ctrl-Y (n < 0): the window moves n lines, the cursor stays on screen. */
 void scroll_lines(long n) {
+    int th = text_rows();
+    if (th <= 0) return;
+    topoff = 0;
     topline += n;
     if (topline < 0) topline = 0;
     if (topline > nl - 1) topline = nl - 1;
-    int th = text_rows();
-    if (cur.l < topline) { cur.l = topline; }
-    long last = topline;
-    long rows = 0;
-    while (last < nl && rows + row_count(last) <= th) rows += row_count(last++);
-    if (last > topline && cur.l > last - 1) cur.l = last - 1;
+    if (cur.l < topline) cur.l = topline;
+    long bot = win_botline();
+    if (bot > topline && cur.l > bot - 1) cur.l = bot - 1;
     cur.c = byte_at_vcol(cur.l, curswant < 0 ? 100000000 : curswant);
     fix_cursor();
 }
@@ -183,7 +253,6 @@ static int in_visual(long l, int c, int vcol) {
 static regex_t hl_re;
 static int hl_ok;
 static char hl_pat[256];
-static int hl_ic;
 
 static void hl_prepare(void) {
     if (hl_ok) { regfree(&hl_re); hl_ok = 0; }
@@ -195,7 +264,7 @@ static void hl_prepare(void) {
 static void hl_line(long l, Cell *cells, int ncells, const int *byteoff) {
     if (!hl_ok) return;
     const char *s = ls(l);
-    size_t len = L[l].len, pos = 0;
+    size_t len = LN(l).len, pos = 0;
     regmatch_t m[1];
     int guard = 0;
     while (pos <= len && guard++ < 500) {
@@ -209,7 +278,7 @@ static void hl_line(long l, Cell *cells, int ncells, const int *byteoff) {
 /* Builds the display cells of line l (at most cap columns). Returns the count. */
 static int render_line(long l, Cell *cells, int cap, int *byteoff) {
     const char *s = ls(l);
-    int len = (int)L[l].len, v = 0, i = 0, n = 0;
+    int len = (int)LN(l).len, v = 0, i = 0, n = 0;
     int curline = o.cursorline && l == cur.l;
     while (i < len && n < cap) {
         uint32_t cp;
@@ -266,8 +335,8 @@ static const char *mode_name(void) {
     default: break;
     }
     if (vis_mode == M_VISUAL) return "VISUAL";
-    if (vis_mode == M_VLINE) return "V-LINE";
-    if (vis_mode == M_VBLOCK) return "V-BLOCK";
+    if (vis_mode == M_VLINE) return "VISUAL LINE";
+    if (vis_mode == M_VBLOCK) return "VISUAL BLOCK";
     return "NORMAL";
 }
 
@@ -289,11 +358,9 @@ void redraw(void) {
 
     /* ---- text rows */
     long l = topline;
-    int row = 0;
-    int cap = (o.wrap ? avail * (th > 0 ? th : 1) : leftcol + avail) + 1;
-    Cell *cells = malloc((size_t)cap * sizeof *cells);
-    int *boff = malloc((size_t)cap * sizeof *boff);
-    if (!cells || !boff) pt_oom();
+    int row = 0, cap = 0;
+    Cell *cells = NULL;
+    int *boff = NULL;
     while (row < th) {
         if (l >= nl) {
             PtRow *r = pts_row(&scr, row);
@@ -302,12 +369,21 @@ void redraw(void) {
             continue;
         }
         int nrows = row_count(l);
+        int need = (o.wrap ? line_vwidth(l) : leftcol + avail) + 4;
+        if (need > cap) {
+            cap = need;
+            cells = realloc(cells, (size_t)cap * sizeof *cells);
+            boff = realloc(boff, (size_t)cap * sizeof *boff);
+            if (!cells || !boff) pt_oom();
+        }
         int n = render_line(l, cells, cap, boff);
-        if (o.wrap && nrows > th - row && row > 0) {            /* does not fit: show @ like vi */
+        int skip = l == topline ? topoff : 0;            /* rows of a very long top line that are scrolled off */
+        if (o.wrap && nrows - skip > th - row && row > 0) {     /* does not fit: show @ like vi */
             while (row < th) { PtRow *r = pts_row(&scr, row++); pr_str(r, "@", cols); }
             break;
         }
-        for (int k = 0; k < nrows && row < th; k++, row++) {
+        int line_top = row - skip;
+        for (int k = skip; k < nrows && row < th; k++, row++) {
             PtRow *r = pts_row(&scr, row);
             if (nw) {
                 char nb[24];
@@ -326,8 +402,9 @@ void redraw(void) {
         if (l == cur.l) {
             int v = (mode == M_INSERT || mode == M_REPLACE) ? vcol_of(l, cur.c) : vcol_end(l, cur.c);
             if (o.wrap) {
-                int rr = row - nrows + v / avail;
+                int rr = line_top + v / avail;
                 if (rr >= row) rr = row - 1;
+                if (rr < 0) rr = 0;
                 crow = rr;
                 ccol = nw + v % avail;
             } else {
@@ -348,10 +425,15 @@ void redraw(void) {
                 (o.ro || view_mode) ? " [RO]" : "");
         if (recording) pb_addf(&left, "  recording @%c", recording);
         int vc = vcol_end(cur.l, cur.c);
-        if (L[cur.l].len == 0) pb_addf(&right, "%ld,0-1  ", cur.l + 1);
+        if (LN(cur.l).len == 0) pb_addf(&right, "%ld,0-1  ", cur.l + 1);
         else if (vc == cur.c) pb_addf(&right, "%ld,%d  ", cur.l + 1, cur.c + 1);
         else pb_addf(&right, "%ld,%d-%d  ", cur.l + 1, cur.c + 1, vc + 1);
-        pb_addf(&right, "%ld%% ", (cur.l + 1) * 100 / nl);
+        {                                                /* All, Top, Bot or how far down the window is, like Vim's ruler */
+            long above = topline, below = nl - win_botline();
+            if (below <= 0) pb_adds(&right, above == 0 ? "All " : "Bot ");
+            else if (above == 0) pb_adds(&right, "Top ");
+            else pb_addf(&right, "%ld%% ", above * 100 / (above + below));
+        }
         pb_adds(&r->b, "\x1b[7m");
         int lw = (int)pt_u8_count(left.p, left.len);
         int rw = (int)right.len;
@@ -461,7 +543,7 @@ int cmdline_read(const char *prompt, const char *init, PtBuf *out) {
             int rg = getkey();
             if (rg == 23) {                              /* Ctrl-R Ctrl-W: the word under the cursor */
                 const char *s = ls(cur.l);
-                int c = cur.c, e = cur.c, len = (int)L[cur.l].len;
+                int c = cur.c, e = cur.c, len = (int)LN(cur.l).len;
                 while (c > 0 && (isalnum((unsigned char)s[c - 1]) || s[c - 1] == '_')) c--;
                 while (e < len && (isalnum((unsigned char)s[e]) || s[e] == '_')) e++;
                 cl_insert(s + c, (size_t)(e - c));
@@ -469,9 +551,16 @@ int cmdline_read(const char *prompt, const char *init, PtBuf *out) {
                 Reg *rr = reg_get(rg);
                 if (rr) for (size_t i = 0; i < rr->len; i++) { char ch = rr->s[i] == '\n' ? '\r' : rr->s[i]; cl_insert(&ch, 1); }
             }
-        } else if (k == PT_K_LEFT || k == 2) { if (cmdline_pos > 0) cmdline_pos = (int)pt_u8_prev(cmdline_text.p, (size_t)cmdline_pos); }
-        else if (k == PT_K_RIGHT || k == 6) { if ((size_t)cmdline_pos < cmdline_text.len) cmdline_pos += pt_u8_next(cmdline_text.p, cmdline_text.len, (size_t)cmdline_pos); }
-        else if (k == PT_K_HOME || k == 1) cmdline_pos = 0;
+        } else if (k == PT_K_LEFT) { if (cmdline_pos > 0) cmdline_pos = (int)pt_u8_prev(cmdline_text.p, (size_t)cmdline_pos); }
+        else if (k == PT_K_RIGHT) { if ((size_t)cmdline_pos < cmdline_text.len) cmdline_pos += pt_u8_next(cmdline_text.p, cmdline_text.len, (size_t)cmdline_pos); }
+        else if (k == K_SLEFT || k == K_CLEFT) {
+            while (cmdline_pos > 0 && cmdline_text.p[cmdline_pos - 1] == ' ') cmdline_pos--;
+            while (cmdline_pos > 0 && cmdline_text.p[cmdline_pos - 1] != ' ') cmdline_pos--;
+        } else if (k == K_SRIGHT || k == K_CRIGHT) {
+            while ((size_t)cmdline_pos < cmdline_text.len && cmdline_text.p[cmdline_pos] != ' ') cmdline_pos++;
+            while ((size_t)cmdline_pos < cmdline_text.len && cmdline_text.p[cmdline_pos] == ' ') cmdline_pos++;
+        }
+        else if (k == PT_K_HOME || k == 1 || k == 2) cmdline_pos = 0;
         else if (k == PT_K_END || k == 5) cmdline_pos = (int)cmdline_text.len;
         else if (k == PT_K_UP || k == 16 || k == PT_K_DOWN || k == 14) {
             int up = k == PT_K_UP || k == 16;
