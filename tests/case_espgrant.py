@@ -7,6 +7,8 @@ write grant") and docs/UPDATE.md ("Writing the ESP") describe the design.
 
   TOUHOU_ESP_CUT_RUNS=N python tests/run_all.py espgrant_power_cut       more power cuts (default 4)
   TOUHOU_ESP_CUT_SEED=N                                                 the seed of the first run (default: from the clock)
+  TOUHOU_ESP_CUT_AT=replacing                                           cut after that step only (default: a fixed rotation of steps)
+  TOUHOU_ESP_CUT_IOPS=N                                                 disk writes per second during the update (default 4)
 """
 import hashlib
 import os
@@ -163,9 +165,9 @@ def espgrant_helper():
         # espgrant killed while the command runs: the mount stays, read-only
         g.ok("rm -f /tmp/st.txt")
         g.ok("espgrant -d /BambooForest/killed run sh -c 'echo before > $ESP/before.txt; kill -9 $ESPGRANT_PID; sleep 1; "
-             "echo after > $ESP/after.txt 2> /tmp/err.txt; echo $? > /tmp/st.txt' > /tmp/run.txt 2>&1; true")
+             "echo after > $ESP/after.txt; echo $? > /tmp/st.txt' > /tmp/run.txt 2>&1; true")
         shell_wait(g, "/tmp/st.txt", r"\d")
-        st = g.ok("cat /tmp/st.txt /tmp/err.txt")
+        st = g.ok("cat /tmp/st.txt /tmp/run.txt")
         assert not st.startswith("0"), "a write after the grant ended went through:\n" + st
         must(st, r"Read-only file system")
         must(g.ok("cat /proc/mounts"), r"/dev/nvme0n1p1 /BambooForest/killed fat32 ro")
@@ -177,7 +179,7 @@ def espgrant_helper():
         # an update of the kernel, keeping the old one
         new = make_new_kernel(g)
         out = g.ok("espgrant -k put /tmp/new.elf kernel.elf", timeout=600)
-        steps = re.findall(r"espgrant: (\w+) ", out)
+        steps = re.findall(r"^espgrant: (mounted|staging|staged|synced|verified|kept|replacing|replaced|done) ", out, re.M)
         assert steps == ["mounted", "staging", "staged", "synced", "verified", "kept", "replacing", "replaced", "done"], out
         must(out, r"the ESP holds the new files; /dev/nvme0n1p1 is read-only again")
         out, rc = g.run("su reimu -c 'espgrant rm kernel.old'")
@@ -228,15 +230,16 @@ MARKERS = ["replacing", "staging", "replacing", "verified", "replaced", "synced"
 def cut_run(i, seed):
     """One update cut short by QMP quit. Returns (None or a text saying what is wrong, a one-line summary)."""
     rng = random.Random(seed)
-    marker = MARKERS[i % len(MARKERS)]
+    marker = os.environ.get("TOUHOU_ESP_CUT_AT") or MARKERS[i % len(MARKERS)]
     delay = rng.uniform(0.0, 2.5)
+    iops = int(os.environ.get("TOUHOU_ESP_CUT_IOPS", "4"))
     old = (BUILD / "esp" / "kernel.elf").read_bytes()
     img = fresh("espgrant-cut")
     tag = f"run {i} seed {seed}: cut {delay:.2f} s after '{marker}'"
     with InstalledGuest(img, "nvme", "t-espgrant-cut") as g:
         new = make_new_kernel(g)
         # slow the disk's writes down to a few per second, so that a cut lands between the requests of the update
-        g.vm.qmp("block_set_io_throttle", device="bootdisk", bps=0, bps_rd=0, bps_wr=0, iops=0, iops_rd=0, iops_wr=4)
+        g.vm.qmp("block_set_io_throttle", device="bootdisk", bps=0, bps_rd=0, bps_wr=0, iops=0, iops_rd=0, iops_wr=iops)
         g.vm.send("espgrant put /tmp/new.elf kernel.elf\n")
         g.vm.expect(rf"espgrant: {marker} ", timeout=600)
         time.sleep(delay)
