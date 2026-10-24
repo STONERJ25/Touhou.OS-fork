@@ -86,8 +86,9 @@ int main(void) {
                    disk.sectors, disk.sector_size, disk.media, disk.write_protect, disk.name[0] ? disk.name : "-");
         } else if (!strcmp(cmd, "sectors")) {
             uint32_t cyls = disk.format == PC98_DISK_D88 ? PC98_D88_MAXTRACKS / 2 : disk.cylinders;
+            uint32_t heads = disk.format == PC98_DISK_D88 ? 2 : disk.heads;
             for (uint32_t c = 0; c < cyls; c++)
-                for (uint32_t h = 0; h < 2; h++) {
+                for (uint32_t h = 0; h < heads; h++) {
                     uint32_t ns = pc98_disk_track_sectors(&disk, c, h);
                     for (uint32_t i = 0; i < ns; i++) {
                         Pc98Sector s;
@@ -123,7 +124,8 @@ int main(void) {
         } else if (!strcmp(cmd, "irq")) {
             pc98_irq(m, (int)x1, (int)x2);
         } else if (!strcmp(cmd, "ack")) {
-            printf("A %d\n", pc98_intr_ack(m));
+            int v = pc98_intr_ack(m);
+            if (v < 0) printf("A -1\n"); else printf("A %x\n", v);
         } else if (!strcmp(cmd, "rd")) {
             printf("M %x\n", pc98_read8(m, (uint32_t)x1));
         } else if (!strcmp(cmd, "wr")) {

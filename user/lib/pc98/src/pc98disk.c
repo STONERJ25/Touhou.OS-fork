@@ -42,6 +42,7 @@ static int open_d88(Pc98Disk *d) {
         if (first < 0x20 + 4) return PC98_DISK_ECORRUPT;
         if ((first - 0x20) / 4 < n) n = (first - 0x20) / 4;
     }
+    if (disk_size < 0x20 + 4 * n) return PC98_DISK_EFORMAT;    /* the size must at least cover the header */
     d->ntracks = n;
     memset(d->track, 0, sizeof d->track);
     uint32_t last = 0, odd = 0;
@@ -99,12 +100,13 @@ static int d88_at(const Pc98Disk *d, uint32_t t, uint32_t idx, Pc98Sector *out) 
 
 /* ------------------------------------------------------------------ FDI / HDI / raw */
 
-static int open_anex(Pc98Disk *d, Pc98DiskFormat f) {
+static int open_anex(Pc98Disk *d, Pc98DiskFormat f, int strict) {
     const uint8_t *p = d->data;
     if (d->size < 32 || le32(p) != 0) return PC98_DISK_EFORMAT;
     uint32_t type = le32(p + 4), hdr = le32(p + 8), datasz = le32(p + 12), ssz = le32(p + 16);
     uint32_t spt = le32(p + 20), heads = le32(p + 24), cyls = le32(p + 28);
     if (hdr < 32 || (uint64_t)hdr + datasz > d->size) return PC98_DISK_EFORMAT;
+    if (strict && (uint64_t)hdr + datasz != d->size) return PC98_DISK_EFORMAT;
     if (ssz < 128 || ssz > 8192 || (ssz & (ssz - 1))) return PC98_DISK_EFORMAT;
     if (!spt || !heads || !cyls || spt > 255 || heads > 255 || cyls > 65535) return PC98_DISK_EFORMAT;
     if ((uint64_t)spt * heads * cyls * ssz > datasz) return PC98_DISK_ECORRUPT;
@@ -148,12 +150,15 @@ int pc98_disk_open(Pc98Disk *d, const uint8_t *data, size_t size, Pc98DiskFormat
     int rc;
     switch (hint) {
     case PC98_DISK_D88: rc = open_d88(d); break;
-    case PC98_DISK_FDI: case PC98_DISK_HDI: rc = open_anex(d, hint); break;
+    case PC98_DISK_FDI: case PC98_DISK_HDI: rc = open_anex(d, hint, 0); break;
     case PC98_DISK_RAW: rc = open_raw(d); break;
     default:
-        rc = open_d88(d);
-        if (rc == PC98_DISK_EFORMAT) { d->size = size; rc = open_anex(d, PC98_DISK_NONE); }
-        if (rc == PC98_DISK_EFORMAT) rc = open_raw(d);
+        /* An Anex86 header whose sizes add up to the file exactly is the most specific match; a D88 header is checked
+         * next (an Anex86 header can pass for an empty D88 one); then a looser Anex86 match, then the raw sizes. */
+        rc = open_anex(d, PC98_DISK_NONE, 1);
+        if (rc != PC98_DISK_OK) { d->size = size; rc = open_d88(d); }
+        if (rc == PC98_DISK_EFORMAT) { d->size = size; rc = open_anex(d, PC98_DISK_NONE, 0); }
+        if (rc == PC98_DISK_EFORMAT) { d->size = size; rc = open_raw(d); }
         break;
     }
     if (rc != PC98_DISK_OK) {
