@@ -158,8 +158,8 @@ def net_nonet_switch():
 
 @test
 def net_e1000e_transmit_variants():
-    """The PCH-style card's transmit variants: e1000.txvar=N starts at variant N (queue switched off first, MAC reset, no errata bits) and DHCP still works; e1000.txstall=2 swallows the doorbell like a hung card, the watchdog tries variant 1 and then 2, and the lease arrives."""
-    for var in (1, 2, 3):
+    """The PCH-style card's transmit variants: e1000.txvar=N starts at variant N (queue switched off first, MAC reset, no errata bits, ring flush, PHY reset, D3 cycle, receive stopped) and DHCP still works; e1000.txstall=2 swallows the doorbell like a hung card, the watchdog tries variant 1 and then 2, and the lease arrives; with txstall=7 the whole ladder is walked."""
+    for var in (1, 2, 3, 4, 5, 6, 7):
         with Guest(f"t-net-txvar{var}", net="e1000e", cmdline=f"e1000.pch e1000.txvar={var}") as g:
             text = g.vm.text()
             assert f"transmit variant {var}:" in text, text[-1500:]
@@ -169,6 +169,12 @@ def net_e1000e_transmit_variants():
         text = g.vm.text()
         assert "transmit variant 1:" in text and "transmit variant 2:" in text and "transmit works with variant 2" in text, text[-2500:]
         assert "the transmit queue stopped moving" in text and "GPTC" in text, "the register dump should be in the log: " + text[-2500:]
+        assert "as the firmware left it" in text and "FEXTNVM6" in text and "LNKCTL" in text, "the full dump should have the power and link registers: " + text[-2500:]
+    with Guest("t-net-txladder", net="e1000e", cmdline="e1000.pch e1000.txstall=7") as g:
+        text = g.vm.text()
+        for v in range(1, 8):
+            assert f"transmit variant {v}:" in text, f"variant {v} was not tried:\n" + text[-3000:]
+        assert "transmit works with variant 7" in text and "descriptor ring flush" in text, text[-3000:]
 
 
 # ------------------------------------------------------------------------------------------------------------ the cards
