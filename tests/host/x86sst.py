@@ -122,12 +122,18 @@ def run_file(tool, path, mask, limit):
                 e, g = e & mask, g & mask
             if e != g:
                 bad.append(f"{k}={g:04x} want {e:04x}")
+        # A divide error pushes FLAGS; the bits the suite calls undefined are as undefined on the stack as in the register.
+        fmask = {}
+        if exp["cs"] == 0 and exp["ip"] == 0x400:
+            lo, hi = ((exp["ss"] << 4) + ((exp["sp"] + 4) & 0xFFFF)) & 0xFFFFF, ((exp["ss"] << 4) + ((exp["sp"] + 5) & 0xFFFF)) & 0xFFFFF
+            fmask = {lo: mask & 0xFF, hi: mask >> 8}
         mem_before = {a: v for a, v in ini["ram"]}
         mem_after = dict(mem_before)
         mem_after.update({a: v for a, v in fin["ram"]})
         for a, v in res["w"].items():
             want = mem_after.get(a, 0)
-            if v != want:
+            m = fmask.get(a, 0xFF)
+            if v & m != want & m:
                 bad.append(f"[{a:05x}]={v:02x} want {want:02x}")
         for a, v in fin["ram"]:
             if a not in res["w"] and mem_before.get(a, 0) != v:
@@ -161,9 +167,20 @@ def main():
     tool = build_tool()
     total = failed = 0
     skipped = []
+    done_bases = set()
     for name, mask in files:
         fn = name + ".json.gz"
         path = fetch(fn) if a.fetch else (CACHE / fn if (CACHE / fn).exists() else None)
+        if path is None and "." in name:
+            # Opcodes whose reg field is ignored (8F, C6, C7) come as one file for all reg values.
+            base = name.split(".")[0]
+            if base in done_bases:
+                continue
+            fn = base + ".json.gz"
+            path = fetch(fn) if a.fetch else (CACHE / fn if (CACHE / fn).exists() else None)
+            if path is not None:
+                done_bases.add(base)
+                name = base
         if path is None:
             skipped.append(name)
             continue

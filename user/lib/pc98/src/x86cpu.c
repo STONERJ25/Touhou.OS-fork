@@ -258,6 +258,15 @@ static uint16_t shift(C *c, int op, uint16_t v, unsigned cnt, int w) {
     return (uint16_t)r;
 }
 
+/* The 8086 divides by shifting and subtracting; its first step compares the high half of the (absolute) dividend with
+ * the (absolute) divisor and gives up with a divide error when the quotient cannot fit. The flags it leaves (pushed by
+ * the interrupt) are those of that subtraction, as the SingleStepTests 8088 vectors show. A signed quotient that turns
+ * out too large only at the end leaves the flags of later steps, which are not modelled (they stay as they were). */
+static void div_overflow(C *c, uint16_t hi, uint16_t divisor, int w) {
+    alu(c, 5, hi, divisor, w);
+    divide_error(c);
+}
+
 /* Group 3 multiply and divide. Returns 0, or 1 when a divide error was raised. */
 static int muldiv(C *c, int op, uint16_t src, int w) {
     if (!w) {
@@ -281,17 +290,18 @@ static int muldiv(C *c, int op, uint16_t src, int w) {
         }
         case 6: {
             c->cycles += 85;
-            if ((uint8_t)src == 0) { divide_error(c); return 1; }
+            if ((AX >> 8) >= (uint8_t)src) { div_overflow(c, AX >> 8, (uint8_t)src, 0); return 1; }
             uint16_t q = AX / (uint8_t)src, rem = AX % (uint8_t)src;
-            if (q > 0xFF) { divide_error(c); return 1; }
             AX = (uint16_t)(rem << 8 | q);
             return 0;
         }
         default: {
             c->cycles += 107;
             int d = (int8_t)src;
-            if (d == 0) { divide_error(c); return 1; }
-            int n = (int16_t)AX, q = n / d, rem = n % d;
+            int n = (int16_t)AX;
+            unsigned an = (unsigned)(n < 0 ? -n : n), ad = (unsigned)(d < 0 ? -d : d);
+            if ((an >> 8) >= ad) { div_overflow(c, (uint16_t)(an >> 8), (uint16_t)ad, 0); return 1; }
+            int q = n / d, rem = n % d;
             if (q > 127 || q < (IS286(c) ? -128 : -127)) { divide_error(c); return 1; }
             if (c->rep && IS8086(c)) q = -q;        /* 8086: a REP prefix negates the quotient */
             AX = (uint16_t)((uint8_t)rem << 8 | (uint8_t)q);
@@ -320,9 +330,8 @@ static int muldiv(C *c, int op, uint16_t src, int w) {
     }
     case 6: {
         c->cycles += 153;
-        if (src == 0) { divide_error(c); return 1; }
+        if (DX >= src) { div_overflow(c, DX, src, 1); return 1; }
         uint32_t n = (uint32_t)DX << 16 | AX, q = n / src, rem = n % src;
-        if (q > 0xFFFF) { divide_error(c); return 1; }
         AX = (uint16_t)q;
         DX = (uint16_t)rem;
         return 0;
@@ -330,8 +339,10 @@ static int muldiv(C *c, int op, uint16_t src, int w) {
     default: {
         c->cycles += 175;
         int64_t d = (int16_t)src;
-        if (d == 0) { divide_error(c); return 1; }
-        int64_t n = (int32_t)((uint32_t)DX << 16 | AX), q = n / d, rem = n % d;
+        int64_t n = (int32_t)((uint32_t)DX << 16 | AX);
+        uint64_t an = (uint64_t)(n < 0 ? -n : n), ad = (uint64_t)(d < 0 ? -d : d);
+        if ((an >> 16) >= ad) { div_overflow(c, (uint16_t)(an >> 16), (uint16_t)ad, 1); return 1; }
+        int64_t q = n / d, rem = n % d;
         if (q > 32767 || q < (IS286(c) ? -32768 : -32767)) { divide_error(c); return 1; }
         if (c->rep && IS8086(c)) q = -q;
         AX = (uint16_t)q;
@@ -892,7 +903,12 @@ static void execute(C *c) {
         uint8_t base = fetch8(c);
         if (c->model == X86_MODEL_V30) base = 10;
         c->cycles += 83;
-        if (base == 0) { divide_error(c); break; }
+        if (base == 0) {                            /* divide error; the 8086 leaves the flags of a zero result */
+            c->flags &= (uint16_t)~(CF | OF | AF);
+            szp(c, 0, 0);
+            divide_error(c);
+            break;
+        }
         uint8_t al = (uint8_t)AX;
         AX = (uint16_t)((al / base) << 8 | (al % base));
         szp(c, (uint8_t)AX, 0);
