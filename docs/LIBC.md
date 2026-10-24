@@ -51,6 +51,13 @@ instructions); on real hardware a few hundred cycles.
     `a{32768}`) were not run: the harness had a bug (its buffer for the alternatives was too small) when work was paused. The
     limits themselves (`MAX_NEST`, `MAX_PROG`, `MAX_DUP`, `MAX_STACKED` in `regex.c`) are only reviewed, not exercised.
   - The old-engine timing of `grep -E '(a?){25}a{25}'` was not taken (the new one is 0.08 s).
+- **Merged on `cloud/staging` (2026-10-24, commit `5ae8945`).** `src/stdio.c` was hand-merged with main's per-stream locks (each
+  `FILE` has its own recursive lock, `__stdio_list_lock` for the list and `fflush(NULL)`, `io_read`/`io_write` record the lock for
+  `pthread_cancel`, main's fork hooks), keeping this branch's block-moving `*_nl` functions and the `__libc_threaded` shortcut. After
+  the merge `python tests/run_all.py libc,selftest,utest,shell,awk_,bc_,dc_,vi_basic,diff_,patch_,pager,pnote_commands,threads`
+  passed (31 tests) on Linux, so the guest tests after the three last regex edits, `libc_stdio_bigfile`, `libc_malloc_patterns`
+  and `threads` have now run. The host compile-stress cases (below) are still not run. mcc cannot compile `fpconv.c`
+  (`unsigned __int128`), so `mcc_libgap` takes its clang object, as it does for `math.c` (docs/MCC.md).
 - Not started: nothing from the task list. Ideas, not started: `\'` and `` \` `` in regex, equivalence classes beyond one
   character, POSIX "longest subexpression" rules for submatches.
 

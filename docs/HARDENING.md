@@ -16,7 +16,7 @@ checks now, what was found and fixed, how the tools that find such things work (
 | Resource limits and an OOM killer | not started (`kernel/mm/oom.c` only counts) |
 | SMAP, `stac`/`clac`, crash tests for SMEP and SMAP | not started (SMEP was already on) |
 | Soft-lockup detector and `panic_on_lockup` | not started (`kernel/sched/watchdog.c` only counts) |
-| Panic screens that always appear | not started; one real gap is known: a panic during a desktop session is not drawn (see "How to resume", item 5) |
+| Panic screens that always appear | partly: since the merge with main a panic during a desktop session **is** drawn (`fbcon_force_on` from the hardware audit; `crash=desktop` and `hwaudit_panic_on_desktop` check it); the rest of item 5 of "How to resume" (second panic, escape state) is not started |
 
 ## Warnings and counters
 
@@ -238,6 +238,11 @@ and `oom.c` and `watchdog.c` only hold the counters that `/proc/kstats` shows.
     `login_text`, `storage_posix_semantics`, `kshell_serial`, `kshell_keyboard`, `selftest`, `manual`, `hardening_exec`, `apps_cli`, `pnote_edit`, `pager`, `lock_screen`, `desktop_boots`;
   * after that only fuzz campaigns ran. **The suite was not run on the final head** (`c889090`, which rewrote the backtrace code and added the vnode ledger), and in particular the `crash_*` tests of
     `tests/case_core.py` were not run on it. By reading, the output format of `dump_backtrace` is unchanged ("backtrace:" and numbered lines), but that is not a test.
+* **Merged on `cloud/staging` (2026-10-24, `f8905d4`)**, Linux, QEMU 8.2 TCG, `TOUHOU_TIMEOUT_SCALE=3`: `crash,hardening,selftest,utest,shell,jobctl,kshell,threads`
+  pass (all nine `crash_*` on the final backtrace code), and `hardening_sysfuzz` (`TOUHOU_HARDENING_FUZZ=1`, three seeds) passes. One semantic conflict with main: main's
+  `hwaudit_panic_on_desktop` brought the machine down by typing `kill -9 1` as root, which init now shrugs off. Both intents are kept: init stays immune, and a new
+  `crash=desktop` (the kind item 5 below planned; `kernel/main.c`) panics 20 s after the window server took the screen; the test boots with it and checks the same
+  pixels. The init protection test (item 4) is still not written.
 
 ## How to resume
 

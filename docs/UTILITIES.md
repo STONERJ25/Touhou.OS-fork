@@ -12,8 +12,8 @@ as done has one. The kernel half of job control is in [JOBCONTROL.md](JOBCONTROL
 |------|-------|
 | awk, diff, patch, bc, dc | **done**, merged (first pause) |
 | vi | **mostly done, merged**: about 950 scripted guest checks plus screen tests passed at the last full run; differential test against the host's vim is half done (see below) |
-| libgap numerics and speed (exact `strtod`/`printf`, block-wise stdio, new malloc, libm, leftmost-longest regex) | **done on its own branch, NOT merged**: it conflicts with main in `user/libc/src/stdio.c` and was not fully tested (see below) |
-| gapsh job control | **not started** (the kernel half is in main) |
+| libgap numerics and speed (exact `strtod`/`printf`, block-wise stdio, new malloc, libm, leftmost-longest regex) | **done, merged** on `cloud/staging` (2026-10-24): `stdio.c` hand-merged with main's per-stream locks; the libc tests and the regression set below pass (see "The libc branch") |
+| gapsh job control | **done** on main (pull request #4, [JOBCONTROL.md](JOBCONTROL.md)) |
 | gapsh audit (here-documents, `set -e`, `trap`, ...) and the shell conformance test | **not started** |
 | the small new tools (`join split csplit fmt column unexpand tsort timeout time watch nohup install killall pgrep vmstat fuser getopt du sha1sum` and standalone `printf`, `test`/`[`, `pwd`) | **not started** (no helper was launched for them) |
 | extensions of the weak applets (`ls find grep sed sort cut paste tr uniq head tail wc xargs tee cp mv rm chmod chown stat date od xxd base64 md5sum ...`) | **not started** |
@@ -54,7 +54,7 @@ The branch head builds (`python tools/build.py`). Nothing was pushed.
 * **Not started:** `\v \V \zs \%(` in patterns, `/foo\nbar` searches, `gj gk g0 g$`, Ctrl-K digraphs, `:undo N`, the `"=` register.
   Limits: patterns are byte based, windows/folds/syntax colours do not exist.
 
-### The libc branch (NOT merged)
+### The libc branch (merged on `cloud/staging`, 2026-10-24)
 
 Branch `worktree-agent-a503fea82ea373559`, head `3a99e04`, worktree `.claude/worktrees/agent-a503fea82ea373559` (keep it until
 the merge is done). Seven commits, all on top of the old `d059acb`; they build there. Notes and a "State when paused" section are
@@ -65,13 +65,17 @@ in `docs/LIBC.md` **on that branch**.
   an accurate libm with the missing functions; a leftmost-longest `regexec` with a heap stack, a memoised search and no
   `strlen` (cut a 128 KB `sed s/a/bb/g` from 8.8 s to 0.12 s, and `grep 'a.*b'` on a 1 MB line from a segfault to 0.25 s).
   Guest timings before -> after (seconds): `wc -l` 1.25 -> 0.62, `sort -n` 38.2 -> 14.1, `sort` 7.1 -> 3.9, `seq 1e6` 2.9 -> 0.95.
-* **Why it is not merged:** merging it into current main conflicts in `user/libc/src/stdio.c`. Main's commit `f618cdf` gave
+* **The merge conflict and how it was resolved:** merging it into current main conflicts in `user/libc/src/stdio.c`. Main's commit `f618cdf` gave
   every `FILE` its own recursive lock (`__stdio_list_lock`, `io_read`/`io_write` wrappers that record `stdio_blocked` for
   `pthread_cancel`, locks taken in library order around `fork`), while the libc branch keeps one global `__stdio_lock` and a
   `__libc_threaded` flag. All other files merge automatically (`pthread.c` merges textually; check it by hand). The resolution is:
   take the libc branch's block-moving `*_nl` functions, but lock `f->lock` per stream as main does, send every `read`/`write`
   in `fill`, `write_all` and the direct-read path through `io_read`/`io_write`, keep `__stdio_list_lock` for the stream list and
-  `fflush(NULL)`, and keep main's fork handling. Then run the tests listed under "How to resume".
+  `fflush(NULL)`, and keep main's fork handling. That is what the staging merge did (`5ae8945`); the branch's "no locks until the
+  first `pthread_create`" (`__libc_threaded`) is kept for the stream and list locks, and `fork()` takes them regardless.
+* **Tests on `cloud/staging` after the merge** (Linux, QEMU 8.2 TCG, `TOUHOU_TIMEOUT_SCALE=3`): `libc` (all 12, `libc_stdio_bigfile` and
+  `libc_malloc_patterns` included), `selftest utest shell awk_ bc_ dc_ vi_basic diff_ patch_ pager pnote_commands threads`: 31 tests, 0 failed.
+  So the three last regex edits have now run in the guest, and `threads` ran for the first time with this libc.
 * **Tests the libc helper ran:** green on its branch: `bc_language diff_formats vi_basic` after the libm commit; `apps_cli
   libc_math_awk utest awk_checks shell`; with the new regex (before its last three small edits) `utest shell awk_checks
   pnote_commands pager vi_basic` and `libc_regex_longest libc_regex_tools libc_regex_big`. **Not run:** `threads`
@@ -115,9 +119,8 @@ Nothing below has been written; the existing versions of the existing tools are 
 * `sed.c` `do_subst` and `grep.c` `find_match` call `regexec` on `line + pos` with `REG_NOTBOL`, so `\<`, `\b` and `\B` lose
   the previous character (`echo aa | sed 's/\<a/X/g'` prints `XX`; it should print `Xa`). Use `REG_STARTEND`. Also: `sed`
   `buf_append` grows with exact fit; `expr :` tries every start position.
-* libgap (when the libc branch is merged, re-check these): the regex engine is byte based, has no non-capturing groups or
-  non-greedy repeats; `memmove` with `dst > src` copied backwards with `std; rep movsb` (very slow under QEMU; check whether the
-  libc branch's string functions fixed it); `qsort` misbehaves with inconsistent comparators; `alarm()` is a stub.
+* libgap: the regex engine is byte based, has no non-capturing groups or non-greedy repeats; `memmove` with `dst > src` no longer
+  uses `std; rep movsb` (the libc branch copies backwards in 64-byte SSE2 blocks); `qsort` misbehaves with inconsistent comparators; `alarm()` is a stub.
 * kernel: user-mode `SIGSEGV` handlers apparently never run (the process is killed first, so a program cannot print its own
   crash message). `ptlib`: `pt_active` is static per translation unit, so `pt_oom()` in another file does not restore the terminal.
 * Tests: `bc_language` failed 1 of 169 checks on the merged main (before any helper merge): `echo '7' | bc /dev/null` printed
@@ -131,10 +134,10 @@ Nothing below has been written; the existing versions of the existing tools are 
 1. `python tools/build.py` (6-25 s). Never run two test runs in one checkout at once.
 2. Run the cheap checks first, one run at a time: `python tests/run_all.py vi_manual,manual` (the filter takes comma-separated
    substrings), then `shell`, then `vi_` (about 20 tests), then `awk_ diff_ patch_ bc_ dc_`.
-3. Merge the libc branch (see "The libc branch"): resolve `stdio.c`, build, then run
+3. (Done on `cloud/staging`.) Merge the libc branch (see "The libc branch"): resolve `stdio.c`, build, then run
    `libc_regex,libc_stdio_bigfile,libc_malloc_patterns`, `utest`, `shell`, `awk_checks`, `bc_language`, `vi_basic`,
    `diff_formats`, `pager`, `pnote_commands`, and `threads` last. If something breaks, bisect on the seven libc commits.
-4. gapsh job control, then the rest of the gapsh audit with `tests/case_shell_conform.py` (gapsh is shared: one owner at a
+4. (gapsh job control is done.) The rest of the gapsh audit with `tests/case_shell_conform.py` (gapsh is shared: one owner at a
    time), then the small tools and the extensions in this order: `sed`/`grep` `REG_STARTEND` fix, `touch` with `utimes`,
    `du`, `printf`/`test`/`[`/`pwd` applets, `timeout`, `time`, `nohup`, `watch`, `pgrep`/`killall`, `join`, `split`, `csplit`,
    `fmt`, `column`, `unexpand`, `tsort`, `sha1sum`, `fuser`, `getopt`, then the option sets of the weak applets. Each new

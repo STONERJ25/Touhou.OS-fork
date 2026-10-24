@@ -21,6 +21,30 @@ The OS has booted on the real PC (Dell, i5-7500) since 2026-10-23 evening; [HARD
 
 - Docs (cloud task 9, branch `cloud/docs`): [USER_GUIDE.md](USER_GUIDE.md) for someone at the desktop, a refreshed README, and STATUS / ROADMAP / NEXT checked against the code on main.
 
+## `cloud/staging` (2026-10-24): the parked branches merged
+
+Branch `cloud/staging` holds main plus every parked branch but the unfinished `parked/usb-stick-quirks-wip`, merged one at a time in the order
+below, built and tested after each (the first five by an earlier session; Linux, Ubuntu 24.04, QEMU 8.2 TCG without KVM, clang 20, `TOUHOU_TIMEOUT_SCALE=3`). It is waiting for a pull request
+into main.
+
+| Merged | Conflicts and what else had to change | Tests right after the merge |
+|--------|---------------------------------------|-----------------------------|
+| `cloud/linux-tooling` | none | earlier session, not recorded in the commits |
+| `parked/usb-dirty-fsck` | STATUS.md; `fsck.pw` lines cut to 78 columns (the `manual` test failed on them); the host checker builds as a Linux shared object | earlier session, not recorded (`manual` and the `fsck_c_*` tests needed the two fixes) |
+| `parked/audio-jukebox` | `launch.c`: both menu lines (Gallery and Jukebox) | earlier session, not recorded |
+| `parked/network-https` | none; the host harness builds libtls as a Linux shared object (the `tls_host_*` tests needed it) | earlier session, not recorded |
+| `parked/utilities-vi` | none | earlier session, not recorded |
+| `parked/libc-accuracy` | `user/libc/src/stdio.c` hand-merged as `docs/UTILITIES.md` described: the branch's block-moving stdio with main's per-stream locks | `libc,selftest,utest,shell,awk_,bc_,dc_,vi_basic,diff_,patch_,pager,pnote_commands,threads`: 31 pass |
+| `parked/kernel-hardening` | `kernel/main.c` (both sides). Semantic: init now drops signals it has no handler for, so `hwaudit_panic_on_desktop` can no longer panic the machine with `kill -9 1`; a new `crash=desktop` does it instead (docs/HARDENING.md) | `crash,hardening,selftest,utest,shell,jobctl,kshell,threads,hwaudit_panic` and `hardening_sysfuzz`: all pass after the fix |
+| `parked/mcc-compiler`, squashed (`87458cd`, without the stray 400 KB binary) | `tools/build.py` EXTRA_LINKS, THEMING.md, STATUS.md. Four mcc tests broke on what the other branches changed (`unsigned __int128` and SSE2 in libgap, `-ltls`, `-I shared`, an SSE copy in fairyd) plus one typo in `mcc_selfhost`; fixed in `0b8c1fc` (docs/MCC.md); the mcc test helpers run natively on Linux now | `mcc,mld,manual,selftest,utest,shell`: all pass after the fix |
+| `origin/main` (pull requests #1 update server, #2 docs, #3 Linux tooling, #4 gapsh job control, #5 installer) | STATUS.md, ROADMAP.md, THEMING.md (docs only); ROADMAP and STATUS now describe the merged state | `jobctl,install,manual,selftest,utest,shell,hardening,kshell,threads,blk_`: 43 pass; `tests/host/test_serve_update.py`: 31 pass |
+
+The whole suite on the result: see "Whole suite on `cloud/staging`" below.
+
+What is left from the merge work: `/bin/fsck` has still never been run in a VM (no test runs the program; the kernel-side check has 7 tests); the init
+protection test of docs/HARDENING.md (item 4) is not written; the mcc-built userland was not run against the other suites (docs/MCC.md, "How to resume" 4);
+`parked/usb-stick-quirks-wip` does not compile and stays parked.
+
 ## Goals for the next session (the owner, 2026-10-23 night)
 
 The OS has now booted on the real Dell and the fixed image works (desktop, USB keyboard and mouse behind a hub, the stick as `/HumanVillage`, sound: `beep` comes out of the speakers).
@@ -39,14 +63,14 @@ The next two goals, in this order:
    failed starts). The ESP is never mounted by the policy today: the updater mounts it explicitly (root, read-write, briefly). The forge (`server.tailfbc785.ts.net`) is Tailscale-only,
    so the OS cannot fetch from it directly: the update server is a plain LAN HTTP(S) server on the owner's PC.
 
-Goal 1 has a first implementation on branch `cloud/installer` (task 4 of [CLOUD_AGENT_BRIEF.md](CLOUD_AGENT_BRIEF.md)): `install DISK`, a per-disk write unlock (`BLKWRUNLOCK`), `blk.rw=`, `/proc/bootdisk`, tested in QEMU only; see [INSTALL.md](INSTALL.md).
+Goal 1 has a first implementation, merged into main (pull request #5, task 4 of [CLOUD_AGENT_BRIEF.md](CLOUD_AGENT_BRIEF.md)): `install DISK`, a per-disk write unlock (`BLKWRUNLOCK`), `blk.rw=`, `/proc/bootdisk`, tested in QEMU only; see [INSTALL.md](INSTALL.md).
 
-The server half of goal 2 is on branch `cloud/update-server` (2026-10-24): `tools/serve-update.py` signs a manifest and serves it over HTTP, host tests in `tests/host/test_serve_update.py`; format, protocol and the loader fallback design are in [UPDATE.md](UPDATE.md). The OS client and the fallback are not started.
+The server half of goal 2 is merged into main (pull request #1, 2026-10-24): `tools/serve-update.py` signs a manifest and serves it over HTTP, host tests in `tests/host/test_serve_update.py`; format, protocol and the loader fallback design are in [UPDATE.md](UPDATE.md). The OS client and the fallback are not started.
 
-gapsh job control is on branch `cloud/job-control` (2026-10-24): Ctrl-Z, `jobs`, `fg`, `bg`, `wait %N`, `disown`, `%` job names; tests `jobctl_shell_console`, `jobctl_shell_pty`, `jobctl_desktop_terminal`; see [JOBCONTROL.md](JOBCONTROL.md) "State when paused".
+gapsh job control is merged into main (pull request #4, 2026-10-24): Ctrl-Z, `jobs`, `fg`, `bg`, `wait %N`, `disown`, `%` job names; tests `jobctl_shell_console`, `jobctl_shell_pty`, `jobctl_desktop_terminal`; see [JOBCONTROL.md](JOBCONTROL.md) "State when paused".
 
 Before both: merge the parked branches (below) and run the whole suite on the result, in particular the network/HTTPS branch, the dirty-volume `fsck` branch (an installed disk and a
-stick that is switched off with the button need it) and the audio branch.
+stick that is switched off with the button need it) and the audio branch. Done on `cloud/staging` (above), waiting to go into main.
 
 ## The first real boot (2026-10-23) and the images
 
@@ -63,9 +87,9 @@ files are diagnostic builds and can be deleted. Known in these images: Ctrl-Z in
 stick that was not shut down cleanly mounts read-only next time (fixed on the dirty-volume branch). The owner's keyboard and mouse sit behind a USB switch/hub that appears when they flip it, so
 USB hot-plug of a hub after boot matters.
 
-## Branches that are not merged
+## Branches that were parked
 
-All paused with a clean, building tree unless a row says otherwise. Each has its own `docs/<AREA>.md` with "State when paused" and
+All of them but `parked/usb-stick-quirks-wip` are merged on `cloud/staging` (see above); the table is what they held when they were parked. All paused with a clean, building tree unless a row says otherwise. Each has its own `docs/<AREA>.md` with "State when paused" and
 "How to resume". Locally the branches were `worktree-agent-<id>` (worktrees under `.claude/worktrees/agent-<id>`); on `origin` they are `parked/<area>`:
 a504bf8a5a198d471 = `parked/usb-dirty-fsck`, a3d380c78d6285728 = `parked/audio-jukebox`, a46f2d415c0a1a9ca = `parked/network-https`,
 a93e3061dde450b33 = `parked/mcc-compiler`, abec503ce2c98467a = `parked/utilities-vi`, a503fea82ea373559 = `parked/libc-accuracy`,
@@ -90,7 +114,7 @@ Old helper worktrees that are merged and can be deleted: `agent-a8e93238212e069d
 
 ## What to do first when work resumes
 
-1. Merge in this order, building after each and running the tests named (the usual suspects for conflicts are `docs/STATUS.md`,
+1. (Done on `cloud/staging`, see the top of this file.) Merge in this order, building after each and running the tests named (the usual suspects for conflicts are `docs/STATUS.md`,
    `docs/ROADMAP.md`, `tools/qemu.py`, `tools/build.py` EXTRA_LINKS, `user/bin/hakurei-shell/launch.c`, `shared/syscall.h`):
    1. ~~a6d5e6306014eb8c7 (audit round 2)~~: merged (`88acd67`)
    2. a504bf8a5a198d471 (dirty volumes): `fsck,storage,usbstor`, then run `/bin/fsck` in a VM for the first time
@@ -102,9 +126,8 @@ Old helper worktrees that are merged and can be deleted: `agent-a8e93238212e069d
    8. a93e3061dde450b33 (`mcc`), squashed: `mcc,mld,manual`
 2. Run the whole suite on a quiet machine in seven parallel worktrees (the groups are listed in [CLOUD_AGENT_BRIEF.md](CLOUD_AGENT_BRIEF.md), "Rules of the house"). Mouse-driven GUI
    tests (`notebook_*`, `sketchbook_*`, `audio_panel_volume`) flake when the host is busy; rerun a failure alone before suspecting the code.
-3. Only then build a stick image (`python tools/mkimage.py --zip`) for the Dell. (The 2026-10-23 images were built before either of the following; both are still open.) Before that, finish **gapsh job control**: in this tree Ctrl-Z in a
-   terminal freezes the foreground job and the shell with it (`docs/JOBCONTROL.md` lists what the shell has to do). Raise the `exec` argument
-   limits (hardening branch) so `rm *` and `xargs` work on big folders.
+3. Only then build a stick image (`python tools/mkimage.py --zip`) for the Dell. (The 2026-10-23 images were built before either of the following.) gapsh job control
+   is on main now (Ctrl-Z no longer freezes the shell), and the raised `exec` argument limits are on `cloud/staging`, so a new image from staging has both.
 4. First real boot (done on 2026-10-23, see above; the advice holds for the next one): use a spare stick, Secure Boot off, follow [REAL_HARDWARE.md](REAL_HARDWARE.md); read the on-screen log (photograph it) and, after
    a clean shutdown or a bad one, `TOUHOU.LOG` and `TOUHOU.PRV` on the stick from another PC. Useful command-line words: `video=1024x768`, `text`,
    `usbstorage=off`, `bootlog=off`, `noaudio`, `fb.mtrr=off`, `fb.cache=uc`, and once `parked/usb-dirty-fsck` is merged `hvforce`, `hvcheck=off`.
@@ -117,8 +140,8 @@ Old helper worktrees that are merged and can be deleted: `agent-a8e93238212e069d
   text; `k_confirm_dialog` has only two buttons; there is no triple click.
 - `sed` and `grep` call `regexec` on `line + pos` with `REG_NOTBOL`, so `\<`, `\b`, `\B` lose the previous character (`echo aa | sed 's/\<a/X/g'` prints
   `XX`); they should use `REG_STARTEND`. gapsh: `"$@"` with no arguments expands to one empty word; the `printf` builtin needs `\0NNN`.
-- Kernel: user-mode SIGSEGV handlers never seem to run; `alarm()` is a stub; `exec` refuses more than 256 arguments or 32 KiB of strings (fixed on the hardening branch).
-- A kernel panic while the desktop is running **is** drawn on the main branch (the audit's `fbcon_force_on` in the panic path; the hardening agent's note about a frozen frame came from a base older than that fix). `hwaudit_panic_on_desktop` kills init as root with the desktop up and checks the screen.
+- Kernel: user-mode SIGSEGV handlers never seem to run; `alarm()` is a stub. (`exec`'s old limit of 256 arguments or 32 KiB of strings is fixed: hardening, merged on `cloud/staging`.)
+- A kernel panic while the desktop is running **is** drawn on the main branch (the audit's `fbcon_force_on` in the panic path; the hardening agent's note about a frozen frame came from a base older than that fix). `hwaudit_panic_on_desktop` checks the screen after a panic with the desktop up (since the hardening merge it boots with `crash=desktop`: init can no longer be killed by a signal).
 - Rare, seen once in about ten full runs: `accounts_passwords` failed with the typed password echoed at the first `New password:` prompt of `passwd` (the second prompt did not echo). `getpass` disables echo before it prints its prompt, so the likely culprit is another writer of the terminal settings (the shell restoring cooked mode after it forked, or `TCSAFLUSH` applying late); it passes alone and in six reruns under load. Worth a look at gapsh's terminal handling around `fork`.
 - The fuzz seed 105 with `heapdebug` (`python tools/fuzz.py --secs 30 --extra heapdebug 105`) probably hangs the guest; look at it first.
 - `/etc` is rebuilt in RAM at every boot, so passwords, new accounts and a planned `/etc/network.conf` do not persist; only `/HumanVillage` does.
