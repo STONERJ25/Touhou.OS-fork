@@ -13,7 +13,7 @@ import re
 import time
 
 import harness
-from harness import Qemu, BUILD
+from harness import Qemu, BUILD, scaled
 from guitools import Gui, near
 
 
@@ -136,7 +136,7 @@ class Sk:
         return self.wait_gone()
 
     def wait_gone(self, timeout=10):
-        end = time.time() + timeout
+        end = time.time() + scaled(timeout)
         while time.time() < end:
             if not re.search(r"\d+", self.g.sh("pidof sketchbook")):
                 return True
@@ -182,7 +182,7 @@ class Sk:
 
     def wait_pixel(self, x, y, rgb, timeout=8, tol=8):
         self.park() if self.g.px is not None else None
-        end = time.time() + timeout
+        end = time.time() + scaled(timeout)
         while time.time() < end:
             if near(self.vm.pixel(x + self.dx, y + self.dy), rgb, tol):
                 return True
@@ -191,7 +191,7 @@ class Sk:
 
     def wait_until(self, fn, timeout=8, gap=0.25):
         self.park()
-        end = time.time() + timeout
+        end = time.time() + scaled(timeout)
         while time.time() < end:
             shot = self.vm.screen_ppm()
             if fn(shot):
@@ -276,7 +276,7 @@ class Sk:
         return "".join(re.findall(r"^[0-9a-f]+$", out, re.M))[:2 * n]
 
     def wait_file(self, path, size=None, timeout=15):
-        end = time.time() + timeout
+        end = time.time() + scaled(timeout)
         while time.time() < end:
             out = self.g.sh(f"ls -l {path}")
             if path.split("/")[-1] in out and (size is None or str(size) in out):

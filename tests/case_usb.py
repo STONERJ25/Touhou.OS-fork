@@ -11,7 +11,7 @@ import os
 import re
 import time
 
-from harness import test, TESTS, Qemu, BUILD
+from harness import test, TESTS, Qemu, BUILD, scaled
 from test_shell import run, PROMPT
 
 XHCI = ["-device", "qemu-xhci,id=xhci"]
@@ -37,7 +37,7 @@ def usb_vm(devices, cmdline="", name="t-usb", xhci=True):
 def wait_count(vm, pattern, n=1, timeout=60):
     """Waits until the serial log holds at least n matches of pattern (searches the whole log, not just new output)."""
     rx = re.compile(pattern)
-    end = time.time() + timeout
+    end = time.time() + scaled(timeout)
     while time.time() < end:
         if len(rx.findall(vm.text())) >= n:
             return
@@ -317,7 +317,7 @@ def usb_key_repeat(devs, hubs, name):
         s0 = stat(vm)
         key_event(vm, "x", True)
         # The repeat starts after 500 ms of *guest* time, which runs slower than the wall clock when the host is busy: wait for it.
-        end = time.time() + 120
+        end = time.time() + scaled(120)
         while time.time() < end and not re.search(r"\$ x{6,}", vm.text()):
             time.sleep(0.25)
         key_event(vm, "x", False)
@@ -392,7 +392,7 @@ def usb_ring_wrap():
                 time.sleep(0.02)
             sent += 40
             s1 = stat(vm)
-        end = time.time() + 60
+        end = time.time() + scaled(60)
         while time.time() < end and s1["mouse_dx"] - s0["mouse_dx"] != sent:           # let the last reports drain
             time.sleep(0.5)
             s1 = stat(vm)
@@ -401,7 +401,7 @@ def usb_ring_wrap():
         keys = "abcdefghij" * 5
         for k in keys:
             vm.key(k, hold=0.02)
-        end = time.time() + 120
+        end = time.time() + scaled(120)
         while time.time() < end and not re.search(r"\$ (?:abcdefghij){5}", vm.text()):       # all of it has reached the command line
             time.sleep(0.5)
         clear_line(vm)
