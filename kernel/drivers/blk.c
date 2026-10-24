@@ -40,12 +40,20 @@ int blk_read(BlockDev *d, u64 lba, u32 count, void *buf) {
     return d->read ? d->read(d, lba, count, buf) : -ENODEV;
 }
 
-int blk_write(BlockDev *d, u64 lba, u32 count, const void *buf) {
+/* unlocked: the caller is a /dev node whose open file holds the BLKWRUNLOCK of this very (whole) disk, see blk_unlock.c */
+static int write_checked(BlockDev *d, u64 lba, u32 count, const void *buf, bool unlocked) {
     if (!count) return 0;
     if (d->removed) return -ENODEV;
-    if (d->readonly) return -EROFS;
+    if (d->readonly && !(unlocked && d->ro_policy && !d->parent)) return -EROFS;
     if (lba >= d->sectors || lba + count > d->sectors) return -EINVAL;
     return d->write ? d->write(d, lba, count, buf) : -ENODEV;
+}
+
+int blk_write(BlockDev *d, u64 lba, u32 count, const void *buf) { return write_checked(d, lba, count, buf, false); }
+
+/* A partition named by blk.rw= (rw_grant) gets past its disk's blk.ro; blk_write() has already checked the partition's own bounds. */
+static int part_write(BlockDev *d, u64 lba, u32 count, const void *buf) {
+    return write_checked(d->parent, d->part_start + lba, count, buf, d->rw_grant);
 }
 
 int blk_flush(BlockDev *d) {
@@ -55,18 +63,17 @@ int blk_flush(BlockDev *d) {
 
 /* Partitions are thin wrappers that offset into their parent. */
 static int part_read(BlockDev *d, u64 lba, u32 count, void *buf) { return blk_read(d->parent, d->part_start + lba, count, buf); }
-static int part_write(BlockDev *d, u64 lba, u32 count, const void *buf) { return blk_write(d->parent, d->part_start + lba, count, buf); }
 static int part_flush(BlockDev *d) { return blk_flush(d->parent); }
 
 /* ---------------------------------------------------------------- /dev nodes */
 
 #define IO_CHUNK (64 * 1024)
 
-static ssize_t blkdev_io(BlockDev *d, void *buf, size_t n, u64 off, bool write) {
+static ssize_t blkdev_io(BlockDev *d, void *buf, size_t n, u64 off, bool write, bool unlocked) {
     u64 cap = d->sectors * d->sector_size;
     if (off >= cap) return write ? -ENOSPC : 0;
     if (off + n > cap) n = (size_t)(cap - off);
-    if (write && d->readonly) return -EROFS;
+    if (write && d->readonly && !unlocked) return -EROFS;
     u32 ss = d->sector_size;
     u8 *bounce = kmalloc(IO_CHUNK + ss);
     if (!bounce) return -ENOMEM;
@@ -86,7 +93,7 @@ static ssize_t blkdev_io(BlockDev *d, void *buf, size_t n, u64 off, bool write) 
             if (partial) rc = blk_read(d, lba, count, bounce);              /* read-modify-write at the edges */
             if (!rc) {
                 memcpy(bounce + head, (const u8 *)buf + done, take);
-                rc = blk_write(d, lba, count, bounce);
+                rc = write_checked(d, lba, count, bounce, unlocked);
             }
         }
         if (!rc) done += take;
@@ -95,25 +102,28 @@ static ssize_t blkdev_io(BlockDev *d, void *buf, size_t n, u64 off, bool write) 
     return done ? (ssize_t)done : rc;
 }
 
-static ssize_t blk_node_read(VNode *v, File *f, void *buf, size_t n, u64 off) { (void)f; return blkdev_io(v->priv, buf, n, off, false); }
-static ssize_t blk_node_write(VNode *v, File *f, const void *buf, size_t n, u64 off) { (void)f; return blkdev_io(v->priv, (void *)buf, n, off, true); }
+static ssize_t blk_node_read(VNode *v, File *f, void *buf, size_t n, u64 off) { (void)f; return blkdev_io(v->priv, buf, n, off, false, false); }
+static ssize_t blk_node_write(VNode *v, File *f, const void *buf, size_t n, u64 off) {
+    BlockDev *d = v->priv;
+    return blkdev_io(d, (void *)buf, n, off, true, d->readonly && blk_unlock_allows(d, f));
+}
+static void blk_node_closed(VNode *v, File *f) { blk_unlock_closed(v->priv, f); }
 
 #define BLKGETSIZE64 0x80081272
 #define BLKSSZGET    0x1268
 #define BLKFLSBUF    0x1261
 
 static int blk_node_ioctl(VNode *v, File *f, unsigned long req, void *arg) {
-    (void)f;
     BlockDev *d = v->priv;
     switch (req) {
     case BLKGETSIZE64: *(u64 *)arg = d->sectors * d->sector_size; return 0;
     case BLKSSZGET: *(int *)arg = (int)d->sector_size; return 0;
     case BLKFLSBUF: return blk_flush(d);
-    default: return -ENOTTY;
+    default: return blk_unlock_ioctl(d, f, req, arg);
     }
 }
 
-static const VNodeOps blk_node_ops = { .read = blk_node_read, .write = blk_node_write, .ioctl = blk_node_ioctl };
+static const VNodeOps blk_node_ops = { .read = blk_node_read, .write = blk_node_write, .ioctl = blk_node_ioctl, .closed = blk_node_closed };
 
 static void make_node(BlockDev *d) {
     char path[32];
@@ -189,7 +199,8 @@ static bool scan_gpt(BlockDev *d) {
                     size_t n = 0;
                     for (; n < 36 && e.name[n] && n < sizeof label - 1; n++) label[n] = e.name[n] < 128 ? (char)e.name[n] : '?';
                     label[n] = 0;
-                    add_partition(d, (int)i + 1, e.first, e.last - e.first + 1, e.type, 0, label);
+                    BlockDev *p = add_partition(d, (int)i + 1, e.first, e.last - e.first + 1, e.type, 0, label);
+                    if (p) blk_rw_check(p, e.guid);         /* blk.rw=GUID: this one partition stays writable under blk.ro */
                 }
             }
             kfree(ents);
