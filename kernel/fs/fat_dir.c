@@ -200,13 +200,22 @@ static void fill_times(FatNode *n, const u8 *e) {
     if (!n->atime) n->atime = n->mtime;
 }
 
-static u8 owner_for(FatNode *parent, const char *name, bool is_dir) {
-    FatVol *v = parent->vol;
-    if (parent->owner) return parent->owner;
-    if (!v->userdirs || !(parent->flags & FN_ROOT) || !is_dir) return 0;
+/* Who owns a directory at the top of the volume: ".system" (the persistent /etc, docs/PERSISTENT_ETC.md) is root's with
+ * 0700/0600 on every mount, whatever the uid=/fmask= options say, so the shadow file kept there is never readable by a resident;
+ * with "userdirs" a directory named like a user is that user's. */
+u8 fat_top_owner(const FatVol *v, const char *name, bool is_dir) {
+    if (!is_dir) return 0;
+    if (fatn_equal(".system", name)) return FAT_SYSTEM_OWNER;
+    if (!v->userdirs) return 0;
     for (int i = 0; i < v->nusers; i++)
         if (fatn_equal(v->users[i].name, name)) return (u8)(i + 1);
     return 0;
+}
+
+static u8 owner_for(FatNode *parent, const char *name, bool is_dir) {
+    if (parent->owner) return parent->owner;
+    if (!(parent->flags & FN_ROOT)) return 0;
+    return fat_top_owner(parent->vol, name, is_dir);
 }
 
 /* Turns one short entry (plus the long-name fragments collected before it) into a child node. */

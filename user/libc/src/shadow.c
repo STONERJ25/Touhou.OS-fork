@@ -8,6 +8,7 @@
 #include <fcntl.h>
 #include <termios.h>
 #include <sys/stat.h>
+#include <etcstore.h>
 
 #define SHADOW_PATH "/etc/shadow"
 
@@ -40,30 +41,34 @@ int gap_shadow_set(const char *user, const char *hash) {
         long sz = ftell(f);
         rewind(f);
         old = malloc((size_t)sz + 1);
+        if (!old) { fclose(f); return -1; }
         len = fread(old, 1, (size_t)sz, f);
         old[len] = 0;
         fclose(f);
     }
-    char tmp[] = SHADOW_PATH ".new";
-    FILE *out = fopen(tmp, "w");
+    size_t ul = strlen(user), cap = len + ul + strlen(hash) + 64, used = 0;
+    char *out = malloc(cap);
     if (!out) { free(old); return -1; }
-    size_t ul = strlen(user);
     bool done = false;
     char *p = old;
     while (p && *p) {
         char *nl = strchr(p, '\n');
         size_t ll = nl ? (size_t)(nl - p + 1) : strlen(p);
         if (!strncmp(p, user, ul) && p[ul] == ':') {
-            fprintf(out, "%s:%s:19000:0:99999:7:::\n", user, hash);
+            used += (size_t)snprintf(out + used, cap - used, "%s:%s:19000:0:99999:7:::\n", user, hash);
             done = true;
-        } else fwrite(p, 1, ll, out);
+        } else {
+            memcpy(out + used, p, ll);
+            used += ll;
+            if (!nl) out[used++] = '\n';
+        }
         p += ll;
     }
-    if (!done) fprintf(out, "%s:%s:19000:0:99999:7:::\n", user, hash);
-    fclose(out);
+    if (!done) used += (size_t)snprintf(out + used, cap - used, "%s:%s:19000:0:99999:7:::\n", user, hash);
     free(old);
-    chmod(tmp, 0600);
-    return rename(tmp, SHADOW_PATH);
+    int rc = etc_commit("shadow", out, used);                  /* /etc and the HUMANVILLAGE volume, atomically (etcstore.h) */
+    free(out);
+    return rc;
 }
 
 int gap_authenticate(const char *user, const char *password) {

@@ -1,10 +1,12 @@
-/* Account administration: adduser, deluser. They edit the plain text files in /etc and so need root (use sudo). */
+/* Account administration: adduser, deluser. They edit the plain text files in /etc (kept on the HUMANVILLAGE volume too, see
+ * etcstore.h) and so need root (use sudo). */
 #include "kappabox.h"
 #include <stdbool.h>
 #include <pwd.h>
 #include <grp.h>
 #include <shadow.h>
 #include <crypto.h>
+#include <etcstore.h>
 
 #define HOME_ROOT "/HumanVillage"
 #define SEAT_GROUP "shrine"
@@ -19,17 +21,26 @@ static char **load_lines(const char *path, size_t *n) {
     return lines;
 }
 
-/* Replaces the file with the given lines (plus `extra`, if any) by writing a sibling and renaming it over the original. */
-static int store_lines(const char *path, mode_t mode, char **lines, size_t n, const char *extra) {
-    char tmp[128];
-    snprintf(tmp, sizeof tmp, "%s.new", path);
-    FILE *f = fopen(tmp, "w");
-    if (!f) return -1;
-    for (size_t i = 0; i < n; i++) if (lines[i]) fprintf(f, "%s\n", lines[i]);
-    if (extra) fprintf(f, "%s\n", extra);
-    if (fclose(f) != 0) return -1;
-    chmod(tmp, mode);
-    return rename(tmp, path);
+/* Replaces /etc/NAME with the given lines (plus `extra`, if any) through etc_commit(): checked, written to a sibling and renamed over
+ * the original, and kept on the HUMANVILLAGE volume as well (etcstore.h). 0 done, 1 changed until the next restart only, -1 failed. */
+static int g_ram_only;                                                     /* some change could not be kept on the volume */
+
+static int store_lines(const char *name, char **lines, size_t n, const char *extra) {
+    size_t cap = (extra ? strlen(extra) : 0) + 2, used = 0;
+    for (size_t i = 0; i < n; i++) if (lines[i]) cap += strlen(lines[i]) + 1;
+    char *buf = malloc(cap);
+    if (!buf) return -1;
+    for (size_t i = 0; i < n; i++) if (lines[i]) used += (size_t)sprintf(buf + used, "%s\n", lines[i]);
+    if (extra) used += (size_t)sprintf(buf + used, "%s\n", extra);
+    int rc = etc_commit(name, buf, used);
+    free(buf);
+    if (rc < 0) kb_error("/etc/%s: %s", name, etc_note()[0] ? etc_note() : strerror(errno));
+    if (rc > 0) g_ram_only = 1;
+    return rc;
+}
+
+static void report_ram_only(const char *tool) {
+    if (g_ram_only) fprintf(stderr, "%s: the change lasts only until the next restart: %s\n", tool, etc_note());
 }
 
 static bool valid_name(const char *s) {
@@ -136,26 +147,34 @@ APPLET(adduser) {
 
     char home[96], line[512];
     snprintf(home, sizeof home, "%s/%s", HOME_ROOT, name);
-    snprintf(line, sizeof line, "%s:x:%d:%d:%s:%s:%s", name, id, id, gecos, home, shell);
     size_t n;
-    char **lines = load_lines("/etc/passwd", &n);
-    if (store_lines("/etc/passwd", 0644, lines, n, line) < 0) { kb_error("/etc/passwd: %s", strerror(errno)); free_lines(lines, n); return 1; }
+    char **lines;
+    /* shadow and group first, passwd last: a power cut in between leaves at most a line nobody refers to, never a user without
+     * a shadow line (each file on its own is replaced atomically) */
+    snprintf(line, sizeof line, "%s:%s:19000:0:99999:7:::", name, hash);
+    lines = load_lines("/etc/shadow", &n);
+    int rc = store_lines("shadow", lines, n, line);
     free_lines(lines, n);
+    if (rc < 0) return 1;
 
     snprintf(line, sizeof line, "%s:x:%d:%s", name, id, name);
     lines = load_lines("/etc/group", &n);
     if (seat) add_member(lines, n, SEAT_GROUP, name);
-    store_lines("/etc/group", 0644, lines, n, line);
+    rc = store_lines("group", lines, n, line);
     free_lines(lines, n);
+    if (rc < 0) return 1;
 
-    snprintf(line, sizeof line, "%s:%s:19000:0:99999:7:::", name, hash);
-    lines = load_lines("/etc/shadow", &n);
-    store_lines("/etc/shadow", 0600, lines, n, line);
+    snprintf(line, sizeof line, "%s:x:%d:%d:%s:%s:%s", name, id, id, gecos, home, shell);
+    lines = load_lines("/etc/passwd", &n);
+    rc = store_lines("passwd", lines, n, line);
     free_lines(lines, n);
+    if (rc < 0) return 1;
+    etc_reload_homes();                                                    /* a home on the volume belongs to its resident at once */
 
     if (mkdir(home, 0755) < 0 && errno != EEXIST) kb_error("%s: %s", home, strerror(errno));
     chown(home, (uid_t)id, (gid_t)id);
     printf("adduser: %s joins the Human Village (uid %d)%s%s\n", name, id, seat ? "" : ", without a seat at the shrine", locked ? "; the account is locked until passwd sets a password" : "");
+    report_ram_only("adduser");
     return 0;
 }
 
@@ -177,20 +196,25 @@ APPLET(deluser) {
     if (p->pw_uid < 1000 && !force) { kb_error("'%s' is part of the shrine itself (use --force if you really mean it)", name); return 1; }
     snprintf(home, sizeof home, "%s", p->pw_dir);
 
-    static const char *const files[] = { "/etc/passwd", "/etc/shadow", "/etc/group" };
+    static const char *const files[] = { "passwd", "shadow", "group" };       /* passwd first: the user is gone before the rest */
     for (int f = 0; f < 3; f++) {
         size_t n;
-        char **lines = load_lines(files[f], &n);
+        char path[32];
+        snprintf(path, sizeof path, "/etc/%s", files[f]);
+        char **lines = load_lines(path, &n);
         if (!lines && n == 0) continue;
         if (f == 2) drop_member(lines, n, name);
         else {
             size_t ul = strlen(name);
             for (size_t k = 0; k < n; k++) if (!strncmp(lines[k], name, ul) && lines[k][ul] == ':') { free(lines[k]); lines[k] = NULL; }
         }
-        store_lines(files[f], f == 1 ? 0600 : 0644, lines, n, NULL);
+        int rc = store_lines(files[f], lines, n, NULL);
         free_lines(lines, n);
+        if (rc < 0) return 1;
     }
+    etc_reload_homes();
     if (remove_home && strncmp(home, HOME_ROOT "/", strlen(HOME_ROOT) + 1) == 0) kb_remove_tree(home, 1, 0);
     printf("deluser: %s has left the Human Village%s\n", name, remove_home ? " (home removed)" : "");
+    report_ram_only("deluser");
     return 0;
 }

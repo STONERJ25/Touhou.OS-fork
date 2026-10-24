@@ -2,6 +2,7 @@
  * shutdown dmesg mount umount sync kill sleep ps top tty which nproc true false yes seq logname getty-less helpers. */
 #include "kappabox.h"
 #include <sys/utsname.h>
+#include <etcstore.h>
 #include <poll.h>
 
 APPLET(true) { (void)argc; (void)argv; return 0; }
@@ -82,9 +83,24 @@ APPLET(uname) {
     return 0;
 }
 
+/* hostname [NAME]: prints the machine's name; root may give a new one, which goes to /etc/hostname and onto the HUMANVILLAGE
+ * volume (etcstore.h), so it is still the name after a restart. */
 APPLET(hostname) {
     char buf[64];
-    if (argc > 1) { kb_error("cannot set hostname"); return 1; }
+    if (argc > 2 || (argc == 2 && argv[1][0] == '-')) { kb_error("usage: hostname [NAME]"); return 2; }
+    if (argc == 2) {
+        if (geteuid() != 0) { kb_error("only root may rename the machine (try: sudo hostname %s)", argv[1]); return 1; }
+        char line[80], why[120];
+        int n = snprintf(line, sizeof line, "%s\n", argv[1]);
+        if (n >= (int)sizeof line || etc_validate("hostname", line, (size_t)n, why, sizeof why) < 0) {
+            kb_error("'%s' is not a host name: letters, digits and '-', at most 31 characters", argv[1]);
+            return 1;
+        }
+        int rc = etc_commit("hostname", line, (size_t)n);
+        if (rc < 0) { kb_error("%s", etc_note()); return 1; }
+        if (rc > 0) fprintf(stderr, "hostname: the new name lasts only until the next restart: %s\n", etc_note());
+        return 0;
+    }
     gethostname(buf, sizeof buf);
     puts(buf);
     return 0;

@@ -543,7 +543,31 @@ void rewinddir(DIR *d) { lseek(d->fd, 0, SEEK_SET); }
 
 /* ---------------------------------------------------------------- misc */
 
-int uname(struct utsname *u) { return (int)__ret(__sc1(SYS_uname, (long)u)); }
+/* The machine's name is the first line of /etc/hostname (kept on the HUMANVILLAGE volume, see etcstore.h); the kernel's own
+ * "gensokyo" is the fallback when the file is missing or does not hold a name. */
+static void hostname_from_etc(char *out, size_t cap) {
+    int fd = open("/etc/hostname", O_RDONLY);
+    if (fd < 0) return;
+    char buf[40];
+    ssize_t n = read(fd, buf, sizeof buf - 1);
+    close(fd);
+    if (n <= 0) return;
+    buf[n] = 0;
+    size_t len = strcspn(buf, "\n");
+    if (len == 0 || len >= cap || len > 31 || buf[0] == '-') return;
+    for (size_t i = 0; i < len; i++) {
+        char c = buf[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-')) return;
+    }
+    memcpy(out, buf, len);
+    out[len] = 0;
+}
+
+int uname(struct utsname *u) {
+    int rc = (int)__ret(__sc1(SYS_uname, (long)u));
+    if (rc == 0) hostname_from_etc(u->nodename, sizeof u->nodename);
+    return rc;
+}
 
 int gethostname(char *buf, size_t n) {
     struct utsname u;

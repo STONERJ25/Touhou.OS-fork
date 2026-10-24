@@ -19,6 +19,7 @@
 #include "irq.h"
 #include "ktime.h"
 #include "bootlog.h"
+#include "process.h"
 
 #define FLUSH_AGE_MS 3000
 #define MSDOS_SUPER_MAGIC 0x4d44
@@ -482,10 +483,7 @@ static int fat_rename(VNode *olddir, const char *oldname, VNode *newdir, const c
         }
         if (!rc) {
             u8 owner = nd->owner;
-            if (!owner && (nd->flags & FN_ROOT) && v->userdirs && (src->flags & FN_DIR)) {
-                for (int i = 0; i < v->nusers; i++)
-                    if (fatn_equal(v->users[i].name, newname)) owner = (u8)(i + 1);
-            }
+            if (nd->flags & FN_ROOT) owner = fat_top_owner(v, newname, (src->flags & FN_DIR) != 0);
             if (owner != src->owner) node_set_owner(src, owner);
             fat_node_publish(src);
             touch_dir(od);
@@ -688,10 +686,77 @@ static int fat_vsync(VNode *vn) {
     return rc;
 }
 
+/* The residents of /etc/passwd who own a home on a "userdirs" volume: uid 1000 to 59999, as the mount applet's usermap. Returns how
+ * many were found, or a negative errno when the file cannot be read. */
+static int users_from_passwd(FatUser *out, int max) {
+    void *data;
+    size_t size;
+    int rc = vfs_read_file("/etc/passwd", &data, &size);
+    if (rc) return rc;
+    int n = 0;
+    const char *p = data, *end = (const char *)data + size;
+    while (p < end && n < max) {
+        const char *nl = memchr(p, '\n', (size_t)(end - p));
+        const char *le = nl ? nl : end;
+        const char *f[4];
+        int nf = 0;
+        f[nf++] = p;
+        for (const char *q = p; q < le && nf < 4; q++) if (*q == ':') f[nf++] = q + 1;
+        if (nf == 4) {
+            size_t nlen = (size_t)(f[1] - 1 - f[0]);
+            u32 uid = 0, gid = 0;
+            const char *q = f[2];
+            bool ok = q < le && *q != ':';
+            for (; ok && q < le && *q != ':'; q++) { if (*q < '0' || *q > '9' || uid > 99999) ok = false; else uid = uid * 10 + (u32)(*q - '0'); }
+            q = f[3];
+            ok = ok && q < le && *q != ':';
+            for (; ok && q < le && *q != ':'; q++) { if (*q < '0' || *q > '9' || gid > 99999) ok = false; else gid = gid * 10 + (u32)(*q - '0'); }
+            if (ok && nlen && nlen < sizeof out[0].name && uid >= 1000 && uid < 60000) {
+                memcpy(out[n].name, f[0], nlen);
+                out[n].name[nlen] = 0;
+                out[n].uid = uid;
+                out[n].gid = gid;
+                n++;
+            }
+        }
+        p = le + 1;
+    }
+    kfree(data);
+    return n;
+}
+
+/* ioctl(fd of a directory on the volume, FATIOC_USERS_RELOAD): root hands the volume the residents of /etc/passwd, so a home made by
+ * adduser (or kept on the volume from an earlier boot, see docs/PERSISTENT_ETC.md) belongs to its resident at once. */
+static int fat_dir_ioctl(VNode *vn, File *f, unsigned long req, void *arg) {
+    (void)f; (void)arg;
+    if (req != FATIOC_USERS_RELOAD) return -ENOTTY;
+    if (current->proc && current->proc->cred.uid != 0) return -EPERM;
+    FatNode *n = vn->priv;
+    FatVol *v = n->vol;
+    if (!v->userdirs) return -EINVAL;
+    FatUser *users = kmalloc(sizeof(FatUser) * FAT_MAX_USERS);
+    if (!users) return -ENOMEM;
+    int nu = users_from_passwd(users, FAT_MAX_USERS);
+    if (nu < 0) { kfree(users); return nu; }
+    vol_enter(v);
+    memcpy(v->users, users, sizeof(FatUser) * (size_t)nu);
+    v->nusers = nu;
+    FatNode *root = v->root;
+    if (root && root->dir)
+        for (u32 i = 0; i < root->dir->count; i++) {
+            FatNode *c = root->dir->order[i];
+            u8 owner = fat_top_owner(v, c->name, (c->flags & FN_DIR) != 0);
+            if (owner != c->owner) node_set_owner(c, owner);
+        }
+    vol_leave(v);
+    kfree(users);
+    return nu;
+}
+
 static const VNodeOps fat_dir_ops = {
     .lookup = fat_lookup, .create = fat_create, .mkdir = fat_mkdir, .unlink = fat_unlink, .rmdir = fat_rmdir,
     .rename = fat_rename, .readdir = fat_readdir, .chmod = fat_chmod, .chown = fat_chown, .sync = fat_vsync,
-    .release = fat_release, .settimes = fat_settimes,
+    .release = fat_release, .settimes = fat_settimes, .ioctl = fat_dir_ioctl,
 };
 
 static const VNodeOps fat_file_ops = {
@@ -916,6 +981,7 @@ static int fat_mount(const char *source, u32 flags, Mount *m) {
     if (o.userdirs && v->nusers == 0) {
         for (unsigned i = 0; i < ARRAY_SIZE(g_default_users); i++) v->users[v->nusers++] = g_default_users[i];
     }
+    v->users[FAT_SYSTEM_OWNER - 1] = (FatUser){ ".system", 0, 0 };
     v->uid = o.uid; v->gid = o.gid; v->fmask = o.fmask; v->dmask = o.dmask;
     v->userdirs = o.userdirs;
     v->sync_mode = o.sync;
