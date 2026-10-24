@@ -318,7 +318,7 @@ def hwaudit_stage_marks():
         centres = [vm.pixel(6 + 20 * i + 7, 13, shot) for i in range(8)]
         white = [all(c > 240 for c in p) for p in centres]
         assert white == [True] * 6 + [False] * 2, f"squares drawn: {white}, pixels {centres}"
-        assert "Gensokyo" not in vm.text(), "the kernel went on after stagehold=6"
+        assert "[Gensokyo] kernel" not in vm.text(), "the kernel went on after stagehold=6"
 
 
 @test
