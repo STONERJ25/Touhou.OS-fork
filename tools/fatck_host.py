@@ -96,7 +96,8 @@ FK_COUNT = len(FK_NAMES)
 class Finding(ctypes.Structure):
     _fields_ = [("code", ctypes.c_uint16), ("sev", ctypes.c_uint8), ("fixable", ctypes.c_uint8), ("dir", ctypes.c_uint32),
                 ("slot", ctypes.c_uint32), ("nslots", ctypes.c_uint32), ("cluster", ctypes.c_uint32), ("first", ctypes.c_uint32),
-                ("size", ctypes.c_uint32), ("aux", ctypes.c_uint32), ("chain_len", ctypes.c_uint32), ("attr", ctypes.c_uint8)]
+                ("size", ctypes.c_uint32), ("aux", ctypes.c_uint32), ("chain_len", ctypes.c_uint32), ("last", ctypes.c_uint32),
+                ("attr", ctypes.c_uint8)]
 
 
 class Result(ctypes.Structure):
@@ -132,7 +133,23 @@ REPORT_T = C.CFUNCTYPE(None, C.c_void_p, C.POINTER(Finding), C.c_char_p)
 class Io(ctypes.Structure):
     _fields_ = [("read", READ_T), ("write", WRITE_T), ("flush", FLUSH_T), ("alloc", ALLOC_T), ("release", RELEASE_T), ("now_ms", NOW_T),
                 ("report", REPORT_T), ("ctx", C.c_void_p), ("bytes", C.c_uint64), ("align", C.c_uint32), ("deadline_ms", C.c_uint64),
-                ("max_windows", C.c_uint32), ("arena_bytes", C.c_uint32), ("max_depth", C.c_uint32)]
+                ("max_windows", C.c_uint32), ("arena_bytes", C.c_uint32), ("max_depth", C.c_uint32), ("keep", C.c_uint32)]
+
+
+FIX_NONE, FIX_SAFE, FIX_ALL = 0, 1, 2
+SAY_T = C.CFUNCTYPE(None, C.c_void_p, C.c_char_p)
+ASK_T = C.CFUNCTYPE(C.c_bool, C.c_void_p, C.c_int, C.c_char_p)
+
+
+class FixOpts(ctypes.Structure):
+    _fields_ = [("mode", C.c_int), ("free_lost", C.c_bool), ("ask", ASK_T), ("say", SAY_T), ("ctx", C.c_void_p),
+                ("unix_time", C.c_uint64), ("max_passes", C.c_uint32)]
+
+
+class FixStats(ctypes.Structure):
+    _fields_ = [("passes", C.c_uint32), ("repaired", C.c_uint32), ("declined", C.c_uint32), ("failed", C.c_uint32),
+                ("lost_chains", C.c_uint32), ("lost_clusters", C.c_uint32), ("freed_clusters", C.c_uint32),
+                ("copied_clusters", C.c_uint32), ("wrote", C.c_bool), ("clean_now", C.c_bool), ("flags_cleared", C.c_bool)]
 
 
 _lib = None
@@ -161,6 +178,9 @@ def lib():
         _lib.fatck_geom.restype = C.POINTER(Geom)
         _lib.fatck_flush.argtypes = [C.c_void_p]
         _lib.fatck_flush.restype = C.c_int
+        if hasattr(_lib, "fatfix_run"):
+            _lib.fatfix_run.argtypes = [C.c_void_p, C.POINTER(FixOpts), C.POINTER(FixStats)]
+            _lib.fatfix_run.restype = C.c_int
     return _lib
 
 
@@ -197,7 +217,7 @@ class ScanOutcome:
 class Session:
     """One FAT volume of an image file (or any seekable binary file) opened for the C engine."""
 
-    def __init__(self, path, offset=0, length=None, align=512, writable=False, deadline_ms=0, max_windows=64, arena=1 << 20):
+    def __init__(self, path, offset=0, length=None, align=512, writable=False, deadline_ms=0, max_windows=64, arena=1 << 20, keep=0):
         self.f = open(path, "r+b" if writable else "rb")
         self.offset = offset
         self.f.seek(0, 2)
@@ -252,7 +272,7 @@ class Session:
         self._cb = (READ_T(read), WRITE_T(write) if writable else WRITE_T(), FLUSH_T(flush), ALLOC_T(alloc), RELEASE_T(release),
                     NOW_T(), REPORT_T(report))
         self.io = Io(self._cb[0], self._cb[1], self._cb[2], self._cb[3], self._cb[4], self._cb[5], self._cb[6], None,
-                     self.length, align, deadline_ms, max_windows, arena, 0)
+                     self.length, align, deadline_ms, max_windows, arena, 0, keep)
         self.rc_open = L.fatck_open(C.byref(self._ck), C.byref(self.io))
 
     @property
@@ -270,6 +290,22 @@ class Session:
         geom = Geom()
         C.memmove(C.addressof(geom), L.fatck_geom(self._ck), C.sizeof(Geom))
         return ScanOutcome(rc, res, list(self.findings), geom)
+
+    def fix(self, mode=FIX_SAFE, free_lost=False, unix_time=1767225600, max_passes=0):
+        """Runs the repair engine (shared/fatfix.c). Returns (rc, FixStats, [lines it said], ScanOutcome of the last scan)."""
+        L = lib()
+        lines = []
+        if not self.opened:                                    # the boot sector is unusable: nothing can be repaired
+            return self.rc_open, FixStats(), lines, self.scan()
+
+        def say(_ctx, text):
+            lines.append(text.decode("utf-8", "replace"))
+
+        say_cb = SAY_T(say)
+        opts = FixOpts(mode, free_lost, ASK_T(), say_cb, None, unix_time, max_passes)
+        stats = FixStats()
+        rc = L.fatfix_run(self._ck, C.byref(opts), C.byref(stats))
+        return rc, stats, lines, self.scan()                    # (one more scan, so that the findings are those of the repaired volume only)
 
     def close(self):
         if self._ck.value:
@@ -298,15 +334,35 @@ def scan_volume(path, index=None, **kw):
     return out
 
 
+def fix_volume(path, index=None, mode=FIX_SAFE, free_lost=False, **kw):
+    """Repairs partition `index` of an image in place (the file is modified!). Returns (rc, FixStats, lines, ScanOutcome of the last scan)."""
+    import mkdisk
+    ss, parts = mkdisk.partitions(path)
+    pick = [p for p in parts if index is None or p["index"] == index]
+    if not pick:
+        raise HostBuildError(f"no partition {index} in {path}")
+    with Session(path, pick[0]["offset"], pick[0]["length"], align=ss, writable=mode != FIX_NONE, keep=4096, **kw) as s:
+        return s.fix(mode, free_lost)
+
+
 def main(argv=None):
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:
         print(__doc__)
         return 2
+    mode = None
+    while args and args[0] in ("-a", "-y", "-n"):
+        mode = {"-a": FIX_SAFE, "-y": FIX_ALL, "-n": FIX_NONE}[args.pop(0)]
     spec = args[-1]
     m = re.match(r"^(.*):(\d+)$", spec)
     path, idx = (m.group(1), int(m.group(2))) if m and len(m.group(1)) > 1 else (spec, None)
+    if mode:
+        rc, stats, lines, out = fix_volume(path, idx, mode)
+        print("\n".join(lines))
+        print(f"passes {stats.passes}, repaired {stats.repaired}, declined {stats.declined}, failed {stats.failed}, clean now: {stats.clean_now}")
+        print(out.text())
+        return 0 if stats.clean_now else 1
     out = scan_volume(path, idx)
     print(out.text())
     r = out.result

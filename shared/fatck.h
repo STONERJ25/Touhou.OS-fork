@@ -75,18 +75,24 @@ enum {
 /* why a chain is broken (FatCkFinding.aux for FK_DIRCHAIN / FK_CHAIN) */
 enum { FC_RANGE = 1, FC_FREE, FC_BAD, FC_RESERVED, FC_LOOP };
 
+/* Where a finding is: entry-level findings name the directory (by its first cluster; the root is FatCkGeom.root_dir, 0 for a fixed
+ * FAT12/16 root) and the entry set inside it: `slot` is the FIRST slot of the set (its long-name fragments, if any), `nslots` how many
+ * slots it spans, so the short entry sits at slot + nslots - 1. Findings about a single long-name fragment have nslots = 1; those about
+ * a run of orphaned fragments name the run. `first` and `size` repeat what the short entry held when it was read (a repair compares them
+ * before it touches the slot). */
 typedef struct FatCkFinding {
     uint16_t code;          /* FK_* */
     uint8_t  sev;           /* FS_* */
     uint8_t  fixable;       /* the repair code knows what to do about it */
-    uint32_t dir;           /* first cluster of the directory the entry lives in (the root counts as FatCkGeom.root_dir) */
-    uint32_t slot;          /* slot of the short entry (or of the offending LFN fragment) inside that directory */
-    uint32_t nslots;        /* slots of the whole entry set (LFN fragments + short entry), 1 for fragments */
-    uint32_t cluster;       /* the cluster the finding is about, 0 if none */
+    uint32_t dir;           /* first cluster of the directory the entry lives in */
+    uint32_t slot;          /* first slot of the entry set inside that directory */
+    uint32_t nslots;        /* slots of the whole set (LFN fragments + short entry) */
+    uint32_t cluster;       /* the cluster the finding is about, 0 if none (for FK_DOTS: what the entry should hold) */
     uint32_t first;         /* the entry's first cluster */
     uint32_t size;          /* the entry's size field */
     uint32_t aux;           /* code specific */
     uint32_t chain_len;     /* clusters that were found in the entry's chain before the trouble (or in all of it) */
+    uint32_t last;          /* the last cluster of the chain that was claimed before the trouble (0 if none) */
     uint8_t  attr;
 } FatCkFinding;
 
@@ -137,6 +143,7 @@ typedef struct FatCkIo {
     uint32_t max_windows;   /* FAT cache: windows of 64 KiB (0 = 16) */
     uint32_t arena_bytes;   /* memory for the duplicate-name tables (0 = 1 MiB) */
     uint32_t max_depth;     /* directory nesting limit (0 = 256) */
+    uint32_t keep;          /* findings (with their text) to retain for fatck_findings(), 0 = none */
 } FatCkIo;
 
 typedef struct FatCk FatCk;
@@ -150,10 +157,24 @@ void fatck_close(FatCk *ck);
  * clean needs no scan (that is what the kernel does). */
 int  fatck_quick_state(FatCk *ck, bool *dirty, bool *hard_error);
 
-/* The whole scan. Returns 0 when it ran to the end (look at the result), a negative code when it could not (res.incomplete). */
+/* The whole scan. Returns 0 when it ran to the end (look at the result), a negative code when it could not (res.incomplete).
+ * It may be run again (after a repair): every scan starts from scratch and replaces the retained findings. */
 int  fatck_scan(FatCk *ck);
 const FatCkResult *fatck_result(const FatCk *ck);
 const FatCkGeom   *fatck_geom(const FatCk *ck);
+
+/* The findings of the last scan that were retained (FatCkIo.keep of them; the rest are only counted in the result). */
+uint32_t fatck_findings(const FatCk *ck, const FatCkFinding **list);
+const char *fatck_finding_text(const FatCk *ck, uint32_t index);
+uint32_t fatck_findings_dropped(const FatCk *ck);
+bool fatck_cluster_owned(const FatCk *ck, uint32_t c);      /* claimed by a chain that the last scan walked */
+
+void *fatck_scratch(FatCk *ck, size_t n);                    /* zeroed memory for the repair code; fatck_close releases what is left */
+void  fatck_scratch_free(FatCk *ck, void *p);
+
+/* The checker's own printf (%s %u %x %d %c %%, %lu / %lx / %ld for 64-bit values, 0-padded widths): the same text in the kernel, in user
+ * space and in the tests. (No format attribute: %lu means 64 bits here whatever the compiler's `long` is.) */
+int  fatck_fmt(char *buf, size_t cap, const char *fmt, ...);
 
 /* Names for messages. */
 const char *fatck_code_name(int code);

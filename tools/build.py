@@ -421,7 +421,8 @@ def build_user(nproc):
 
 # Programs that run with their owner's authority (setuid root) and files that only root may read.
 SPECIAL_MODES = {"bin/eiki": 0o4755, "bin/su": 0o4755, "bin/passwd": 0o4755, "sbin/pwcheck": 0o4755, "Hakurei/etc/shadow": 0o600}
-EXTRA_LINKS = [("bin/sudo", "eiki"), ("bin/sh", "gapsh")]       # #!/bin/sh scripts (and system()/popen() callers) find a shell
+EXTRA_LINKS = [("bin/sudo", "eiki"), ("bin/sh", "gapsh"),       # #!/bin/sh scripts (and system()/popen() callers) find a shell
+               ("bin/fsck.fat", "fsck"), ("bin/fsck.vfat", "fsck")]
 
 
 def build_initrd(user_bins):

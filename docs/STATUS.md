@@ -41,8 +41,9 @@ Running on a real PC: [REAL_HARDWARE.md](REAL_HARDWARE.md).
 - Only one CPU is used (the other cores are idle); everything is polled.
 - Nothing is persistent unless a HUMANVILLAGE volume is mounted: `/etc` and the homes live in RAM and are rebuilt at boot.
 - USB mass storage is in (bulk-only sticks, [USB](USB.md)): the stick the OS booted from carries `/HumanVillage`, and the kernel log is kept on it
-  (`TOUHOU.LOG`, [REAL_HARDWARE](REAL_HARDWARE.md)). Not covered: UAS, a stick flagged dirty stays read-only until a file system check, and nothing of it
-  has run on real silicon. No image decoders yet.
+  (`TOUHOU.LOG`, [REAL_HARDWARE](REAL_HARDWARE.md)). A stick flagged dirty is gone through before it is mounted (read-write when nothing is out of place; read-only with
+  the reason in `/proc/fatcheck` otherwise; `hvforce` / `hvcheck=off`, [STORAGE](STORAGE.md)). Not covered: UAS; `fsck` (written, host-tested, **never run in the guest yet**: see
+  "State when paused" in STORAGE.md); a safer FAT write order; and nothing of it has run on real silicon. No image decoders yet.
 - Nothing has run on the real target PC (the real-PC network drivers for the I219 and RTL8168 included); [HARDWARE_AUDIT](HARDWARE_AUDIT.md) (when it exists) lists what is unverified.
 - Job control: the kernel side exists (stopped state, Ctrl-Z, `waitpid` with WUNTRACED, orphaned groups; [JOBCONTROL](JOBCONTROL.md)), but gapsh does not use it yet (`jobs`, `fg`, `bg` are being written), so for now Ctrl-Z freezes the foreground job and the shell prompt along with it.
 - The local agent log (`docs/AI_SUMMARY.md`, gitignored) has the newest development notes.

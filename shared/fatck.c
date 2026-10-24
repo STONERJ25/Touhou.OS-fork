@@ -15,6 +15,7 @@ void *memcpy(void *, const void *, size_t);
 void *memmove(void *, const void *, size_t);
 void *memset(void *, int, size_t);
 int memcmp(const void *, const void *, size_t);
+size_t strlen(const char *);
 #else
 #include <string.h>
 #endif
@@ -31,6 +32,7 @@ int memcmp(const void *, const void *, size_t);
 #define RA_WINDOWS  4
 #define MAX_SLOTS   65536u              /* the FAT directory limit: 2 MiB */
 #define MAX_MEM     24
+#define KEEP_TEXT   200
 
 /* ---------------------------------------------------------------------------------------------- small helpers */
 
@@ -85,6 +87,14 @@ static void ck_vfmt(char *buf, size_t cap, const char *fmt, va_list ap) {
         }
     }
     if (cap) buf[o.len < cap ? o.len : cap - 1] = 0;
+}
+
+int fatck_fmt(char *buf, size_t cap, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    ck_vfmt(buf, cap, fmt, ap);
+    va_end(ap);
+    return (int)strlen(buf);
 }
 
 /* ---------------------------------------------------------------------------------------------- the session */
@@ -142,8 +152,12 @@ struct FatCk {
     Lfn lfn;
     uint64_t ticks;
     int fatal;
-    bool scanned;
+    bool bufs_ready;                /* the scan's buffers exist (allocated by the first scan, reused by later ones) */
     bool fat_dirty_state;           /* dirty flags, for severity decisions */
+    /* retained findings */
+    FatCkFinding *kept;
+    char (*ktext)[KEEP_TEXT];
+    uint32_t nkept, kept_cap, ndropped;
 };
 
 static void *xalloc(FatCk *ck, size_t n) {
@@ -155,6 +169,20 @@ static void *xalloc(FatCk *ck, size_t n) {
     if (ck->io.release) ck->io.release(ck->io.ctx, p, n);
     return NULL;
 }
+
+static void xfree(FatCk *ck, void *p) {
+    if (!p) return;
+    for (int i = 0; i < MAX_MEM; i++)
+        if (ck->mem[i].p == p) {
+            if (ck->io.release) ck->io.release(ck->io.ctx, p, ck->mem[i].n);
+            ck->mem[i].p = NULL;
+            return;
+        }
+}
+
+/* Zeroed scratch memory for the repair code, returned with fatck_scratch_free (anything left is released by fatck_close). */
+void *fatck_scratch(FatCk *ck, size_t n) { return xalloc(ck, n); }
+void fatck_scratch_free(FatCk *ck, void *p) { xfree(ck, p); }
 
 /* ---------------------------------------------------------------------------------------------- findings */
 
@@ -215,8 +243,23 @@ static void emit(FatCk *ck, int code, int sev, FatCkFinding *f, const char *fmt,
     case FS_WARN: ck->res.warnings++; break;
     default:      ck->res.notes++; break;
     }
+    if (ck->kept) {
+        if (ck->nkept < ck->kept_cap) {
+            ck->kept[ck->nkept] = *f;
+            size_t n = 0;
+            while (text[n] && n < KEEP_TEXT - 1) { ck->ktext[ck->nkept][n] = text[n]; n++; }
+            ck->ktext[ck->nkept][n] = 0;
+            ck->nkept++;
+        } else {
+            ck->ndropped++;
+        }
+    }
     if (ck->io.report) ck->io.report(ck->io.ctx, f, text);
 }
+
+uint32_t fatck_findings(const FatCk *ck, const FatCkFinding **list) { *list = ck->kept; return ck->nkept; }
+const char *fatck_finding_text(const FatCk *ck, uint32_t i) { return i < ck->nkept ? ck->ktext[i] : ""; }
+uint32_t fatck_findings_dropped(const FatCk *ck) { return ck->ndropped; }
 
 /* A volume-level finding with no entry attached. */
 static void emit0(FatCk *ck, int code, int sev, uint32_t cluster, uint32_t aux, const char *fmt, ...) {
@@ -528,6 +571,12 @@ int fatck_open(FatCk **out, const FatCkIo *io) {
     ck->win = wdata ? xalloc(ck, ck->nwin * sizeof(Win)) : NULL;
     if (!ck->win) { rc = -ENOMEM_; goto fail; }
     for (uint32_t i = 0; i < ck->nwin; i++) ck->win[i].data = wdata + (size_t)i * WIN_SIZE;
+    if (io->keep) {                                              /* retained findings: optional, a failed allocation just means none are kept */
+        ck->kept = xalloc(ck, (size_t)io->keep * sizeof(FatCkFinding));
+        ck->ktext = xalloc(ck, (size_t)io->keep * KEEP_TEXT);
+        if (ck->kept && ck->ktext) ck->kept_cap = io->keep;
+        else { ck->kept = NULL; ck->ktext = NULL; }
+    }
     ck->last_idx = ~0ull - 1;
     ck->res.opened = true;
     ck->res.bits = bits;
@@ -596,20 +645,24 @@ int fatck_dir_slot_off(FatCk *ck, uint32_t dir, uint32_t slot, uint64_t *off) {
 static inline bool owned_get(const FatCk *ck, uint32_t c) { return (ck->owned[c >> 5] >> (c & 31)) & 1; }
 static inline void owned_set(FatCk *ck, uint32_t c) { ck->owned[c >> 5] |= 1u << (c & 31); }
 
-typedef struct { uint32_t len; int stop; uint32_t at; } Trace;
+typedef struct { uint32_t len; int stop; uint32_t at; uint32_t last; } Trace;
 
-/* Follows a chain from `first`, claiming every cluster. stop = 0: ended with an end-of-chain mark; else FC_* and `at` is the cluster
- * that could not be used (it is not claimed, and not counted in len). */
+/* Follows a chain from `first`, claiming every cluster. stop = 0: ended with an end-of-chain mark. Otherwise stop is FC_* and
+ *   FC_RANGE / FC_LOOP:  `at` is the cluster the last good one pointed to (outside the volume, or already claimed); it is not claimed
+ *   FC_FREE / BAD / RESERVED: `at` is the last good cluster itself, whose own FAT entry is free, bad or reserved (it IS claimed)
+ * `last` is the last cluster that was claimed (0 if none), len how many were. */
 static void trace_chain(FatCk *ck, uint32_t first, Trace *t) {
     t->len = 0;
     t->stop = 0;
     t->at = 0;
+    t->last = 0;
     uint32_t c = first;
     for (;;) {
         if (!valid_cluster(ck, c)) { t->stop = FC_RANGE; t->at = c; return; }
         if (owned_get(ck, c)) { t->stop = FC_LOOP; t->at = c; return; }
         owned_set(ck, c);
         t->len++;
+        t->last = c;
         uint32_t nxt;
         if (fat_entry_get(ck, ck->g.active_fat, c, &nxt)) { t->stop = FC_RANGE; t->at = c; ck->fatal = ck->fatal ? ck->fatal : -EIO_; return; }
         if (fatck_is_eoc(ck, nxt)) return;
@@ -620,6 +673,8 @@ static void trace_chain(FatCk *ck, uint32_t first, Trace *t) {
         if (tick(ck)) { t->stop = FC_RANGE; t->at = c; return; }
     }
 }
+
+bool fatck_cluster_owned(const FatCk *ck, uint32_t c) { return ck->owned && c < ck->maxc && owned_get(ck, c); }
 
 static const char *stop_text(int stop) {
     switch (stop) {
@@ -734,14 +789,15 @@ static bool valid_dos_date(uint32_t date, uint32_t tm) {
 
 static void lfn_reset(FatCk *ck) { ck->lfn.active = false; ck->lfn.pad_bad = ck->lfn.type_bad = false; }
 
-/* Reports a long-name set that was left without its short entry. */
-static void lfn_orphan(FatCk *ck, Frame *f) {
+/* Reports a long-name set that was left without its short entry; `cur` is the slot at which that was noticed (the fragments are the
+ * slots from the set's start up to it). */
+static void lfn_orphan(FatCk *ck, Frame *f, uint32_t cur) {
     if (!ck->lfn.active) return;
     FatCkFinding fi;
     memset(&fi, 0, sizeof fi);
     fi.dir = f->first;
     fi.slot = ck->lfn.slot;
-    fi.nslots = 1;
+    fi.nslots = cur > ck->lfn.slot ? cur - ck->lfn.slot : 1;
     emit(ck, FK_LFN, -1, &fi, "%s: LFN fragment at slot %u is not followed by a matching entry", ck->path_len ? ck->path : "/", ck->lfn.slot);
     lfn_reset(ck);
 }
@@ -849,11 +905,20 @@ static void check_short_entry(FatCk *ck, Frame *f, const uint8_t *e, uint32_t sl
             const char *want = f->nent == 0 ? "." : "..";
             bool ok = f->nent == 0 ? dot : dotdot;
             if (!ok) {
-                if (!f->dots_done) { f->dots_done = true; emit(ck, FK_DOTS, -1, &fi, "%s: missing '.' / '..' entries", ck->path_len ? ck->path : "/"); }
+                if (!f->dots_done) {
+                    f->dots_done = true;
+                    FatCkFinding df = fi;
+                    df.slot = 0; df.nslots = 1; df.aux = 1; df.cluster = f->dotdot;
+                    emit(ck, FK_DOTS, -1, &df, "%s: missing '.' / '..' entries", ck->path_len ? ck->path : "/");
+                }
             } else {
                 uint32_t exp = f->nent == 0 ? f->first : f->dotdot;
-                if (first != exp) { fi.aux = f->nent == 0 ? 2 : 3; fi.cluster = exp; emit(ck, FK_DOTS, -1, &fi, "%s: '%s' points to cluster %u, expected %u", ck->path_len ? ck->path : "/", want, first, exp); }
-                if (!is_dir) { fi.aux = f->nent == 0 ? 2 : 3; emit(ck, FK_DOTS, -1, &fi, "%s: '.'/'..' without the directory attribute", ck->path_len ? ck->path : "/"); }
+                fi.aux = f->nent == 0 ? 2 : 3;
+                fi.cluster = exp;
+                if (first != exp) emit(ck, FK_DOTS, -1, &fi, "%s: '%s' points to cluster %u, expected %u", ck->path_len ? ck->path : "/", want, first, exp);
+                if (!is_dir) emit(ck, FK_DOTS, -1, &fi, "%s: '.'/'..' without the directory attribute", ck->path_len ? ck->path : "/");
+                fi.aux = 0;
+                fi.cluster = 0;
             }
         }
         f->nent++;
@@ -873,8 +938,11 @@ static void check_short_entry(FatCk *ck, Frame *f, const uint8_t *e, uint32_t sl
         for (int i = 0; i < 11; i++) hs = fnv64(hs, e[i]);
         hs ^= 0xA5A5A5A5A5A5A5A5ull;
         bool dup_name = tab_seen(f, h), dup_sfn = tab_seen(f, hs);
+        fi.aux = 1;
         if (dup_name) emit(ck, FK_DUP, -1, &fi, "%s: duplicate name '%s' (slot %u)", ck->path_len ? ck->path : "/", disp, slot);
+        fi.aux = 2;
         if (dup_sfn) emit(ck, FK_DUP, -1, &fi, "%s: duplicate short name '%s'", ck->path_len ? ck->path : "/", sname);
+        fi.aux = 0;
     }
 
     Trace t;
@@ -883,6 +951,7 @@ static void check_short_entry(FatCk *ck, Frame *f, const uint8_t *e, uint32_t sl
         if (first < 2) { emit(ck, FK_NOCLUSTER, -1, &fi, "%s: directory without a first cluster", esc); return; }
         trace_chain(ck, first, &t);
         fi.chain_len = t.len;
+        fi.last = t.last;
         if (t.stop) {
             fi.cluster = t.at;
             fi.aux = (uint32_t)t.stop;
@@ -923,6 +992,7 @@ static void check_short_entry(FatCk *ck, Frame *f, const uint8_t *e, uint32_t sl
     }
     trace_chain(ck, first, &t);
     fi.chain_len = t.len;
+    fi.last = t.last;
     uint64_t need = ((uint64_t)size + ck->g.cluster_bytes - 1) / ck->g.cluster_bytes;
     if (t.stop) {
         fi.cluster = t.at;
@@ -966,8 +1036,8 @@ static void walk_frame(FatCk *ck, Frame *f) {
             continue;
         }
         uint8_t first = e[0], attr = e[11];
-        if (first == 0x00) { f->ended = true; lfn_orphan(ck, f); continue; }
-        if (first == 0xE5) { lfn_orphan(ck, f); continue; }
+        if (first == 0x00) { f->ended = true; lfn_orphan(ck, f, slot); continue; }
+        if (first == 0xE5) { lfn_orphan(ck, f, slot); continue; }
         if ((attr & 0x3F) == 0x0F) {                                     /* a long-name fragment */
             Lfn *l = &ck->lfn;
             FatCkFinding fi;
@@ -977,7 +1047,7 @@ static void walk_frame(FatCk *ck, Frame *f) {
             fi.nslots = 1;
             const char *dp = ck->path_len ? ck->path : "/";
             if (first & 0x40) {
-                lfn_orphan(ck, f);
+                lfn_orphan(ck, f, slot);
                 uint32_t cnt = first & 0x3F;
                 if (cnt == 0 || cnt > 20) {
                     emit(ck, FK_LFN, -1, &fi, "%s: bad LFN sequence number %x at slot %u", dp, first, slot);
@@ -994,7 +1064,7 @@ static void walk_frame(FatCk *ck, Frame *f) {
                 lfn_reset(ck);
                 continue;
             }
-            if (e[12] != 0 && !l->type_bad) { l->type_bad = true; emit(ck, FK_LFNPAD, -1, &fi, "%s: LFN entry at slot %u has a non-zero type byte", dp, slot); }
+            if (e[12] != 0 && !l->type_bad) { l->type_bad = true; fi.aux = 1; emit(ck, FK_LFNPAD, -1, &fi, "%s: LFN entry at slot %u has a non-zero type byte", dp, slot); fi.aux = 0; }
             if (e[26] | e[27]) emit(ck, FK_LFNFIELD, -1, &fi, "%s: LFN entry at slot %u has a non-zero first-cluster field", dp, slot);
             uint16_t *u = l->units + (size_t)(l->expect - 1) * 13;
             for (int i = 0; i < 5; i++) u[i] = (uint16_t)rd16(e + 1 + 2 * i);
@@ -1023,6 +1093,7 @@ static void walk_frame(FatCk *ck, Frame *f) {
                             fi.dir = f->first;
                             fi.slot = slot;
                             fi.nslots = 1;
+                            fi.aux = 2;
                             emit(ck, FK_LFNPAD, -1, &fi, "%s: LFN padding of %s is not 0xFFFF", ck->path_len ? ck->path : "/", sfn_label(e, sn));
                         }
                 }
@@ -1045,7 +1116,7 @@ static void walk_frame(FatCk *ck, Frame *f) {
         if (ck->fatal) return;
     }
     /* end of the directory */
-    lfn_orphan(ck, f);
+    lfn_orphan(ck, f, f->nslots);
     if (!f->is_root && f->nent < 2 && !f->dots_done) {
         f->dots_done = true;
         FatCkFinding fi;
@@ -1168,21 +1239,41 @@ static void check_fsinfo(FatCk *ck, uint32_t free_clusters) {
 }
 
 int fatck_scan(FatCk *ck) {
-    if (!ck || !ck->res.opened || ck->scanned) return -EINVAL_;
-    ck->scanned = true;
+    if (!ck || !ck->res.opened) return -EINVAL_;
     const FatCkGeom *g = &ck->g;
-    size_t words = ((size_t)ck->maxc + 31) / 32;
-    ck->owned_bytes = words * 4;
-    ck->owned = xalloc(ck, ck->owned_bytes);
-    ck->cbuf = xalloc(ck, g->cluster_bytes);
-    ck->stack = xalloc(ck, (size_t)ck->max_depth * sizeof(Frame));
-    ck->arena_size = ck->io.arena_bytes ? ck->io.arena_bytes : (1u << 20);
-    ck->arena = xalloc(ck, ck->arena_size);                              /* may be NULL: duplicate checks are skipped then */
-    if (g->bits != 32) ck->rootbuf = xalloc(ck, (size_t)((g->root_bytes + ck->align - 1) & ~(uint64_t)(ck->align - 1)));
-    if (!ck->owned || !ck->cbuf || !ck->stack || (g->bits != 32 && !ck->rootbuf)) {
-        ck->res.incomplete = true;
-        emit0(ck, FK_INCOMPLETE, -1, 0, 0, "not enough memory to check this volume (%u clusters)", g->nclusters);
-        return -ENOMEM_;
+    if (!ck->bufs_ready) {
+        size_t words = ((size_t)ck->maxc + 31) / 32;
+        ck->owned_bytes = words * 4;
+        ck->owned = xalloc(ck, ck->owned_bytes);
+        ck->cbuf = xalloc(ck, g->cluster_bytes);
+        ck->stack = xalloc(ck, (size_t)ck->max_depth * sizeof(Frame));
+        ck->arena_size = ck->io.arena_bytes ? ck->io.arena_bytes : (1u << 20);
+        ck->arena = xalloc(ck, ck->arena_size);                          /* may be NULL: duplicate checks are skipped then */
+        if (g->bits != 32) ck->rootbuf = xalloc(ck, (size_t)((g->root_bytes + ck->align - 1) & ~(uint64_t)(ck->align - 1)));
+        if (!ck->owned || !ck->cbuf || !ck->stack || (g->bits != 32 && !ck->rootbuf)) {
+            ck->res.incomplete = true;
+            emit0(ck, FK_INCOMPLETE, -1, 0, 0, "not enough memory to check this volume (%u clusters)", g->nclusters);
+            return -ENOMEM_;
+        }
+        ck->bufs_ready = true;
+    } else {
+        memset(ck->owned, 0, ck->owned_bytes);
+    }
+    {                                                                    /* every scan starts from scratch */
+        FatCkResult keep = ck->res;
+        memset(&ck->res, 0, sizeof ck->res);
+        ck->res.opened = true;
+        ck->res.bits = keep.bits;
+        ck->res.nclusters = keep.nclusters;
+        ck->res.cluster_bytes = keep.cluster_bytes;
+        ck->nkept = ck->ndropped = 0;
+        ck->fatal = 0;
+        ck->depth = 0;
+        ck->arena_used = 0;
+        ck->ticks = 0;
+        ck->path_len = 0;
+        ck->path[0] = 0;
+        lfn_reset(ck);
     }
     ck->cbuf_cluster = 0;
     int rc = check_flags(ck);
@@ -1199,9 +1290,11 @@ int fatck_scan(FatCk *ck) {
                 FatCkFinding fi;
                 memset(&fi, 0, sizeof fi);
                 fi.dir = g->root_cluster;
+                fi.first = g->root_cluster;
                 fi.cluster = t.at;
                 fi.aux = (uint32_t)t.stop;
                 fi.chain_len = t.len;
+                fi.last = t.last;
                 emit(ck, FK_DIRCHAIN, -1, &fi, "/: the root directory chain %s (cluster %u, after %u cluster(s))", stop_text(t.stop), t.at, t.len);
             }
             uint64_t s = (uint64_t)t.len * (g->cluster_bytes / 32);
