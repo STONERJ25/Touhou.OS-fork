@@ -74,7 +74,9 @@ void pane_system(KUI *ui, KRect pane) {
     y += 40;
     int sw = 0, sh = 0;
     fairy_screen_size(kapp_display(P.app), &sw, &sh);
-    snprintf(buf, sizeof buf, "%d x %d pixels", sw, sh);
+    int us = fairy_scale(kapp_display(P.app));
+    if (us > 1) snprintf(buf, sizeof buf, "%d x %d pixels at ui scale %d", sw * us, sh * us, us);
+    else snprintf(buf, sizeof buf, "%d x %d pixels", sw, sh);
     kv_line(ui, x, y, lw, w, "Display", buf); y += 20;
     struct passwd *pw = getpwuid(getuid());
     snprintf(buf, sizeof buf, "%s%s%s%s", pw ? pw->pw_name : "unknown", pw && pw->pw_gecos && pw->pw_gecos[0] ? " (" : "", pw && pw->pw_gecos ? pw->pw_gecos : "",
@@ -120,8 +122,16 @@ void pane_display(KUI *ui, KRect pane) {
 
     int x = b.x + mon.w + 70, y = b.y + 16, lw = 150, w = b.w - (mon.w + 70) - 12;
     char buf[160], t[48];
-    snprintf(buf, sizeof buf, "%d x %d pixels", sw, sh);
-    kv_line(ui, x, y, lw, w, "Screen size", buf); y += 20;
+    int us = fairy_scale(kapp_display(P.app));
+    if (us > 1) {                                                 /* hi-dpi: the programs' pixels are us x us screen pixels */
+        snprintf(buf, sizeof buf, "%d x %d pixels", sw * us, sh * us);
+        kv_line(ui, x, y, lw, w, "Screen size", buf); y += 20;
+        snprintf(buf, sizeof buf, "%d (programs see %d x %d)", us, sw, sh);
+        kv_line(ui, x, y, lw, w, "Ui scale", buf); y += 20;
+    } else {
+        snprintf(buf, sizeof buf, "%d x %d pixels", sw, sh);
+        kv_line(ui, x, y, lw, w, "Screen size", buf); y += 20;
+    }
     snprintf(buf, sizeof buf, "%d x %d pixels", ww, wh);
     kv_line(ui, x, y, lw, w, "Room for windows", buf); y += 20;
     if (have_fb) {

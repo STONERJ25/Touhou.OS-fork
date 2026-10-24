@@ -52,17 +52,77 @@ uint32_t kc_shade(uint32_t c, int pct) {
 void kc_init(KCanvas *c, uint32_t *px, int w, int h, int stride) {
     c->px = px; c->w = w; c->h = h; c->stride = stride;
     c->clip = kr(0, 0, w, h);
+    c->scale = 1;
+}
+
+void kc_init_scaled(KCanvas *c, uint32_t *px, int w, int h, int stride, int scale) {
+    kc_init(c, px, w, h, stride);
+    c->scale = scale > 1 ? scale : 1;
+}
+
+/* ---------------------------------------------------------------- scaled canvases
+ *
+ * On a canvas with scale s > 1 every function below turns logical coordinates into pixels of px and does the work on
+ * kc_native_view(), a 1x view of the same pixels. Shapes that gain from the extra pixels (circles, lines, gradients, icons) are
+ * drawn at the finer resolution; text and pictures are enlarged. The 1x code paths are untouched. */
+
+static inline KRect up(KRect r, int s) { return kr(r.x * s, r.y * s, r.w * s, r.h * s); }
+
+KCanvas kc_native_view(const KCanvas *c) {
+    int s = kc_scale(c);
+    KCanvas v;
+    v.px = c->px;
+    v.w = c->w * s;
+    v.h = c->h * s;
+    v.stride = c->stride;
+    v.clip = up(c->clip, s);
+    v.scale = 1;
+    return v;
+}
+
+static uint64_t isqrt64(uint64_t v) {
+    uint64_t r = 0, bit = (uint64_t)1 << 62;
+    while (bit > v) bit >>= 2;
+    while (bit) {
+        if (v >= r + bit) { v -= r + bit; r = (r >> 1) + bit; }
+        else r >>= 1;
+        bit >>= 2;
+    }
+    return r;
+}
+
+/* A filled ellipse (a circle when rx == ry) over the logical pixels cx-rx .. cx+rx, at the canvas' resolution: the edge is the
+ * ellipse through the outer corners' midpoints, computed in doubled pixel coordinates so that the centre of logical pixel cx
+ * (which lies between two pixels of px for even scales) is exact. */
+static void ellipse_fill_fine(KCanvas *c, int cx, int cy, int rx, int ry, uint32_t rgb) {
+    int s = kc_scale(c);
+    KCanvas v = kc_native_view(c);
+    int64_t ax = (int64_t)(2 * rx + 1) * s, ay = (int64_t)(2 * ry + 1) * s;      /* doubled semi-axes */
+    int64_t ccx = (int64_t)(2 * cx + 1) * s, ccy = (int64_t)(2 * cy + 1) * s;    /* doubled centre */
+    int y0 = (cy - ry) * s, y1 = (cy + ry + 1) * s;
+    for (int py = y0; py < y1; py++) {
+        int64_t Y = 2 * (int64_t)py + 1 - ccy;
+        if (Y * Y > ay * ay) continue;
+        /* X^2 / ax^2 + Y^2 / ay^2 <= 1  ->  |X| <= ax * sqrt(ay^2 - Y^2) / ay */
+        uint64_t m = isqrt64((uint64_t)(ax * ax) * (uint64_t)(ay * ay - Y * Y) / (uint64_t)(ay * ay));
+        /* 2px + 1 - ccx in [-m, m]  ->  px in [ceil((ccx - m - 1) / 2), floor((ccx + m - 1) / 2)] */
+        int64_t lo = ccx - (int64_t)m - 1, hi = ccx + (int64_t)m - 1;
+        int64_t xa = lo >= 0 ? (lo + 1) / 2 : -((-lo) / 2), xb = hi >= 0 ? hi / 2 : -((-hi + 1) / 2);
+        if (xb >= xa) kc_fill(&v, kr((int)xa, py, (int)(xb - xa + 1), 1), rgb);
+    }
 }
 
 void kc_set_clip(KCanvas *c, KRect r) { c->clip = kr_intersect(r, kr(0, 0, c->w, c->h)); }
 
 void kc_pixel(KCanvas *c, int x, int y, uint32_t rgb) {
     if (!kr_contains(c->clip, x, y)) return;
+    if (c->scale > 1) { int s = c->scale; KCanvas v = kc_native_view(c); kc_fill(&v, kr(x * s, y * s, s, s), rgb); return; }
     c->px[y * c->stride + x] = rgb;
 }
 
 void kc_blend_pixel(KCanvas *c, int x, int y, uint32_t rgb, int a) {
     if (!kr_contains(c->clip, x, y) || a <= 0) return;
+    if (c->scale > 1) { int s = c->scale; KCanvas v = kc_native_view(c); kc_fill_alpha(&v, kr(x * s, y * s, s, s), rgb, a); return; }
     uint32_t *p = &c->px[y * c->stride + x];
     if (a >= 255) { *p = rgb; return; }
     uint32_t d = *p;
@@ -75,6 +135,7 @@ void kc_blend_pixel(KCanvas *c, int x, int y, uint32_t rgb, int a) {
 void kc_fill(KCanvas *c, KRect r, uint32_t rgb) {
     r = kr_intersect(r, c->clip);
     if (kr_empty(r)) return;
+    if (c->scale > 1) { KCanvas v = kc_native_view(c); kc_fill(&v, up(r, c->scale), rgb); return; }
     for (int y = r.y; y < r.y + r.h; y++) {
         uint32_t *row = c->px + (size_t)y * c->stride + r.x;
         for (int x = 0; x < r.w; x++) row[x] = rgb;
@@ -84,6 +145,7 @@ void kc_fill(KCanvas *c, KRect r, uint32_t rgb) {
 void kc_fill_alpha(KCanvas *c, KRect r, uint32_t rgb, int a) {
     r = kr_intersect(r, c->clip);
     if (kr_empty(r) || a <= 0) return;
+    if (c->scale > 1) { KCanvas v = kc_native_view(c); kc_fill_alpha(&v, up(r, c->scale), rgb, a); return; }
     if (a >= 255) { kc_fill(c, r, rgb); return; }
     int sr = (rgb >> 16) & 255, sg = (rgb >> 8) & 255, sb = rgb & 255, ia = 255 - a;
     for (int y = r.y; y < r.y + r.h; y++) {
@@ -110,6 +172,22 @@ void kc_outline(KCanvas *c, KRect r, uint32_t rgb) {
 }
 
 void kc_line(KCanvas *c, int x0, int y0, int x1, int y1, uint32_t rgb) {
+    if (c->scale > 1) {                                       /* the same line at the finer resolution, drawn with a pen one logical pixel wide */
+        int s = c->scale;
+        KCanvas v = kc_native_view(c);
+        int X0 = x0 * s, Y0 = y0 * s, X1 = x1 * s, Y1 = y1 * s;
+        int dx = abs(X1 - X0), sx = X0 < X1 ? 1 : -1;
+        int dy = -abs(Y1 - Y0), sy = Y0 < Y1 ? 1 : -1;
+        int err = dx + dy;
+        for (;;) {
+            kc_fill(&v, kr(X0, Y0, s, s), rgb);
+            if (X0 == X1 && Y0 == Y1) break;
+            int e2 = 2 * err;
+            if (e2 >= dy) { err += dy; X0 += sx; }
+            if (e2 <= dx) { err += dx; Y0 += sy; }
+        }
+        return;
+    }
     int dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
     int dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
     int err = dx + dy;
@@ -124,15 +202,18 @@ void kc_line(KCanvas *c, int x0, int y0, int x1, int y1, uint32_t rgb) {
 
 void kc_gradient_v(KCanvas *c, KRect r, uint32_t top, uint32_t bottom) {
     if (kr_empty(r)) return;
+    if (c->scale > 1) { KCanvas v = kc_native_view(c); kc_gradient_v(&v, up(r, c->scale), top, bottom); return; }
     for (int i = 0; i < r.h; i++) kc_fill(c, kr(r.x, r.y + i, r.w, 1), kc_mix(top, bottom, r.h > 1 ? i * 256 / (r.h - 1) : 0));
 }
 
 void kc_gradient_h(KCanvas *c, KRect r, uint32_t left, uint32_t right) {
     if (kr_empty(r)) return;
+    if (c->scale > 1) { KCanvas v = kc_native_view(c); kc_gradient_h(&v, up(r, c->scale), left, right); return; }
     for (int i = 0; i < r.w; i++) kc_fill(c, kr(r.x + i, r.y, 1, r.h), kc_mix(left, right, r.w > 1 ? i * 256 / (r.w - 1) : 0));
 }
 
 void kc_circle_fill(KCanvas *c, int cx, int cy, int radius, uint32_t rgb) {
+    if (c->scale > 1) { if (radius >= 0) ellipse_fill_fine(c, cx, cy, radius, radius, rgb); return; }
     for (int dy = -radius; dy <= radius; dy++) {
         int dx = 0;
         while ((dx + 1) * (dx + 1) + dy * dy <= radius * radius + radius) dx++;
@@ -142,6 +223,7 @@ void kc_circle_fill(KCanvas *c, int cx, int cy, int radius, uint32_t rgb) {
 
 void kc_ellipse_fill(KCanvas *c, int cx, int cy, int rx, int ry, uint32_t rgb) {
     if (rx <= 0 || ry <= 0) return;
+    if (c->scale > 1) { ellipse_fill_fine(c, cx, cy, rx, ry, rgb); return; }
     for (int dy = -ry; dy <= ry; dy++) {
         long num = (long)rx * rx * ((long)ry * ry - (long)dy * dy);
         long den = (long)ry * ry;
@@ -152,6 +234,23 @@ void kc_ellipse_fill(KCanvas *c, int cx, int cy, int rx, int ry, uint32_t rgb) {
 }
 
 void kc_circle(KCanvas *c, int cx, int cy, int radius, uint32_t rgb) {
+    if (c->scale > 1) {                                       /* a ring one logical pixel thick, at the finer resolution */
+        if (radius < 0) return;
+        int s = c->scale;
+        KCanvas v = kc_native_view(c);
+        int64_t ro = (int64_t)(2 * radius + 1) * s, ri = (int64_t)(2 * radius - 1) * s;
+        int64_t ccx = (int64_t)(2 * cx + 1) * s, ccy = (int64_t)(2 * cy + 1) * s;
+        KRect box = kr_intersect(kr((cx - radius) * s, (cy - radius) * s, (2 * radius + 1) * s, (2 * radius + 1) * s), v.clip);
+        for (int py = box.y; py < box.y + box.h; py++) {
+            int64_t Y = 2 * (int64_t)py + 1 - ccy;
+            uint32_t *row = v.px + (size_t)py * v.stride;
+            for (int px = box.x; px < box.x + box.w; px++) {
+                int64_t X = 2 * (int64_t)px + 1 - ccx, d = X * X + Y * Y;
+                if (d <= ro * ro && (ri < 0 || d >= ri * ri)) row[px] = rgb;
+            }
+        }
+        return;
+    }
     int x = radius, y = 0, err = 1 - radius;
     while (x >= y) {
         kc_pixel(c, cx + x, cy + y, rgb); kc_pixel(c, cx - x, cy + y, rgb);
@@ -196,6 +295,15 @@ void kc_panel(KCanvas *c, KRect r, KBevel kind, uint32_t fill) {
 void kc_blit(KCanvas *dst, int x, int y, const uint32_t *src, int sw, int sh, int sstride) {
     KRect r = kr_intersect(kr(x, y, sw, sh), dst->clip);
     if (kr_empty(r)) return;
+    if (dst->scale > 1) {                                     /* enlarge: each source pixel becomes a block */
+        int s = dst->scale;
+        for (int row = r.y * s; row < (r.y + r.h) * s; row++) {
+            const uint32_t *sr = src + (size_t)(row / s - y) * sstride - x;
+            uint32_t *d = dst->px + (size_t)row * dst->stride;
+            for (int col = r.x * s; col < (r.x + r.w) * s; col++) d[col] = sr[col / s];
+        }
+        return;
+    }
     for (int row = r.y; row < r.y + r.h; row++)
         memcpy(dst->px + (size_t)row * dst->stride + r.x, src + (size_t)(row - y) * sstride + (r.x - x), (size_t)r.w * 4);
 }
@@ -204,7 +312,25 @@ void kc_blit_part(KCanvas *dst, int x, int y, const uint32_t *src, int sstride, 
     kc_blit(dst, x, y, src + (size_t)part.y * sstride + part.x, part.w, part.h, sstride);
 }
 
+void kc_blit_native(KCanvas *dst, int x, int y, const uint32_t *src, int sw, int sh, int sstride) {
+    if (dst->scale > 1) { KCanvas v = kc_native_view(dst); kc_blit(&v, x * dst->scale, y * dst->scale, src, sw, sh, sstride); return; }
+    kc_blit(dst, x, y, src, sw, sh, sstride);
+}
+
 void kc_blit_argb(KCanvas *dst, int x, int y, const uint32_t *src, int sw, int sh, int sstride) {
+    if (dst->scale > 1) {                                     /* enlarge each source pixel into a block, then blend as below */
+        int s = dst->scale;
+        KRect r = kr_intersect(kr(x, y, sw, sh), dst->clip);
+        if (kr_empty(r)) return;
+        KCanvas v = kc_native_view(dst);
+        for (int row = r.y; row < r.y + r.h; row++)
+            for (int col = r.x; col < r.x + r.w; col++) {
+                uint32_t p = src[(size_t)(row - y) * sstride + (col - x)];
+                int a = (int)(p >> 24);
+                if (a > 0) kc_fill_alpha(&v, kr(col * s, row * s, s, s), p & 0xFFFFFF, a);
+            }
+        return;
+    }
     KRect r = kr_intersect(kr(x, y, sw, sh), dst->clip);
     for (int row = r.y; row < r.y + r.h; row++) {
         const uint32_t *s = src + (size_t)(row - y) * sstride + (r.x - x);
@@ -227,6 +353,7 @@ void kc_blit_argb(KCanvas *dst, int x, int y, const uint32_t *src, int sw, int s
 void kc_scroll(KCanvas *c, KRect r, int dy) {
     r = kr_intersect(r, c->clip);
     if (kr_empty(r) || dy == 0 || abs(dy) >= r.h) return;
+    if (c->scale > 1) { KCanvas v = kc_native_view(c); kc_scroll(&v, up(r, c->scale), dy * c->scale); return; }
     if (dy < 0) {
         for (int row = r.y; row < r.y + r.h + dy; row++)
             memcpy(c->px + (size_t)row * c->stride + r.x, c->px + (size_t)(row - dy) * c->stride + r.x, (size_t)r.w * 4);
@@ -289,6 +416,11 @@ int kc_glyph(KCanvas *c, int x, int y, uint32_t cp, uint32_t fg, int scale) {
     if (scale < 1) scale = 1;
     KRect box = kr(x, y, FONT_W * scale, FONT_H * scale);
     if (kr_empty(kr_intersect(box, c->clip))) return FONT_W * scale;
+    if (c->scale > 1) {                                           /* the bitmap font has no finer drawing: its pixels become blocks */
+        KCanvas v = kc_native_view(c);
+        kc_glyph(&v, x * c->scale, y * c->scale, cp, fg, scale * c->scale);
+        return FONT_W * scale;
+    }
     const unsigned char *g = font8x16_glyph(cp);
     if (scale == 1 && x >= c->clip.x && y >= c->clip.y && x + FONT_W <= c->clip.x + c->clip.w && y + FONT_H <= c->clip.y + c->clip.h) {
         uint32_t *row = c->px + (size_t)y * c->stride + x;           /* fast path: the whole cell is visible */
@@ -298,6 +430,18 @@ int kc_glyph(KCanvas *c, int x, int y, uint32_t cp, uint32_t fg, int scale) {
             for (int col = 0; col < FONT_W; col++) if (bits & (0x80u >> col)) row[col] = fg;
         }
         return FONT_W;
+    }
+    if (x >= c->clip.x && y >= c->clip.y && x + FONT_W * scale <= c->clip.x + c->clip.w && y + FONT_H * scale <= c->clip.y + c->clip.h) {
+        for (int r = 0; r < FONT_H; r++) {                         /* enlarged, whole cell visible: the same blocks as below, written directly */
+            unsigned bits = g[r];
+            if (!bits) continue;
+            for (int k = 0; k < scale; k++) {
+                uint32_t *row = c->px + (size_t)(y + r * scale + k) * c->stride + x;
+                for (int col = 0; col < FONT_W; col++)
+                    if (bits & (0x80u >> col)) for (int j = 0; j < scale; j++) row[col * scale + j] = fg;
+            }
+        }
+        return FONT_W * scale;
     }
     for (int row = 0; row < FONT_H; row++) {
         unsigned bits = g[row];
