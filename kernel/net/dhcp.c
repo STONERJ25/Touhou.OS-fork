@@ -60,6 +60,55 @@ void dhcp_start(NetDev *d) {
     net_kick();
 }
 
+void dhcp_stop(NetDev *d) {
+    Dhcp *c = d->dhcp;
+    if (!c || !c->state) return;
+    c->state = 0;                                   /* no more DISCOVERs, no renewals; an address already leased stays, as a static one */
+    d->flags &= ~(u32)NDF_DHCP;
+    klog("Yukari", "%s: DHCP stopped", d->name);
+}
+
+static const char *state_name(int s) {
+    switch (s) {
+    case D_SELECTING: return "selecting";
+    case D_REQUESTING: return "requesting";
+    case D_BOUND: return "bound";
+    case D_RENEWING: return "renewing";
+    default: return "off";
+    }
+}
+
+/* One line per card: name, state, address, mask, server, gateway, name servers (comma separated), lease length and seconds left. */
+size_t dhcp_proc(char *buf, size_t cap) {
+    size_t n = (size_t)snprintf(buf, cap, "# interface state address mask server gateway dns lease_s left_s\n");
+    u64 now = net_now();
+    NetDev *d;
+    for (int idx = 0; (d = netdev_by_index(idx)) != NULL && n + 200 < cap; idx++) {
+        if (d->flags & NDF_LOOPBACK) continue;
+        Dhcp *c = d->dhcp;
+        int st = c ? c->state : 0;
+        bool leased = st == D_BOUND || st == D_RENEWING;
+        char a[20] = "-", m[20] = "-", s[20] = "-", r[20] = "-", dns[64] = "-";
+        if (leased) {
+            net_ip_str(c->offer, a, sizeof a);
+            net_ip_str(c->mask, m, sizeof m);
+            net_ip_str(c->server, s, sizeof s);
+            if (c->router) net_ip_str(c->router, r, sizeof r);
+            size_t k = 0;
+            dns[0] = 0;
+            for (int i = 0; i < c->ndns && k + 18 < sizeof dns; i++) {
+                char one[20];
+                net_ip_str(c->dns[i], one, sizeof one);
+                k += (size_t)snprintf(dns + k, sizeof dns - k, "%s%s", i ? "," : "", one);
+            }
+            if (!c->ndns) strlcpy(dns, "-", sizeof dns);
+        }
+        unsigned long left = leased && c->expire > now ? (unsigned long)((c->expire - now) / 1000) : 0;
+        n += (size_t)snprintf(buf + n, cap - n, "%s %s %s %s %s %s %s %u %lu\n", d->name, state_name(st), a, m, s, r, dns, leased ? c->lease_s : 0, left);
+    }
+    return n;
+}
+
 static void dhcp_send(NetDev *d, Dhcp *c, u8 type) {
     NetBuf *nb = nb_alloc();
     if (!nb) return;

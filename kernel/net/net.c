@@ -944,6 +944,13 @@ static size_t gen_dev(char *b, size_t cap) {
     return n;
 }
 
+static size_t gen_dhcp(char *b, size_t cap) {
+    net_lock();
+    size_t n = dhcp_proc(b, cap);
+    net_unlock();
+    return n;
+}
+
 static size_t gen_route(char *b, size_t cap) {
     size_t n = (size_t)snprintf(b, cap, "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n");
     net_lock();
@@ -1078,6 +1085,7 @@ long net_ctl(unsigned long cmd, void *arg) {
             netdev_set_addr(d, 0, 0);
         } else if (r->mask || r->addr) {
             if (!r->mask) r->mask = 0xFFFFFF00u;
+            dhcp_stop(d);                                           /* an address set by hand is final: a late DHCP offer must not replace it */
             route_flush_dev(d);
             d->flags &= ~(u32)NDF_DHCP;
             netdev_set_addr(d, r->addr, r->mask);
@@ -1119,6 +1127,13 @@ long net_ctl(unsigned long cmd, void *arg) {
         if (!root) rc = -EPERM; else if (!d || (d->flags & NDF_LOOPBACK)) rc = -ENODEV; else dhcp_start(d);
         break;
     }
+    case NETCTL_DHCP_STOP: {
+        struct gnet_if *r = arg;
+        r->name[sizeof r->name - 1] = 0;
+        NetDev *d = netdev_find(r->name);
+        if (!root) rc = -EPERM; else if (!d || (d->flags & NDF_LOOPBACK)) rc = -ENODEV; else dhcp_stop(d);
+        break;
+    }
     default: rc = -EINVAL;
     }
     net_unlock();
@@ -1146,6 +1161,7 @@ static void net_init(void) {
     procfs_register("net/dev", gen_dev);
     procfs_register("net/route", gen_route);
     procfs_register("net/arp", gen_arp);
+    procfs_register("net/dhcp", gen_dhcp);
     procfs_register("net/tcp", gen_tcp);
     procfs_register("net/udp", gen_udp);
     procfs_register_rw("net/tune", gen_tune, put_tune);
