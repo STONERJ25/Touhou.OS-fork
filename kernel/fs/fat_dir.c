@@ -410,7 +410,9 @@ static bool sfn_taken(void *ctx, const u8 sfn[11]) {
     return false;
 }
 
-/* Clears whatever follows the end-of-directory marker so that the zero-slots invariant holds again. */
+/* Clears whatever follows the end-of-directory marker so that the zero-slots invariant holds again. Zeroing slots past
+ * the end is harmless at any time and must be on the disk before a new entry is written at the end (or the stale slots
+ * behind it would read as entries), so it is written as DATA. */
 static int clean_tail(FatNode *d) {
     FatDir *dd = d->dir;
     u64 off = (u64)dd->end_slot * FAT_SLOT, end = (u64)dd->slots * FAT_SLOT;
@@ -419,7 +421,7 @@ static int clean_tail(FatNode *d) {
         int rc = chain_map(d, off, (u32)MIN(end - off, (u64)0x10000), &disk, &avail);
         if (rc) return rc == -ENXIO ? -EIO : rc;
         size_t take = (size_t)MIN(avail, end - off);
-        rc = fc_zero(d->vol, disk, take, FPC_META);
+        rc = fc_zero(d->vol, disk, take, FPC_DATA);
         if (rc) return rc;
         off += take;
     }
@@ -439,15 +441,23 @@ static int dir_grow(FatNode *d) {
     return rc;
 }
 
-/* Finds (or makes) room for n consecutive slots. */
+#define SECTOR_SLOTS (FAT_ATOMIC / FAT_SLOT)            /* 16 slots in the smallest sector */
+
+/*
+ * Finds (or makes) room for n consecutive slots. A set of up to 16 slots (names up to 195 characters) never straddles a
+ * 512-byte sector: the device writes it in one piece, so a power cut cannot leave half a long name behind (long-name
+ * fragments without their short entry, or a short entry whose long name is missing). Longer sets cannot avoid it.
+ */
 static int dir_reserve(FatNode *d, u32 n, u32 *slot_out) {
     FatDir *dd = d->dir;
     if (dd->garbage) {
         int rc = clean_tail(d);
         if (rc) return rc;
     }
+    bool fit = n <= SECTOR_SLOTS;
     u32 run = 0, start = 0;
     for (u32 i = 0; i < dd->end_slot; i++) {
+        if (fit && i % SECTOR_SLOTS == 0) run = 0;      /* a run does not continue into the next sector */
         if (!bit_get(dd, i)) {
             if (!run) start = i;
             if (++run == n) { *slot_out = start; return 0; }
@@ -456,15 +466,31 @@ static int dir_reserve(FatNode *d, u32 n, u32 *slot_out) {
         }
     }
     u32 tail = dd->end_slot - run;                      /* free slots just below the end join the untouched tail */
+    if (fit && tail % SECTOR_SLOTS + n > SECTOR_SLOTS) tail = (tail / SECTOR_SLOTS + 1) * SECTOR_SLOTS;
     while (tail + n > dd->slots) {
         int rc = dir_grow(d);
+        if (rc) return rc;
+    }
+    if (tail > dd->end_slot) {
+        /* The set starts in the next sector: the zero slots before it would end the directory in front of it, so they
+         * become deleted entries (0xE5), and those are on the disk before the set is (a set behind the end marker would
+         * be invisible, its clusters lost and the slots garbage). */
+        u8 fill[SECTOR_SLOTS * FAT_SLOT];
+        u32 k = tail - dd->end_slot;
+        memset(fill, 0, sizeof fill);
+        for (u32 i = 0; i < k; i++) fill[i * FAT_SLOT] = 0xE5;
+        int rc = dir_write(d, (u64)dd->end_slot * FAT_SLOT, fill, (size_t)k * FAT_SLOT);
+        if (rc) return rc;
+        dd->end_slot = tail;
+        d->vol->barriers++;
+        rc = fc_flush_upto(d->vol, FPC_META);
         if (rc) return rc;
     }
     *slot_out = tail;
     return 0;
 }
 
-typedef struct { u8 sfn[11], ntres; u32 slot; u8 nslots; } Placed;
+typedef struct { u8 sfn[11], ntres; u32 slot; u8 nslots; u8 raw[21 * FAT_SLOT]; } Placed;
 
 static u64 disk_from_utc(const FatVol *v, u64 utc) {
     s64 t = (s64)utc + v->tz_sec;
@@ -493,9 +519,10 @@ static void build_short_entry(u8 *e, const u8 sfn[11], u8 attr, u8 ntres, u32 fi
     e[28] = (u8)size; e[29] = (u8)(size >> 8); e[30] = (u8)(size >> 16); e[31] = (u8)(size >> 24);
 }
 
-/* Validates the name, picks the short name, reserves slots and writes the entry set. */
-static int dir_place(FatNode *d, const char *name, u8 attr, u32 first, u32 size, u64 ct, u64 mt, u64 at, const FatNode *skip,
-                     const FatNode *skip2, Placed *out) {
+/* Validates the name, picks the short name, builds the entry set and reserves slots for it. Nothing that anybody can see
+ * is written yet (the directory may grow, and fillers may be written past its end). */
+static int dir_prepare(FatNode *d, const char *name, u8 attr, u32 first, u32 size, u64 ct, u64 mt, u64 at, const FatNode *skip,
+                       const FatNode *skip2, Placed *out) {
     FatVol *v = d->vol;
     FatDir *dd = d->dir;
     u16 name16[FAT_MAX_NAME + 1];
@@ -507,20 +534,30 @@ static int dir_place(FatNode *d, const char *name, u8 attr, u32 first, u32 size,
     int rc = fatn_make_sfn(name16, n16, out->sfn, &out->ntres, &need_lfn, sfn_taken, &tc);
     if (rc) return rc;
     u32 nslots = need_lfn ? 1 + (u32)(n16 + 12) / 13 : 1;
-    u8 raw[21 * FAT_SLOT];
-    if (need_lfn) fatn_pack_lfn(name16, n16, fatn_checksum(out->sfn), raw);
-    build_short_entry(raw + (nslots - 1) * FAT_SLOT, out->sfn, attr, out->ntres, first, size, ct, mt, at, v);
+    if (need_lfn) fatn_pack_lfn(name16, n16, fatn_checksum(out->sfn), out->raw);
+    build_short_entry(out->raw + (nslots - 1) * FAT_SLOT, out->sfn, attr, out->ntres, first, size, ct, mt, at, v);
     u32 slot;
     rc = dir_reserve(d, nslots, &slot);
     if (rc) return rc;
-    /* a set that starts below end_slot but reaches past it needs the (still zero) slots after it to stay zero */
-    rc = dir_write(d, (u64)slot * FAT_SLOT, raw, (size_t)nslots * FAT_SLOT);
-    if (rc) return rc;
-    for (u32 i = 0; i < nslots; i++) bit_set(dd, slot + i);
-    if (slot + nslots > dd->end_slot) dd->end_slot = slot + nslots;
     out->slot = slot;
     out->nslots = (u8)nslots;
     return 0;
+}
+
+/* Writes a prepared entry set into its reserved slots. */
+static int dir_put(FatNode *d, const Placed *pl) {
+    FatDir *dd = d->dir;
+    /* a set that starts below end_slot but reaches past it needs the (still zero) slots after it to stay zero */
+    int rc = dir_write(d, (u64)pl->slot * FAT_SLOT, pl->raw, (size_t)pl->nslots * FAT_SLOT);
+    if (rc) return rc;
+    for (u32 i = 0; i < pl->nslots; i++) bit_set(dd, pl->slot + i);
+    if (pl->slot + pl->nslots > dd->end_slot) dd->end_slot = pl->slot + pl->nslots;
+    return 0;
+}
+
+static int dir_place(FatNode *d, const char *name, u8 attr, u32 first, u32 size, u64 ct, u64 mt, u64 at, Placed *out) {
+    int rc = dir_prepare(d, name, attr, first, size, ct, mt, at, NULL, NULL, out);
+    return rc ? rc : dir_put(d, out);
 }
 
 /* Creates an entry in directory d (whose listing is loaded). first/size/attr describe what it points at. */
@@ -533,7 +570,7 @@ int fatd_create(FatNode *d, const char *name, u8 attr, u32 first, FatNode **out)
     if (!n) return -ENOMEM;
     u64 now = fat_now();
     Placed pl;
-    int rc = dir_place(d, name, attr, first, 0, now, now, now, NULL, NULL, &pl);
+    int rc = dir_place(d, name, attr, first, 0, now, now, now, &pl);
     if (rc) { fatd_node_free(n); return rc; }
     memcpy(n->sfn, pl.sfn, 11);
     n->ntres = pl.ntres;
@@ -575,16 +612,75 @@ int fatd_commit(FatNode *n) {
     return dir_write(p, (u64)(n->slot + n->nslots - 1) * FAT_SLOT, e, FAT_SLOT);
 }
 
-/* Moves node c into directory nd under a new name: new entry set first, then the old one is removed. */
-int fatd_attach_renamed(FatNode *nd, FatNode *c, const char *newname, const FatNode *replaced) {
+/* Writes everything that is dirty up to the directory entries and waits for the device: one step of a rename. A failing
+ * device is remembered but does not stop the rename half-way in the cache (nothing more reaches such a device anyway). */
+static void rename_barrier(FatVol *v) {
+    v->barriers++;
+    int rc = fc_flush_upto(v, FPC_META);
+    if (rc) v->io_error = rc;
+}
+
+/*
+ * Moves node c into directory nd under a new name. `replaced` (an entry of nd that the new name takes over, or NULL)
+ * leaves nd's listing here, with its parent set to NULL; the caller disposes of it and frees its clusters (FREE, so after
+ * these entries). On an error before anything was changed, c and `replaced` are untouched.
+ *
+ * Order on the disk, each step durable before the next one starts: (1) the old entry set goes (with a replaced entry that is
+ * spelled differently: two names that differ only in case must never be on the disk together); (2) the ".." of a
+ * directory that changes parent; (3) the new entry. A power cut in between leaves the file without a name (its
+ * clusters are lost clusters, which fsck saves), never two names for one chain (a cross-link once one of them is
+ * deleted). When the replaced entry is spelled exactly like the new name, step 3 rewrites its short entry in place to
+ * point at c's clusters: a cut then leaves either the old file or the renamed one under that name (editors save so).
+ */
+int fatd_attach_renamed(FatNode *nd, FatNode *c, const char *newname, FatNode *replaced) {
+    FatVol *v = nd->vol;
     FatNode *od = c->parent;
+    bool in_place = replaced && !strcmp(replaced->name, newname);
+    bool move_dir = (c->flags & FN_DIR) && od != nd;
+    u32 size = (c->flags & FN_DIR) ? 0 : c->size;
+    if (move_dir) {                                     /* check the ".." entry now, while nothing has changed */
+        u8 e[FAT_SLOT];
+        int rc = c->first ? fc_read(v, fat_cluster_off(v, c->first) + FAT_SLOT, e, sizeof e) : -EIO;
+        if (!rc && memcmp(e, "..         ", 11)) rc = -EIO;
+        if (rc) return rc;
+    }
     char *nname = kmalloc(strlen(newname) + 1);
     if (!nname) return -ENOMEM;
     strcpy(nname, newname);
     Placed pl;
-    int rc = dir_place(nd, newname, c->attr, c->first, (c->flags & FN_DIR) ? 0 : c->size, c->ctime, c->mtime, c->atime, c, replaced, &pl);
-    if (rc) { kfree(nname); return rc; }
+    int rc = 0;
+    if (in_place) {
+        memcpy(pl.sfn, replaced->sfn, 11);
+        pl.ntres = replaced->ntres;
+        pl.slot = replaced->slot;
+        pl.nslots = replaced->nslots;
+    } else {
+        rc = dir_prepare(nd, newname, c->attr, c->first, size, c->ctime, c->mtime, c->atime, c, replaced, &pl);
+        if (rc) { kfree(nname); return rc; }
+    }
+    /* (1) */
     fatd_remove(od, c);
+    if (replaced) {
+        if (in_place) { dir_unlist(nd->dir, replaced); replaced->parent = NULL; }
+        else fatd_remove(nd, replaced);
+    }
+    rename_barrier(v);
+    /* (2) */
+    if (move_dir) {
+        int r2 = fatd_set_dotdot(c, (nd->flags & FN_ROOT) ? 0 : nd->first);
+        if (r2) v->io_error = r2;
+        rename_barrier(v);
+    }
+    /* (3) */
+    if (in_place) {
+        u8 e[FAT_SLOT];
+        build_short_entry(e, pl.sfn, c->attr, pl.ntres, c->first, size, c->ctime, c->mtime, c->atime, v);
+        rc = dir_write(nd, (u64)(pl.slot + pl.nslots - 1) * FAT_SLOT, e, FAT_SLOT);
+        if (!rc) for (u32 i = 0; i < pl.nslots; i++) bit_set(nd->dir, pl.slot + i);
+    } else {
+        rc = dir_put(nd, &pl);
+    }
+    if (rc) { kfree(nname); return rc; }                /* the cache refused (out of memory, I/O): c stays detached, its clusters lost */
     kfree(c->name);
     c->name = nname;
     c->name_len = (u16)strlen(nname);
@@ -594,19 +690,20 @@ int fatd_attach_renamed(FatNode *nd, FatNode *c, const char *newname, const FatN
     c->nslots = pl.nslots;
     c->parent = nd;
     rc = dir_insert(nd->dir, c);
-    if (rc) {                                           /* out of memory after the disk is updated: keep c reachable through its parent */
+    if (rc) {                                           /* out of memory after the disk is updated */
         c->parent = NULL;
         return rc;
     }
     return 0;
 }
 
-/* "." and ".." for a fresh directory cluster (already zeroed). */
+/* "." and ".." for a fresh directory cluster (already zeroed). Nothing points at the cluster yet, so this is DATA: on the
+ * disk before the entry that makes the directory visible (a directory without its dots is a corrupted one). */
 int fatd_write_dots(FatVol *v, u32 cluster, u32 parent_cluster, u64 now) {
     u8 raw[2 * FAT_SLOT];
     build_short_entry(raw, (const u8 *)".          ", FAT_ATTR_DIR, 0, cluster, 0, now, now, now, v);
     build_short_entry(raw + FAT_SLOT, (const u8 *)"..         ", FAT_ATTR_DIR, 0, parent_cluster, 0, now, now, now, v);
-    return fc_write(v, fat_cluster_off(v, cluster), raw, sizeof raw, FPC_META);
+    return fc_write(v, fat_cluster_off(v, cluster), raw, sizeof raw, FPC_DATA);
 }
 
 /* Points a directory's ".." entry at a new parent (after a move). parent_cluster is 0 for the root. */

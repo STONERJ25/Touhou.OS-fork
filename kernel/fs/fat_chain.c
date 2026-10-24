@@ -34,8 +34,9 @@ int fat_get(FatVol *v, u32 c, u32 *val) {
     return 0;
 }
 
-/* Stores an entry in every FAT copy (the top four bits of a FAT32 entry are reserved and preserved). */
-int fat_put(FatVol *v, u32 c, u32 val) {
+/* Stores an entry in every FAT copy (the top four bits of a FAT32 entry are reserved and preserved), with flush class
+ * cls (fatfs.h: ALLOC for new clusters, LINK for hooking them onto a chain in use, CUT and FREE for shortening). */
+int fat_put(FatVol *v, u32 c, u32 val, int cls) {
     if (c < 2 || c >= v->nclusters + 2) return -EIO;
     u8 b[4];
     for (u32 i = 0; i < v->nfats; i++) {
@@ -46,11 +47,11 @@ int fat_put(FatVol *v, u32 c, u32 val) {
             u32 old = (u32)b[0] | (u32)b[1] << 8 | (u32)b[2] << 16 | (u32)b[3] << 24;
             u32 nv = (old & 0xF0000000u) | (val & 0x0FFFFFFFu);
             b[0] = (u8)nv; b[1] = (u8)(nv >> 8); b[2] = (u8)(nv >> 16); b[3] = (u8)(nv >> 24);
-            rc = fc_write(v, off, b, 4, FPC_FAT);
+            rc = fc_write(v, off, b, 4, cls);
             if (rc) return rc;
         } else {
             b[0] = (u8)val; b[1] = (u8)(val >> 8);
-            int rc = fc_write(v, off, b, 2, FPC_FAT);
+            int rc = fc_write(v, off, b, 2, cls);
             if (rc) return rc;
         }
     }
@@ -73,7 +74,7 @@ int fat_set_clean_bits(FatVol *v, bool clean) {
             x = clean ? (x | 0x8000u) : (x & ~0x8000u);
             b[0] = (u8)x; b[1] = (u8)(x >> 8);
         }
-        rc = fc_write(v, off, b, esize(v), FPC_FAT);
+        rc = fc_write(v, off, b, esize(v), FPC_ALLOC);         /* written between full flushes (fat32.c) */
         if (rc) return rc;
     }
     return 0;
@@ -193,13 +194,13 @@ int fat_alloc_chain_cb(FatVol *v, u32 count, u32 prefer, int zero_cls, void (*ru
         u32 start, len;
         rc = find_run(v, prefer, left, &start, &len);
         if (rc) break;
-        for (u32 i = 0; i < len && !rc; i++)
-            rc = fat_put(v, start + i, i + 1 < len ? start + i + 1 : eoc_value(v));
-        if (!rc && prev_last) rc = fat_put(v, prev_last, start);
+        for (u32 i = 0; i < len && !rc; i++)                    /* nothing points at these clusters yet: ALLOC, the first class of the FAT */
+            rc = fat_put(v, start + i, i + 1 < len ? start + i + 1 : eoc_value(v), FPC_ALLOC);
+        if (!rc && prev_last) rc = fat_put(v, prev_last, start, FPC_ALLOC);
         if (!rc && zero_cls >= 0) rc = fc_zero(v, fat_cluster_off(v, start), (size_t)len * v->cbytes, zero_cls);
         if (rc) {
-            for (u32 i = 0; i < len; i++) fat_put(v, start + i, 0);     /* best effort; earlier runs are freed below */
-            if (prev_last) fat_put(v, prev_last, eoc_value(v));
+            for (u32 i = 0; i < len; i++) fat_put(v, start + i, 0, FPC_ALLOC);     /* best effort; earlier runs are freed below */
+            if (prev_last) fat_put(v, prev_last, eoc_value(v), FPC_ALLOC);
             break;
         }
         if (!first) first = start;
@@ -211,7 +212,7 @@ int fat_alloc_chain_cb(FatVol *v, u32 count, u32 prefer, int zero_cls, void (*ru
         if (v->free_known && v->free_clusters >= len) v->free_clusters -= len;
     }
     if (rc) {
-        if (first) fat_free_chain(v, first, NULL);
+        if (first) fat_free_chain(v, first, NULL, FPC_ALLOC);
         return rc;
     }
     *first_out = first;
@@ -223,8 +224,9 @@ int fat_alloc_chain(FatVol *v, u32 count, u32 prefer, u32 *first, u32 *last) {
     return fat_alloc_chain_cb(v, count, prefer, -1, NULL, NULL, first, last);
 }
 
-/* Frees a whole chain starting at `first`. */
-int fat_free_chain(FatVol *v, u32 first, u32 *freed) {
+/* Frees a whole chain starting at `first`. cls is FPC_FREE for a chain a directory entry pointed at (the caller has
+ * changed that entry already, so the frees reach the disk after it), FPC_ALLOC to undo an allocation nothing points at. */
+int fat_free_chain(FatVol *v, u32 first, u32 *freed, int cls) {
     u32 c = first, n = 0;
     int rc = 0;
     for (;;) {
@@ -233,7 +235,7 @@ int fat_free_chain(FatVol *v, u32 first, u32 *freed) {
         rc = fat_get(v, c, &nxt);
         if (rc) break;
         if (nxt == 0) { rc = -EIO; break; }                 /* already free: the chain was damaged */
-        rc = fat_put(v, c, 0);
+        rc = fat_put(v, c, 0, cls);
         if (rc) break;
         n++;
         if (fat_is_eoc(v, nxt)) break;
@@ -395,12 +397,17 @@ int chain_prepare(FatNode *n) {
     return 0;
 }
 
-struct grow_ctx { FatNode *n; int rc; };
+struct grow_ctx { FatNode *n; int rc; u32 lo, hi; };
 
 static void grow_cb(void *ctx, u32 start, u32 len) {
     struct grow_ctx *g = ctx;
     if (!g->rc) g->rc = ext_append(g->n, start, len);
+    if (!g->lo || start < g->lo) g->lo = start;
+    if (start + len - 1 > g->hi) g->hi = start + len - 1;
 }
+
+/* 512-byte sector of the FAT that holds cluster c's entry (the same in every copy: they start on sector boundaries). */
+static u64 fat_sector(const FatVol *v, u32 c) { return (u64)c * esize(v) / FAT_ATOMIC; }
 
 /* Appends `count` zeroed clusters to a chain that has been prepared. */
 int chain_grow(FatNode *n, u32 count) {
@@ -422,16 +429,30 @@ int chain_grow(FatNode *n, u32 count) {
     }
     u32 saved = n->known, saved_tail = n->tail;
     u32 first = 0, last = 0;
-    struct grow_ctx g = { n, 0 };
-    int cls = (n->flags & FN_DIR) ? FPC_META : FPC_DATA;
-    int rc = fat_alloc_chain_cb(v, count, n->known ? n->tail + 1 : 0, cls, grow_cb, &g, &first, &last);
+    struct grow_ctx g = { n, 0, 0, 0 };
+    /* New clusters are zeroed as DATA, directories too: on the disk before the FAT links them (a directory with a cluster
+     * of stale bytes in its chain would be a corrupted directory) and before an entry is written into them. */
+    int rc = fat_alloc_chain_cb(v, count, n->known ? n->tail + 1 : 0, FPC_DATA, grow_cb, &g, &first, &last);
     if (!rc && g.rc) {                                          /* out of memory for the extent cache */
-        fat_free_chain(v, first, NULL);
+        fat_free_chain(v, first, NULL, FPC_ALLOC);
         rc = g.rc;
     } else if (!rc) {
         if (saved) {
-            rc = fat_put(v, saved_tail, first);                 /* link the old tail to the new clusters */
-            if (rc) fat_free_chain(v, first, NULL);
+            /* Link the old tail to the new clusters. The link must not reach the disk before the new entries do (the chain
+             * would run into free clusters, which a later allocation could hand to another file). When they all sit in the
+             * link's own sector, one device write carries both and the link can go with them; otherwise the new entries
+             * are written first. */
+            int lcls = FPC_ALLOC;
+            if (fat_sector(v, g.lo) != fat_sector(v, saved_tail) || fat_sector(v, g.hi) != fat_sector(v, saved_tail)) {
+                v->barriers++;
+                rc = fc_flush_upto(v, FPC_ALLOC);
+                lcls = FPC_LINK;
+            }
+            if (!rc) rc = fat_put(v, saved_tail, first, lcls);
+            if (rc) {
+                fat_put(v, saved_tail, eoc_value(v), lcls);     /* best effort: one FAT copy may have taken the link */
+                fat_free_chain(v, first, NULL, FPC_ALLOC);
+            }
         } else {
             n->first = first;
         }
@@ -446,7 +467,9 @@ int chain_grow(FatNode *n, u32 count) {
     return 0;
 }
 
-/* Keeps the first `keep` clusters; frees the rest. keep == 0 frees everything and clears n->first. */
+/* Keeps the first `keep` clusters; frees the rest. keep == 0 frees everything and clears n->first. The caller has written
+ * the entry with the smaller size (or first cluster 0) already: the cut (CUT) and the frees (FREE) reach the disk after it,
+ * and the frees after the cut, so a power cut leaves a chain longer than the size, never one that runs into free clusters. */
 int chain_shrink(FatNode *n, u32 keep) {
     FatVol *v = n->vol;
     if (keep >= n->known) return 0;
@@ -456,17 +479,17 @@ int chain_shrink(FatNode *n, u32 keep) {
         n->first = 0;
         chain_reset(n);
         n->flags |= FN_CHAIN_OK | FN_CHAIN_END;
-        return f ? fat_free_chain(v, f, NULL) : 0;
+        return f ? fat_free_chain(v, f, NULL, FPC_FREE) : 0;
     }
     u32 c, run, nxt;
     rc = chain_lookup(n, keep - 1, 1, &c, &run);
     if (rc) return rc;
     rc = fat_get(v, c, &nxt);
     if (rc) return rc;
-    rc = fat_put(v, c, eoc_value(v));
+    rc = fat_put(v, c, eoc_value(v), FPC_CUT);
     if (rc) return rc;
     ext_truncate(n, keep);
     n->flags |= FN_CHAIN_END;
-    if (!fat_is_eoc(v, nxt) && fat_valid_cluster(v, nxt)) return fat_free_chain(v, nxt, NULL);
+    if (!fat_is_eoc(v, nxt) && fat_valid_cluster(v, nxt)) return fat_free_chain(v, nxt, NULL, FPC_FREE);
     return 0;
 }

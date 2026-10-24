@@ -257,13 +257,14 @@ static void vol_reap(FatVol *v) {
         if (n) v->orphans = n->onext;
         irq_restore(f);
         if (!n) break;
-        if (n->first && !(n->flags & FN_DIR) && !v->ro && vol_begin_write(v) == 0) fat_free_chain(v, n->first, NULL);
+        if (n->first && !(n->flags & FN_DIR) && !v->ro && vol_begin_write(v) == 0) fat_free_chain(v, n->first, NULL, FPC_FREE);
         n->first = 0;
         fatd_node_free(n);
     }
 }
 
-/* A node that has been taken out of its directory: forget it now, or when the last user lets go. */
+/* A node that has been taken out of its directory: forget it now, or when the last user lets go. The clusters are freed
+ * as FREE, the last flush class: on the disk only after the entry that pointed at them is gone. */
 static void node_dispose(FatNode *c) {
     u64 f = irq_save();
     c->flags |= FN_UNLINKED;
@@ -271,7 +272,7 @@ static void node_dispose(FatNode *c) {
     if (live) live->nlink = 0;
     irq_restore(f);
     if (!live) {
-        if (c->first && !(c->flags & FN_DIR)) fat_free_chain(c->vol, c->first, NULL);
+        if (c->first && !(c->flags & FN_DIR)) fat_free_chain(c->vol, c->first, NULL, FPC_FREE);
         c->first = 0;
         fatd_node_free(c);
     }
@@ -360,14 +361,15 @@ static int fat_mkdir(VNode *dir, const char *name, u32 mode, VNode **out) {
     if (!rc) rc = vol_begin_write(v);
     if (!rc) {
         u32 first, last;
-        rc = fat_alloc_chain_cb(v, 1, 0, FPC_META, NULL, NULL, &first, &last);
+        /* the new cluster's zeros and "." / ".." are DATA, on the disk before the entry (META) that makes it a directory */
+        rc = fat_alloc_chain_cb(v, 1, 0, FPC_DATA, NULL, NULL, &first, &last);
         if (!rc) {
             u64 now = fat_now();
             rc = fatd_write_dots(v, first, (d->flags & FN_ROOT) ? 0 : d->first, now);
             FatNode *c = NULL;
             if (!rc) rc = fatd_create(d, name, FAT_ATTR_DIR, first, &c);
             if (rc) {
-                fat_free_chain(v, first, NULL);
+                fat_free_chain(v, first, NULL, FPC_FREE);     /* after the entry's removal, should it have been written */
             } else {
                 touch_dir(d);
                 *out = node_vnode(c);
@@ -421,7 +423,7 @@ static int fat_rmdir(VNode *dir, const char *name) {
         c->first = 0;
         fatd_drop(c);
         chain_reset(c);
-        if (first) fat_free_chain(v, first, NULL);
+        if (first) fat_free_chain(v, first, NULL, FPC_FREE);
         node_dispose(c);
         touch_dir(d);
     }
@@ -463,22 +465,16 @@ static int fat_rename(VNode *olddir, const char *oldname, VNode *newdir, const c
     }
     if (!rc) rc = vol_begin_write(v);
     if (!rc) {
-        bool was_dir_move = (src->flags & FN_DIR) && od != nd;
-        rc = fatd_attach_renamed(nd, src, newname, dst);        /* new entry first, then the old ones go */
-        if (!rc && dst) {
-            fatd_remove(nd, dst);
+        rc = fatd_attach_renamed(nd, src, newname, dst);        /* old names go first, then the new one (fat_dir.c) */
+        if (dst && !dst->parent) {                               /* taken out of nd: its clusters are freed after the new entry */
             if (dst->flags & FN_DIR) {
                 u32 first = dst->first;
                 dst->first = 0;
                 fatd_drop(dst);
                 chain_reset(dst);
-                if (first) fat_free_chain(v, first, NULL);
+                if (first) fat_free_chain(v, first, NULL, FPC_FREE);
             }
             node_dispose(dst);
-        }
-        if (!rc && was_dir_move) {
-            int r2 = fatd_set_dotdot(src, (nd->flags & FN_ROOT) ? 0 : nd->first);
-            if (r2) rc = r2;
         }
         if (!rc) {
             u8 owner = nd->owner;
@@ -601,18 +597,33 @@ static int file_resize_locked(FatNode *nd, u64 size) {
     u32 need = (u32)((size + v->cbytes - 1) >> v->cshift);
     if (size > nd->size) {
         if (need > nd->known) rc = chain_grow(nd, need - nd->known);
+        if (rc) return rc;
+        nd->size = (u32)size;
+        nd->mtime = nd->ctime = fat_now();
+        fatd_commit(nd);
     } else {
-        if (need < nd->known) rc = chain_shrink(nd, need);
-        if (!rc && need && (size & (v->cbytes - 1))) {          /* keep "everything past the size is zero" true */
+        if (need && (size & (v->cbytes - 1))) {                 /* keep "everything past the size is zero" true */
             u64 d, avail;
             rc = chain_map(nd, size, 1, &d, &avail);
             if (!rc) rc = fc_zero(v, d, (size_t)(v->cbytes - (size & (v->cbytes - 1))), FPC_DATA);
+            if (rc) return rc;
         }
+        /* The entry with the smaller size (and no first cluster when nothing is left) comes first, the cut and the frees
+         * after it: a power cut in between leaves a chain longer than the size, not a size the chain cannot hold. */
+        u32 first = nd->first;
+        nd->size = (u32)size;
+        nd->mtime = nd->ctime = fat_now();
+        if (!need) nd->first = 0;
+        fatd_commit(nd);
+        if (!need) {
+            chain_reset(nd);
+            nd->flags |= FN_CHAIN_OK | FN_CHAIN_END;
+            if (first) rc = fat_free_chain(v, first, NULL, FPC_FREE);
+        } else if (need < nd->known) {
+            rc = chain_shrink(nd, need);
+        }
+        if (rc) return rc;
     }
-    if (rc) return rc;
-    nd->size = (u32)size;
-    nd->mtime = nd->ctime = fat_now();
-    fatd_commit(nd);
     fat_node_publish(nd);
     return 0;
 }

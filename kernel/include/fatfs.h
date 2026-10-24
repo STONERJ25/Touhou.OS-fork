@@ -35,8 +35,22 @@
 #define FAT_MAX_DIR_SLOTS 65536         /* 2 MiB: the FAT directory size limit */
 #define FAT_MAX_FILE    0xFFFFFFFFu     /* sizes are 32-bit */
 
-/* flush classes: data first, then the FAT, then directory entries and other metadata */
-enum { FPC_DATA = 0, FPC_FAT = 1, FPC_META = 2, FPC_COUNT = 3 };
+/*
+ * Flush classes, written in this order with a device cache flush between them (fat_cache.c). Each class only depends on
+ * lower ones, so a power cut between any two device writes leaves at worst lost clusters, a chain longer than its file's
+ * size, a lagging FAT copy 2 or FSInfo count (docs/STORAGE.md, "Write ordering"):
+ *   DATA   file data, and everything written into clusters nothing points at yet (new directory clusters with their
+ *          zeros and "." / "..", 0xE5 fillers after a directory's end)
+ *   ALLOC  FAT entries of newly allocated clusters (their chain among themselves and the end mark)
+ *   LINK   a FAT entry that hooks new clusters onto a chain something already points at (appending to a file or a
+ *          directory), when the new entries are not all in the link's own 512-byte sector
+ *   META   directory entries, FSInfo, the boot sector flag
+ *   CUT    the end mark that shortens a chain (truncate), after the entry with the smaller size
+ *   FREE   FAT entries set to 0 (delete, truncate), after the entry that stopped pointing at them
+ * A dirty page that is about to be written with another class first goes out with its old contents (fc_write).
+ */
+enum { FPC_DATA = 0, FPC_ALLOC = 1, FPC_LINK = 2, FPC_META = 3, FPC_CUT = 4, FPC_FREE = 5, FPC_COUNT = 6 };
+#define FAT_ATOMIC  512         /* the smallest device sector: the unit a device writes in one piece */
 
 typedef struct FatVol FatVol;
 typedef struct FatNode FatNode;
@@ -149,6 +163,7 @@ struct FatVol {
     FatPage *lru_head, *lru_tail;
     u32 npages, max_pages, ndirty, dirty_limit;
     u64 dirty_since_ms;
+    u64 barriers;               /* flushes forced by the write order (a page changing class, rename, directory fillers) */
     u8 *bounce;                 /* contiguous scratch for multi-page device I/O */
     /* nodes */
     FatNode *root;
@@ -166,6 +181,7 @@ int  fc_read(FatVol *v, u64 off, void *buf, size_t n);
 int  fc_write(FatVol *v, u64 off, const void *buf, size_t n, int cls);
 int  fc_zero(FatVol *v, u64 off, size_t n, int cls);
 int  fc_flush(FatVol *v);
+int  fc_flush_upto(FatVol *v, int maxcls);                           /* writes the dirty pages of classes 0..maxcls (a barrier) */
 int  fc_read_ra(FatVol *v, u64 off, void *buf, size_t n, u32 ra);    /* ra: pages to read ahead on a miss */
 const u8 *fc_peek(FatVol *v, u64 off, size_t *avail, int *err);      /* pointer into a cached page, valid until the next cache call */
 
@@ -173,11 +189,11 @@ const u8 *fc_peek(FatVol *v, u64 off, size_t *avail, int *err);      /* pointer 
 bool fat_valid_cluster(const FatVol *v, u32 c);
 bool fat_is_eoc(const FatVol *v, u32 val);
 int  fat_get(FatVol *v, u32 c, u32 *val);
-int  fat_put(FatVol *v, u32 c, u32 val);
+int  fat_put(FatVol *v, u32 c, u32 val, int cls);
 int  fat_alloc_chain(FatVol *v, u32 count, u32 prefer, u32 *first, u32 *last);
 int  fat_alloc_chain_cb(FatVol *v, u32 count, u32 prefer, int zero_cls, void (*run_cb)(void *, u32, u32), void *ctx,
                         u32 *first_out, u32 *last_out);
-int  fat_free_chain(FatVol *v, u32 first, u32 *freed);
+int  fat_free_chain(FatVol *v, u32 first, u32 *freed, int cls);     /* FPC_FREE, or FPC_ALLOC to undo an allocation nothing points at */
 int  fat_count_free(FatVol *v, u32 *out);
 u64  fat_cluster_off(const FatVol *v, u32 c);
 int  fat_set_clean_bits(FatVol *v, bool clean);
@@ -213,7 +229,7 @@ FatNode *fatd_find(FatNode *d, const char *name);
 int  fatd_create(FatNode *d, const char *name, u8 attr, u32 first, FatNode **out);
 void fatd_remove(FatNode *d, FatNode *c);
 int  fatd_commit(FatNode *n);
-int  fatd_attach_renamed(FatNode *nd, FatNode *c, const char *newname, const FatNode *replaced);
+int  fatd_attach_renamed(FatNode *nd, FatNode *c, const char *newname, FatNode *replaced);  /* also takes `replaced` out of nd */
 #define FAT_NODE_LIMIT 200000      /* cached nodes before idle directory listings are dropped */
 void fatd_trim(FatVol *v);
 void fatd_tree_free(FatNode *n);
