@@ -41,6 +41,8 @@ The next two goals, in this order:
 
 Goal 1 has a first implementation on branch `cloud/installer` (task 4 of [CLOUD_AGENT_BRIEF.md](CLOUD_AGENT_BRIEF.md)): `install DISK`, a per-disk write unlock (`BLKWRUNLOCK`), `blk.rw=`, `/proc/bootdisk`, tested in QEMU only; see [INSTALL.md](INSTALL.md).
 
+The write-path review before the first real install (task 13) is on branch `cloud/write-path-review` (2026-10-24): AHCI/NVMe flush error fixes, `sync` reports write-back errors, `install` reads back every byte it wrote and refuses a disk with Windows/Linux/macOS unless the sentence `ERASE <SYSTEMS> ON <model> <disk>` is typed; tests `blk_err_*`, `install_other_systems`; see [HARDWARE_AUDIT.md](HARDWARE_AUDIT.md) 5a and [INSTALL.md](INSTALL.md) "Other operating systems"; shutdown notification (W12) is open.
+
 The server half of goal 2 is on branch `cloud/update-server` (2026-10-24): `tools/serve-update.py` signs a manifest and serves it over HTTP, host tests in `tests/host/test_serve_update.py`; format, protocol and the loader fallback design are in [UPDATE.md](UPDATE.md). The OS client and the fallback are not started.
 
 gapsh job control is on branch `cloud/job-control` (2026-10-24): Ctrl-Z, `jobs`, `fg`, `bg`, `wait %N`, `disown`, `%` job names; tests `jobctl_shell_console`, `jobctl_shell_pty`, `jobctl_desktop_terminal`; see [JOBCONTROL.md](JOBCONTROL.md) "State when paused".

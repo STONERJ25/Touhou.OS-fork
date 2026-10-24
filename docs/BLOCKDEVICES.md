@@ -227,6 +227,7 @@ These exist so the tests can reach paths that QEMU never takes by itself. They a
 | `ahci.maxsect=N` `ahci.prdlen=N` `ahci.prdmax=N` | at most N sectors per command / N bytes per PRD entry / N PRD entries per command |
 | `ahci.bounce` `ahci.hbareset` `ahci.nosync` | always bounce / reset the HBA at start / no flush after writes |
 | `ahci.iotimeout=ms` `ahci.dropcmd=N` | read/write timeout / never issue the N-th read or write (it then times out for real) |
+| `ahci.losewrite=LBA[,LBA...]` | test only: the first write covering each listed LBA is reported done but never sent (a disk that loses a write; up to 8 LBAs, each used once; logged). Used by `blk_err_install_readback` |
 | `nvme.maxxfer=N` `nvme.window=N` `nvme.depth=N` | bytes per command / commands in flight / I/O queue entries (tiny values force queue wrap-around) |
 | `nvme.bounce` `nvme.nosync` | always bounce / no flush after writes |
 | `blk.ro` | register every SATA disk and NVMe namespace read-only (**use this for the first boot on real hardware**; USB sticks are not affected) |

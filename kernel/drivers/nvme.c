@@ -463,7 +463,7 @@ static int nvme_blk_flush(BlockDev *d) {
     if (c->dead) { mutex_unlock(&c->io_lock); return -EIO; }
     NvmeQueue *q = &c->io;
     int rc = 0;
-    /* A failure with the do-not-retry bit clear is tried again, like a read or write (NVMe 1.4 4.6.1.2.1, "DNR"). */
+    /* A failure with the Do Not Retry bit of the status field clear is tried again, like a read or a write (NVMe 1.4, completion entry). */
     for (unsigned attempt = 0;; attempt++) {
         NvmeCmd cmd;
         memset(&cmd, 0, sizeof cmd);
