@@ -348,6 +348,24 @@ def vi_screen_keys_serial():
 
 
 @test
+def vi_screen_interrupt():
+    """vi: Ctrl-C stops a macro that calls itself; the editor stays usable afterwards (written, not yet run: see docs/VI.md)."""
+    with Qemu(cmdline="text", name="t-vi-intr") as vm:
+        g = Guest(vm)
+        ss = Session(g, "x\n")
+        ss.keys("qaqqaA!<Esc>@aq")                       # register a is empty while it is recorded, so this ends normally
+        g.type(K("@a"), wait=1.5)                        # now the macro calls itself for ever
+        g.type(K("<C-c>"), wait=0.1)
+        vt = g.wait_screen(ss.s, lambda r: "Interrupted" in r[15], timeout=60)
+        assert vt.rows_text()[14].startswith(" NORMAL"), vt.rows_text()[14]
+        # the editor is not stuck: ordinary commands still work
+        vt = ss.keys("0iy<Esc>:w<CR>", until=lambda r: "written" in r[15] and r[0].startswith("yx!"))
+        ss.quit()
+        out = g.out("cat /tmp/x")
+        assert re.fullmatch(r"yx!+\n", out) and len(out) > 5, out[:80]
+
+
+@test
 def vi_exit_paths():
     """vi: the terminal is handed back after :q, :q!, ZZ, :cq, SIGTERM, SIGINT and a run that ends by itself."""
     with Qemu(cmdline="text", name="t-vi-exit") as vm:

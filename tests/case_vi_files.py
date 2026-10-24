@@ -116,7 +116,7 @@ def vi_big_file():
         checks = [
             # (name, file, keys, repeat, shell command printing the result, wanted output, seconds allowed)
             ("G and an edit on the last line", "big", "Gx", None, "tail -n 1 /tmp/big; wc -l </tmp/big", ["00000", "100000"], 60),
-            ("1G and an edit on the first line", "big", "1Gx", None, "head -n 1 /tmp/big; wc -l </tmp/big", ["", "100000"], 60),
+            ("1G and an edit on the first line", "big", "1Gx", None, "head -n 1 /tmp/big; wc -l </tmp/big", ["100000"], 60),
             ("500G and dd", "big", "500Gdd", None, "wc -l </tmp/big; sed -n 500p /tmp/big", ["99999", "501"], 60),
             ("a count of 100000 for dd", "big", "100000dd", None, "wc -c </tmp/big", ["0"], 60),
             (":%s on every line", "big", ":%s/1/X/g<CR>", None,
@@ -131,9 +131,12 @@ def vi_big_file():
             ("a search through the file", "big", "/99999<CR>x", None, "sed -n 99999p /tmp/big", ["9999"], 60),
             (":sort n", "big", ":sort n<CR>", None, "head -n 2 /tmp/big", ["1", "2"], 240),
             (":sort", "big", ":sort<CR>", None, "head -n 3 /tmp/big", ["1", "10", "100"], 240),
-            ("a 100,000 character line: $A", "long", "$A!<Esc>", None, "tail -c 3 /tmp/long; wc -c </tmp/long", ["x!", "100003"], 60),
+            ("a 100,000 character line: $A", "long", "$A!<Esc>", None, "tail -c 3 /tmp/long; wc -c </tmp/long", ["x!", "100002"], 60),
             ("a 100,000 character line: 0x", "long", "0x", None, "wc -c </tmp/long", ["100000"], 60),
             ("a 100,000 character line: dw", "long", "dw", None, "wc -c </tmp/long", ["1"], 60),
+            ("a 100,000 character line: D", "long", "D", None, "wc -c </tmp/long", ["1"], 60),
+            ("a 100,000 character line: cc", "long", "ccab<Esc>", None, "cat /tmp/long", ["ab"], 60),
+            ("a 100,000 character line: x at the end", "long", "$x", None, "wc -c </tmp/long", ["100000"], 60),
         ]
         failures = []
         for name, f, keys, repeat, cmd, want, limit in checks:
