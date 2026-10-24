@@ -183,10 +183,11 @@ Paused on 2026-10-23 in the evening, at the request of the user. The branch `wor
   the Sketchbook reading and writing PNG through libimg; DCT-domain downscaling in the JPEG decoder (1/2, 1/4, 1/8: faster thumbnails and wallpapers of big photographs);
   `zip` adding to an existing archive; a decoded-wallpaper cache; animated PNG.
 * **Tests**: the whole suite on the merged tree (at the commit "docs/MEDIA.md: measured decode times", with the Explorer change in) ended with `201 tests, 0 failed`.
-  The later commits (the 64-scan cap, `stat()` before `open()`, manual pages, test changes) were tested with the groups they touch (`media_*` several times, `manual`,
-  `explorer_open_apps`) on a scratch build, and a second whole run on the final head was stopped at test 57 (all passed) when the pause came. On the host: the sanitizer fuzz
-  (6000 mutations seed 7, 4000 seed 11, 12000 seed 99) and the corpus check found nothing; libz's `ztest.py` 0 failures. `audio_mix_two_clients`, `notebook_eol_switch` and
-  `sketchbook_guard_save` (other people's tests) failed once each in a run on a busy host and passed when run again; none touches this code.
+  The later commits (the 64-scan cap, `stat()` before `open()`, manual pages, test changes) were tested with the groups they touch (`media_*` several times, `manual`) on a
+  scratch copy of the sources, and a second whole run on the final head (after the last `git merge main`) was stopped at test 57 (all passed) when the pause came. On the host:
+  the sanitizer fuzz (6000 mutations seed 7, 4000 seed 11, 12000 seed 99) and the corpus check found nothing; libz's `ztest.py` 0 failures. Other people's tests that failed in
+  earlier runs on a busy host: `audio_mix_two_clients` (twice, passed in the 201-test run), `notebook_eol_switch` and `sketchbook_guard_save` (once each, passed when run alone);
+  none touches this code.
 
 ## How to resume
 
