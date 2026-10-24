@@ -138,6 +138,16 @@ static void stage(const BootFramebuffer *fb, int n) {
     if (g_stagehold == n) loader_halt();
 }
 
+/* The marks of the exit from the firmware (rows 1-5 of the grid in shared/stagemark.h). Plain stores to the framebuffer: they do not
+ * touch boot services, so they may sit between GetMemoryMap and ExitBootServices. */
+static void exit_mark(const BootFramebuffer *fb, int row, int col) {
+    if (fb->base) mark_square((volatile UINT8 *)fb->base, fb->pitch, fb->width, fb->height, row, col, 0x00FFFFFFu);
+}
+
+static void exit_status(const BootFramebuffer *fb, int row, UINT64 status) {
+    if (fb->base) mark_byte((volatile UINT8 *)fb->base, fb->pitch, fb->width, fb->height, row, status);
+}
+
 /* Which byte order a mode uses: BOOTFB_BGRX, BOOTFB_RGBX, or -1 when it is not a 32-bit linear framebuffer we can draw to.
  * Real firmware often describes its modes with PixelBitMask; the masks say which of the two layouts it really is. */
 static int pixel_layout(const EFI_GRAPHICS_OUTPUT_MODE_INFORMATION *info) {
@@ -403,18 +413,23 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st) {
         UINTN mapKey = 0;
         UINT32 descVer = 0;
         mapSize = map_pages * PAGE_SIZE;
+        exit_mark(&fb, 1, attempt);                 /* attempt N begins (squares: see shared/stagemark.h) */
         EFI_STATUS s = g_bs->GetMemoryMap(&mapSize, rawmap, &mapKey, &descSize, &descVer);
         if (s == EFI_BUFFER_TOO_SMALL) {            /* a firmware with a huge map: a bigger buffer (the allocation changes the map, so ask again) */
+            exit_status(&fb, 2, s);
             map_pages = (mapSize >> 12) + 16;
             rawmap_phys = alloc_pages(EfiLoaderData, map_pages);
             rawmap = (EFI_MEMORY_DESCRIPTOR *)rawmap_phys;
             continue;
         }
-        if (EFI_ERROR(s)) { log_str("loader: GetMemoryMap failed\n"); loader_halt(); }
+        if (EFI_ERROR(s)) { exit_status(&fb, 2, s); log_str("loader: GetMemoryMap failed\n"); loader_halt(); }
         /* A stale map key (something the firmware did while shutting down changed the map) is the normal reason for a failure: ask again. */
-        if (!EFI_ERROR(g_bs->ExitBootServices(image, mapKey))) exited = 1;
+        exit_mark(&fb, 3, attempt);                 /* about to call ExitBootServices */
+        EFI_STATUS es = g_bs->ExitBootServices(image, mapKey);
+        exit_status(&fb, 4, es);
+        if (!EFI_ERROR(es)) exited = 1;
     }
-    if (!exited) { log_str("loader: ExitBootServices failed\n"); loader_halt(); }
+    if (!exited) { exit_mark(&fb, 5, 0); log_str("loader: ExitBootServices failed\n"); loader_halt(); }
     g_bs = 0;                       /* console logging is serial-only from here on */
     stage(&fb, 2);                  /* the firmware's own page tables are still active: the framebuffer is reachable at its physical address */
 
