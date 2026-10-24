@@ -738,6 +738,11 @@ static void read_knobs(void) {
 }
 
 void nvme_init(void) {
+    char sw[8];
+    if (cmdline_value("nvme", sw, sizeof sw) && (!strcmp(sw, "off") || !strcmp(sw, "0") || !strcmp(sw, "no"))) {
+        klog("Kappa", "nvme: disabled on the kernel command line (nvme=off); the NVMe controllers are left alone");
+        return;
+    }
     read_knobs();
     for (PciDev *d = pci_find_class(0x01, 0x08, 0x02, NULL); d; d = pci_find_class(0x01, 0x08, 0x02, d))
         ctrl_probe(d);
