@@ -146,7 +146,7 @@ def crash_run(seed):
     """One power cut. Returns None, or a text that says what is wrong."""
     rng = random.Random(seed)
     kind, cluster, size = rng.choice([("fat32", None, 96), ("fat32", 512, 96), ("fat32", 4096, 300), ("fat16", None, 96)])
-    ops = 20 * rng.randint(0, 30)                         # kill after this many operations (0: right at the start) ...
+    ops = 20 * rng.randint(0, 60)                         # kill after this many operations (0: right at the start) ...
     jitter = rng.uniform(0.0, 1.0)                        # ... plus up to a second
     tag = f"seed {seed} ({kind}, {cluster or 'default'} B clusters, kill after {ops} ops + {jitter:.2f} s)"
     with Image("crash", size * MIB, [hv_part(cluster=cluster, kind=kind)]) as img:
