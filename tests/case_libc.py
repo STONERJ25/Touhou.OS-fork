@@ -20,6 +20,7 @@ import sys
 import time
 from contextlib import contextmanager
 from decimal import Decimal, getcontext
+from functools import lru_cache
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -541,3 +542,214 @@ def libc_math_awk():
                 if g != want:
                     bad.append(f"{setup}{expr}: got {g}, want {want}")
         assert not bad, f"{len(bad)} of {len(MATH_TABLE)} differ:\n" + "\n".join(bad[:15])
+
+
+# ---------------------------------------------------------------------------------------------------------------- regex
+
+_POSIX_CLASS = {"alpha": "a-zA-Z", "digit": "0-9", "alnum": "a-zA-Z0-9", "upper": "A-Z", "lower": "a-z", "space": " \\t\\n\\r\\f\\v", "blank": " \\t"}
+
+
+def ere_to_python(pat):
+    """The ERE subset these tests use, spelled for Python's re module (ASCII). ^ and $ are the ends of the string; \\b \\B \\< \\> are
+    written with lookarounds, which also give the right answer on an empty string."""
+    out, i = [], 0
+    while i < len(pat):
+        c = pat[i]
+        if c == "\\":
+            d = pat[i + 1]
+            i += 2
+            out.append({"b": "(?:(?<=\\w)(?!\\w)|(?<!\\w)(?=\\w))", "B": "(?:(?<=\\w)(?=\\w)|(?<!\\w)(?!\\w))", "<": "(?<!\\w)(?=\\w)",
+                        ">": "(?<=\\w)(?!\\w)", "w": "\\w", "W": "\\W", "s": "\\s", "S": "\\S"}.get(d) or re.escape(d))
+        elif c == "[":
+            j = i + 1
+            neg = pat[j] == "^"
+            j += neg
+            items, first = [], True
+            while pat[j] != "]" or first:
+                first = False
+                if pat.startswith("[:", j):
+                    k = pat.index(":]", j)
+                    items.append(_POSIX_CLASS[pat[j + 2:k]])
+                    j = k + 2
+                elif pat[j + 1] == "-" and pat[j + 2] != "]":
+                    items.append(re.escape(pat[j]) + "-" + re.escape(pat[j + 2]))
+                    j += 3
+                else:
+                    items.append(re.escape(pat[j]))
+                    j += 1
+            i = j + 1
+            out.append("[" + ("^" if neg else "") + "".join(items) + "]")
+        elif c == ".":
+            out.append("[\\s\\S]")
+            i += 1
+        elif c == "^":
+            out.append("\\A")
+            i += 1
+        elif c == "$":
+            out.append("\\Z")
+            i += 1
+        else:
+            out.append(c)                # ( ) | * + ? { } , letters and digits mean the same in both dialects
+            i += 1
+    return "".join(out)
+
+
+@lru_cache(maxsize=None)
+def _ends_at(py, k):
+    return re.compile(f"(?:{py})(?=[\\s\\S]{{{k}}}\\Z)", re.ASCII)
+
+
+def longest_match(py, s):
+    """POSIX leftmost-longest match of the Python-spelled regex in s: (start, end) or None. For each start, the longest end for which the
+    pattern can match exactly s[start:end] (a lookahead pins the end; backtracking tries every way to get there)."""
+    for i in range(len(s) + 1):
+        for j in range(len(s), i - 1, -1):
+            if _ends_at(py, len(s) - j).match(s, i):
+                return i, j
+    return None
+
+
+RE_PATTERNS = [
+    # alternation: the longest alternative wins, whatever the order
+    "a|ab", "ab|a|b", "(a|ab)(b|bab)", "b|ab|abab", "(a|ab)*b", "(a|ab)+$", "(a|b|ab)*", "(aa|a)*b", "(a|aa)*$", "(ab|a)(bab|b)",
+    # loops, nested loops, loops that can match nothing
+    "a*", "a*b", "(a*)*b", "(a|b)*b", "(a*b*)*", "(a?b?)*a", "(a*|b)*", "((a)|b)*", "(a+|b+)*a?", "(a*)+", "(a|b*)+b", "x*",
+    # one-character loops, classes, counted repetition
+    "b*a", ".*a", ".*", "a.*b", "[ab]+", "[^a]*", "[^a]+a", "a{2}", "a{1,2}b", "(ab){2}", "(ab){1,2}a?", "a{2,}", "(a|b){3}", "(a|ab){2,3}",
+    "[ab ]*a", "a *b", "(a )*b", "a+ b*", "( a|b)+", "(a?){3}b", "[[:alpha:]]+ ", "[^[:space:]]+$",
+    # anchors and word boundaries
+    "^a", "a$", "^a*$", "^$", "(^a|b)", "a|^b", "(a|^)b", "b$|a", "^(ab|a)*$",
+    "\\<a", "a\\>", "\\ba", "a\\b", "\\Ba", "a\\B", "\\<(a|ab)\\>", "\\b.*\\b", "a*\\B", "\\b", "\\B",
+    # empty alternatives and groups
+    "()", "(|a)", "a|", "(a|)b",
+]
+
+# awk spells a word boundary \y (its \b is the backspace); everything else goes to regcomp unchanged. The results of all strings come
+# out as one line ("start length," for each): a terminal line costs several milliseconds, 364 of them seconds.
+_AWK_MATCH_ALL = ("m() { awk 'BEGIN{p=ARGV[1];n=1;s[0]=\"\";for(i=0;i<n;i++){w=s[i];match(w,p);r=r RSTART \" \" RLENGTH \",\";"
+                  "if(length(w)<5){s[n++]=w \"a\";s[n++]=w \"b\";s[n++]=w \" \"}};print r}' \"$1\"; }")
+
+
+@test
+def libc_regex_longest():
+    """regexec finds the leftmost-longest match: 70 patterns (alternation, nested and empty loops, counted repeats, anchors, word
+    boundaries) on all 364 strings of up to 5 characters over a, b and space, through awk's match(), compared with Python's re."""
+    strings, i = [""], 0
+    while i < len(strings):
+        w = strings[i]
+        i += 1
+        if len(w) < 5:
+            strings += [w + "a", w + "b", w + " "]
+    with guest("t-libc-regex") as vm:
+        sh(vm, _AWK_MATCH_ALL)
+        bad = []
+        for pat in RE_PATTERNS:
+            py = ere_to_python(pat)
+            want = []
+            for w in strings:
+                m = longest_match(py, w)
+                want.append("0 -1" if m is None else f"{m[0] + 1} {m[1] - m[0]}")
+            out, rc = sh(vm, "m '" + pat.replace("\\b", "\\y") + "'")
+            got = out.strip("\n").split(",")[:-1]
+            if len(got) != len(strings):
+                bad.append(f"/{pat}/: {len(got)} results instead of {len(strings)}: {out[:100]!r}")
+                continue
+            diffs = [(w, g, x) for w, g, x in zip(strings, got, want) if g != x]
+            if diffs:
+                bad.append(f"/{pat}/: {len(diffs)} strings differ, e.g. " + "; ".join(f"{w!r}: got {g}, want {x}" for w, g, x in diffs[:3]))
+        assert not bad, f"{len(bad)} of {len(RE_PATTERNS)} patterns differ:\n" + "\n".join(bad[:10])
+
+
+def _numbers(lo, hi):
+    return [str(n) for n in range(lo, hi + 1)]
+
+
+REGEX_TOOL_CASES = [
+    # leftmost-longest where the tools expose it
+    ("echo ab | grep -o -E 'a|ab'", "ab"),
+    ("echo xabcd | sed -E 's/a|ab|abc/<&>/'", "x<abc>d"),
+    ("echo abcd | sed -E 's/(a|ab)(c|bcd)(d*)/<&>/'", "<abcd>"),
+    ("echo foobar | awk '{ match($0, /foo|foobar/); print RSTART, RLENGTH }'", "1 6"),
+    ("expr abcd : 'a\\|ab\\|abc'", "3"),
+    ("echo abcabc | grep -o 'abc\\|ab'", "abc\nabc"),
+    ("echo 'abcabc' | awk '{ n = gsub(/b|bc/, \"[&]\"); print n, $0 }'", "2 a[bc]a[bc]"),
+    ("echo abab | sed -E 's/(ab)*/X/'", "X"),
+    ("echo foo | sed -n 's/\\(o*\\)$/[\\1]/p'", "f[oo]"),
+    ("echo aaaa | sed 's/a\\{2,3\\}/X/'", "Xa"),
+    ("echo xyz | sed -E 's/y?/-/'", "-xyz"),
+    # groups, back-references, options
+    ("echo 'hello world' | sed 's/\\(hello\\) \\(world\\)/\\2 \\1/'", "world hello"),
+    ("echo 'one two three' | sed -E 's/([a-z]+) ([a-z]+)/\\2 \\1/'", "two one three"),
+    ("echo ab | sed -E 's/(a|)b/[\\1]/'", "[a]"),
+    ("echo aabbcd | sed 's/\\(.\\)\\1/<\\1>/g'", "<a><b>cd"),
+    ("echo abcabc | sed -E 's/(abc)\\1/X/'", "X"),
+    ("printf 'x\\nyy\\nzz\\nw\\n' | grep -c -E '^(.)\\1$'", "2"),
+    ("echo 'The Quick' | grep -i -o 'q[a-z]*'", "Quick"),
+    ("echo 'ABC abc' | grep -i -o -E '[a-c]+'", "ABC\nabc"),
+    ("echo 'ab12cd' | expr 'ab12cd' : '[a-z]*\\([0-9]*\\)'", "12"),
+    ("echo 'a+b' | sed -E 's/a\\+b/X/'", "X"),
+    ("echo 'x+y' | sed 's/+/ plus /'", "x plus y"),
+    # successive calls on the rest of a line (REG_NOTBOL, empty matches), a window in the middle (REG_STARTEND)
+    ("echo abc | sed 's/x*/-/g'", "-a-b-c-"),
+    ("echo aaa | sed 's/^a/b/g'", "baa"),
+    ("echo aXbXc | sed 's/X/-/2'", "aXb-c"),
+    ("echo 'aaa bbb' | awk '{ gsub(/\\yb/, \"X\"); print }'", "aaa Xbb"),
+    # counting over generated numbers
+    ("seq 1 500 | grep -c -E '^(1|2)[0-9]*5$'", str(sum(1 for n in _numbers(1, 500) if re.fullmatch(r"[12][0-9]*5", n)))),
+    ("seq 1 1000 | grep -c -E '(.)\\1'", str(sum(1 for n in _numbers(1, 1000) if re.search(r"(.)\1", n)))),
+    ("seq 1 400 | grep -c -v '[13579]$'", str(sum(1 for n in _numbers(1, 400) if n[-1] not in "13579"))),
+]
+
+
+@test
+def libc_regex_tools():
+    """grep, sed, awk and expr on regular expressions: longest alternatives, groups, back-references, -i, {m,n}, empty matches, s///g."""
+    with guest("t-libc-regextools") as vm:
+        bad = []
+        for cmd, want in REGEX_TOOL_CASES:
+            out, rc = sh(vm, cmd)
+            if out.strip("\n") != want:
+                bad.append(f"{cmd}: got {out.strip(chr(10))!r}, want {want!r}")
+        assert not bad, "\n".join(bad)
+
+
+@test
+def libc_regex_big():
+    """A megabyte line: .* does not overflow the stack or go quadratic, nested loops and (a|aa)+ do not blow up, sed s///g on a long line is linear."""
+    big, mid = 1 << 20, 1 << 17
+    checks = [
+        ("grep -c 'a.*b' /tmp/l1m", "0"),
+        ("grep -c 'a.*a' /tmp/l1m", "1"),
+        ("grep -c -E '[a-z]*b' /tmp/l1m", "0"),
+        ("sed 's/a.*a/X/' /tmp/l1m", "X"),
+        ("awk '{print match($0, /a+$/), RLENGTH}' /tmp/l1m", f"1 {big}"),
+        ("sed -n 's/^\\(a*\\)$/\\1/p' /tmp/l1m | wc -c", str(big + 1)),
+        ("grep -c -E '(a|b)*c' /tmp/l128k", "0"),
+        ("awk '{print match($0, /(a|aa)+$/), RLENGTH}' /tmp/l128k", f"1 {mid}"),
+        ("sed 's/a/bb/g' /tmp/l128k | wc -c", str(2 * mid + 1)),
+        ("sed 's/\\(a\\)/\\1b/g' /tmp/l128k | wc -c", str(2 * mid + 1)),
+        ("awk '{n = gsub(/a/, \"bb\"); print n, length($0)}' /tmp/l128k", f"{mid} {2 * mid}"),
+        ("grep -c -E '(a+)+$' /tmp/r1", "0"),
+        ("grep -c -E '(a|aa)+c' /tmp/r1", "0"),
+        ("grep -c -E '(a*)*c' /tmp/r1", "0"),
+        ("grep -c -E '(.*)*c' /tmp/r1", "0"),
+        ("grep -c -E '(a?){25}a{25}' /tmp/r2", "1"),
+        ("grep -c -E '(a*)\\1' /tmp/l128k", "1"),
+    ]
+    with guest("t-libc-regexbig") as vm:
+        sh(vm, "awk 'BEGIN{s=\"a\"; for(i=0;i<20;i++) s = s s; print s}' > /tmp/l1m; "
+               "awk 'BEGIN{s=\"a\"; for(i=0;i<17;i++) s = s s; print s}' > /tmp/l128k; "
+               "echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab > /tmp/r1; echo aaaaaaaaaaaaaaaaaaaaaaaaa > /tmp/r2")
+        bad = []
+        for cmd, want in checks:
+            t0 = time.time()
+            out, rc = sh(vm, cmd, timeout=300)
+            secs = time.time() - t0
+            got = out.strip("\n")
+            if got != want:
+                bad.append(f"{cmd}: got {got[:60]!r}, want {want!r}")
+            elif secs > 40:                                             # all of these take a second or less; an engine that backtracks takes minutes
+                bad.append(f"{cmd}: took {secs:.0f} s")
+            else:
+                print(f"  [libc timing] {cmd[:62]:62} {secs:6.2f} s wall")
+        assert not bad, "\n".join(bad)
