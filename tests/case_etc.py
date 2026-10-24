@@ -154,6 +154,9 @@ def etc_corrupt_fallback():
         "/.system/etc/network.conf": b"eth0 static 10.0.2.15/24 gateway 192.168.9.1\n",            # gateway outside the network
         "/.system/etc/update.conf": b"url=http://10.0.2.2:8080/\nkey=00112233aabbccdd\n",
         "/.system/etc/timezone": b"EST5EDT,M3.2.0,M11.1.0\n",
+        # a power cut between "sync" and "rename" on a FAT driver that freed the old clusters first: the complete .new wins
+        "/.system/etc/group": b"root:x:0:root\nreimu:x:10",
+        "/.system/etc/group.new": b"root:x:0:root\nreimu:x:1000:reimu\nshrine:x:100:reimu\nyoumu:x:1004:youmu\n",
     }
     with hv_image("etc-corrupt", files) as img:
         with boot(img, name="t-etc-corrupt") as (g, vm):
@@ -162,7 +165,9 @@ def etc_corrupt_fallback():
                               ("hostname", r"line 1: a host name has only letters"), ("network.conf", r"line 1: the gateway 192\.168\.9\.1")):
                 rx = rf"\[Keine\] {re.escape(KEPT)}/{re.escape(name)} is damaged \({why}.*?\): Keine falls back to the initrd default"
                 assert len(re.findall(rx, log)) == 1, f"expected one fallback line for {name}:\n" + log[-3000:]
-            assert re.search(r"/etc restored from the Human Village's records \(/HumanVillage/\.system/etc\): timezone update\.conf", log), log[-3000:]
+            assert re.search(r"/etc restored from the Human Village's records \(/HumanVillage/\.system/etc\): group timezone update\.conf", log), log[-3000:]
+            assert re.search(rf"\[Keine\] {re.escape(KEPT)}/group is damaged \(the last line is cut short.*?\): the complete group\.new written just before is used", log), log[-3000:]
+            assert "youmu:x:1004:youmu" in say(g, "grep ^youmu /etc/group")
             assert "reimu:x:1000:1000:Reimu Hakurei" in say(g, "grep ^reimu /etc/passwd")
             assert "reimu::" in say(g, "grep ^reimu /etc/shadow")
             assert say(g, "hostname") == "gensokyo"

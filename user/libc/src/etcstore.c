@@ -440,6 +440,19 @@ void etc_snapshot(EtcSnapshot *snap) {
     }
 }
 
+/* The kept copy at PATH if it can be read and is well-formed. Otherwise NULL, with the reason in `why` ("cannot read it: I/O
+ * error", "line 3: ...") or an empty `why` when there is no such file. */
+static char *usable_copy(const char *name, const char *path, size_t *len, char *why, size_t whylen) {
+    char *data = read_small(path, len);
+    if (!data) {
+        if (errno == ENOENT) why[0] = 0;
+        else snprintf(why, whylen, "cannot read it: %s", strerror(errno));
+        return NULL;
+    }
+    if (etc_validate(name, data, *len, why, whylen) < 0) { free(data); return NULL; }
+    return data;
+}
+
 int etc_restore(const EtcSnapshot *snap, void (*log)(const char *line)) {
     if (!etc_volume_present(NULL)) return -1;
     char done[160] = "", line[240];
@@ -448,39 +461,36 @@ int etc_restore(const EtcSnapshot *snap, void (*log)(const char *line)) {
     if (snap) etc_snapshot(&now);
     for (int i = 0; etc_kept_names[i]; i++) {
         const char *name = etc_kept_names[i];
-        char src[128], dst[64], why[120];
+        char src[128], alt[136], dst[64], why[120], why_alt[120];
         snprintf(src, sizeof src, "%s/%s", ETC_KEEP_DIR, name);
+        snprintf(alt, sizeof alt, "%s.new", src);
         snprintf(dst, sizeof dst, "/etc/%s", name);
         size_t len = 0;
-        char *data = read_small(src, &len);
+        char *data = usable_copy(name, src, &len, why, sizeof why);
+        bool from_alt = false;
         if (!data) {
-            if (errno != ENOENT && log) {
-                snprintf(line, sizeof line, "cannot read %s (%s): the initrd default of %s stays", src, strerror(errno), dst);
-                log(line);
-            }
-            continue;
+            /* A power cut inside etc_write_atomic(), on a FAT driver that frees the replaced file's clusters before its entry is
+             * rewritten, can leave NAME pointing at free clusters while NAME.new is complete (it was synced before the rename). */
+            data = usable_copy(name, alt, &len, why_alt, sizeof why_alt);
+            from_alt = data != NULL;
         }
+        if (!data && !why[0]) continue;                                   /* not kept: the initrd default, nothing to say */
         found++;
         if (snap && (now.mtime[i] != snap->mtime[i] || now.size[i] != snap->size[i])) {
-            if (log) {
-                snprintf(line, sizeof line, "%s changed since boot, so the copy in %s is not put over it", dst, ETC_KEEP_DIR);
-                log(line);
-            }
-        } else if (etc_validate(name, data, len, why, sizeof why) < 0) {
-            if (log) {
-                snprintf(line, sizeof line, "%s is damaged (%s): Keine falls back to the initrd default", src, why);
-                log(line);
-            }
+            snprintf(line, sizeof line, "%s changed since boot, so the copy in %s is not put over it", dst, ETC_KEEP_DIR);
+        } else if (!data) {
+            snprintf(line, sizeof line, "%s is damaged (%s): Keine falls back to the initrd default", src, why);
         } else if (etc_write_atomic(dst, data, len, etc_file_mode(name), 0) < 0) {
-            if (log) {
-                snprintf(line, sizeof line, "cannot restore %s (%s): the initrd default stays", dst, strerror(errno));
-                log(line);
-            }
+            snprintf(line, sizeof line, "cannot restore %s (%s): the initrd default stays", dst, strerror(errno));
         } else {
             restored++;
             size_t used = strlen(done);
             snprintf(done + used, sizeof done - used, " %s", name);
+            if (from_alt && why[0]) snprintf(line, sizeof line, "%s is damaged (%s): the complete %s.new written just before is used", src, why, name);
+            else if (from_alt) snprintf(line, sizeof line, "%s is missing: the complete %s.new written just before is used", src, name);
+            else line[0] = 0;
         }
+        if (line[0] && log) log(line);
         free(data);
     }
     if (log) {
