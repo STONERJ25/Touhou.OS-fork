@@ -32,7 +32,8 @@ are what is left, roughly in the order they matter.
 - [x] USB mass storage, so `/HumanVillage` lives on the stick the OS booted from, plus `TOUHOU.LOG` on it for debugging a PC without serial (docs/USB.md, docs/REAL_HARDWARE.md)
 - [ ] real-hardware audit: framebuffer write-combining, xHCI/AHCI/NVMe/PCI/ACPI against the specs and the target Dell (in progress)
 - [x] networking: NICs (virtio, e1000/e1000e, rtl8139 tested in QEMU; I217-I219 and rtl8168 written but never run on hardware), ARP/IP/UDP/TCP, DHCP/DNS, tools (docs/NETWORK.md)
-- [ ] networking, next: try the I219 / RTL8168 drivers on the real PC; IPv6, TLS, SACK, a Kappa network panel
+- [x] HTTPS: `libtls` (TLS 1.3 and 1.2 client, X.509 chains, Mozilla roots in the initrd), `fetch`/`wget` over `https://` (docs/TLS.md)
+- [ ] networking, next: try the I219 / RTL8168 drivers on the real PC; IPv6, SACK; the Kappa network page, the panel indicator, `/etc/network.conf` and `netconfig` (designed, kernel half committed but untested: docs/NETWORK.md "State when paused")
 - [x] audio core: Intel HDA / AC97, mixer, `play`, `beep`, `volume`
 - [ ] audio rest: chiptune engine, Jukebox, songs, system sounds wired in (in progress)
 - [x] threads (clone, futex, pthreads)
