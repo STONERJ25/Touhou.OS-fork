@@ -10,6 +10,9 @@
  * disk that holds any partition or a recognisable partition table or file system; the user types the disk's name to go on (or gives
  * --yes-i-typed=NAME, which must be that exact name); the kernel's blk.ro is lifted for this one disk through this one open file only
  * (BLKWRUNLOCK, shared/blkabi.h) and handed back before the program ends. Nothing is written before all of that passed.
+ * A disk that holds another operating system (Windows, Linux, macOS, a RAID member: other_systems()) needs --force *and* a typed sentence
+ * that names the systems, the disk's model and its name (ERASE WINDOWS ON <model> <disk>); what would be lost is listed first.
+ * Afterwards the disk's cache is flushed (a failure fails the install) and every byte written is read back and compared (read_back()).
  */
 #include "kappabox.h"
 #include <inttypes.h>
@@ -1004,7 +1007,7 @@ static void list_disks(const Boot *b) {
             int nlost = 0, os = fd >= 0 ? other_systems(fd, d, lost, MAX_LOST, &nlost) : 0;
             os_words(os, w, sizeof w);
             if (fd >= 0 && disk_content(fd, d, what, sizeof what))
-                snprintf(state, sizeof state, os ? "holds %s: %.120s (protected: needs --force and a typed sentence)" : "holds %s%.150s (needs --force)",
+                snprintf(state, sizeof state, os ? "holds %s (protected: needs --force and a typed sentence): %.110s" : "holds %s%.150s (needs --force)",
                          os ? w : "", what);
             else if (fd < 0) snprintf(state, sizeof state, "cannot be read: %s", strerror(errno));
             else strlcpy(state, "empty", sizeof state);
@@ -1072,8 +1075,8 @@ APPLET(install) {
         print_losses(target, d, lost, nlost, os);
         fflush(stdout);
         if (!force)
-            return refuse("%s holds another operating system (%s). install erases it only with --force and the typed sentence\n"
-                          "install:   %s\n(see 'man install')", target, osw, sentence);
+            return refuse("%s holds another operating system (%s). install erases it only with --force and this sentence, typed\n"
+                          "install: exactly (see 'man install'):\ninstall:   %s", target, osw, sentence);
         if (erase && strcmp(erase, sentence))
             return refuse("--erase-phrase does not match. To erase %s on %s the sentence is exactly:\ninstall:   %s", osw, target, sentence);
         if (!erase && typed)

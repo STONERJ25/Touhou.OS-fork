@@ -2,12 +2,12 @@
 
 # SYNOPSIS
 *install*
-*install* [*--force*] [*--yes-i-typed*=_DISK_] [*--from* _DIR_] [*--cmdline* _WORDS_] [*--dry-run*] _DISK_
+*install* [*--force*] [*--yes-i-typed*=_DISK_] [*--erase-phrase*=_SENTENCE_] [*--from* _DIR_] [*--cmdline* _WORDS_] [*--dry-run*] _DISK_
 
 # DESCRIPTION
 `install` moves the shrine for good: it writes TouhouOS onto the disk _DISK_ (`sdb`, `nvme0n1`, `vda`, with or without `/dev/`), so the computer starts it without the USB stick. *Everything on that disk is lost.* Only root may do it (`sudo install sdb`).
 
-Without arguments it lists the disks it can see and what it thinks of each: the disk the system was started from, a disk in use, a disk that holds partitions or a file system (`--force` needed), an empty disk.
+Without arguments it lists the disks it can see and what it thinks of each: the disk the system was started from, a disk in use, a disk that holds partitions or a file system (`--force` needed), a disk that holds another operating system (protected: `--force` and a typed sentence), an empty disk.
 
 The disk gets the same layout as the stick image: a GPT partition table, partition 1 a 64 MiB FAT32 EFI System Partition named TOUHOUOS-ESP holding `EFI/BOOT/BOOTX64.EFI`, `kernel.elf`, `initrd.img` and `cmdline.txt`, partition 2 a FAT32 volume named HUMANVILLAGE that takes the rest of the disk (FAT32 counts 2^32 sectors: at most 2 TiB on a disk with 512-byte sectors) and keeps the home directories. On a disk with 4096-byte sectors the boot partition is 258 MiB, the smallest FAT32 volume such a disk can hold.
 
@@ -16,15 +16,23 @@ The files are the ones the running system was started from: `install` finds the 
 # SAFETY
 Before anything is written, `install` refuses: a caller who is not root; a name that is not a whole disk; the disk the system was started from; a disk with a mounted partition; a disk too small for the two volumes; and, unless `--force` is given, a disk that holds any partition, a partition table or a file system it recognises (FAT, NTFS, exFAT, ext, XFS, btrfs, LVM, LUKS, swap, ISO 9660, Intel RAID metadata). Then it shows the plan and asks you to type the disk's name; anything else stops it.
 
+A disk that holds another operating system is protected even from `--force`. Recognised are Windows (a Microsoft reserved, Windows recovery, LDM or Storage Spaces partition, a basic data partition that does not hold FAT, NTFS, exFAT, ReFS, BitLocker), Linux (its partition types, ext2/3/4, XFS, btrfs, swap, LVM, LUKS, a GRUB BIOS boot partition), macOS (HFS+, APFS), a member of an Intel RST RAID set, and partitions that cannot be read. `install` then lists every partition with its name, size, type and file system, and goes on only when you type, exactly, a sentence that names the systems, the disk's model and the disk, for example
+
+    ERASE WINDOWS ON SAMSUNG MZVLB256HAHQ-000L7 nvme0n1
+
+at the prompt (or give it with `--erase-phrase`). `--yes-i-typed` is not enough for such a disk. Leave a disk you want to keep alone: use another disk or the stick.
+
 The kernel's `blk.ro` stays on. For the writes `install` asks the kernel to lift it for that one disk, through its own open file only; the disk's partitions, every other program and every other disk still get "Read-only file system". The unlock ends when `install` hands it back or exits, and it is never written down anywhere, so a restart forgets it. The kernel log shows both moments (`blk: sdb unlocked for writing ...`, `blk: sdb is read-only again`).
 
-After writing, `install` reads the files and the partition table back and compares them. The new partitions appear after the next start.
+After writing, `install` flushes the disk's cache (a failing flush fails the install) and reads back every byte it wrote, the files, directories, both FATs, the boot sectors and their backups, both GPT copies and the protective MBR, and compares them with what it meant to write. Any difference or read error is listed by place and the install fails: do not start from that disk. A write error stops the install at once; the partition table is written last, so a disk left behind by a failed run never looks like a finished install. The new partitions appear after the next start.
 
 # OPTIONS
 @ *--force*
     Overwrite a disk that holds partitions or a file system. Still refused for the boot disk, a mounted disk, or when the firmware did not say which disk the system started from.
 @ *--yes-i-typed*=_DISK_
-    For scripts: the confirmation, given in advance. It must be exactly the name of the disk being installed on.
+    For scripts: the confirmation, given in advance. It must be exactly the name of the disk being installed on. Not enough for a disk that holds another operating system.
+@ *--erase-phrase*=_SENTENCE_
+    For a disk that holds another operating system, together with `--force`: the sentence `install` asks for, given in advance, exactly as `install` or `install --dry-run --force DISK` shows it.
 @ *--from* _DIR_
     Take the files from _DIR_ (holding `EFI/BOOT/BOOTX64.EFI`, `kernel.elf`, `initrd.img`, `cmdline.txt`) instead of the boot partition.
 @ *--cmdline* _WORDS_
@@ -39,12 +47,13 @@ After writing, `install` reads the files and the partition table back and compar
     sudo install --dry-run sdb
     sudo install sdb
     sudo install --force --cmdline "video=native blk.ro" nvme0n1
+    sudo install --force --dry-run nvme0n1
 
 # NOTES
 On a PC whose SATA controller is set to RAID (Intel RST) in the firmware the internal disks are invisible to TouhouOS; switch "SATA Operation" to AHCI first. A Windows installed in RAID mode may then stop starting unless it was prepared for the switch. After installing, take the stick out and choose the disk in the firmware's boot menu if it does not start by itself.
 
 # EXIT STATUS
-0 when the system was installed (or the plan shown), 1 when it was refused or failed, 2 for a usage error.
+0 when the system was installed and read back correctly (or the plan shown), 1 when it was refused or failed (a write, the flush or the read-back), 2 for a usage error.
 
 # SEE ALSO
 lsblk(1), dd(1), mount(8), proc(5)
