@@ -15,7 +15,7 @@ from pathlib import Path
 import mkdisk
 import case_storage
 from case_storage import (Image, Guest, hv_part, decoy_esp, file_sha, sha, MIB, WORK, HV, H, ROOT_PROMPT, USER_PROMPT)
-from harness import test, Qemu, BUILD
+from harness import test, Qemu, BUILD, scaled
 
 
 def boot(*args, **kw):
@@ -53,7 +53,7 @@ def unplug(vm, n=1):
 def wait_log(vm, pattern, timeout=90, since=0):
     """Waits until the serial log holds pattern (searches the whole log from offset `since`); returns the match."""
     rx = re.compile(pattern, re.S)
-    end = time.time() + timeout
+    end = time.time() + scaled(timeout)
     while time.time() < end:
         m = rx.search(vm.text(), since)
         if m:
@@ -291,7 +291,7 @@ def usbstor_unplug_during_io():
             mark = len(vm.text())
             unplug(vm)
             wait_log(vm, r"blk: sdb removed", timeout=90, since=mark)
-            end = time.time() + 90
+            end = time.time() + scaled(90)
             out = ""
             while time.time() < end:
                 out = g.ok("cat /tmp/dd.out")
@@ -757,7 +757,7 @@ def usbstor_bootlog_clean():
             assert "[Gensokyo] kernel 0.1.0 \"Story of Eastern Wonderland\" starting" in log[:2500], log[:300]      # after the banner the console printed first
             assert "[Keine] fat32: sdb2 mounted on /HumanVillage" in log, log[-500:]
             g.ok("logger -t testing a line that must reach the stick")
-            deadline = time.time() + 60
+            deadline = time.time() + scaled(60)
             while time.time() < deadline and "a line that must reach the stick" not in g.ok(f"cat {HV}/TOUHOU.LOG"):
                 time.sleep(1)                                          # the writer thread appends every ~5 s
             assert "a line that must reach the stick" in g.ok(f"cat {HV}/TOUHOU.LOG")
@@ -788,7 +788,7 @@ def usbstor_bootlog_killed():
         with Qemu(cmdline="text user=root", name="t-usbs-kill", extra=XHCI + stick(img)) as vm:
             vm.expect(r"\[Keine\] bootlog: TOUHOU.LOG holds the boot log up to here", timeout=180)
             vm.proc.kill()                                              # the plug is pulled: no sync, no poweroff
-            vm.proc.wait(timeout=20)
+            vm.proc.wait(timeout=scaled(20))
         rep = mkdisk.check_image(img.path)
         assert rep.ok, "the stick is damaged after the kill:\n" + rep.text(True)
         text = host_read(img, "/TOUHOU.LOG").decode()

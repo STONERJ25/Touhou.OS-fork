@@ -39,6 +39,8 @@ The next two goals, in this order:
    failed starts). The ESP is never mounted by the policy today: the updater mounts it explicitly (root, read-write, briefly). The forge (`server.tailfbc785.ts.net`) is Tailscale-only,
    so the OS cannot fetch from it directly: the update server is a plain LAN HTTP(S) server on the owner's PC.
 
+The server half of goal 2 is on branch `cloud/update-server` (2026-10-24): `tools/serve-update.py` signs a manifest and serves it over HTTP, host tests in `tests/host/test_serve_update.py`; format, protocol and the loader fallback design are in [UPDATE.md](UPDATE.md). The OS client and the fallback are not started.
+
 Before both: merge the parked branches (below) and run the whole suite on the result, in particular the network/HTTPS branch, the dirty-volume `fsck` branch (an installed disk and a
 stick that is switched off with the button need it) and the audio branch.
 
@@ -136,4 +138,5 @@ Old helper worktrees that are merged and can be deleted: `agent-a8e93238212e069d
 - Every new kappabox applet needs a manual page (`initrd/ScarletDevilMansion/share/patchouli/1/NAME.pw`, lines at most 78 columns) or `manual` fails.
 - Agents started with worktree isolation get a worktree made from `origin/main`: tell them to run `git merge main` first, or push before starting them.
 - `TOUHOU_CPU=Skylake-Client-noTSX-IBRS` runs QEMU as a CPU closer to the target i5-7500.
+- Linux works too (`cloud/linux-tooling`): packages, `TOUHOU_*` variables (tool paths, `TOUHOU_TIMEOUT_SCALE` for slow hosts) and the GitHub Actions smoke run are in [LINUX.md](LINUX.md).
 - Commits stay local; push to `origin` (`STONERJ25/Touhou.OS-fork`, private) only when the user asks. Never push to `upstream`.

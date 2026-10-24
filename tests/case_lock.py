@@ -2,7 +2,7 @@
 import time
 
 from guitools import Gui, START_BUTTON, SHRINE_RED, near
-from harness import test, Qemu
+from harness import test, Qemu, scaled
 
 LOCK_CARD = (640, 400)          # inside the lock card's avatar disc at 1024x768 (the lock window is full screen)
 
@@ -35,7 +35,7 @@ def lock_screen():
         vm._input([vm._key_event("meta_l", True), vm._key_event("l", True)], vm.input_device)
         time.sleep(0.2)
         vm._input([vm._key_event("l", False), vm._key_event("meta_l", False)], vm.input_device)
-        deadline = time.time() + 20
+        deadline = time.time() + scaled(20)
         while time.time() < deadline and not lock_visible(g):
             time.sleep(0.5)
         assert lock_visible(g), "the lock screen never appeared"

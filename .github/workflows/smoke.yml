@@ -1,0 +1,48 @@
+# Builds TouhouOS on Ubuntu and boots the smoke set of the QEMU suite (docs/LINUX.md).
+# The whole suite (about 260 tests) is too long for every push; run it locally in the seven groups of docs/CLOUD_AGENT_BRIEF.md.
+name: smoke
+
+on:
+  push:
+    branches: [main, "cloud/**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-and-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      # Runners have no KVM for QEMU here (TCG) and share their CPUs: wait three times longer than on a desktop.
+      TOUHOU_TIMEOUT_SCALE: "3"
+      # Clang 20, not Ubuntu's default 18: closer to the LLVM 22 of the Windows machine (clang 18's bigger stack
+      # frames trip awk's recursion limit in awk_checks; docs/LINUX.md).
+      TOUHOU_LLVM_DIR: /usr/lib/llvm-20/bin
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install the toolchain, QEMU and OVMF
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang-20 lld-20 llvm-20 nasm qemu-system-x86 ovmf \
+            python3 python3-pil python3-numpy python3-cryptography
+
+      - name: Build
+        run: python3 tools/build.py
+
+      - name: Smoke tests
+        run: python3 tests/run_all.py selftest,utest,shell,desktop_boots,image_,hwaudit_stage_marks
+
+      - name: Keep the logs of a failed run
+        if: failure()
+        uses: actions/upload-artifact@v5
+        with:
+          name: smoke-logs
+          path: |
+            build/*-serial.log
+            build/*-qemu.log
+            build/*.png
+          if-no-files-found: ignore
+          retention-days: 7

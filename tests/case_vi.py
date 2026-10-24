@@ -6,7 +6,7 @@ The guest clock runs slowly on a busy host, so nothing here sleeps and hopes: ev
 import re
 import time
 
-from harness import test, Qemu
+from harness import test, Qemu, scaled
 from vt import VT
 
 PROMPT = r"reimu@gensokyo \S+ \$ "
@@ -46,7 +46,7 @@ class Guest:
         return vt
 
     def wait_screen(self, since, needle, timeout=40, row=None):
-        end = time.time() + timeout
+        end = time.time() + scaled(timeout)
         while True:
             vt = self.screen(since)
             rows = vt.rows_text()
@@ -64,7 +64,7 @@ class Guest:
             time.sleep(0.1)
 
     def wait_left(self, since, timeout=40):
-        end = time.time() + timeout
+        end = time.time() + scaled(timeout)
         while True:
             data = self.vm.serial_path.read_bytes()[since:]
             i = data.rfind(LEAVE)

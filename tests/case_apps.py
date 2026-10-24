@@ -5,7 +5,7 @@ under test can be slow, so every wait is on an event, never on a fixed delay) an
 import re
 import time
 
-from harness import test, Qemu, BUILD
+from harness import test, Qemu, BUILD, scaled
 from test_shell import run, PROMPT
 
 
@@ -109,7 +109,7 @@ def apps_cli():
 # ---------------------------------------------------------------- windows
 
 def wait_pixels(vm, predicate, timeout=60, step=1.5):
-    end = time.time() + timeout
+    end = time.time() + scaled(timeout)
     shot = None
     while time.time() < end:
         shot = vm.screen_ppm()

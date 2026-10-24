@@ -17,7 +17,7 @@ import urllib.error
 import urllib.request
 
 import test_shell
-from harness import test, TESTS, Qemu, BUILD
+from harness import test, TESTS, Qemu, BUILD, scaled
 from qemu import free_port
 
 USER_PROMPT = test_shell.PROMPT
@@ -39,7 +39,7 @@ class Guest:
         self.vm.start()
         # the shell prompt and (with a NIC) the DHCP lease line arrive in either order: wait for both, then move past them
         patterns = [self.prompt] + ([LEASE] if self.net and self.wait_lease else [])
-        deadline = time.time() + 240
+        deadline = time.time() + scaled(240)
         while True:
             text = self.vm.text()
             found = [re.search(p, text, re.S) for p in patterns]
@@ -506,7 +506,7 @@ def link_case(model, label):
             out, rc = g.run("ifconfig eth0")
             assert "RUNNING" in out, out
             vm.qmp("set_link", name="net0", up=False)                   # the cable is pulled
-            deadline = time.time() + 120
+            deadline = time.time() + scaled(120)
             while "link down" not in vm.text() and time.time() < deadline:
                 time.sleep(0.5)
             assert "link down" in vm.text(), vm.text()[-800:]
@@ -514,7 +514,7 @@ def link_case(model, label):
             assert "RUNNING" not in out.split("PING")[0] and "rc=1" in out, out
             lease_lines = len(re.findall(LEASE, vm.text()))
             vm.qmp("set_link", name="net0", up=True)                    # and plugged in again: DHCP starts over by itself
-            deadline = time.time() + 180
+            deadline = time.time() + scaled(180)
             while len(re.findall(LEASE, vm.text())) <= lease_lines and time.time() < deadline:
                 time.sleep(0.5)
             assert len(re.findall(LEASE, vm.text())) > lease_lines, vm.text()[-1200:]

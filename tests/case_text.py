@@ -8,7 +8,7 @@ files the editor saved. LINES and COLUMNS make the programs use a 16 x 70 screen
 import re
 import time
 
-from harness import test, Qemu
+from harness import test, Qemu, scaled
 from vt import VT
 
 PROMPT = r"reimu@gensokyo \S+ \$ "
@@ -51,7 +51,7 @@ class Guest:
     def wait_screen(self, since, needle, timeout=20, row=None):
         """Waits until `needle` is on the screen (in row `row` if given). NEEDLE can also be a function of the list of
         screen rows that says when the screen is right. Returns the screen."""
-        end = time.time() + timeout
+        end = time.time() + scaled(timeout)
         while True:
             vt = self.screen(since)
             rows = vt.rows_text()
@@ -70,7 +70,7 @@ class Guest:
 
     def wait_left(self, since, timeout=20):
         """Waits until the program has restored the terminal and the shell shows its prompt again."""
-        end = time.time() + timeout
+        end = time.time() + scaled(timeout)
         while True:
             data = self.vm.serial_path.read_bytes()[since:]
             i = data.rfind(LEAVE)
@@ -513,7 +513,7 @@ def pager():
         vm.send(f"{SIZE}patchouli-pager /tmp/wb.txt\n")
         g.wait_screen(s, "lines 1-1")
         g.type("/\\<ab\n")
-        end = time.time() + 20
+        end = time.time() + scaled(20)
         while not any(a & 2 for a in g.screen(s).row_attrs(0)[:4]):
             assert time.time() < end, g.screen(s).text()
             time.sleep(0.1)
