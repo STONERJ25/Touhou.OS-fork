@@ -306,6 +306,10 @@ void comp_init(int w, int h, uint32_t *fb, int pitch, bool swap_rb) {
     S.cursor_y = S.ptr_y / s;
     S.cursor_shape = FC_ARROW;
     build_cursors(s);
+    for (int y = 0; y < h; y++) {                                   /* a size that does not divide by the scale: the strip never drawn is black */
+        uint32_t *row = (uint32_t *)((uint8_t *)fb + (size_t)y * pitch);
+        for (int x = y < S.phys_h ? S.phys_w : 0; x < w; x++) row[x] = 0;
+    }
     w = S.screen_w;
     h = S.screen_h;
     fprintf(stderr, "fairyd: ui scale %d (%s)\n", s, why);

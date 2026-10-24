@@ -37,6 +37,8 @@ The next two goals, in this order:
    failed starts). The ESP is never mounted by the policy today: the updater mounts it explicitly (root, read-write, briefly). The forge (`server.tailfbc785.ts.net`) is Tailscale-only,
    so the OS cannot fetch from it directly: the update server is a plain LAN HTTP(S) server on the owner's PC.
 
+Hi-dpi (brief task 8) is on branch `cloud/hidpi` (2026-10-24): ui scale 2 by itself at 2560x1440 (or `ui.scale=N`), Fairies/Kappa/shell drawn at full resolution, pixel-drawing apps enlarged by the server, 1x unchanged; tests `hidpi_`, details in [DESKTOP.md](DESKTOP.md) "Hi-dpi screens".
+
 The server half of goal 2 is on branch `cloud/update-server` (2026-10-24): `tools/serve-update.py` signs a manifest and serves it over HTTP, host tests in `tests/host/test_serve_update.py`; format, protocol and the loader fallback design are in [UPDATE.md](UPDATE.md). The OS client and the fallback are not started.
 
 Before both: merge the parked branches (below) and run the whole suite on the result, in particular the network/HTTPS branch, the dirty-volume `fsck` branch (an installed disk and a
