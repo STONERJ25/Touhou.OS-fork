@@ -1,5 +1,6 @@
 /* KApp / KWin: windows, back buffers, the event loop; turns window-system events into KUI input. */
 #include <kappa.h>
+#include <audio.h>
 #include <poll.h>
 #include <time.h>
 #include <stdlib.h>
@@ -442,6 +443,7 @@ int k_messagebox(FairyDisplay *d, const char *title, const char *message, KIcon 
     if (h < 140) h = 140;
     KApp *a = kapp_new(title, 440, h, FW_DIALOG | FW_CENTER | FW_TOP);
     if (!a) return -1;
+    audio_event(icon == KI_ERROR ? AUDIO_EV_ERROR : AUDIO_EV_DIALOG);
     MsgBox m = { message, icon, buttons, n, -1 };
     kapp_set_draw(a, msgbox_draw, &m);
     kapp_run(a);

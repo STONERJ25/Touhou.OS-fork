@@ -7,6 +7,7 @@ int normal_depth;
 int in_dot_replay;
 int recording;
 int last_typed_key;
+static int plain_depth;                                  /* > 0: do not repaint while waiting for a key */
 
 /* ------------------------------------------------------------------ type-ahead: a stack, the next key is on top */
 
@@ -83,10 +84,44 @@ void ta_push_str(const char *s, size_t n, int nomap) {
     free(tmp);
 }
 
-/* ------------------------------------------------------------------ the terminal */
+/* ------------------------------------------------------------------ the byte source */
+
+/* Bytes come from the push-back stack first, then from the script given with -s, then from the terminal. A script is
+ * used up like a closed terminal: vi quits (status 1), so a test that forgot ":wq" cannot hang. */
+static unsigned char *scr_buf;
+static size_t scr_len, scr_pos;
+static int pb_stack[32], pb_n;
+int script_mode;
+
+int script_open(const char *path) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return -1;
+    size_t cap = 4096, n = 0;
+    scr_buf = malloc(cap);
+    if (!scr_buf) pt_oom();
+    for (;;) {
+        if (n == cap) { cap *= 2; scr_buf = realloc(scr_buf, cap); if (!scr_buf) pt_oom(); }
+        ssize_t r = read(fd, scr_buf + n, cap - n);
+        if (r < 0 && errno == EINTR) continue;
+        if (r <= 0) break;
+        n += (size_t)r;
+    }
+    close(fd);
+    scr_len = n;
+    scr_pos = 0;
+    script_mode = 1;
+    return 0;
+}
+
+static int src_ready(void) { return pb_n > 0 || scr_pos < scr_len || pt_pending(&term); }
+
+static void unget_byte(int b) { if (pb_n < 32) pb_stack[pb_n++] = b; }
 
 /* One byte: >= 0, -1 on timeout or interrupt, -2 at end of input. */
 static int rd_byte(int ms) {
+    if (pb_n > 0) return pb_stack[--pb_n];
+    if (scr_pos < scr_len) return scr_buf[scr_pos++];
+    if (script_mode) return -2;
     if (term.unget >= 0) { int b = term.unget; term.unget = -1; return b; }
     int r = pt_fill(&term, ms);
     if (r < 0) return -2;
@@ -94,29 +129,81 @@ static int rd_byte(int ms) {
     return term.ibuf[term.ipos++];
 }
 
+/* ------------------------------------------------------------------ key decoding */
+
+#define SEQ_WAIT_MS 100                                  /* between the bytes of one escape sequence */
+
+/* CSI finals that stand for a key when no parameter came before them */
+static int csi_plain_final(int f) { return f == 'A' || f == 'B' || f == 'C' || f == 'D' || f == 'F' || f == 'H' || f == 'Z'; }
+
+/* After ESC [. Returns the key, K_NONE for a sequence that is complete but unknown (swallowed), or K_ESC after pushing
+ * back everything that turned out not to be a sequence. */
 static int csi_key(void) {
-    int params[4] = { 0, 0, 0, 0 }, np = 0, fin;
+    int seen[24], n = 0, params[4] = { 0, 0, 0, 0 }, np = 0, fin = -1, have_param = 0;
     for (;;) {
-        fin = rd_byte(100);
-        if (fin < 0) return K_ESC;
-        if (fin >= '0' && fin <= '9') { params[np] = params[np] * 10 + (fin - '0'); continue; }
-        if (fin == ';') { if (np < 3) np++; continue; }
-        if (fin == '?' || fin == '>' || fin == '=' || fin == ' ') continue;
+        int b = rd_byte(SEQ_WAIT_MS);
+        if (b < 0) break;                                /* incomplete: not a sequence */
+        seen[n++] = b;
+        if (b >= '0' && b <= '9') { params[np] = params[np] * 10 + (b - '0'); have_param = 1; if (n >= 20) break; continue; }
+        if (b == ';') { if (np < 3) np++; have_param = 1; if (n >= 20) break; continue; }
+        if ((b >= 0x20 && b <= 0x2F) || b == '?' || b == '>' || b == '=' || b == '<') { have_param = 1; if (n >= 20) break; continue; }
+        if (b >= 0x40 && b <= 0x7E) { fin = b; }
         break;
     }
-    int k = pt_csi_key(fin, params[0], np >= 1 ? params[1] : 0);
-    return k == PT_KEY_NONE ? K_NONE : (k & ~(PT_M_SHIFT | PT_M_ALT | PT_M_CTRL));
+    if (fin >= 0 && (have_param || csi_plain_final(fin))) {
+        int k = pt_csi_key(fin, params[0], np >= 1 ? params[1] : 0);
+        if (k == PT_KEY_NONE) return K_NONE;
+        int base = k & ~(PT_M_SHIFT | PT_M_ALT | PT_M_CTRL);
+        if (k & PT_M_CTRL) {                             /* Ctrl or Shift with Left / Right: a WORD or a word; Shift-Up / Down: a page */
+            if (base == PT_K_LEFT) return K_CLEFT;
+            if (base == PT_K_RIGHT) return K_CRIGHT;
+        } else if (k & PT_M_SHIFT) {
+            if (base == PT_K_LEFT) return K_SLEFT;
+            if (base == PT_K_RIGHT) return K_SRIGHT;
+            if (base == PT_K_UP) return PT_K_PGUP;
+            if (base == PT_K_DOWN) return PT_K_PGDN;
+        }
+        return base;
+    }
+    for (int i = n - 1; i >= 0; i--) unget_byte(seen[i]);   /* Esc followed by "[" and what came after it */
+    unget_byte('[');
+    return K_ESC;
 }
 
-/* Reads one key from the terminal: a code point, 1..26 for Ctrl-A..Z, 27 for Esc, PT_K_* for the special keys. */
+/* After ESC O (the SS3 form of the cursor keys and F1-F4, also the keypad in application mode). */
+static int ss3_key(void) {
+    int b = rd_byte(SEQ_WAIT_MS);
+    int k = 0;
+    switch (b) {
+    case 'A': k = PT_K_UP; break;
+    case 'B': k = PT_K_DOWN; break;
+    case 'C': k = PT_K_RIGHT; break;
+    case 'D': k = PT_K_LEFT; break;
+    case 'H': k = PT_K_HOME; break;
+    case 'F': k = PT_K_END; break;
+    case 'P': case 'Q': case 'R': case 'S': return K_NONE;       /* F1-F4: no meaning here, swallowed */
+    case 'M': return K_ENTER;                                      /* keypad Enter */
+    case 'j': return '*'; case 'k': return '+'; case 'l': return ','; case 'm': return '-'; case 'n': return '.'; case 'o': return '/';
+    case 'p': case 'q': case 'r': case 's': case 't': case 'u': case 'v': case 'w': case 'x': case 'y': return '0' + (b - 'p');
+    default: break;
+    }
+    if (k) return k;
+    if (b >= 0) unget_byte(b);
+    unget_byte('O');
+    return K_ESC;
+}
+
+/* Reads one key from the byte source: a code point, 1..26 for Ctrl-A..Z, 27 for Esc, PT_K_* for the special keys.
+ * K_NONE means a timeout or an unknown sequence that was swallowed. */
 static int term_key(int wait_ms) {
     int c = rd_byte(wait_ms);
     if (c == -2) return K_EOF;
     if (c < 0) return K_NONE;
     if (c == 27) {
-        int c1 = rd_byte(term.ipos < term.ilen ? 0 : ESC_WAIT_MS);
+        int c1 = rd_byte(src_ready() ? 0 : ESC_WAIT_MS);
         if (c1 == '[') return csi_key();
-        if (c1 >= 0) term.unget = c1;
+        if (c1 == 'O') return ss3_key();
+        if (c1 >= 0) unget_byte(c1);
         return K_ESC;
     }
     if (c == '\r' || c == '\n') return K_ENTER;
@@ -127,15 +214,14 @@ static int term_key(int wait_ms) {
     seq[0] = (unsigned char)c;
     if (!need) return PT_RAWBYTE_BASE + c;
     while (n <= need) {
-        int b = rd_byte(100);
+        int b = rd_byte(SEQ_WAIT_MS);
         if (b < 0) break;
-        if ((b & 0xC0) != 0x80) { term.unget = b; break; }
+        if ((b & 0xC0) != 0x80) { unget_byte(b); break; }
         seq[n++] = (unsigned char)b;
     }
     uint32_t cp;
-    if (pt_u8_decode(seq, (size_t)n, &cp) != n) {
-        /* not a valid sequence: hand back the first byte raw and re-read the others */
-        for (int i = n - 1; i >= 1; i--) { if (term.ipos > 0 && term.unget < 0 && i == n - 1) term.unget = seq[i]; }
+    if (n != need + 1 || pt_u8_decode(seq, (size_t)n, &cp) != n) {
+        for (int i = n - 1; i >= 1; i--) unget_byte(seq[i]);       /* not a valid sequence: the lead byte stays raw */
         return PT_RAWBYTE_BASE + c;
     }
     return (int)cp;
@@ -188,15 +274,18 @@ void dot_begin(void) {
     dot_on = 1;
 }
 
-static int dot_nokeep;                                   /* set for visual-mode commands: "." does not repeat them */
-void dot_nokeep_set(void) { dot_nokeep = 1; }
+/* A visual-mode change is repeated on an area of the same size starting at the cursor. */
+static VisRedo dot_vis, pending_vis;
+void dot_set_visual(const VisRedo *v) { pending_vis = *v; pending_vis.valid = 1; }
+const VisRedo *dot_visual(void) { return dot_vis.valid ? &dot_vis : NULL; }
+
+int dot_len(void) { return dotn; }
+void dot_set_len(int n) { if (n >= 0 && n <= dotn) dotn = n; }
 
 void dot_end(int keep) {
-    int nokeep = dot_nokeep;
-    dot_nokeep = 0;
-    if (!dot_on) return;
+    if (!dot_on) { pending_vis.valid = 0; return; }
     dot_on = 0;
-    if (!keep || nokeep) return;
+    if (!keep) { pending_vis.valid = 0; return; }
     free(dotkeys);
     dotkeys = malloc((size_t)dotn * sizeof *dotkeys + 4);
     if (!dotkeys) pt_oom();
@@ -204,13 +293,18 @@ void dot_end(int keep) {
     dotkn = dotn;
     dot_count = cur_count;
     dot_reg = cur_reg;
+    dot_vis = pending_vis;
+    pending_vis.valid = 0;
 }
 
+/* Puts the keys of the last change in front of the type-ahead queue. A count given to "." replaces the old one; a numbered
+ * register moves on to the next one ("1p then . puts "2p). */
 void dot_replay(int count) {
     if (!dotkn) return;
     if (count > 0) dot_count = count;
+    if (dot_reg >= '1' && dot_reg < '9') dot_reg++;
     int pre[40], np = 0;
-    if (dot_reg) { pre[np++] = '"'; pre[np++] = dot_reg >= '1' && dot_reg < '9' ? dot_reg + 1 : dot_reg; }
+    if (dot_reg) { pre[np++] = '"'; pre[np++] = dot_reg; }
     if (dot_count > 0) {
         char num[16];
         snprintf(num, sizeof num, "%d", dot_count);
@@ -310,12 +404,34 @@ void map_list(int imode) {
     pb_free(&b);
 }
 
-static const char *abbr_l[16], *abbr_r[16];
+#define MAXABBR 64
+static char *abbr_l[MAXABBR], *abbr_r[MAXABBR];
 static int nabbr;
 
 void abbr_add(const char *lhs, const char *rhs) {
-    for (int i = 0; i < nabbr; i++) if (!strcmp(abbr_l[i], lhs)) { free((char *)abbr_r[i]); abbr_r[i] = strdup(rhs); return; }
-    if (nabbr < 16) { abbr_l[nabbr] = strdup(lhs); abbr_r[nabbr] = strdup(rhs); nabbr++; }
+    for (int i = 0; i < nabbr; i++) if (!strcmp(abbr_l[i], lhs)) { free(abbr_r[i]); abbr_r[i] = strdup(rhs); return; }
+    if (nabbr < MAXABBR) { abbr_l[nabbr] = strdup(lhs); abbr_r[nabbr] = strdup(rhs); nabbr++; }
+}
+
+int abbr_del(const char *lhs) {
+    for (int i = 0; i < nabbr; i++) {
+        if (strcmp(abbr_l[i], lhs)) continue;
+        free(abbr_l[i]);
+        free(abbr_r[i]);
+        for (int j = i; j + 1 < nabbr; j++) { abbr_l[j] = abbr_l[j + 1]; abbr_r[j] = abbr_r[j + 1]; }
+        nabbr--;
+        return 1;
+    }
+    return 0;
+}
+
+void abbr_clear(void) {
+    while (nabbr > 0) { nabbr--; free(abbr_l[nabbr]); free(abbr_r[nabbr]); }
+}
+
+void abbr_list(PtBuf *out) {
+    for (int i = 0; i < nabbr; i++) pb_addf(out, "i  %-12s %s\n", abbr_l[i], abbr_r[i]);
+    if (!nabbr) pb_adds(out, "No abbreviation found\n");
 }
 
 const char *abbr_find(const char *w, size_t n) {
@@ -323,20 +439,54 @@ const char *abbr_find(const char *w, size_t n) {
     return NULL;
 }
 
+/* A key read without repainting the editor first (for the "Press ENTER" prompt after a shell command). */
+int getkey_plain(void) {
+    plain_depth++;
+    int k = getkey();
+    plain_depth--;
+    return k;
+}
+
 /* ------------------------------------------------------------------ getkey */
 
+int key_from_ta;                                         /* the key returned last came from the type-ahead queue (macro, "." ...) */
+static int macro_note(int k);
+
+/* Long-running work (a macro that runs on and on, :g, :s over many lines) calls this now and then: a Ctrl-C typed meanwhile stops
+ * it, as in Vim, and the keys typed before the Ctrl-C go with it. Returns 1 when the work should stop. */
+int intr_check(void) {
+    static unsigned tick;
+    if (script_mode || pb_n > 0 || term.unget >= 0) return 0;
+    if ((++tick & 127) != 0) return 0;
+    if (term.ipos >= term.ilen && pt_fill(&term, 0) <= 0) return 0;
+    for (int i = term.ipos; i < term.ilen; i++) {
+        if (term.ibuf[i] == 3) {
+            term.ipos = i + 1;
+            ta_flush();
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* The next key. Typed keys (from the terminal or the script) are what a macro records; keys from the queue are not. */
 static int raw_next(int *from_ta) {
-    if (ta_n > 0) { *from_ta = 1; return taq[--ta_n]; }
+    if (ta_n > 0) {
+        if (intr_check()) { set_msg("Interrupted"); *from_ta = 0; return K_ESC; }
+        *from_ta = 1;
+        return taq[--ta_n];
+    }
     *from_ta = 0;
     if (normal_depth > 0) return K_ESC;                  /* :normal ran out of keys: finish like <Esc> */
     for (;;) {
-        if (!pt_pending(&term)) redraw();
+        if (!src_ready() && !plain_depth) redraw();
         int k = term_key(-1);
         if (k == K_EOF) {
             if (!quit_flag) { quit_flag = 1; exit_status = 1; }
             return K_ESC;
         }
         if (k == K_NONE) continue;
+        macro_note(k);
         return k;
     }
 }
@@ -369,10 +519,11 @@ static int mapped_key(int *from_ta) {
         int k2, f2;
         if (ta_n > 0) { k2 = taq[--ta_n]; f2 = 1; }
         else {
-            if (!pt_pending(&term)) redraw();
+            if (!src_ready()) redraw();
             k2 = term_key(1000);
             f2 = 0;
             if (k2 == K_NONE || k2 == K_EOF) break;
+            macro_note(k2);
         }
         (void)f2;
         if (k2 & K_NOMAP) { ta_push(&k2, 1); break; }
@@ -384,17 +535,21 @@ static int mapped_key(int *from_ta) {
     return buf[0];
 }
 
+static int macro_note(int k) {
+    if (!recording) return k;
+    if (macn == maccap) {
+        maccap = maccap ? maccap * 2 : 64;
+        macbuf = realloc(macbuf, (size_t)maccap * sizeof *macbuf);
+        if (!macbuf) pt_oom();
+    }
+    macbuf[macn++] = k;
+    return k;
+}
+
 int getkey(void) {
     int from_ta;
     int k = mapped_key(&from_ta);
-    if (!from_ta && recording) {
-        if (macn == maccap) {
-            maccap = maccap ? maccap * 2 : 64;
-            macbuf = realloc(macbuf, (size_t)maccap * sizeof *macbuf);
-            if (!macbuf) pt_oom();
-        }
-        macbuf[macn++] = k;
-    }
+    key_from_ta = from_ta;
     dot_push(k);
     last_typed_key = k;
     return k;

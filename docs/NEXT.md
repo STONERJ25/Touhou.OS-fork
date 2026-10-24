@@ -20,6 +20,7 @@ How well `main` is verified: the whole suite (261 tests, seven parallel groups) 
 The OS has booted on the real PC (Dell, i5-7500) since 2026-10-23 evening; [HARDWARE_AUDIT.md](HARDWARE_AUDIT.md) has what that showed and the checklist for the rest (network link, the internal disks).
 
 - Docs (cloud task 9, branch `cloud/docs`): [USER_GUIDE.md](USER_GUIDE.md) for someone at the desktop, a refreshed README, and STATUS / ROADMAP / NEXT checked against the code on main.
+- FAT write order (cloud task 7, branch `cloud/fat-ordering`, which also merges `cloud/staging`): the four ordering gaps are closed (six flush classes, a page that changes class is written first, renames in three steps); `storage_crash_consistency` pulled the plug 2 x 50 times during a write-heavy workload with nothing worse than lost clusters (the kernel's ledger check agrees), and a control with the order switched off fails; `storage,usbstor` (only the known `usbstor_4k_blocks` fails on QEMU 8.2) and `blk,selftest,utest,shell,explorer_netherworld,fsck` pass after the merge. Details, cost and what is left in [STORAGE.md](STORAGE.md) ("Write ordering", "Crash test", "State when paused").
 
 ## Goals for the next session (the owner, 2026-10-23 night)
 

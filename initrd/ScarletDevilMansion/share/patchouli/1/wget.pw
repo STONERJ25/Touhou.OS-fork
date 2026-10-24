@@ -1,16 +1,17 @@
-.page wget 1 download a file over HTTP and save it
+.page wget 1 download a file over HTTP or HTTPS and save it
 
 # SYNOPSIS
-*wget* [*-q*] [*-O* _FILE_] [*-T* _SECONDS_] _URL_...
+*wget* [*-qvk*] [*-O* _FILE_] [*-T* _SECONDS_] [*--cacert* _FILE_] _URL_...
 
 # DESCRIPTION
 `wget` is `fetch(1)` with the defaults of the traditional tool: the body of each _URL_ is saved in a file named after the last part of the URL path, or `index.html` when the path ends in a slash. An existing file is never overwritten; the new one gets `.1`, `.2`, ... appended. `-O FILE` chooses the name and `-O -` writes to standard output.
 
-All the other options, the redirect handling, the exit status and the limits (plain HTTP only, no TLS) are those of `fetch`; read that page.
+All the other options, the redirect handling, HTTPS (certificates are checked unless `-k` or `--no-check-certificate` is given; `--cacert` and `--ca-certificate` name other authorities), the exit status and the limits are those of `fetch`; read that page.
 
 # EXAMPLES
     wget http://10.0.2.2:8000/hello.txt
-    wget -q -O - http://10.0.2.2:8000/hello.txt
+    wget -q -O - https://example.com/
+    wget --no-check-certificate https://10.0.2.2:8443/self-made.html
 
 # SEE ALSO
-fetch(1), httpd(1), network(7)
+fetch(1), tls(7), httpd(1), network(7)

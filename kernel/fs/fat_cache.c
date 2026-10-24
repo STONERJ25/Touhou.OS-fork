@@ -1,9 +1,14 @@
 /*
  * Write-back page cache for one FAT volume. Pages are 4 KiB slices of the volume (addressed by volume byte offset, so a
- * partition that does not start on a 4 KiB boundary needs no special care). A dirty page remembers its flush class:
- * file data goes to the device first, then the FAT, then directory entries and the boot/FSInfo sectors, with a device
- * cache flush between the classes, so a power cut can leave leaked clusters but not a directory entry that points at
- * data that was never written.
+ * partition that does not start on a 4 KiB boundary needs no special care). A dirty page remembers its flush class
+ * (fatfs.h: data, new FAT entries, links, directory entries, chain cuts, frees) and fc_flush writes the classes in that
+ * order with a device cache flush between them, so a power cut leaves at worst lost clusters.
+ *
+ * A page holds one class. When a dirty page is about to be changed by a write of another class, its old contents are
+ * written first, at their own turn (everything dirty of classes up to the page's old class goes out, then the device
+ * cache is flushed): "write the old state of the page first". That keeps two operations that share a page in order:
+ * a cluster freed by a delete is not handed to a new file before the delete is on the disk (the allocation touches the
+ * same FAT page), and a new directory cluster is zeroed on the disk before an entry lands in it.
  *
  * Everything here runs with the volume mutex held.
  */
@@ -159,9 +164,8 @@ static int load_run(FatVol *v, u64 key, u32 maxpages) {
 
 static int fc_page(FatVol *v, u64 key, int mode, u32 ra, FatPage **out) {
     FatPage *p = pg_lookup(v, key);
-    if (p) {
+    if (p) {                                            /* PG_ZERO: fc_zero clears it, after pg_reclass */
         pg_touch(v, p);
-        if (mode == PG_ZERO) memset(p->data, 0, FAT_PAGE);
         *out = p;
         return 0;
     }
@@ -216,6 +220,13 @@ const u8 *fc_peek(FatVol *v, u64 off, size_t *avail, int *err) {
     return p->data + po;
 }
 
+/* A dirty page about to take a write of another class: its old contents go out at their own turn first (see the top). */
+static int pg_reclass(FatVol *v, FatPage *p, int cls) {
+    if (!p->dirty || p->cls == cls) return 0;
+    v->barriers++;
+    return fc_flush_upto(v, p->cls);
+}
+
 int fc_write(FatVol *v, u64 off, const void *buf, size_t n, int cls) {
     int rc = check_range(v, off, n);
     if (rc) return rc;
@@ -224,6 +235,7 @@ int fc_write(FatVol *v, u64 off, const void *buf, size_t n, int cls) {
         size_t po = (size_t)(off & (FAT_PAGE - 1)), chunk = MIN(n, FAT_PAGE - po);
         FatPage *p;
         rc = fc_page(v, off / FAT_PAGE, chunk == FAT_PAGE ? PG_BLANK : PG_LOAD, 4, &p);
+        if (!rc) rc = pg_reclass(v, p, cls);
         if (rc) return rc;
         memcpy(p->data + po, src, chunk);
         pg_dirty(v, p, cls);
@@ -241,8 +253,9 @@ int fc_zero(FatVol *v, u64 off, size_t n, int cls) {
         size_t po = (size_t)(off & (FAT_PAGE - 1)), chunk = MIN(n, FAT_PAGE - po);
         FatPage *p;
         rc = fc_page(v, off / FAT_PAGE, chunk == FAT_PAGE ? PG_ZERO : PG_LOAD, 4, &p);
+        if (!rc) rc = pg_reclass(v, p, cls);
         if (rc) return rc;
-        if (chunk != FAT_PAGE) memset(p->data + po, 0, chunk);
+        memset(p->data + po, 0, chunk);
         pg_dirty(v, p, cls);
         off += chunk;
         n -= chunk;
@@ -289,9 +302,9 @@ static int write_run(FatVol *v, FatPage **run, u32 n) {
 }
 
 /* When memory is too tight to sort the dirty pages: write them one by one, class by class (still correctly ordered). */
-static int flush_unsorted(FatVol *v) {
+static int flush_unsorted(FatVol *v, int maxcls) {
     int rc = 0;
-    for (int cls = 0; cls < FPC_COUNT && !rc; cls++) {
+    for (int cls = 0; cls <= maxcls && !rc; cls++) {
         bool wrote = false;
         for (FatPage *p = v->lru_head; p && !rc; p = p->lru_next) {
             if (!p->dirty || p->cls != cls) continue;
@@ -305,15 +318,15 @@ static int flush_unsorted(FatVol *v) {
     return rc;
 }
 
-/* Writes every dirty page (data, then FAT, then metadata, with a device flush between the classes). */
-int fc_flush(FatVol *v) {
+/* Writes the dirty pages of classes 0..maxcls, class by class in disk order, with a device flush after each class. */
+int fc_flush_upto(FatVol *v, int maxcls) {
     if (!v->ndirty) return 0;
     if (v->ro) return -EROFS;
     u32 n = v->ndirty, k = 0;
     FatPage **arr = kmalloc((size_t)n * sizeof *arr);
-    if (!arr) return flush_unsorted(v);
+    if (!arr) return flush_unsorted(v, maxcls);
     for (FatPage *p = v->lru_head; p && k < n; p = p->lru_next)
-        if (p->dirty) arr[k++] = p;
+        if (p->dirty && p->cls <= maxcls) arr[k++] = p;
     heapsort_pages(arr, k);
     int rc = 0;
     u32 i = 0;
@@ -331,6 +344,9 @@ int fc_flush(FatVol *v) {
     if (!rc && !v->ndirty) v->dirty_since_ms = 0;
     return rc;
 }
+
+/* Writes every dirty page. */
+int fc_flush(FatVol *v) { return fc_flush_upto(v, FPC_COUNT - 1); }
 
 void fc_destroy(FatVol *v) {
     while (v->lru_head) {

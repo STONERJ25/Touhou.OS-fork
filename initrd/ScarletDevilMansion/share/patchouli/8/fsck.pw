@@ -1,0 +1,46 @@
+.page fsck 8 check and mend a FAT file system
+.alias fsck.fat fsck.vfat
+
+# SYNOPSIS
+*fsck* [*-n* | *-a* | *-p* | *-y*] [*-F*] [*-v*] [*-q*] _DEVICE_
+*fsck.fat* ...
+*fsck.vfat* ...
+
+# DESCRIPTION
+`fsck` goes through the ledger of an unmounted FAT12, FAT16 or FAT32 volume: _DEVICE_ is a partition such as `/dev/sdb2` (the Human Village on a USB stick) or an image file. It reads the boot sector, both FAT copies, every directory and every cluster chain, and reports what does not add up: chains that run into free, bad or foreign clusters, clusters claimed by two files (cross-links), files whose size and chain disagree, entries that point outside the volume, broken long names, missing `.` and `..` entries, duplicate names, clusters that are allocated but belong to nothing (lost clusters), a FAT copy that lags behind the other, a stale FSInfo sector.
+
+It refuses to touch a volume that is mounted (`umount` the mount point first; for the Human Village that is `umount /HumanVillage`), and it refuses anything that is not a FAT volume. Only root may open the disk (`sudo fsck ...`).
+
+The kernel runs the same check, read-only, on the Human Village when the volume was not closed properly (the power went out, the stick was pulled out). When nothing is out of place it mounts the volume read-write; otherwise it mounts it read-only, says what is wrong (`dmesg`, `/proc/fatcheck`) and leaves the repair to `fsck`, which is the only program that clears the dirty flag of a volume that has damage.
+
+# OPTIONS
+@ *-n*
+    Look only. Nothing is written, not even the dirty flag.
+@ *-a*, *-p*
+    Automatic: make the repairs that lose nothing and cost no name, and leave everything else alone. They are: a FAT copy that differs is overwritten by the good one, FSInfo is rewritten, the media byte and the backup boot sector are restored, a file never claims more bytes than its chain holds, the clusters behind a file's end are given back, bytes after a directory's end are cleared, orphaned long-name entries are removed, `.` and `..` are put right, a file that is cross-linked with another gets its own copy of the shared clusters, and lost chains are saved as files `FOUND.000/FILE0000.CHK`, `FILE0001.CHK`, ... in the root directory (the data is kept; look at them, keep what is yours, delete the rest). When the volume is in order afterwards, the dirty flag is cleared.
+@ *-y*
+    Say yes to everything, also to what costs something: a chain is cut where it breaks (the file keeps what lies before the break, and what lay behind becomes a lost chain), an entry that points outside the volume or only into another file's clusters is removed or emptied, an entry that repeats a name is removed or renamed, a stray volume label is removed, a bad 8.3 name is mended.
+@ *-F*
+    Give lost chains back to the free pool instead of saving them as files.
+@ *-v*
+    Show warnings and notes as well (lower-case letters in 8.3 names, odd attribute bits, bad dates).
+@ *-q*
+    Only the summary.
+
+Without `-n`, `-a` or `-y`, `fsck` asks before every repair when it is run on a terminal (`y` yes, `n` no, `a` yes to all, `q` stop); otherwise it behaves like `-n`.
+
+# EXIT STATUS
+0 when nothing is wrong, 1 when problems were found and all of them corrected, 4 when problems are left (with `-n`: when any were found), 8 when the check could not be done (cannot open the device, it is mounted, it is not a FAT volume, the device failed), 16 for a usage error.
+
+# EXAMPLES
+    umount /HumanVillage
+    fsck -n /dev/sdb2    # what is wrong?
+    fsck -a /dev/sdb2    # mend what loses nothing, clear the flag
+    fsck -y /dev/sdb2    # and everything else
+    reboot
+
+# FILES
+`/proc/fatcheck` holds the kernel's report of the last volume it went through. `FOUND.000/FILEnnnn.CHK` in the root of the volume are the lost chains that `fsck` saved.
+
+# SEE ALSO
+mount(8), umount(8), dmesg(1), lsblk(1)

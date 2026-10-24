@@ -55,6 +55,10 @@ partition name has room for the full text. The mount policy accepts both spellin
    /dev/vda2: the first one found wins, this one is left alone`). Without an internal one the first stick to become ready wins, and the
    second stick's volume is ignored the same way. Within one pass, a GPT partition *name* beats a FAT volume *label*, and device order
    decides between equals.
+8. **A HUMANVILLAGE volume that was not shut down cleanly is gone through before it is mounted** (read-only, no VFS lock held; the section
+   "Dirty volumes" below): nothing out of place -> mounted read-write (`fsck=ok` / `fsck=left`), otherwise read-only with the precise reason
+   in the log and in `/proc/fatcheck`. `hvforce` on the kernel command line mounts read-write whatever the check says (dangerous);
+   `hvcheck=off` skips the check, and a dirty volume is then read-only as it always was.
 
 ### Sticks (USB)
 
@@ -75,8 +79,10 @@ logs `fat32: sdb2 vanished while it was mounted on /HumanVillage ...` once, `umo
 stick is mounted by the hook. While the stale mount is still there a new stick is *not* mounted (the log says `... /HumanVillage is
 still mounted on /dev/sdb2, whose stick was pulled out: umount it (or reboot) ...`).
 
-An unclean pull leaves the volume flagged dirty, so the next mount is read-only (the policy never uses `-o force`; see "Safety design").
-That is the price of the flag protocol on a medium people unplug; eject (`umount`, `poweroff`, `sync`) before pulling.
+An unclean pull leaves the volume flagged dirty. The next mount goes through the ledger first (see "Dirty volumes"): if nothing is out of
+place the volume is mounted read-write and the flag is taken over (cleared again at the first idle flush); if something is, it stays
+read-only until `fsck` has been through it (the policy never uses `-o force` by itself; `hvforce` is the owner's decision). Eject
+(`umount`, `poweroff`, `sync`) before pulling anyway: the check costs a second or more, and every unclean pull is a gamble on the write order.
 
 Decisions are logged with `klog("Keine", ...)`, one line per mounted volume:
 
@@ -84,6 +90,9 @@ Decisions are logged with `klog("Keine", ...)`, one line per mounted volume:
 [Keine] fat32: vda2 mounted on /HumanVillage, 126 MiB, 512-byte clusters, label 'HUMANVILLAG', home directories per user
 [Keine] no HUMANVILLAGE volume found: homes stay in RAM (tmpfs)
 [Keine] fat32: vda2 mounted on /HumanVillage, ..., read-only: the volume was not cleanly unmounted (mount with -o force to override)
+[Keine] vda2 was not closed properly: Keine goes through the whole ledger, read-only, before anyone writes in it
+[Keine] vda2 was left untidy (the power went out before it was closed), but Keine went through the whole ledger in 114 ms (48 files in 10 directories) and nothing is out of place: the Human Village may write in it again
+[Keine] vda2 was left untidy and its ledger does not add up: 2 error(s). It stays read-only so that nothing gets worse. As root, `umount /HumanVillage` and run `fsck -a /dev/vda2` (see /proc/fatcheck)
 ```
 
 ### mount / umount
@@ -101,6 +110,7 @@ mounted rather than losing data).
 |--------|---------|
 | `ro`, `rw` | read-only / read-write (also `-r`); a read-only device is always mounted read-only |
 | `force` | mount a volume that is flagged dirty read-write anyway (its flags then stay dirty) |
+| `fsck=ok`, `fsck=left` | set by the mount policy, not meant for typing: the caller has just gone through the volume with the read-only consistency check and found nothing out of place (`ok`: not even leftovers, so the dirty flag is cleared again at the first idle flush; `left`: only harmless leftovers, so it stays until `fsck`). Like `force` it lets a dirty volume be mounted read-write, and it also allows a file whose chain is longer than its size to be trimmed when it is next written |
 | `sync` | write back after every operation |
 | `uid=N`, `gid=N` | owner of every file (default root, 0) |
 | `fmask=OCT`, `dmask=OCT`, `umask=OCT` | permission bits to remove; defaults `fmask=0133`, `dmask=0022` give files 0644, directories 0755 |
@@ -136,10 +146,14 @@ Any other option fails the mount. The option string reaches the kernel through t
   clean-shutdown bit (FAT[1] bit 27, FAT16 bit 15) is cleared in every FAT copy and the boot-sector flag byte is set, and
   both are forced to the device. `sync`, `umount`, `reboot`/`poweroff` and the periodic flush (when the volume has been
   idle for 3 s) write everything back and restore the flags (flag byte and FSInfo first, FAT[1] last). A volume found
-  flagged dirty (or with the "disk errors seen" bit) mounts **read-only** with a warning unless `-o force` is given.
-* **Write ordering.** The cache flushes file data first, then the FAT, then directory entries/FSInfo/boot sector, with a
-  device cache flush between the classes. A power cut can therefore leak clusters (fsck reclaims them) but not leave
-  an entry pointing at data that was never written. Unlinking while open keeps the clusters until the last close.
+  flagged dirty (or with the "disk errors seen" bit) mounts **read-only** with a warning unless `-o force` is given - or, for the
+  HUMANVILLAGE volume, unless the policy's consistency check found nothing out of place (`fsck=ok|left`, "Dirty volumes").
+* **Write ordering.** The cache writes its dirty pages in six classes (file data, new FAT entries, links, directory
+  entries, chain cuts, frees) with a device cache flush after each, and a dirty page that changes class is written with its
+  old contents first. A power cut at any moment leaves at worst lost clusters (and the other harmless leftovers listed in
+  "Write ordering" below), never a cross-link, an entry pointing at free or foreign clusters, a size that exposes stale
+  bytes or a broken directory. Unlinking while open keeps the clusters until the last close. `tests/case_storagecrash.py`
+  pulls the plug at random moments to hold the kernel to that.
 * **Periodic and explicit flushing.** A kernel thread (`fat-flush`) writes back dirty pages older than 3 s; `sync(2)`
   (the `sync` applet, `dd`, `reboot`, `poweroff`) flushes every writable filesystem; a large backlog is flushed by the
   writer itself.
@@ -147,9 +161,196 @@ Any other option fails the mount. The option string reaches the kernel through t
 * Everything is behind one mutex per volume; the vnode release path is lock-free and defers cleanup to the next locked
   operation.
 
+## Dirty volumes: the ledger check, and fsck
+
+The owner will often switch the machine off with the button after a hang, and the next boot used to mount the stick read-only (and could not even
+write `TOUHOU.LOG`), exactly when the log is needed. So a dirty HUMANVILLAGE volume is now *looked at* before the decision is made.
+
+```
+ shared/fatck.[ch]    the scanner, freestanding C: the same source runs in the kernel, in /bin/fsck and (as a DLL) in the host tests
+ shared/fatfix.[ch]   the repair engine (user space only; an empty file in the kernel build)
+ kernel/fs/fat_check.c   kernel adapter: block device in, text out, /proc/fatcheck;  kernel/include/fatcheck.h has the contract
+ kernel/fs/mountpolicy.c check_before_mount(): runs it, adds "fsck=ok|left" or "force" to the mount options
+ user/bin/fsck/       the command line (fsck, fsck.fat, fsck.vfat)                  initrd/.../patchouli/8/fsck.pw
+ tools/fatck_host.py  builds shared/*.c into a host DLL for the tests                tools/fatck_host_rt.c is its little C runtime
+```
+
+**The check** (`fat_check_device()`): reads the boot sector and FAT[0..1]; a volume whose flags are clear is not scanned (verdict 0). Otherwise the
+scan runs in the automount thread, before the VFS mount and with no lock held (a stick can take seconds), through a session that has no write callback
+at all. It compares the FAT copies, walks every directory iteratively (explicit stack, depth limit 256, a 2 MiB arena for duplicate-name tables),
+claims the clusters of every chain in a one-bit-per-cluster bitmap (a cluster claimed twice is a cross-link or a loop), looks at the FAT once from end to
+end for allocated clusters nobody owns, and checks FSInfo. Memory: the bitmap, 4 MiB of 16 KiB cache windows (sequential read-ahead of 64 KiB), one
+cluster, the arena. Time: one pass over the FAT, one read of every directory, and a deadline of 120 s; a volume the scan cannot finish (time, memory,
+nesting, a failing device) is *unverified* and stays read-only. Every cluster number and size read from the volume is validated before it is used.
+
+Findings come in four severities (`FS_ERR`, `FS_LEAK`, `FS_WARN`, `FS_NOTE`; `fatck.h`):
+
+| Severity | Means | Examples |
+|----------|-------|----------|
+| error | damage: data loss or storage that two things claim | a chain that runs into a free, bad or reserved cluster or leaves the volume; a loop or a cross-link; a size beyond its chain; an entry pointing outside the volume; wrong `.` / `..`; broken long-name sets; a directory with a size; duplicate names; a FAT copy that differs or FSInfo that is wrong *on a volume that is flagged clean* |
+| leftover | what a power cut leaves on a volume that was being written to; harmless to write on | lost clusters; a chain longer than the file size says; bytes after a directory's end marker; a FAT copy or the FSInfo count that lags behind *on a dirty volume*; an empty file that owns clusters |
+| warning | cosmetic | lower-case letters in an 8.3 name, odd attribute or NT bits, an impossible date, the dirty flag itself, the media byte, the backup boot sector |
+
+The verdict decides the mount: **no error and no leftover** -> read-write, `fsck=ok`, the dirty flag is taken over and cleared at the first idle flush (the log
+says `... nothing is out of place: the Human Village may write in it again`); **no error, leftovers** (or the disk-error flag) -> read-write, `fsck=left`, the
+flag stays until `fsck -a` has tidied them (a file whose chain is longer than its size is trimmed when it is next written - only on such a verified mount; on any
+other volume it stays read-only for the boot, as before); **any error, or no verdict** -> read-only, the first four problems are in the log with the fix
+(`umount /HumanVillage`, `fsck -a /dev/sdb2`, reboot) and all of them in `/proc/fatcheck`:
+
+```
+sdb2: FAT32, flagged dirty: DAMAGED (114 ms, 48 files in 10 directories, 126758 free clusters, 137 lost)
+  2 error(s), 2 harmless leftover(s), 2 warning(s)
+  error:    /reimu/hello.txt: chain runs into a free cluster (cluster 37, after 3 cluster(s))
+  error:    /marisa/spell.dat: chain is cross-linked or loops back (the cluster is already part of a chain) (cluster 35, after 1 cluster(s))
+  leftover: 137 lost cluster(s) (allocated in the FAT but part of no file), first: 23, 38, 39, 40, 41, 42, 43, 44
+  fix: as root, `umount /HumanVillage`, `fsck -a /dev/sdb2` (`fsck -y` also repairs what needs a decision), then reboot
+```
+
+`hvforce` on the kernel command line mounts read-write whatever the check says (and says so; the dirty flag stays set; "dangerous" in
+REAL_HARDWARE.md). `hvcheck=off` skips the check: a dirty volume is read-only as before, and with `hvforce` it is forced as before. A device that is
+read-only anyway is not checked. Volumes mounted by hand are not checked: `mount` still needs `-o force`.
+
+**fsck** (`fsck [-n|-a|-p|-y] [-F] [-v] [-q] DEVICE`, section 8 of the manual): refuses a device (or a partition of it) that is listed in
+`/proc/mounts`, refuses anything that is not FAT12/16/32, needs root. It scans, prints the findings, and (unless `-n`) runs `fatfix_run()`: passes of
+*scan, repair what the findings allow, flush*, until a pass repairs nothing; lost clusters last, once nothing else changes what counts as lost. Every repair
+re-reads the directory slot it is about to change and skips it if the scan's view is stale. `-a` makes the repairs that lose no readable data and no names
+(FAT copies, FSInfo, media byte, backup boot sector, size beyond chain, chain beyond size, bytes after a directory's end, orphaned long-name entries, `.`/`..`,
+cross-linked files get a copy of the shared clusters, lost chains become `FOUND.000/FILEnnnn.CHK`); `-y` also cuts broken chains, removes entries that point
+nowhere, repeat a name or are stray labels, and mends bad 8.3 names; without either it asks per repair on a terminal. `-F` frees lost chains instead of saving
+them. The dirty flag (and FSInfo) is touched only when the last scan finds no error and no leftover. Exit status: 0 nothing wrong, 1 corrected, 4 problems
+left, 8 could not do it, 16 usage. Boot-sector damage is never repaired (the checker refuses such a volume).
+
+**Held against the Python checker.** `tools/mkdisk.py`'s `FatReader.check()` is independent of the C code; `tests/case_fsck.py` makes the two agree on
+about 50 kinds of deliberate damage per FAT size (FAT12/16/32) and on 240 random mutations per run (3000+ were run while developing, no difference left).
+To make them agree the Python side learned FAT12, the active FAT of a FAT32 volume with mirroring off, a `benign` class next to `errors` (`Report.serious`
+is `errors` minus `benign`: the leftovers above), invalid dates as warnings, and a FAT32/FAT16 layout that contradicts the cluster count as an error.
+
+## Write ordering
+
+FAT has no journal, so what a power cut leaves behind depends only on the order in which the cache's writes reach the
+device. `kernel/fs/fat_cache.c` keeps one flush class per dirty 4 KiB page and writes the classes in this order, each in
+disk order, with a device cache flush (`blk_flush`) after each class:
+
+| # | Class | What goes in it | Why it waits for the classes before it |
+|---|-------|-----------------|-----------------------------------------|
+| 0 | DATA  | file data; the zeros of new clusters; a new directory's cluster with its `.` and `..`; `0xE5` fillers and the zeroing of garbage past a directory's end marker | nothing points at any of it yet |
+| 1 | ALLOC | FAT entries of newly allocated clusters (their chain among themselves and the end mark) | still nothing points at them: a cut leaves lost clusters |
+| 2 | LINK  | the FAT entry that hooks new clusters onto a chain in use (an append, a growing directory), when the new entries are not all in the link's own 512-byte sector | a link that lands before the entries it points at makes a chain run into free clusters, which a later allocation hands to another file |
+| 3 | META  | directory entries (create, size and first cluster, rename, delete), FSInfo, the boot-sector flag | an entry may only point at clusters whose data, FAT entries and links are on the disk |
+| 4 | CUT   | the end mark that shortens a chain (truncate to a smaller size) | the entry with the smaller size goes first, so a cut leaves a chain longer than the size, never a size the chain cannot hold |
+| 5 | FREE  | FAT entries set to 0 (delete, rmdir, rename over a file, truncate) | the entry that pointed at the clusters is gone first (and the cut is in), so a cut leaves lost clusters, never an entry pointing at free clusters |
+
+Three rules make the classes hold across operations and at any moment, not only at the end of a quiet `sync`:
+
+* **A page holds one class.** A write of another class into a dirty page first writes everything dirty of classes up to
+  the page's old class and flushes the device (`pg_reclass`): "write the old state of the page first". So a cluster that a
+  delete freed is not handed to a new file before the delete is durable (the allocation touches the same FAT page and
+  forces the flush), and a new directory cluster is zeroed on the disk before the first entry lands in it.
+* **Program order follows the dependencies.** Every operation changes what others depend on first (data before the FAT
+  before the entry; the entry with the smaller size before the cut; the removed entry before the frees), so a flush that
+  starts at any point - the 3 s flusher, the dirty-limit throttle, an eviction when the cache is full, a barrier - writes
+  a consistent state.
+* **The atomic unit is a 512-byte sector** (`FAT_ATOMIC`), the smallest a device writes in one piece. A directory entry set
+  of up to 16 slots (names up to 195 characters) never straddles one: `dir_reserve()` starts it in the next sector and
+  fills the rest of the current one with `0xE5` slots, which are durable before the set (a barrier). A link whose new
+  entries all sit in its own sector rides in ALLOC with them; otherwise the new entries are written first.
+
+**Renames** are three steps with a barrier (classes 0..3 written and flushed) between them: (1) the old entry set goes,
+together with a replaced entry that is spelled differently (two names that differ only in case must never be on the disk
+together); (2) the `..` of a directory that changes parent; (3) the new entry. A cut in between leaves the file without
+a name - its clusters are lost clusters, which `fsck` saves as `FOUND.000/FILEnnnn.CHK` - but never two names for one chain
+(deleting one of them later would free the other's clusters). When a rename replaces a file whose name is spelled exactly
+like the new one (an editor saving `notes.txt` through `notes.tmp`), step 3 rewrites that file's short entry in place to
+point at the new clusters instead, so a cut leaves either the old file or the new one under the name, and the old
+clusters are freed after it.
+
+**What a power cut may leave** (and `tests/case_storagecrash.py` accepts): lost clusters (a file being created or
+extended, a delete whose frees did not land, a file or a whole directory between the steps of a rename); a chain longer
+than its file's size (an append whose size did not land; a truncate whose cut did not); FAT copy 2 behind copy 1 (copy 1
+is written first within a class); a stale FSInfo free count; the dirty flags. The ledger check ("Dirty volumes") counts all
+of these as harmless leftovers, so the next boot mounts such a volume read-write (`fsck=left`) and trims a chain that is longer
+than its size when the file is next written; a volume mounted any other way keeps such a file read-only for the boot.
+
+**The four gaps** the review of the old order found ("data, FAT, metadata"; a page took the class of its last writer, and
+the order inside a class was by disk offset), and what closed them:
+
+1. *Freeing a chain wrote the FAT before the entry that stopped pointing at it* (a cut between them left an entry pointing
+   at free clusters; a truncate left a size beyond its chain): frees are FREE and cuts CUT, both after META, and a
+   truncate writes the smaller size before it cuts.
+2. *A new directory's cluster (zeros, `.`, `..`) had the class of the entry that makes it visible* (by disk offset the
+   entry could land first and point at a cluster of stale bytes): the cluster is DATA.
+3. *A growing directory was linked in the FAT before its new cluster was zeroed*: the cluster is zeroed as DATA, and the
+   link waits for it and for the new FAT entries (LINK, or ALLOC within one sector).
+4. *A rename wrote the new entry and the removal of the old one in the same class* (two names for one chain): the three
+   steps above.
+
+Found and closed on the way: an append's link (old tail -> new cluster) and the new clusters' own FAT entries were in the
+same class in different pages (a chain into free clusters: the LINK class); a truncate's cut and its frees likewise (the
+CUT class); entry sets straddling a sector or a page (half a long name: the sector rule); zeroing garbage past a
+directory's end in the class of the entries written behind it (DATA now).
+
+**Not covered:** names longer than 195 characters (17 to 21 slots cannot fit one sector), and entry sets that another
+system wrote across a sector boundary, can still be cut in half (long-name fragments without their short entry, which
+`fsck` removes); the bytes inside a file are not written atomically (an overwrite in place can leave a mix of old and new
+data, never another file's); a device that acknowledges a cache flush it did not do defeats all of this. In QEMU the test
+checks the order of the requests (QEMU keeps every acknowledged write when it is killed); the device cache flushes
+between the classes are what protects a real stick.
+
+**Cost:** the barriers are extra device flushes; the unmount log line counts them (`unmounted cleanly (N extra flushes for the
+write order)`). See "Crash test" below for numbers.
+
+## Crash test
+
+`tests/case_storagecrash.py`, `python tests/run_all.py storage_crash`. Each run builds a fresh image with a HUMANVILLAGE volume (one of
+FAT32 with the default, 512-byte or 4 KiB clusters, or FAT16), boots, starts `fstest -churn SEED /HumanVillage/reimu` in the guest and
+pulls the plug: QMP `quit` after a random number of operations (0 to 1200, read from the workload's `churn N` lines) plus a random
+0 to 1 s, so the cut lands inside an operation, between operations or in the middle of a flush. No `sync`, no `poweroff`, the kernel
+gets no warning. Then the host looks at the image with `tools/mkdisk.py`'s checker (no code shared with the kernel):
+
+* allowed: lost clusters, a chain longer than its file's size, FAT copy 2 behind copy 1, a stale FSInfo count, the dirty flags;
+* anything else fails the run (a cross-link, a chain into a free cluster, a size beyond the chain, a broken directory, a long name
+  without its short entry, bytes after a directory's end), and so does a file holding a byte it never held: every byte of the
+  workload's file `k<id>` is either 0 or `churn_byte(id, offset)` (`user/bin/fstest.c`; a numpy twin in the test), whatever renames
+  it went through, so another file's or a directory's bytes in it are caught;
+* the kernel's own ledger check (`shared/fatck.c`, run on the host through `tools/fatck_host.py`) must find no error either, which is
+  what lets the next boot mount the volume read-write ("Dirty volumes");
+* a call that failed in the guest (`CHURNFAIL`, anything but a full volume) fails the run too.
+
+The workload (`fstest -churn SEED DIR [OPS]`): creates (empty, small, cluster-boundary and 40 KB sizes; 8.3 names in both cases and long
+names of up to 9 slots), appends, overwrites inside and across the end, truncates down and up, deletes, renames to a new name and into
+another directory, the editor's save (a `.tmp` copy renamed over the file, spelled alike or in the other case), mkdir, rmdir, moving
+and renaming whole directories, bursts of 10 to 30 small files and of 10 deletes, a big file growing in 64 to 256 KiB steps up to 8 MiB,
+and an occasional `sync`; a full volume deletes files instead of failing.
+
+`TOUHOU_CRASH_RUNS=N` sets the number of runs (default 3, the full run is 50), `TOUHOU_CRASH_SEED=S` the seed of the first (default: from
+the clock; run i uses S+i). A failing run prints its seed, geometry and kill point and the checker's report; `TOUHOU_CRASH_SEED=<seed>
+TOUHOU_CRASH_RUNS=1` replays its workload and kill point (the exact moment varies with the guest's speed), `TOUHOU_KEEP_IMAGES=1` keeps
+the image. `storage_crash_checker_selftest` (no VM) damages images by hand to make sure the judge lets the leftovers through and
+catches a cross-link, a chain into a free cluster, a size beyond the chain and another file's bytes; the ledger check is held to the
+same images (all but the last, which only the contents show).
+
+**Results** (2026-10-24, Ubuntu 24.04, QEMU 8.2 TCG, `TOUHOU_TIMEOUT_SCALE=3`):
+
+* 50 runs, seeds 7000..7049: **50 passed**, 491 s. Geometries: 17 FAT32 default clusters, 16 FAT32 4 KiB, 6 FAT32 512 B, 11 FAT16; cuts
+  after 0 to 1180 operations. Leftovers seen: lost clusters in 33 runs (1 to 77 clusters), a stale FSInfo count in 34, FAT copy 2
+  behind copy 1 in 8, a chain longer than its size in 6, nothing at all in 5.
+* After the merge of `cloud/staging` (the ledger check added to the judge), 50 runs, seeds 8000..8049: **50 passed**, 517 s. 15 FAT16,
+  13 FAT32 default, 12 FAT32 512 B, 10 FAT32 4 KiB; cuts after 20 to 1180 operations. Lost clusters in 32 runs (up to 127), a stale FSInfo
+  count in 29, a chain longer than its size in 10, FAT copy 2 behind in 2, nothing in 7; the ledger check found 0 to 7 leftovers per run
+  and never an error.
+* Control: with the classes switched off (every dirty page in one class, so the cache writes in disk order as a plain write-back cache
+  would), 2 of 12 runs failed (seeds 505 and 506; 506 passed when replayed, the moment of the cut differs); seed 505 replayed shows the gap of the LINK class: `K91.DAT: chain runs into a free
+  cluster after 625`, `size 1180 needs 3 cluster(s) but the chain has 1` (the link of an append reached the disk, the new clusters'
+  own entries did not). So the test does see a wrong order.
+* Cost: `fstest -churn 11` and `-churn 12` with 600 operations each and an unmount: 691 and 703 extra device flushes (about 1.2 per
+  operation; mostly a FAT page going from frees to allocations and back, and the barriers of renames and new entry sets). In QEMU a flush
+  is almost free (the 600 operations took 3.2 and 3.4 s of wall time; the old order was not timed); on a USB stick each one is a SYNCHRONIZE CACHE, which can take milliseconds.
+  Not measured on hardware.
+
 ## FAT specifics and limits
 
-* FAT32 and FAT16 (the QEMU `fat:` ESP is FAT16) read/write. **FAT12, exFAT and NTFS are not supported.**
+* FAT32 and FAT16 (the QEMU `fat:` ESP is FAT16) read/write. **FAT12, exFAT and NTFS are not mounted** (the checker and `fsck` do read
+  and mend FAT12).
 * Long file names (UTF-16 on disk, UTF-8 at the VFS; up to 255 UTF-16 units), proper 8.3 short names with `~N` tails and
   checksums, NT case flags for pure lower-case 8.3 names, short-name aliases (`PROGRA~1`) are accepted on lookup.
 * Names are **case-insensitive** (simple folding for ASCII, Latin-1/Extended-A, Greek, Cyrillic) and the stored case is
@@ -167,8 +368,10 @@ Any other option fails the mount. The option string reaches the kernel through t
   bytes between the old end and the new data always read as zero (stale cluster contents are never exposed).
 * The allocator prefers contiguous runs: a new file starts in a free run of at least 64 clusters when one exists, and
   appends continue right after the file's last cluster.
-* There is no journal. After a crash the dirty flag keeps the volume read-only until a file system checker ran
-  (`python tools/mkdisk.py --check image`, or Windows/Linux `fsck`), then `mount -o force` to override at your own risk.
+* There is no journal. After a crash the dirty flag makes the HUMANVILLAGE volume go through the ledger check; it is mounted read-write
+  when that finds nothing out of place and stays read-only otherwise, until `fsck` (here, or on Windows/Linux) has mended it
+  (`python tools/mkdisk.py --check image` is the host-side look). A volume mounted by hand with `mount` that is flagged dirty is read-only
+  unless `-o force` says otherwise, at your own risk.
 * 4096-byte-sector devices work (FAT with 4096-byte sectors, `logical_block_size=4096`); a FAT with 512-byte sectors on a
   4Kn device is refused (sector size smaller than the device's). The cache works in 4 KiB pages relative to the volume.
 * The page cache is capped at 1/8 of RAM (at most 64 MiB); free clusters are counted at mount for small FATs and trusted
@@ -265,3 +468,73 @@ exhaustion, a write-protected disk, power loss (unflushed write leaves the dirty
 nine different corrupt boot sectors, damaged chains and directories, and a seeded random stress run (create, append,
 overwrite, truncate, delete, rename over files, move directories, mkdir/rmdir) mirrored in a Python model whose final tree
 must match the disk byte for byte.
+
+`python tests/run_all.py fsck` (`tests/case_fsck.py`): `fsck_c_*` need no VM (they build `shared/fatck.c` into a host DLL, `tools/fatck_host.py`, and hold it
+against the Python checker over deliberately damaged images, 20 seconds); `fsck_kernel_*` boot a VM with a dirty volume: a flag and nothing else wrong
+(read-write, the log reaches the stick), harmless leftovers (read-write, surplus chain trimmed on the next write, flag stays), real damage (read-only, the
+log and `/proc/fatcheck` say what, the image is untouched), `hvforce` and `hvcheck=off`, and the limits (nesting beyond 256, a 12 GiB volume with 3 million
+clusters). Tests that used to expect "dirty means read-only" (`storage_dirty_volume_readonly`, `storage_unclean_power_loss`, the bootlog test) run with
+`hvcheck=off`; `usbstor_hotplug_idle` now expects the check and a writable mount.
+
+`python tests/run_all.py storage_crash` (`tests/case_storagecrash.py`, part of the `storage` group): the power-cut test of "Crash test" above, 3 runs by
+default (about 30 s), `TOUHOU_CRASH_RUNS=50` for the full run (about 9 minutes here).
+
+## State when paused
+
+The "dirty-flag trap" work (a dirty HUMANVILLAGE volume is checked instead of refused; a repair tool; a safer write order) was paused part-way; the
+write order was then done on `cloud/fat-ordering` (cloud task 7, 2026-10-24), which also holds the merge of `cloud/staging`. What is what:
+
+**FAT write order (task 7): done and tested**
+* The six flush classes, `pg_reclass`, the sector rule for entry sets, renames in three steps ("Write ordering"); the code is in `fat_cache.c`, `fat_chain.c`,
+  `fat_dir.c`, `fat32.c`, `fatfs.h`.
+* `fstest -churn` and `tests/case_storagecrash.py`: 50 power cuts passed before the merge with staging (seeds 7000..7049) and 50 after it (seeds 8000..8049,
+  now also judged by the kernel's ledger check: 0 to 7 leftovers per run, never an error); the control with the order switched off fails ("Crash test").
+* After the merge: `storage`, `usbstor` and the regression set `blk,selftest,utest,shell,explorer_netherworld` - results in the pull request and in docs/NEXT.md.
+* Not covered: names of more than 195 characters and entry sets another system wrote across a sector can still be cut in half; the cost of the extra flushes on a
+  real stick is not measured; the test runs on virtio-blk only (QEMU keeps every acknowledged write, so it checks the order of the requests; whether a USB stick
+  honours SYNCHRONIZE CACHE is not something QEMU can show).
+
+The rest of this section is the state of the check and `fsck` work as it was handed over (only the write-order item changed).
+
+**Done and tested**
+* The checker, `shared/fatck.c`/`.h`, FAT12/16/32. `fsck_c_agrees_with_python` and `fsck_c_agrees_on_random_damage` passed against the Python checker; the
+  engine was extended afterwards (retained findings, repeatable scans, the last good cluster in a finding, long-name/duplicate/dots details for the repair code) and
+  exercised again by the repair scripts below with the same verdicts, but those two tests were not re-run on the final sources.
+* The kernel side: `fat_check.c`, `check_before_mount()` in the policy, the mount options `fsck=ok|left`, `hvforce`, `hvcheck=off`, `/proc/fatcheck`, the trim of
+  a surplus chain on verified volumes. `fsck_kernel_tidy`, `_leftovers`, `_damage`, `_force_and_off`, `_limits` passed, and so did the four adapted old tests
+  (`storage_dirty_volume_readonly`, `storage_unclean_power_loss`, `usbstor_hotplug_idle`, `usbstor_bootlog_never_when_unsafe`) - on the sources of commit
+  `bf52a4d`; the later engine edits are in the kernel build (it builds) but those tests were not re-run, and the big suites (`storage`, `usbstor`, `usb_`, `blk_`)
+  were not re-run after this work at all.
+* `tools/mkdisk.py`: FAT12 images, `Report.benign`/`serious`, the active FAT of FAT32; `tools/fatck_host.py` (host DLL) and `tools/fatck_host_rt.c`.
+
+**Written, builds, only partly tested**
+* The repair engine `shared/fatfix.c`/`.h`. Run through the host DLL by scratch scripts (not committed) over the whole damage menu of `tests/case_fsck.py` on FAT12,
+  FAT16 and FAT32: with `-y` (FIX_ALL) every damage except a broken boot sector ends clean according to both checkers; with `-a` (FIX_SAFE) exactly the damage that
+  needs a decision stays (cut chains, entries pointing nowhere, duplicates, bad names, strays), the rest is mended. There are no committed repair tests yet, and no
+  check yet that undamaged files keep their bytes or that a lost chain is saved with the right contents.
+* `/bin/fsck` (`user/bin/fsck/`, `fsck.fat`/`fsck.vfat` links in `tools/build.py` `EXTRA_LINKS`) and its manual page `fsck.pw`: they compile and link, and have **never
+  been run in the guest**. Untested assumptions: `lseek(SEEK_END)` on a `/dev` node gives the size, writes plus `ioctl(BLKFLSBUF)` on a node, the `/proc/mounts`
+  check, the interactive prompts, the exit codes, and `patchouli --check-all` (the `manual` test) accepting `fsck.pw`. The kernel's advice (`fsck -a /dev/sdb2`) points at it.
+
+**Not started**
+* (The FAT write path, item 4 of that task, is done: see the first block of this section.)
+* `docs/REAL_HARDWARE.md` has the short version of what the owner does after a bad shutdown; the full walk-through with a real stick is not tried on hardware.
+
+## How to resume
+
+1. `python tools/build.py`, then `python tests/run_all.py fsck_c` (no VM) and `python tests/run_all.py fsck_kernel` (about two minutes) to see the starting point; then the
+   suites this work touched: `storage`, `usbstor`, `usb_`, `blk_`, `power_,manual`.
+2. Put the repairs under test (`tests/case_fsck.py`): the host-level loop is `tools/fatck_host.py` `fix_volume(path, index, mode)` (see `-a`/`-y` in its `main`); for each entry
+   of `damage_menu()` repair with `FIX_ALL` and `FIX_SAFE`, then require `py_class`/`c_class` to say ok/warn (only boot-sector damage may stay `err`) and compare
+   the file tree before and after (`FatReader.snapshot()`) apart from the files the damage was aimed at; a file that lost its directory entry must come back as
+   `FOUND.000/FILE0000.CHK` with its exact bytes. Fix whatever that finds in `shared/fatfix.c`.
+3. Run `/bin/fsck` in a VM (`fsck_cmd_*`): an image as a second virtio disk (`vdb1`), `fsck -n`, `-a`, `-y` on the damage cases with the host checker looking at the image after
+   the guest has shut down; the refusals (mounted -> exit 8, not FAT -> 8, non-root -> 8); a FAT12 image; `-F`; the flow the kernel message promises
+   (`umount /HumanVillage; fsck -a /dev/vda1`, then `reboot`, then the volume is clean and writable). Expect the first guest run to find libc/devfs surprises (see above).
+   Then `python tests/run_all.py manual` for the page.
+4. The write order is done (`cloud/fat-ordering`). To check it after a change to the FAT driver: `TOUHOU_CRASH_RUNS=50 python tests/run_all.py storage_crash`;
+   a failure prints its seed, replay it with `TOUHOU_CRASH_SEED=<seed> TOUHOU_CRASH_RUNS=1 TOUHOU_KEEP_IMAGES=1` and look at the kept image with
+   `python tools/mkdisk.py --check IMAGE`. What could come next: fewer barriers (most come from a FAT page going from frees to allocations and back; frees could
+   be collected per page and written in one go before an allocation reuses the page), a measurement of the flush cost on the real stick (the unmount log line
+   counts the extra flushes), and the same test on a USB stick in QEMU (`usb-storage`) instead of virtio-blk.
+5. `docs/REAL_HARDWARE.md`: section 5 (eject / dirty) now describes the check; add what the owner does when the log says the ledger does not add up, once `fsck` has been seen working.

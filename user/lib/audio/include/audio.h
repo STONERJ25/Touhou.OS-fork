@@ -88,6 +88,8 @@ int  audio_event_by_name(const char *name); /* -1 if unknown */
 /* Plays a short original sound and returns at once (what is queued keeps playing after close). `force` ignores the switch. */
 int  audio_event_play(AudioEvent e, bool force);
 static inline void audio_event(AudioEvent e) { audio_event_play(e, false); }
+/* The same, but returns only once the sound has been heard: for the shutdown tune, before the machine goes. */
+int  audio_event_wait(AudioEvent e);
 /* Renders the sound as 16-bit stereo at 48 kHz into a malloc'd buffer; returns the number of frames. */
 size_t audio_event_render(AudioEvent e, int16_t **out);
 

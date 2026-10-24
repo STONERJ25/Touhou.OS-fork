@@ -1,10 +1,12 @@
-/* buf.c: the line array, undo, registers, and reading and writing files. */
+/* buf.c: the line array (a gap buffer), undo, registers, and reading and writing files. */
 #include "vi.h"
 
+/* The lines are kept in a gap buffer: line i is L[i] for i < gap_at and L[i + gap_len] after it, and gap_len == lcap - nl.
+ * Editing near the gap (a run of deletes, an undo of many lines) costs nothing, which keeps :g/x/d on a 100,000-line file quick. */
 Line *L;
-long nl, lcap;
+long nl, lcap, gap_at, gap_len;
 static char *image;                                      /* bytes of the loaded file; lines borrow from it until edited */
-int noeol, buf_empty;
+int noeol, buf_empty, ff_dos;
 int modified;
 
 static const char empty_str[] = "";
@@ -28,30 +30,69 @@ void fatal(const char *fmt, ...) {
     _exit(1);
 }
 
-Line *lineat(long i) { return &L[i]; }
-const char *ls(long i) { return L[i].s ? L[i].s : empty_str; }
-unsigned ll(long i) { return L[i].len; }
+Line *lineat(long i) { return &LN(i); }
+const char *ls(long i) { return LN(i).s ? LN(i).s : empty_str; }
+unsigned ll(long i) { return LN(i).len; }
+
+/* Moves n lines (the Line structures) from src to dst; the areas may overlap. libc's memmove copies backwards with "std; rep movsb",
+ * which crawls on an emulated CPU, and a plain loop would be turned back into a call to it: the empty asm statement stops that. */
+static void lines_copy(Line *dst, const Line *src, long n) {
+    if (dst < src) {
+        for (long i = 0; i < n; i++) { dst[i] = src[i]; __asm__ volatile ("" ::: "memory"); }
+    } else if (dst > src) {
+        for (long i = n - 1; i >= 0; i--) { dst[i] = src[i]; __asm__ volatile ("" ::: "memory"); }
+    }
+}
+
+static void gap_move(long at) {
+    if (at == gap_at) return;
+    if (at < gap_at) lines_copy(&L[at + gap_len], &L[at], gap_at - at);
+    else lines_copy(&L[gap_at], &L[gap_at + gap_len], at - gap_at);
+    gap_at = at;
+}
 
 static void lines_reserve(long extra) {
-    if (nl + extra <= lcap) return;
+    if (gap_len >= extra) return;
     long nc = lcap ? lcap : 64;
-    while (nc < nl + extra) nc *= 2;
+    while (nc - nl < extra) nc *= 2;
     Line *np = realloc(L, (size_t)nc * sizeof *L);
     if (!np) pt_oom();
+    long tail = nl - gap_at;                             /* the lines after the gap move to the end of the new storage */
+    if (tail > 0) lines_copy(&np[nc - tail], &np[gap_at + gap_len], tail);
     L = np;
     lcap = nc;
+    gap_len = nc - nl;
+}
+
+/* Puts n line structures into the buffer at index at / takes n out (copying them to dst when it is not NULL). */
+static void raw_insert(long at, const Line *src, long n) {
+    lines_reserve(n);
+    gap_move(at);
+    if (n) lines_copy(&L[at], src, n);
+    gap_at += n;
+    gap_len -= n;
+    nl += n;
+}
+
+static void raw_remove(long at, long n, Line *dst) {
+    gap_move(at);
+    if (dst && n) lines_copy(dst, &L[gap_at + gap_len], n);
+    gap_len += n;
+    nl -= n;
 }
 
 static void line_free(Line *l) {
     if (l->cap) free(l->s);
     l->s = NULL;
     l->len = l->cap = 0;
+    l->gid = 0;
 }
 
 static Line line_dup(const Line *l) {
     Line d;
     d.len = l->len;
     d.cap = l->len + 16;
+    d.gid = 0;
     d.s = malloc(d.cap);
     if (!d.s) pt_oom();
     if (l->len) memcpy(d.s, l->s, l->len);
@@ -62,35 +103,77 @@ static Line line_new(const char *s, size_t n) {
     Line d;
     d.len = (unsigned)n;
     d.cap = (unsigned)n + 16;
+    d.gid = 0;
     d.s = malloc(d.cap);
     if (!d.s) pt_oom();
     if (n) memcpy(d.s, s, n);
     return d;
 }
 
+/* ------------------------------------------------------------------ the line saved for "U" */
+
+static long uline_no = -1;                               /* the line whose first change was saved, or -1 */
+static char *uline_s;
+static unsigned uline_len, uline_cap;
+static int uline_col;
+
+static void uline_store(const char *s, unsigned n) {
+    if (n + 1 > uline_cap) {
+        free(uline_s);
+        uline_cap = n + 64;
+        uline_s = malloc(uline_cap);
+        if (!uline_s) pt_oom();
+    }
+    if (n) memcpy(uline_s, s, n);
+    uline_len = n;
+}
+
+/* Called before line i is changed: the first change of a line saves its text. */
+static void uline_note(long i) {
+    if (i == uline_no) return;
+    uline_store(ls(i), LN(i).len);
+    uline_no = i;
+    uline_col = cur.l == i ? cur.c : 0;
+}
+
 /* ------------------------------------------------------------------ marks follow inserted and deleted lines */
+
+/* Same rule for the global (:g) hook below. */
+void (*line_deleted_hook)(const Line *l);
+
+Pos jumps[MAXJUMPS];                                     /* the jump list (oldest first); jumpidx == njumps right after a jump */
+int njumps, jumpidx;
+
+static void adjust_pos(Pos *m, long start, long nold, long nnew) {
+    if (m->l < 0) return;
+    if (m->l >= start + nold) m->l += nnew - nold;
+    else if (m->l >= start + nnew) m->l = -1;            /* the line was deleted or replaced by fewer lines */
+}
 
 static void marks_adjust(long start, long nold, long nnew) {
     if (nold == nnew) return;
-    Pos *all[] = { &mark_ctx, &mark_lt, &mark_gt, &mark_lb, &mark_rb, &mark_dot };
+    Pos *all[] = { &mark_ctx, &mark_lt, &mark_gt, &mark_lb, &mark_rb, &mark_dot, &mark_ins };
+    for (int i = 0; i < 26 + 7; i++) adjust_pos(i < 26 ? &marks[i] : all[i - 26], start, nold, nnew);
+    for (int i = 0; i < njumps; i++) adjust_pos(&jumps[i], start, nold, nnew);
     long delta = nnew - nold;
-    for (int i = 0; i < 26 + 6; i++) {
-        Pos *m = i < 26 ? &marks[i] : all[i - 26];
-        if (m->l < 0) continue;
-        if (m->l >= start + nold) m->l += delta;
-        else if (m->l >= start + nnew && m->l >= start) { if (nnew == 0 || m->l >= start + nnew) m->l = -1; }
+    if (uline_no >= 0) {
+        if (uline_no >= start + nold) uline_no += delta;
+        else if (uline_no >= start + nnew) uline_no = -1;
     }
 }
 
 /* ------------------------------------------------------------------ undo */
 
 typedef struct { long start, nold, nnew; Line *old; } URec;
-typedef struct { URec *r; int n, cap; Pos before; Pos after; } UStep;
+typedef struct { URec *r; int n, cap; Pos before; long seq; time_t when; } UStep;
 
 static UStep *usteps;
 static int un, ucap, upos, usaved;                       /* steps, capacity, applied steps, applied steps at the last write */
 static int uopen;                                        /* is the newest step still collecting changes? */
 static Pos ubefore;
+static long useq;                                        /* the number of the newest step: they are numbered as they are made */
+static long um_old, um_new, um_seq;                      /* for the message after u / Ctrl-R: lines taken out, lines put back, step */
+static time_t um_when;
 long undo_seq;
 
 static void sync_modified(void) { modified = upos != usaved; }
@@ -110,6 +193,7 @@ void undo_clear(void) {
     un = upos = usaved = 0;
     uopen = 0;
     modified = 0;
+    uline_no = -1;
 }
 
 void undo_begin(void) {
@@ -132,6 +216,8 @@ static UStep *step_open(void) {
         }
         memset(&usteps[un], 0, sizeof usteps[un]);
         usteps[un].before = ubefore;
+        usteps[un].seq = ++useq;
+        usteps[un].when = time(NULL);
         un++;
         upos = un;
         uopen = 1;
@@ -148,7 +234,7 @@ static void undo_note(long start, long nold, long nnew, int take) {
         URec *p = &st->r[st->n - 1];
         if (p->start <= start && start + nold <= p->start + p->nnew) {
             p->nnew += nnew - nold;
-            if (take) for (long i = 0; i < nold; i++) line_free(&L[start + i]);
+            if (take) for (long i = 0; i < nold; i++) { if (line_deleted_hook) line_deleted_hook(&LN(start + i)); line_free(&LN(start + i)); }
             return;
         }
     }
@@ -163,19 +249,20 @@ static void undo_note(long start, long nold, long nnew, int take) {
     r->nnew = nnew;
     r->old = nold ? malloc((size_t)nold * sizeof(Line)) : NULL;
     if (nold && !r->old) pt_oom();
-    for (long i = 0; i < nold; i++) r->old[i] = take ? L[start + i] : line_dup(&L[start + i]);
+    for (long i = 0; i < nold; i++) {
+        if (take && line_deleted_hook) line_deleted_hook(&LN(start + i));
+        r->old[i] = take ? LN(start + i) : line_dup(&LN(start + i));
+        r->old[i].gid = 0;
+    }
 }
 
 /* Swap the lines of a record with the buffer's (used for both undo and redo). */
 static void rec_swap(URec *r) {
     Line *cut = r->nnew ? malloc((size_t)r->nnew * sizeof(Line)) : NULL;
     if (r->nnew && !cut) pt_oom();
-    memcpy(cut, &L[r->start], (size_t)r->nnew * sizeof(Line));
-    lines_reserve(r->nold - r->nnew);
-    memmove(&L[r->start + r->nold], &L[r->start + r->nnew], (size_t)(nl - r->start - r->nnew) * sizeof(Line));
-    if (r->nold) memcpy(&L[r->start], r->old, (size_t)r->nold * sizeof(Line));
+    raw_remove(r->start, r->nnew, cut);
+    raw_insert(r->start, r->old, r->nold);
     marks_adjust(r->start, r->nnew, r->nold);
-    nl += r->nold - r->nnew;
     free(r->old);
     r->old = cut;
     long t = r->nold;
@@ -183,47 +270,126 @@ static void rec_swap(URec *r) {
     r->nnew = t;
 }
 
+/* Where the cursor goes after an undo or redo (Vim's rule): back to where it was before the change when that is at the
+ * changed lines (or one line above them, for "o"), else to the first changed line. */
+static void undo_place_cursor(const UStep *st, long top, long size) {
+    Pos sv = st->before;
+    Pos c;
+    long sv1 = sv.l + 1;
+    if (sv1 >= top && sv1 <= top + size + 1) c = sv;
+    else { c.l = top; c.c = 0; }
+    if (sv.l + 1 == c.l && c.l > 0) c.l--;
+    if (c.l >= nl) c.l = nl - 1;
+    if (c.l < 0) c.l = 0;
+    c.c = sv.l == c.l ? sv.c : first_nonblank(c.l);
+    cur = c;
+}
+
+/* Starts the line counts for the message of one u / Ctrl-R command (which may undo several steps). */
+void undo_counts_reset(void) {
+    um_old = buf_empty ? -1 : 0;
+    um_new = 0;
+}
+
+/* "3 fewer lines; before #5  4 seconds ago": Vim's message after u and Ctrl-R; the counts come from the records just swapped. */
+void undo_message(int redo) {
+    long oc = um_old, nc = um_new;
+    if (buf_empty) nc--;                                 /* the placeholder line of an empty buffer is not text */
+    oc -= nc;
+    const char *what;
+    if (oc == -1) what = "more line";
+    else if (oc < 0) what = "more lines";
+    else if (oc == 1) what = "line less";
+    else if (oc > 1) what = "fewer lines";
+    else { oc = nc; what = nc == 1 ? "change" : "changes"; }
+    char when[48];
+    long ago = (long)(time(NULL) - um_when);
+    if (ago < 0) ago = 0;
+    if (ago >= 100) {
+        struct tm tmv;
+        time_t t = um_when;
+        localtime_r(&t, &tmv);
+        strftime(when, sizeof when, ago < 12 * 3600 ? "%H:%M:%S" : "%Y/%m/%d %H:%M:%S", &tmv);
+    } else snprintf(when, sizeof when, "%ld second%s ago", ago, ago == 1 ? "" : "s");
+    set_msg("%ld %s; %s #%ld  %s", oc < 0 ? -oc : oc, what, redo ? "after" : "before", um_seq, when);
+}
+
 int undo_do(int redo) {
     UStep *st;
+    long top = LONG_MAX, size = 0;
     if (!redo) {
         if (upos == 0) return 0;
         st = &usteps[--upos];
-        for (int i = st->n - 1; i >= 0; i--) rec_swap(&st->r[i]);
+        for (int i = st->n - 1; i >= 0; i--) {
+            um_old += st->r[i].nnew;
+            um_new += st->r[i].nold;
+            rec_swap(&st->r[i]);
+            if (st->r[i].start < top) { top = st->r[i].start; size = st->r[i].nnew; }
+        }
     } else {
         if (upos >= un) return 0;
         st = &usteps[upos++];
-        for (int i = 0; i < st->n; i++) rec_swap(&st->r[i]);
+        for (int i = 0; i < st->n; i++) {
+            um_old += st->r[i].nnew;
+            um_new += st->r[i].nold;
+            rec_swap(&st->r[i]);
+            if (st->r[i].start < top) { top = st->r[i].start; size = st->r[i].nnew; }
+        }
     }
+    um_seq = st->seq;
+    um_when = st->when;
     uopen = 0;
-    if (nl == 0) { lines_reserve(1); L[0].s = NULL; L[0].len = L[0].cap = 0; nl = 1; }
-    long top = nl;
-    for (int i = 0; i < st->n; i++) top = imin(top, st->r[i].start);
-    if (top >= nl) top = nl - 1;
-    if (top < 0) top = 0;
-    Pos p;
-    p.l = top;
-    p.c = top == st->before.l ? st->before.c : first_nonblank(top);
-    cur = p;
+    if (nl == 0) { Line e = { 0 }; raw_insert(0, &e, 1); }
+    if (top == LONG_MAX) top = 0;
+    undo_place_cursor(st, top, size);
     fix_cursor();
     sync_modified();
     undo_seq++;
+    uline_no = -1;
     return 1;
 }
 
 void undo_mark_saved(void) { usaved = upos; sync_modified(); }
+
+void undo_force_modified(void) { usaved = -1; sync_modified(); }       /* e.g. after :set ff=dos */
+
+/* "U": swaps the saved line with the text now in the line (so U again goes back). */
+void undo_line_restore(void) {
+    if (uline_no < 0 || uline_no >= nl) { beep(); return; }
+    long l = uline_no;
+    char *now = malloc(LN(l).len + 1);
+    if (!now) pt_oom();
+    unsigned nowlen = LN(l).len;
+    if (nowlen) memcpy(now, ls(l), nowlen);
+    char *sv = uline_s;
+    unsigned svlen = uline_len;
+    uline_s = NULL;
+    uline_cap = 0;
+    int col = uline_col;
+    uline_col = cur.l == l ? cur.c : 0;
+    ln_set(l, sv ? sv : "", svlen);                      /* uline_no is l, so the saved text is not overwritten */
+    free(sv);
+    uline_store(now, nowlen);
+    free(now);
+    uline_no = l;
+    cur.l = l;
+    cur.c = col;
+}
 
 /* ------------------------------------------------------------------ line primitives (all undo-recorded) */
 
 static void check_empty_flag(void) { buf_empty = 0; }
 
 void ln_set(long i, const char *s, size_t n) {
+    uline_note(i);
     undo_note(i, 1, 1, 0);
-    Line *ln = &L[i];
+    Line *ln = &LN(i);
     if (ln->cap && ln->cap > n) {
         if (n) memmove(ln->s, s, n);
         ln->len = (unsigned)n;
     } else {
         Line nw = line_new(s, n);
+        nw.gid = ln->gid;
         if (ln->cap) free(ln->s);
         *ln = nw;
     }
@@ -232,10 +398,8 @@ void ln_set(long i, const char *s, size_t n) {
 
 void ln_insert(long at, const char *s, size_t n) {
     undo_note(at, 0, 1, 0);
-    lines_reserve(1);
-    memmove(&L[at + 1], &L[at], (size_t)(nl - at) * sizeof(Line));
-    L[at] = line_new(s, n);
-    nl++;
+    Line nw = line_new(s, n);
+    raw_insert(at, &nw, 1);
     marks_adjust(at, 0, 1);
     check_empty_flag();
 }
@@ -243,25 +407,23 @@ void ln_insert(long at, const char *s, size_t n) {
 void ln_delete(long at, long n) {
     if (n <= 0) return;
     undo_note(at, n, 0, 1);
-    memmove(&L[at], &L[at + n], (size_t)(nl - at - n) * sizeof(Line));
+    raw_remove(at, n, NULL);
     marks_adjust(at, n, 0);
-    nl -= n;
     if (nl == 0) {
         undo_note(0, 0, 1, 0);
-        lines_reserve(1);
-        L[0].s = NULL;
-        L[0].len = L[0].cap = 0;
-        nl = 1;
+        Line e = { 0 };
+        raw_insert(0, &e, 1);
         buf_empty = 1;
     }
 }
 
 static void ln_splice(long i, size_t at, size_t del, const char *ins, size_t n) {
+    uline_note(i);
     undo_note(i, 1, 1, 0);
-    Line *ln = &L[i];
+    Line *ln = &LN(i);
     size_t newlen = ln->len - del + n;
     if (!ln->cap || newlen + 1 > ln->cap) {
-        size_t nc = newlen * 2 + 32;
+        size_t nc = (newlen > ln->len ? newlen : ln->len) * 2 + 32;          /* the old text is copied in whole before it shrinks */
         char *np = malloc(nc);
         if (!np) pt_oom();
         if (ln->len) memcpy(np, ln->s, ln->len);
@@ -284,10 +446,10 @@ void text_insert(Pos p, const char *s, size_t n) {
         if (seg) { ln_splice(p.l, (size_t)p.c, 0, s + i, seg); p.c += (int)seg; }
         i += seg;
         if (nlp) {                                       /* split the line */
-            size_t tail = L[p.l].len - (size_t)p.c;
+            size_t tail = LN(p.l).len - (size_t)p.c;
             char *copy = malloc(tail + 1);
             if (!copy) pt_oom();
-            memcpy(copy, L[p.l].s ? L[p.l].s + p.c : "", tail);
+            memcpy(copy, LN(p.l).s ? LN(p.l).s + p.c : "", tail);
             ln_splice(p.l, (size_t)p.c, tail, "", 0);
             ln_insert(p.l + 1, copy, tail);
             free(copy);
@@ -305,12 +467,12 @@ void text_delete(Pos a, Pos b) {
         ln_splice(a.l, (size_t)a.c, (size_t)(b.c - a.c), "", 0);
         return;
     }
-    if (b.l >= nl) { b.l = nl - 1; b.c = (int)L[b.l].len; }
-    size_t tail = L[b.l].len - (size_t)b.c;
+    if (b.l >= nl) { b.l = nl - 1; b.c = (int)LN(b.l).len; }
+    size_t tail = LN(b.l).len - (size_t)b.c;
     char *copy = malloc(tail + 1);
     if (!copy) pt_oom();
-    memcpy(copy, L[b.l].s ? L[b.l].s + b.c : "", tail);
-    ln_splice(a.l, (size_t)a.c, L[a.l].len - (size_t)a.c, copy, tail);
+    memcpy(copy, LN(b.l).s ? LN(b.l).s + b.c : "", tail);
+    ln_splice(a.l, (size_t)a.c, LN(a.l).len - (size_t)a.c, copy, tail);
     free(copy);
     ln_delete(a.l + 1, b.l - a.l);
 }
@@ -318,8 +480,7 @@ void text_delete(Pos a, Pos b) {
 /* ------------------------------------------------------------------ ranges */
 
 static void block_cols(long l, const Range *r, int *s, int *e) {
-    if (vcol_end(l, 0) < 0) { *s = *e = 0; return; }
-    int len = (int)L[l].len;
+    int len = (int)LN(l).len;
     if (line_vwidth(l) <= r->vc1) { *s = *e = len; return; }
     *s = byte_at_vcol(l, r->vc1);
     if (r->toeol || line_vwidth(l) <= r->vc2 + 1) *e = len;
@@ -330,7 +491,7 @@ static void block_cols(long l, const Range *r, int *s, int *e) {
 char *range_text(const Range *r, size_t *len) {
     PtBuf b = { 0 };
     if (r->type == 'l') {
-        for (long i = r->a.l; i <= r->b.l && i < nl; i++) { pb_add(&b, ls(i), L[i].len); pb_addc(&b, '\n'); }
+        for (long i = r->a.l; i <= r->b.l && i < nl; i++) { pb_add(&b, ls(i), LN(i).len); pb_addc(&b, '\n'); }
     } else if (r->type == 'b') {
         for (long i = r->a.l; i <= r->b.l && i < nl; i++) {
             int s, e;
@@ -341,8 +502,8 @@ char *range_text(const Range *r, size_t *len) {
     } else {
         for (long i = r->a.l; i <= r->b.l && i < nl; i++) {
             int s = i == r->a.l ? r->a.c : 0;
-            int e = i == r->b.l ? r->b.c : (int)L[i].len;
-            if (e > (int)L[i].len) e = (int)L[i].len;
+            int e = i == r->b.l ? r->b.c : (int)LN(i).len;
+            if (e > (int)LN(i).len) e = (int)LN(i).len;
             if (e > s) pb_add(&b, ls(i) + s, (size_t)(e - s));
             if (i < r->b.l) pb_addc(&b, '\n');
         }
@@ -363,7 +524,7 @@ void range_delete(const Range *r) {
         }
     } else {
         Pos b = r->b;
-        if (b.l >= nl) { b.l = nl - 1; b.c = (int)L[b.l].len; }
+        if (b.l >= nl) { b.l = nl - 1; b.c = (int)LN(b.l).len; }
         text_delete(r->a, b);
     }
 }
@@ -387,11 +548,12 @@ static int reg_index(int name) {
 }
 
 static void reg_store(Reg *r, const char *s, size_t n, int type) {
+    char *copy = malloc(n + 1);                          /* s may point into r->s (the unnamed register is stored from a named one) */
+    if (!copy) pt_oom();
+    memcpy(copy, s, n);
+    copy[n] = 0;
     free(r->s);
-    r->s = malloc(n + 1);
-    if (!r->s) pt_oom();
-    memcpy(r->s, s, n);
-    r->s[n] = 0;
+    r->s = copy;
     r->len = n;
     r->type = type;
 }
@@ -400,10 +562,22 @@ void reg_free_all(void) {
     for (int i = 0; i < 40; i++) { free(regs[i].s); regs[i].s = NULL; regs[i].len = 0; }
 }
 
+static void shift_numbered(const char *s, size_t n, int type) {
+    free(regs[26 + 9].s);
+    for (int i = 9; i > 1; i--) regs[26 + i] = regs[26 + i - 1];
+    regs[26 + 1].s = NULL;
+    reg_store(&regs[26 + 1], s, n, type);
+}
+
+/* Stores text in register `name`. is_delete: 0 for a yank, 1 for a delete, 2 for a delete with a motion that always uses "1
+ * (% ( ) ` / ? n N { }). A delete of a line or of several lines is also put in "1 (the older ones move up), a smaller one in
+ * "-; the unnamed register always holds the latest text. */
 void reg_set(int name, const char *s, size_t n, int type, int is_delete) {
     if (name == '_') return;
     int idx = reg_index(name);
     if (idx < 0) idx = R_UNNAMED;
+    int multiline = type == 'l' || memchr(s, '\n', n) != NULL;
+    int shift = is_delete == 2 || (is_delete && multiline);
     if (name >= 'A' && name <= 'Z') {                    /* append */
         Reg *r = &regs[idx];
         if (r->s) {
@@ -416,17 +590,15 @@ void reg_set(int name, const char *s, size_t n, int type, int is_delete) {
             pb_free(&b);
         } else reg_store(r, s, n, type);
         s = r->s; n = r->len; type = r->type;
+        if (shift) shift_numbered(s, n, type);           /* a delete into a named register also goes into "1 */
     } else if (name == 0 || name == '"') {
         if (is_delete) {
-            if (type == 'l' || memchr(s, '\n', n)) {
-                free(regs[26 + 9].s);
-                for (int i = 9; i > 1; i--) regs[26 + i] = regs[26 + i - 1];
-                regs[26 + 1].s = NULL;
-                reg_store(&regs[26 + 1], s, n, type);
-            } else reg_store(&regs[R_MINUS], s, n, type);
+            if (shift) shift_numbered(s, n, type);
+            if (!multiline) reg_store(&regs[R_MINUS], s, n, type);
         } else reg_store(&regs[26], s, n, type);
     } else {
         reg_store(&regs[idx], s, n, type);
+        if (shift) shift_numbered(s, n, type);
     }
     reg_store(&regs[R_UNNAMED], s, n, type);             /* the unnamed register always holds the latest text */
 }
@@ -448,22 +620,24 @@ Reg *reg_get(int name) {
 
 void buf_clear(void) {
     undo_clear();
-    for (long i = 0; i < nl; i++) line_free(&L[i]);
+    for (long i = 0; i < nl; i++) line_free(&LN(i));
     nl = 0;
+    gap_at = 0;
+    gap_len = lcap;
     free(image);
     image = NULL;
     noeol = 0;
+    ff_dos = 0;
     buf_empty = 0;
     for (int i = 0; i < 26; i++) marks[i].l = -1;
-    mark_ctx.l = mark_lt.l = mark_gt.l = mark_lb.l = mark_rb.l = mark_dot.l = -1;
+    mark_ctx.l = mark_lt.l = mark_gt.l = mark_lb.l = mark_rb.l = mark_dot.l = mark_ins.l = -1;
+    njumps = jumpidx = 0;
 }
 
 void buf_new_empty(void) {
     buf_clear();
-    lines_reserve(1);
-    L[0].s = NULL;
-    L[0].len = L[0].cap = 0;
-    nl = 1;
+    Line e = { 0 };
+    raw_insert(0, &e, 1);
     buf_empty = 1;
 }
 
@@ -489,43 +663,76 @@ static char *slurp(int fd, size_t hint, size_t *len) {
 }
 
 /* Loads path into a fresh buffer. Returns 0 on success, 1 if the file does not exist (the buffer is one empty line),
- * -1 on any other error (errno is set, the buffer is one empty line). */
+ * -1 on any other error (errno is set, the buffer is one empty line). A file whose lines all end in CR LF is edited without
+ * the CRs and written back with them (ff_dos). */
+static int load_fd(int fd, int *nlines, long *nbytes) {
+    struct stat st;
+    size_t hint = 0;
+    if (fstat(fd, &st) == 0) {
+        if (S_ISDIR(st.st_mode)) { errno = EISDIR; return -1; }
+        if (S_ISREG(st.st_mode) && st.st_size > 0) hint = (size_t)st.st_size;
+    }
+    size_t len = 0;
+    char *img = slurp(fd, hint, &len);
+    if (!img) return -1;
+    if (len == 0) { free(img); return 0; }
+    long count = 0, crlf = 0;
+    for (const char *p = img; (p = memchr(p, '\n', (size_t)(img + len - p))) != NULL; p++) {
+        count++;
+        if (p > img && p[-1] == '\r') crlf++;
+    }
+    int eol = img[len - 1] == '\n';
+    int dos = count > 0 && crlf == count;
+    long nlines_total = count + (eol ? 0 : 1);
+    nl = 0;
+    gap_at = 0;
+    gap_len = lcap;
+    lines_reserve(nlines_total);
+    image = img;
+    const char *p = img, *end = img + len;
+    long k = 0;
+    while (p < end) {
+        const char *q = memchr(p, '\n', (size_t)(end - p));
+        size_t seg = q ? (size_t)(q - p) : (size_t)(end - p);
+        size_t shown = seg;
+        if (dos && q) shown--;                           /* the CR before the LF */
+        L[k].s = (char *)p;
+        L[k].len = (unsigned)shown;
+        L[k].cap = 0;
+        L[k].gid = 0;
+        k++;
+        p += seg + (q ? 1 : 0);
+    }
+    nl = k;
+    gap_at = nl;
+    gap_len = lcap - nl;
+    noeol = !eol;
+    ff_dos = dos;
+    buf_empty = 0;
+    *nlines = (int)nl;
+    *nbytes = (long)len;
+    return 0;
+}
+
 int buf_load(const char *path, int *nlines, long *nbytes) {
     buf_new_empty();
     *nlines = 0;
     *nbytes = 0;
     int fd = open(path, O_RDONLY);
     if (fd < 0) return errno == ENOENT ? 1 : -1;
-    struct stat st;
-    if (fstat(fd, &st) == 0 && S_ISDIR(st.st_mode)) { close(fd); errno = EISDIR; return -1; }
-    size_t len = 0;
-    char *img = slurp(fd, fstat(fd, &st) == 0 && st.st_size > 0 ? (size_t)st.st_size : 0, &len);
+    int rc = load_fd(fd, nlines, nbytes);
     int err = errno;
     close(fd);
-    if (!img) { errno = err; return -1; }
-    if (len == 0) { free(img); return 0; }
-    long count = 0;
-    for (const char *p = img; (p = memchr(p, '\n', (size_t)(img + len - p))) != NULL; p++) count++;
-    int eol = img[len - 1] == '\n';
-    long nlines_total = count + (eol ? 0 : 1);
-    nl = 0;
-    lines_reserve(nlines_total);
-    image = img;
-    const char *p = img, *end = img + len;
-    while (p < end) {
-        const char *q = memchr(p, '\n', (size_t)(end - p));
-        size_t seg = q ? (size_t)(q - p) : (size_t)(end - p);
-        L[nl].s = (char *)p;
-        L[nl].len = (unsigned)seg;
-        L[nl].cap = 0;
-        nl++;
-        p += seg + (q ? 1 : 0);
-    }
-    noeol = !eol;
-    buf_empty = 0;
-    *nlines = (int)nl;
-    *nbytes = (long)len;
-    return 0;
+    errno = err;
+    return rc;
+}
+
+/* "vi -": the text comes from standard input (the keys then come from the terminal, see pt_term_open). */
+int buf_load_stdin(int *nlines, long *nbytes) {
+    buf_new_empty();
+    *nlines = 0;
+    *nbytes = 0;
+    return load_fd(0, nlines, nbytes);
 }
 
 static int write_all(int fd, const char *p, size_t n) {
@@ -538,16 +745,17 @@ static int write_all(int fd, const char *p, size_t n) {
     return 0;
 }
 
-/* Writes lines from..to (0-based, inclusive) to path. Returns 0 or -1 (errno set). */
+/* Writes lines from..to (0-based, inclusive) to path. Returns 0 or -1 (errno set). The last line gets its newline unless
+ * 'nofixeol' is set and the file had none. */
 int buf_write(const char *path, long from, long to, int append, long *nbytes) {
     PtBuf b = { 0 };
     int whole = from == 0 && to == nl - 1;
-    if (whole && buf_empty && nl == 1 && L[0].len == 0) {
+    if (whole && buf_empty && nl == 1 && LN(0).len == 0) {
         /* an empty file stays empty */
     } else {
         for (long i = from; i <= to; i++) {
-            pb_add(&b, ls(i), L[i].len);
-            if (i < to || !(whole && noeol)) pb_addc(&b, '\n');
+            pb_add(&b, ls(i), LN(i).len);
+            if (i < to || !(whole && noeol && !o.fixeol)) { if (ff_dos) pb_addc(&b, '\r'); pb_addc(&b, '\n'); }
         }
     }
     *nbytes = (long)b.len;

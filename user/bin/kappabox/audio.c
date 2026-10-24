@@ -1,6 +1,8 @@
 /* Sound tools: beep play volume (Nitori's sound workshop). The real work is in libaudio. */
 #include "kappabox.h"
 #include <audio.h>
+#include <chip.h>
+#include <music.h>
 #include <math.h>
 
 static volatile int g_stop;
@@ -37,10 +39,10 @@ APPLET(beep) {
     unsigned rate = 48000, channels = 2, bits = 16;
     AudioWave wave = AUDIO_SINE;
     bool noise = false, wait = true;
-    const char *wavfile = NULL, *event = NULL;
+    const char *wavfile = NULL, *event = NULL, *polite = NULL;
     int c;
     optind = 1;
-    while ((c = getopt(argc, argv, "f:l:a:w:r:c:b:o:e:n")) != -1) {
+    while ((c = getopt(argc, argv, "f:l:a:w:r:c:b:o:e:E:n")) != -1) {
         switch (c) {
         case 'f': freq = atof(optarg); break;
         case 'l': ms = atoi(optarg); break;
@@ -58,10 +60,11 @@ APPLET(beep) {
         case 'b': bits = (unsigned)atoi(optarg); break;
         case 'o': wavfile = optarg; break;
         case 'e': event = optarg; break;
+        case 'E': polite = optarg; break;
         case 'n': wait = false; break;
         default:
             fprintf(stderr, "usage: beep [-f HZ] [-l MS] [-a PERCENT] [-w sine|square|triangle|saw|noise] [-r RATE] [-c 1|2] [-b 8|16|24|32] [-o FILE.wav] [-n]\n"
-                            "       beep -e login|dialog|error|shutdown\n");
+                            "       beep -e login|dialog|error|shutdown [-o FILE.wav]     (-E NAME: the same, but silent when the system sounds are off)\n");
             return 2;
         }
     }
@@ -74,6 +77,14 @@ APPLET(beep) {
         return 2;
     }
 
+    if (polite) {                                                   /* what the desktop does: honour the switch */
+        int e = audio_event_by_name(polite);
+        if (e < 0) { kb_error("no system sound called '%s' (login, dialog, error, shutdown)", polite); return 2; }
+        if (!audio_events_enabled()) return 0;
+        int rc = audio_event_wait((AudioEvent)e);
+        if (rc) { no_device("cannot play", rc); return 1; }
+        return 0;
+    }
     if (event) {
         int e = audio_event_by_name(event);
         if (e < 0) { kb_error("no system sound called '%s' (login, dialog, error, shutdown)", event); return 2; }
@@ -212,8 +223,15 @@ APPLET(volume) {
 
 /* ---------------------------------------------------------------- play */
 
-static int play_stream(Audio *a, int fd, size_t chunk, bool quiet, const char *name) {
-    (void)quiet; (void)name;
+#define SONG_RATE 32000                     /* songs are synthesized at this rate; the kernel converts to 48 kHz */
+
+typedef struct {
+    bool quiet, info, loop_forever;
+    double start, seconds;
+    const char *wavout;
+} PlayOpts;
+
+static int play_stream(Audio *a, int fd, size_t chunk) {
     uint8_t *buf = malloc(chunk);
     if (!buf) kb_die("out of memory");
     int rc = 0;
@@ -228,43 +246,174 @@ static int play_stream(Audio *a, int fd, size_t chunk, bool quiet, const char *n
     return rc;
 }
 
+static void clock_text(double s, char *out, size_t n) {
+    int t = (int)(s + 0.5);
+    snprintf(out, n, "%d:%02d", t / 60, t % 60);
+}
+
+static void song_summary(const Music *m, const MusicInfo *in, bool full) {
+    char len[16];
+    clock_text(in->length, len, sizeof len);
+    printf("%s%s%s%s\n", in->title, in->sub[0] ? " (" : "", in->sub, in->sub[0] ? ")" : "");
+    if (in->bpm) printf("  %d bpm, %d channels, %s%s\n", in->bpm, in->channels, len, in->loops ? ", loops" : "");
+    else printf("  %s, %d channels, %s\n", in->kind, in->channels, len);
+    const ChipSong *s = music_chip_song(m);
+    if (s && s->author[0]) printf("  by %s\n", s->author);
+    if (!full || !s) return;
+    for (int c = 0; c < s->nchannels; c++) {
+        const ChipInstrument *ins = &s->inst[s->def[c].instrument];
+        printf("  channel %-8s starts with %s (pan %+.2f, gain %.2f)\n", s->def[c].name, ins->name, (double)s->def[c].pan, (double)s->def[c].gain);
+    }
+    if (in->notes[0]) printf("  note: %s\n", in->notes);
+}
+
+/* Plays (or, with -i, measures; with -w, writes to a WAV file) one song or module. *ap is the device, opened on first use. */
+static int play_song(Audio **ap, const char *path, const PlayOpts *o, int volume) {
+    char err[200];
+    unsigned rate = o->wavout ? 44100 : SONG_RATE;
+    MusicInfo info;
+    Music *mus = music_open(path, rate, &info, err, sizeof err);
+    if (!mus) { kb_error("%s: %s", path, err); return 1; }
+    double len = info.length;
+    if (!o->quiet || o->info) song_summary(mus, &info, o->info);
+    if (o->start > 0) music_seek(mus, o->start);
+    double remaining = len - (o->start < len ? o->start : len);
+    double limit = o->seconds > 0 && o->seconds < remaining ? o->seconds : remaining;
+    if (o->info && o->seconds <= 0 && limit > 30) limit = 30;                  /* measuring is for checking a song, not for waiting */
+    uint64_t total = (uint64_t)(limit * rate);
+    if (o->loop_forever && !o->info && !o->wavout) total = ~0ull;
+    static int16_t buf[2 * 1024];
+    int rc = 0;
+
+    if (o->info) {
+        uint64_t done = 0, hot = 0, quiet_windows = 0, windows = 0;
+        double sumsq = 0;
+        int peak = 0, wpeak = 0, wn = 0;
+        while (done < total) {
+            size_t want = sizeof buf / 4 < total - done ? sizeof buf / 4 : (size_t)(total - done);
+            size_t n = music_render(mus, buf, want);
+            if (!n) break;
+            for (size_t i = 0; i < n * 2; i++) {
+                int v = buf[i] < 0 ? -buf[i] : buf[i];
+                if (v > peak) peak = v;
+                if (v > 30000) hot++;
+                if (v > wpeak) wpeak = v;
+                sumsq += (double)buf[i] * (double)buf[i];
+            }
+            wn += (int)n;
+            if (wn >= (int)rate / 4) { windows++; if (wpeak < 30) quiet_windows++; wpeak = 0; wn = 0; }
+            done += n;
+        }
+        printf("  measured %.1f s: peak %.2f, rms %.3f, %llu samples above 0.9, %d%% silent\n", (double)done / rate, peak / 32768.0,
+               done ? sqrt(sumsq / (double)(done * 2)) / 32768.0 : 0.0, (unsigned long long)hot, windows ? (int)(quiet_windows * 100 / windows) : 0);
+    } else if (o->wavout) {
+        size_t cap = (size_t)total * 4;
+        if (cap > 64u * 1024 * 1024) { kb_error("%s: too long to render to a file", path); rc = 1; }
+        else {
+            uint8_t *pcm = malloc(cap ? cap : 1);
+            if (!pcm) kb_die("out of memory");
+            size_t done = 0;
+            while (done < total) {
+                size_t want = sizeof buf / 4 < total - done ? sizeof buf / 4 : (size_t)(total - done);
+                size_t n = music_render(mus, buf, want);
+                if (!n) break;
+                memcpy(pcm + done * 4, buf, n * 4);
+                done += n;
+            }
+            int w = audio_wav_save(o->wavout, rate, 2, 16, pcm, done * 4);
+            if (w) { kb_error("%s: %s", o->wavout, strerror(-w)); rc = 1; }
+            free(pcm);
+        }
+    } else {
+        if (!*ap) {
+            *ap = audio_open(0);
+            if (!*ap) { no_device("cannot play", errno); rc = 1; goto out; }
+            signal(SIGINT, on_signal);
+            signal(SIGTERM, on_signal);
+            if (volume >= 0) audio_set_volume(*ap, volume, volume, 0);
+        }
+        int f = audio_set_format(*ap, rate, 2, AUDIO_FMT_S16);
+        if (f) { kb_error("%s: %s", path, audio_strerror(f)); rc = 1; goto out; }
+        uint64_t done = 0;
+        bool sounded = true;                                                   /* did the last start from the top give any sound? */
+        while (!g_stop && done < total) {
+            size_t want = sizeof buf / 4 < total - done ? sizeof buf / 4 : (size_t)(total - done);
+            size_t n = music_render(mus, buf, want);
+            if (!n) {
+                if (!o->loop_forever || !sounded) break;                       /* -L: from the top again (unless that gives nothing either) */
+                music_seek(mus, 0);
+                sounded = false;
+                continue;
+            }
+            sounded = true;
+            ssize_t w = audio_write(*ap, buf, n * 4);
+            if (w < 0) { kb_error("%s: %s", path, audio_strerror((int)w)); rc = 1; break; }
+            done += n;
+        }
+    }
+out:
+    music_close(mus);
+    return rc;
+}
+
+#define PLAY_USAGE "usage: play [-q] [-v PERCENT] [-g MS] FILE.wav|FILE.tms|FILE.mod ...\n" \
+                   "       play -r RATE -c 1|2 -b 8|16|24|32 FILE.raw     (raw samples; - is standard input)\n" \
+                   "       play [-s SECONDS] [-t SECONDS] [-L] SONG       (start there, play that long, repeat forever)\n" \
+                   "       play -i [-t SECONDS] SONG                      (describe and measure a song; no sound device needed)\n" \
+                   "       play -w OUT.wav SONG                           (render a song to a WAV file)\n" \
+                   "       SONG is a FILE.tms song or a FILE.mod ProTracker module.\n"
+
 APPLET(play) {
     unsigned rate = 44100, channels = 2, bits = 16;
     int volume = -1, gap_ms = 0;
-    bool quiet = false, forced = false;
+    PlayOpts o;
+    memset(&o, 0, sizeof o);
     int c;
     optind = 1;
-    while ((c = getopt(argc, argv, "r:c:b:v:g:q")) != -1) {
+    while ((c = getopt(argc, argv, "r:c:b:v:g:s:t:w:qiL")) != -1) {
         switch (c) {
-        case 'r': rate = (unsigned)atoi(optarg); forced = true; break;
-        case 'c': channels = (unsigned)atoi(optarg); forced = true; break;
-        case 'b': bits = (unsigned)atoi(optarg); forced = true; break;
+        case 'r': rate = (unsigned)atoi(optarg); break;
+        case 'c': channels = (unsigned)atoi(optarg); break;
+        case 'b': bits = (unsigned)atoi(optarg); break;
         case 'v': volume = atoi(optarg); break;
         case 'g': gap_ms = atoi(optarg); break;
-        case 'q': quiet = true; break;
-        default:
-            fprintf(stderr, "usage: play [-q] [-v PERCENT] [-g MS] FILE.wav ...\n       play -r RATE -c 1|2 -b 8|16|24|32 FILE.raw   (raw samples; - is standard input)\n");
-            return 2;
+        case 's': o.start = atof(optarg); break;
+        case 't': o.seconds = atof(optarg); break;
+        case 'w': o.wavout = optarg; break;
+        case 'q': o.quiet = true; break;
+        case 'i': o.info = true; break;
+        case 'L': o.loop_forever = true; break;
+        default: fputs(PLAY_USAGE, stderr); return 2;
         }
     }
-    (void)forced;
-    if (optind >= argc) { fprintf(stderr, "usage: play [-q] [-v PERCENT] [-g MS] FILE.wav ...\n"); return 2; }
-    Audio *a = audio_open(0);
-    if (!a) { no_device("cannot play", errno); return 1; }
-    signal(SIGINT, on_signal);
-    signal(SIGTERM, on_signal);
-    if (volume >= 0) audio_set_volume(a, volume, volume, 0);
+    if (optind >= argc) { fputs(PLAY_USAGE, stderr); return 2; }
+    Audio *a = NULL;
     int status = 0;
     for (int i = optind; i < argc && !g_stop; i++) {
         const char *path = argv[i];
         AudioWav w;
-        int rc;
+        int rc = 0;
+        if (music_is_file(path)) {
+            rc = play_song(&a, path, &o, volume);
+            if (rc) status = 1;
+            if (a && !g_stop && gap_ms > 0 && i + 1 < argc) usleep((useconds_t)gap_ms * 1000);
+            else if (a && !g_stop) audio_drain(a);
+            continue;
+        }
+        if (o.info || o.wavout) { kb_error("%s: -i and -w need a song (*.tms) or a module (*.mod)", path); status = 1; continue; }
+        if (!a) {
+            a = audio_open(0);
+            if (!a) { no_device("cannot play", errno); return 1; }
+            signal(SIGINT, on_signal);
+            signal(SIGTERM, on_signal);
+            if (volume >= 0) audio_set_volume(a, volume, volume, 0);
+        }
         if (strcmp(path, "-") && audio_wav_open(&w, path) == 0) {
-            if (!quiet) printf("%s: %u Hz, %u-bit, %s, %.1f s\n", path, (unsigned)w.rate, (unsigned)w.bits, w.channels == 1 ? "mono" : "stereo",
-                               (double)audio_wav_frames(&w) / (double)w.rate);
+            if (!o.quiet) printf("%s: %u Hz, %u-bit, %s, %.1f s\n", path, (unsigned)w.rate, (unsigned)w.bits, w.channels == 1 ? "mono" : "stereo",
+                                 (double)audio_wav_frames(&w) / (double)w.rate);
             rc = audio_set_format(a, w.rate, w.channels, w.format);
             if (rc) { kb_error("%s: %s", path, audio_strerror(rc)); status = 1; audio_wav_close(&w); continue; }
-            rc = play_stream(a, w.fd, 16384, quiet, path);
+            rc = play_stream(a, w.fd, 16384);
             audio_wav_close(&w);
         } else {
             int fd = strcmp(path, "-") ? open(path, O_RDONLY) : 0;
@@ -272,15 +421,17 @@ APPLET(play) {
             if (bits != 8 && bits != 16 && bits != 24 && bits != 32) { kb_error("unsupported sample size"); return 2; }
             rc = audio_set_format(a, rate, channels, bits == 8 ? AUDIO_FMT_U8 : bits == 16 ? AUDIO_FMT_S16 : bits == 24 ? AUDIO_FMT_S24 : AUDIO_FMT_S32);
             if (rc) { kb_error("%s: %s", path, audio_strerror(rc)); status = 1; if (fd) close(fd); continue; }
-            if (!quiet) printf("%s: raw, %u Hz, %u-bit, %s\n", path, rate, bits, channels == 1 ? "mono" : "stereo");
-            rc = play_stream(a, fd, 16384, quiet, path);
+            if (!o.quiet) printf("%s: raw, %u Hz, %u-bit, %s\n", path, rate, bits, channels == 1 ? "mono" : "stereo");
+            rc = play_stream(a, fd, 16384);
             if (fd) close(fd);
         }
         if (rc) { kb_error("%s: %s", path, audio_strerror(rc)); status = 1; }
         if (!g_stop && gap_ms > 0 && i + 1 < argc) usleep((useconds_t)gap_ms * 1000);     /* the stream stays open and runs dry */
         else if (!g_stop) audio_drain(a);
     }
-    if (g_stop) audio_flush(a);
-    audio_close(a);
+    if (a) {
+        if (g_stop) audio_flush(a);
+        audio_close(a);
+    }
     return status;
 }

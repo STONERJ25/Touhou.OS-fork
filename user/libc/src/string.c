@@ -1,64 +1,278 @@
+/* String and memory functions. The hot ones (mem*, strlen, strchr, strcmp) work 16 bytes at a time with SSE2, and never read
+ * outside the bytes they were given (or, for strlen/strchr, outside the aligned 16-byte block that holds the NUL), so a string
+ * that ends at the end of a mapping is safe. They are written so that the compiler cannot turn their loops back into calls
+ * to themselves (no_builtin). memcpy copies forward and loads every block before storing it, which also makes it correct for
+ * overlapping moves towards lower addresses (what `rep movsb` did); memmove handles the other direction. */
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
 #include <ctype.h>
+#include <stdint.h>
+#include <emmintrin.h>
 
-/* The mem* routines are inline asm so the compiler cannot turn them into calls to themselves. */
-void *memcpy(void *dst, const void *src, size_t n) {
-    void *ret = dst;
-    __asm__ volatile ("rep movsb" : "+D"(dst), "+S"(src), "+c"(n) : : "memory");
-    return ret;
-}
+#ifdef __clang__
+#define NB __attribute__((no_builtin))
+#else
+#define NB
+#endif
 
-void *memmove(void *dst, const void *src, size_t n) {
+typedef uint64_t u64;
+typedef uint32_t u32;
+typedef uint16_t u16;
+
+typedef struct { u64 v; } __attribute__((packed, may_alias)) U64;
+typedef struct { u32 v; } __attribute__((packed, may_alias)) U32;
+typedef struct { u16 v; } __attribute__((packed, may_alias)) U16;
+static inline u64 ld64(const void *p) { return ((const U64 *)p)->v; }
+static inline u32 ld32(const void *p) { return ((const U32 *)p)->v; }
+static inline u16 ld16(const void *p) { return ((const U16 *)p)->v; }
+static inline void st64(void *p, u64 v) { ((U64 *)p)->v = v; }
+static inline void st32(void *p, u32 v) { ((U32 *)p)->v = v; }
+static inline void st16(void *p, u16 v) { ((U16 *)p)->v = v; }
+static inline __m128i ldv(const void *p) { return _mm_loadu_si128((const __m128i *)p); }
+static inline void stv(void *p, __m128i v) { _mm_storeu_si128((__m128i *)p, v); }
+static inline unsigned eqmask(__m128i a, __m128i b) { return (unsigned)_mm_movemask_epi8(_mm_cmpeq_epi8(a, b)); }
+
+NB void *memcpy(void *dst, const void *src, size_t n) {
     unsigned char *d = dst;
     const unsigned char *s = src;
-    if (d <= s || d >= s + n) return memcpy(dst, src, n);
-    d += n - 1;
-    s += n - 1;
-    __asm__ volatile ("std; rep movsb; cld" : "+D"(d), "+S"(s), "+c"(n) : : "memory");
+    if (n <= 16) {
+        if (n >= 8) { u64 a = ld64(s), b = ld64(s + n - 8); st64(d, a); st64(d + n - 8, b); }
+        else if (n >= 4) { u32 a = ld32(s), b = ld32(s + n - 4); st32(d, a); st32(d + n - 4, b); }
+        else if (n >= 2) { u16 a = ld16(s), b = ld16(s + n - 2); st16(d, a); st16(d + n - 2, b); }
+        else if (n) d[0] = s[0];
+        return dst;
+    }
+    if (n <= 32) {
+        __m128i a = ldv(s), b = ldv(s + n - 16);
+        stv(d, a);
+        stv(d + n - 16, b);
+        return dst;
+    }
+    if (n <= 64) {
+        __m128i a = ldv(s), b = ldv(s + 16), c = ldv(s + n - 32), e = ldv(s + n - 16);
+        stv(d, a);
+        stv(d + 16, b);
+        stv(d + n - 32, c);
+        stv(d + n - 16, e);
+        return dst;
+    }
+    __m128i t0 = ldv(s + n - 64), t1 = ldv(s + n - 48), t2 = ldv(s + n - 32), t3 = ldv(s + n - 16);
+    size_t i = 0;
+    for (; n - i > 64; i += 64) {
+        __m128i a = ldv(s + i), b = ldv(s + i + 16), c = ldv(s + i + 32), e = ldv(s + i + 48);
+        stv(d + i, a);
+        stv(d + i + 16, b);
+        stv(d + i + 32, c);
+        stv(d + i + 48, e);
+    }
+    stv(d + n - 64, t0);
+    stv(d + n - 48, t1);
+    stv(d + n - 32, t2);
+    stv(d + n - 16, t3);
     return dst;
 }
 
-void *memset(void *dst, int c, size_t n) {
-    void *ret = dst;
-    __asm__ volatile ("rep stosb" : "+D"(dst), "+c"(n) : "a"(c) : "memory");
-    return ret;
+NB void *memmove(void *dst, const void *src, size_t n) {
+    unsigned char *d = dst;
+    const unsigned char *s = src;
+    if (d <= s || d >= s + n || n <= 64) return memcpy(dst, src, n);      /* memcpy loads before it stores up to 64 bytes */
+    __m128i h0 = ldv(s), h1 = ldv(s + 16), h2 = ldv(s + 32), h3 = ldv(s + 48);
+    size_t i = n;
+    while (i > 64) {
+        i -= 64;
+        __m128i a = ldv(s + i), b = ldv(s + i + 16), c = ldv(s + i + 32), e = ldv(s + i + 48);
+        stv(d + i, a);
+        stv(d + i + 16, b);
+        stv(d + i + 32, c);
+        stv(d + i + 48, e);
+    }
+    stv(d, h0);
+    stv(d + 16, h1);
+    stv(d + 32, h2);
+    stv(d + 48, h3);
+    return dst;
 }
 
-int memcmp(const void *a, const void *b, size_t n) {
+NB void *memset(void *dst, int c, size_t n) {
+    unsigned char *d = dst;
+    u64 v = 0x0101010101010101ULL * (unsigned char)c;
+    if (n <= 16) {
+        if (n >= 8) { st64(d, v); st64(d + n - 8, v); }
+        else if (n >= 4) { st32(d, (u32)v); st32(d + n - 4, (u32)v); }
+        else if (n >= 2) { st16(d, (u16)v); st16(d + n - 2, (u16)v); }
+        else if (n) d[0] = (unsigned char)c;
+        return dst;
+    }
+    __m128i x = _mm_set1_epi8((char)c);
+    if (n <= 32) { stv(d, x); stv(d + n - 16, x); return dst; }
+    if (n <= 64) { stv(d, x); stv(d + 16, x); stv(d + n - 32, x); stv(d + n - 16, x); return dst; }
+    size_t i = 0;
+    for (; n - i > 64; i += 64) {
+        stv(d + i, x);
+        stv(d + i + 16, x);
+        stv(d + i + 32, x);
+        stv(d + i + 48, x);
+    }
+    stv(d + n - 64, x);
+    stv(d + n - 48, x);
+    stv(d + n - 32, x);
+    stv(d + n - 16, x);
+    return dst;
+}
+
+NB int memcmp(const void *a, const void *b, size_t n) {
     const unsigned char *x = a, *y = b;
+    if (n >= 16) {
+        size_t i = 0;
+        for (; i + 16 <= n; i += 16) {
+            unsigned m = eqmask(ldv(x + i), ldv(y + i)) ^ 0xFFFFu;
+            if (m) { int k = __builtin_ctz(m); return x[i + k] - y[i + k]; }
+        }
+        if (i < n) {                                        /* the last block overlaps the one before it */
+            i = n - 16;
+            unsigned m = eqmask(ldv(x + i), ldv(y + i)) ^ 0xFFFFu;
+            if (m) { int k = __builtin_ctz(m); return x[i + k] - y[i + k]; }
+        }
+        return 0;
+    }
+    if (n >= 8) {
+        u64 p = __builtin_bswap64(ld64(x)), q = __builtin_bswap64(ld64(y));
+        if (p != q) return p < q ? -1 : 1;
+        p = __builtin_bswap64(ld64(x + n - 8));
+        q = __builtin_bswap64(ld64(y + n - 8));
+        return p < q ? -1 : p > q;
+    }
     for (size_t i = 0; i < n; i++)
-        if (x[i] != y[i]) return x[i] < y[i] ? -1 : 1;
+        if (x[i] != y[i]) return x[i] - y[i];
     return 0;
 }
 
-void *memchr(const void *s, int c, size_t n) {
+NB void *memchr(const void *s, int c, size_t n) {
     const unsigned char *p = s;
+    unsigned char ch = (unsigned char)c;
+    if (n >= 16) {
+        __m128i v = _mm_set1_epi8((char)ch);
+        size_t i = 0;
+        for (; i + 16 <= n; i += 16) {
+            unsigned m = eqmask(ldv(p + i), v);
+            if (m) return (void *)(p + i + __builtin_ctz(m));
+        }
+        if (i < n) {
+            i = n - 16;
+            unsigned m = eqmask(ldv(p + i), v);
+            if (m) return (void *)(p + i + __builtin_ctz(m));
+        }
+        return NULL;
+    }
     for (size_t i = 0; i < n; i++)
-        if (p[i] == (unsigned char)c) return (void *)(p + i);
+        if (p[i] == ch) return (void *)(p + i);
     return NULL;
 }
 
-void *memmem(const void *h, size_t hl, const void *n, size_t nl) {
+NB void *memrchr(const void *s, int c, size_t n) {
+    const unsigned char *p = s;
+    unsigned char ch = (unsigned char)c;
+    if (n >= 16) {
+        __m128i v = _mm_set1_epi8((char)ch);
+        size_t i = n;
+        while (i >= 16) {
+            i -= 16;
+            unsigned m = eqmask(ldv(p + i), v);
+            if (m) return (void *)(p + i + 31 - __builtin_clz(m));
+        }
+        if (i) {                                            /* the first block overlaps the one after it */
+            unsigned m = eqmask(ldv(p), v);
+            if (m) return (void *)(p + 31 - __builtin_clz(m));
+        }
+        return NULL;
+    }
+    while (n--)
+        if (p[n] == ch) return (void *)(p + n);
+    return NULL;
+}
+
+NB void *memmem(const void *h, size_t hl, const void *n, size_t nl) {
     if (!nl) return (void *)h;
-    const unsigned char *p = h;
-    for (size_t i = 0; i + nl <= hl; i++)
-        if (!memcmp(p + i, n, nl)) return (void *)(p + i);
+    if (nl > hl) return NULL;
+    const unsigned char *p = h, *nd = n;
+    size_t last = hl - nl + 1;                              /* candidate start positions */
+    while (last) {
+        const unsigned char *q = memchr(p, nd[0], last);
+        if (!q) return NULL;
+        if (!memcmp(q, nd, nl)) return (void *)q;
+        last -= (size_t)(q - p) + 1;
+        p = q + 1;
+    }
     return NULL;
 }
 
-size_t strlen(const char *s) { size_t n = 0; while (s[n]) n++; return n; }
-size_t strnlen(const char *s, size_t max) { size_t n = 0; while (n < max && s[n]) n++; return n; }
-
-int strcmp(const char *a, const char *b) {
-    while (*a && *a == *b) { a++; b++; }
-    return (unsigned char)*a - (unsigned char)*b;
+NB size_t strlen(const char *s) {
+    const char *p = (const char *)((uintptr_t)s & ~(uintptr_t)15);
+    __m128i z = _mm_setzero_si128();
+    unsigned m = eqmask(_mm_load_si128((const __m128i *)p), z) >> ((uintptr_t)s & 15);
+    if (m) return (size_t)__builtin_ctz(m);
+    for (;;) {
+        p += 16;
+        m = eqmask(_mm_load_si128((const __m128i *)p), z);
+        if (m) return (size_t)(p - s) + (size_t)__builtin_ctz(m);
+    }
 }
 
-int strncmp(const char *a, const char *b, size_t n) {
-    while (n && *a && *a == *b) { a++; b++; n--; }
-    return n ? (unsigned char)*a - (unsigned char)*b : 0;
+NB size_t strnlen(const char *s, size_t max) {             /* like strlen: never reads past the NUL's aligned block */
+    if (!max) return 0;
+    const char *p = (const char *)((uintptr_t)s & ~(uintptr_t)15);
+    size_t sh = (uintptr_t)s & 15;
+    __m128i z = _mm_setzero_si128();
+    unsigned m = eqmask(_mm_load_si128((const __m128i *)p), z) >> sh;
+    if (m) { size_t k = (size_t)__builtin_ctz(m); return k < max ? k : max; }
+    size_t scanned = 16 - sh;
+    while (scanned < max) {
+        p += 16;
+        m = eqmask(_mm_load_si128((const __m128i *)p), z);
+        if (m) { size_t k = scanned + (size_t)__builtin_ctz(m); return k < max ? k : max; }
+        scanned += 16;
+    }
+    return max;
+}
+
+NB int strcmp(const char *a, const char *b) {
+    __m128i z = _mm_setzero_si128();
+    for (;;) {
+        if (((uintptr_t)a & 4095) <= 4080 && ((uintptr_t)b & 4095) <= 4080) {   /* 16 bytes stay inside both pages */
+            __m128i va = ldv(a), vb = ldv(b);
+            unsigned stop = (eqmask(va, vb) ^ 0xFFFFu) | eqmask(va, z);
+            if (stop) { int k = __builtin_ctz(stop); return (unsigned char)a[k] - (unsigned char)b[k]; }
+            a += 16;
+            b += 16;
+        } else {
+            unsigned char x = (unsigned char)*a, y = (unsigned char)*b;
+            if (x != y || !x) return x - y;
+            a++;
+            b++;
+        }
+    }
+}
+
+NB int strncmp(const char *a, const char *b, size_t n) {
+    __m128i z = _mm_setzero_si128();
+    while (n) {
+        if (n >= 16 && ((uintptr_t)a & 4095) <= 4080 && ((uintptr_t)b & 4095) <= 4080) {
+            __m128i va = ldv(a), vb = ldv(b);
+            unsigned stop = (eqmask(va, vb) ^ 0xFFFFu) | eqmask(va, z);
+            if (stop) { int k = __builtin_ctz(stop); return (unsigned char)a[k] - (unsigned char)b[k]; }
+            a += 16;
+            b += 16;
+            n -= 16;
+        } else {
+            unsigned char x = (unsigned char)*a, y = (unsigned char)*b;
+            if (x != y || !x) return x - y;
+            a++;
+            b++;
+            n--;
+        }
+    }
+    return 0;
 }
 
 int strcasecmp(const char *a, const char *b) {
@@ -71,22 +285,22 @@ int strncasecmp(const char *a, const char *b, size_t n) {
     return n ? tolower((unsigned char)*a) - tolower((unsigned char)*b) : 0;
 }
 
-char *strcpy(char *dst, const char *src) { char *d = dst; while ((*d++ = *src++)) { } return dst; }
+char *strcpy(char *dst, const char *src) { memcpy(dst, src, strlen(src) + 1); return dst; }
 
 char *strncpy(char *dst, const char *src, size_t n) {
-    size_t i = 0;
-    for (; i < n && src[i]; i++) dst[i] = src[i];
-    for (; i < n; i++) dst[i] = 0;
+    size_t l = strnlen(src, n);
+    memcpy(dst, src, l);
+    if (l < n) memset(dst + l, 0, n - l);
     return dst;
 }
 
-char *strcat(char *dst, const char *src) { strcpy(dst + strlen(dst), src); return dst; }
+char *strcat(char *dst, const char *src) { memcpy(dst + strlen(dst), src, strlen(src) + 1); return dst; }
 
 char *strncat(char *dst, const char *src, size_t n) {
     char *d = dst + strlen(dst);
-    size_t i = 0;
-    for (; i < n && src[i]; i++) d[i] = src[i];
-    d[i] = 0;
+    size_t l = strnlen(src, n);
+    memcpy(d, src, l);
+    d[l] = 0;
     return dst;
 }
 
@@ -106,26 +320,40 @@ size_t strlcat(char *dst, const char *src, size_t size) {
     return dl + strlcpy(dst + dl, src, size - dl);
 }
 
-char *strchr(const char *s, int c) {
-    for (;; s++) {
-        if (*s == (char)c) return (char *)s;
-        if (!*s) return NULL;
+NB char *strchr(const char *s, int c) {
+    unsigned char ch = (unsigned char)c;
+    if (!ch) return (char *)s + strlen(s);
+    const char *p = (const char *)((uintptr_t)s & ~(uintptr_t)15);
+    unsigned sh = (unsigned)((uintptr_t)s & 15);
+    __m128i v = _mm_set1_epi8((char)ch), z = _mm_setzero_si128();
+    __m128i blk = _mm_load_si128((const __m128i *)p);
+    unsigned mc = eqmask(blk, v) >> sh, mz = eqmask(blk, z) >> sh;
+    for (;;) {
+        unsigned any = mc | mz;
+        if (any) {
+            int k = __builtin_ctz(any);
+            return (mc >> k) & 1 ? (char *)(p + sh + k) : NULL;
+        }
+        p += 16;
+        sh = 0;
+        blk = _mm_load_si128((const __m128i *)p);
+        mc = eqmask(blk, v);
+        mz = eqmask(blk, z);
     }
 }
 
 char *strrchr(const char *s, int c) {
+    if (!(unsigned char)c) return (char *)s + strlen(s);
     const char *last = NULL;
-    for (;; s++) {
-        if (*s == (char)c) last = s;
-        if (!*s) return (char *)last;
-    }
+    for (const char *p = strchr(s, c); p; p = strchr(p + 1, c)) last = p;
+    return (char *)last;
 }
 
 char *strstr(const char *h, const char *n) {
     size_t nl = strlen(n);
     if (!nl) return (char *)h;
-    for (; *h; h++)
-        if (*h == *n && !strncmp(h, n, nl)) return (char *)h;
+    for (h = strchr(h, n[0]); h; h = strchr(h + 1, n[0]))
+        if (!strncmp(h, n, nl)) return (char *)h;
     return NULL;
 }
 
@@ -137,22 +365,34 @@ char *strcasestr(const char *h, const char *n) {
     return NULL;
 }
 
+/* A 256-bit set of the bytes in `chars`, for strspn and friends. */
+static void byte_set(unsigned char set[32], const char *chars) {
+    memset(set, 0, 32);
+    for (const unsigned char *p = (const unsigned char *)chars; *p; p++) set[*p >> 3] |= (unsigned char)(1u << (*p & 7));
+}
+#define IN_SET(set, c) ((set)[(unsigned char)(c) >> 3] & (1u << ((unsigned char)(c) & 7)))
+
 size_t strspn(const char *s, const char *accept) {
+    unsigned char set[32];
+    byte_set(set, accept);
     size_t n = 0;
-    while (s[n] && strchr(accept, s[n])) n++;
+    while (s[n] && IN_SET(set, s[n])) n++;
     return n;
 }
 
 size_t strcspn(const char *s, const char *reject) {
+    if (!reject[0]) return strlen(s);
+    if (!reject[1]) { const char *e = strchr(s, reject[0]); return e ? (size_t)(e - s) : strlen(s); }
+    unsigned char set[32];
+    byte_set(set, reject);
     size_t n = 0;
-    while (s[n] && !strchr(reject, s[n])) n++;
+    while (s[n] && !IN_SET(set, s[n])) n++;
     return n;
 }
 
 char *strpbrk(const char *s, const char *accept) {
-    for (; *s; s++)
-        if (strchr(accept, *s)) return (char *)s;
-    return NULL;
+    s += strcspn(s, accept);
+    return *s ? (char *)s : NULL;
 }
 
 char *strdup(const char *s) {

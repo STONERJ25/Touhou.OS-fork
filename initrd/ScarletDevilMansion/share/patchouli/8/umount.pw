@@ -6,7 +6,7 @@
 # DESCRIPTION
 `umount` detaches the filesystem mounted on the directory _TARGET_, after writing everything back to the device and marking a FAT volume clean. It fails if the filesystem is busy (a file is open, or a shell is standing inside it).
 
-If the device is gone, because the USB stick was pulled out, there is nothing left to write back: the mount is dropped without a write-back, and what was not written yet is lost. The volume stays flagged dirty, so the next mount of that stick is read-only until it has been checked (`fsck` on another computer). Eject with `umount` (or `poweroff`) before pulling a stick.
+If the device is gone, because the USB stick was pulled out, there is nothing left to write back: the mount is dropped without a write-back, and what was not written yet is lost. The volume stays flagged dirty, so the next boot (or the next time the stick is plugged in) goes through its contents before the Human Village is mounted: read-write when nothing is out of place, read-only until `fsck` has been through it when something is (see fsck(8)). Eject with `umount` (or `poweroff`) before pulling a stick.
 
 # SEE ALSO
-mount(8), sync(1), poweroff(8)
+mount(8), fsck(8), sync(1), poweroff(8)

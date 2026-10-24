@@ -51,7 +51,8 @@ Use rear USB ports directly on the board rather than hubs for the first try.
    here on and survive the next boot. Boot waits for this (at most 8 s, `[Kappa] usb: the bus settled after N ms`).
 4. `init` opens the desktop for `reimu` (no password), the HakureiDE desktop with a panel. Press **Ctrl+Alt+T** for a
    terminal, **Super+L** to lock, the power button for the shutdown dialog. **Shut down from the panel (or `poweroff`) before you pull the
-   stick**: that is what marks the volume clean; a stick that was just pulled is mounted read-only at the next boot (see below).
+   stick**: that is what marks the volume clean. A stick that was just pulled (or a power button held down) is gone through before it is
+   mounted at the next boot: usually it comes up read-write at once, see "What touches your disks" below.
 
 If something is wrong, the useful things to look at (in a terminal window or the text console, `Ctrl+Alt+Backspace` leaves the desktop):
 
@@ -84,8 +85,9 @@ never left flagged dirty by the log itself.
 
 What it does *not* do: a kernel panic is not written (every disk driver needs the scheduler and interrupts, which a panic has just given
 up; the panic text is on the screen: photograph it), nothing is written when the volume is mounted read-only (a stick that was pulled
-without shutting down is flagged dirty and mounted read-only on the next boot; the file of the failed boot is then still intact, and only
-a file system check clears the flag again, see section 5), and `bootlog=off` on the kernel command line switches the whole thing off.
+without shutting down is flagged dirty; at the next boot the kernel goes through it first and mounts it read-write when nothing is out of
+place, so the log of the failed boot is rotated to `TOUHOU.PRV` as usual; only when the check finds real damage does it stay read-only, with the
+file of the failed boot intact, see section 5), and `bootlog=off` on the kernel command line switches the whole thing off.
 
 ## 4. The command line (`cmdline.txt` on the ESP)
 
@@ -110,6 +112,8 @@ clock is hours off on the first boot, the PC's clock chip holds local time (Wind
 | `tz=EST5EDT,M3.2.0,M11.1.0` | the time zone (POSIX syntax, see `man timezone`); also what makes the file times on the stick come out in local time on other computers (FAT stores local time) |
 | `rtc=local` | the clock chip keeps local time (a PC that also runs Windows does that) |
 | `nohumanvillage` | do not mount the HUMANVILLAGE volume |
+| `hvforce` | mount the HUMANVILLAGE volume read-write even if it was not closed properly **and** the check of its contents found damage. **Dangerous**: what is written to a damaged volume can make it worse; use it only to get at your files (copy them out first) |
+| `hvcheck=off` | do not go through a dirty HUMANVILLAGE volume before mounting it: it is then read-only, as in the first versions (with `hvforce` it is forced) |
 | `init=kshell` | skip userland, start the kernel's own tiny shell |
 | `fb.cache=uc` | map the framebuffer uncached instead of write-combining: only for comparing the `framebuffer speed` log line when the screen feels slow (it also switches the MTRR fallback below off) |
 | `fb.mtrr=auto` (default), `on`, `off` | the slow-screen fallback: when the screen measures under 400 MB/s the kernel tries a write-combining MTRR over the display adapter's BAR, logs `fb speed before N MB/s after M MB/s` and takes it back if the screen did not get faster. `on` tries it even when the screen is fast, `off` never touches the MTRRs |
@@ -134,10 +138,22 @@ any editor will do. If there is no `cmdline.txt` at all the loader uses `video=n
   HUMANVILLAGE volume is ignored (the first one found wins; an internal disk that has one beats any stick), and any other stick is
   readable (`mount -t fat32 /dev/sdb1 /mnt`) but is never mounted by itself.
 - Eject before you pull: `poweroff` (or the panel's shutdown) flushes and marks the volume clean. A stick that is pulled, or a machine that
-  is switched off with the power button held, while the volume is flagged dirty (a file was written in the last few seconds) is mounted
-  **read-only** at the next boot: the kernel says so in the log (`read-only: the volume was not cleanly unmounted`), nothing is written to
-  it, and `TOUHOU.LOG` is not updated. The data is fine; only a file system check clears the flag: plug the stick into Windows ("Scan and
-  fix"), or use `fsck.vfat -a` on Linux. From inside TouhouOS root can mount it read-write by hand
+  is switched off with the power button held, while the volume is flagged dirty (a file was written in the last few seconds) is **gone
+  through before it is mounted** at the next boot: `[Keine] sda2 was not closed properly: Keine goes through the whole ledger, read-only,
+  before anyone writes in it`. The check reads the whole FAT and every directory (about a second for a small stick; it never writes). Three
+  outcomes:
+  - *nothing is out of place* (the usual case: the cut came between two writes): `... nothing is out of place: the Human Village may write in
+    it again`; the volume is mounted read-write, the flag is cleared again after the first sync, and `TOUHOU.LOG` is kept as usual;
+  - *only harmless leftovers* (clusters that were allocated and never used, a file whose chain is a little longer than its size, a stale free
+    count): mounted read-write too, and the log says so; the flag stays until a file system check tidies them up (`fsck -a`, below);
+  - *damage* (a chain that runs into nothing, two files sharing clusters, a directory without `.` / `..`, ...): the volume stays
+    **read-only**, nothing is written, `TOUHOU.LOG` is not updated, and the log (`dmesg | grep Keine`, and `cat /proc/fatcheck` with every
+    problem) says precisely what and what to do: as root `umount /HumanVillage`, `fsck -a /dev/sda2` (`fsck -y` also repairs what needs a
+    decision, such as a file whose chain is cut at its break), then reboot. Your files are still readable meanwhile. (`fsck` here is new: it has
+    been tested against images on the host and has not yet been run on the real machine; on Windows, "Scan and fix" on the big partition, or
+    `fsck.vfat -a` on Linux, do the same job.)
+  `hvforce` on the kernel command line mounts the volume read-write even when the check found damage (dangerous), `hvcheck=off` skips the check
+  (then a dirty volume is read-only, as before). From inside TouhouOS root can also mount it by hand
   (`umount /HumanVillage; mount -t fat32 -o force,userdirs /dev/sda2 /HumanVillage`), but the flag then stays dirty. If you pull the
   stick of a *running* system, `/HumanVillage` starts failing with "No such device" until you `umount /HumanVillage` and plug it in again.
 
@@ -155,6 +171,8 @@ any editor will do. If there is no `cmdline.txt` at all the loader uses `video=n
 - **Wrong time**: `rtc=local` and `tz=`; fix the chip with `sudo hwclock -w` (see [POWER_AND_TIME.md](POWER_AND_TIME.md)).
 - **Boots, then reboots**: the log's last lines name the subsystem; every driver polls and has timeouts, so a stall is
   normally one device being skipped after a few seconds, not a hang.
+- **Sound** (Intel HD Audio, AC'97 as a fallback; never run on a real codec yet): `volume`, then `beep`; if the jack stays
+  silent, `cat /proc/audio` and `dmesg | grep Nitori` say what the driver found; see [AUDIO.md](AUDIO.md).
 - **Network** (see [NETWORK.md](NETWORK.md)): the I219-LM of the target machine (and RTL8168/8111 boards) have drivers that have
   never run on hardware. On boot the log shows `[Yukari] eth0: Intel I219-LM at ..., MAC ...` and, when a cable is plugged in
   and autonegotiation finishes, `link up, N Mb/s` followed by the DHCP lease line; `ifconfig`, `ip addr` and `cat /proc/net/dev`
