@@ -34,9 +34,9 @@ Without `-n`, `-a` or `-y`, `fsck` asks before every repair when it is run on a 
 
 # EXAMPLES
     umount /HumanVillage
-    fsck -n /dev/sdb2          # what is wrong?
-    fsck -a /dev/sdb2          # mend what loses nothing, clear the dirty flag
-    fsck -y /dev/sdb2          # and everything else
+    fsck -n /dev/sdb2    # what is wrong?
+    fsck -a /dev/sdb2    # mend what loses nothing, clear the flag
+    fsck -y /dev/sdb2    # and everything else
     reboot
 
 # FILES
