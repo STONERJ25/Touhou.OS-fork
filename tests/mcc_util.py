@@ -73,11 +73,11 @@ def make_initrd(extra, out):
     """Copies build/initrd.img and adds extra files: {archive name: bytes | Path}.  Executables get mode 0755."""
     src = BUILD / "initrd.img"
     with tarfile.open(src, "r") as tin, tarfile.open(out, "w", format=tarfile.USTAR_FORMAT) as tout:
-        names = set()
+        modes = {}
         for m in tin.getmembers():
             if m.name in extra:
-                continue            # replaced by the file we are adding
-            names.add(m.name)
+                modes[m.name] = m.mode      # replaced by the file we are adding, which keeps the mode (setuid bits...)
+                continue
             if m.isfile():
                 tout.addfile(m, tin.extractfile(m))
             else:
@@ -87,7 +87,7 @@ def make_initrd(extra, out):
                 data = data.read_bytes()
             ti = tarfile.TarInfo(name)
             ti.size = len(data)
-            ti.mode = 0o755
+            ti.mode = modes.get(name, 0o755)
             ti.mtime = int(time.time())
             tout.addfile(ti, io.BytesIO(data))
 

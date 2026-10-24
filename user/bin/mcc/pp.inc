@@ -352,6 +352,8 @@ static int pp_prec(Token *t) {
     return 0;
 }
 
+static int pp_noeval; /* > 0 inside the operand of && || ?: that is not evaluated: division by zero is not an error there */
+
 static PV pp_binary(int minprec) {
     PV lhs = pp_unary();
     for (;;) {
@@ -359,14 +361,20 @@ static PV pp_binary(int minprec) {
         int p = pp_prec(op);
         if (p == 0 || p < minprec) return lhs;
         pp_t = op->next;
+        bool skip_rhs = (equal(op, "&&") && !lhs.v) || (equal(op, "||") && lhs.v);
+        if (skip_rhs) pp_noeval++;
         PV rhs = pp_binary(p + 1);
+        if (skip_rhs) pp_noeval--;
         bool u = lhs.u || rhs.u;
         PV r;
         r.u = u;
         i64 a = lhs.v, b = rhs.v;
         if (equal(op, "*")) r.v = (i64)((u64)a * (u64)b);
         else if (equal(op, "/") || equal(op, "%")) {
-            if (b == 0) error_tok(op, "division by zero in #if");
+            if (b == 0) {
+                if (!pp_noeval) error_tok(op, "division by zero in #if");
+                b = 1;
+            }
             if (u) r.v = equal(op, "/") ? (i64)((u64)a / (u64)b) : (i64)((u64)a % (u64)b);
             else r.v = equal(op, "/") ? (b == -1 ? (i64)(0 - (u64)a) : a / b) : (b == -1 ? 0 : a % b);
         } else if (equal(op, "+")) r.v = (i64)((u64)a + (u64)b);
@@ -413,10 +421,14 @@ static PV pp_ternary(void) {
     PV c = pp_binary(1);
     if (!equal(pp_t, "?")) return c;
     pp_t = pp_t->next;
+    if (!c.v) pp_noeval++;
     PV a = pp_ternary();
+    if (!c.v) pp_noeval--;
     if (!equal(pp_t, ":")) error_tok(pp_t, "expected ':'");
     pp_t = pp_t->next;
+    if (c.v) pp_noeval++;
     PV b = pp_ternary();
+    if (c.v) pp_noeval--;
     PV r = c.v ? a : b;
     r.u = a.u || b.u;
     return r;

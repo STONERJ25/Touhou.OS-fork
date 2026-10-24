@@ -455,9 +455,21 @@ static void label_ensure(int id) {
     label_cap = ncap;
 }
 
+static int last_jmp_pos = -1;   /* where the latest unconditional jump starts */
+static int last_jmp_label;
+static int last_label_pos = -1; /* where the latest label was put */
+
 static void label_set(int id) {
     label_ensure(id);
+    /* a jump to the very next instruction is dropped (the usual `return` at the end of a function) */
+    if (last_jmp_pos >= 0 && last_jmp_pos + 5 == cur_pos() && last_jmp_label == id && last_label_pos != cur_pos() && nfixups > 0 &&
+        fixups[nfixups - 1].pos == last_jmp_pos + 1) {
+        TB()->len -= 5;
+        nfixups--;
+        last_jmp_pos = -1;
+    }
     label_pos[id] = cur_pos();
+    last_label_pos = cur_pos();
 }
 
 static void add_fixup(int pos, int label) {
@@ -471,6 +483,8 @@ static void add_fixup(int pos, int label) {
 }
 
 static void jmp_label(int id) {
+    last_jmp_pos = cur_pos();
+    last_jmp_label = id;
     e1(0xE9);
     add_fixup(cur_pos(), id);
     e4(0);

@@ -321,7 +321,7 @@ static int mcc_main(int argc, char **argv) {
     return ld_link_mixed(all, nall, dst, opt_strip, opt_map, "_start");
 }
 
-int main(int argc, char **argv) {
+static int real_main(int argc, char **argv) {
     const char *self = base_of(argv[0]);
     if (argc > 1 && str_eq(argv[1], "--mld")) {
         argv[1] = argv[0];
@@ -334,4 +334,33 @@ int main(int argc, char **argv) {
     if (str_starts(self, "mld")) return mld_main(argc, argv);
     if (str_starts(self, "mar")) return mar_main(argc, argv);
     return mcc_main(argc, argv);
+}
+
+/* The compiler is recursive (a chain of 4000 additions is a tree 4000 levels deep), and the main stack of a TouhouOS
+ * program is 8 MiB: the work is done in a thread with a big, lazily mapped stack. */
+typedef struct {
+    int argc;
+    char **argv;
+    int rc;
+} MainArgs;
+
+static void *big_stack_main(void *p) {
+    MainArgs *a = p;
+    a->rc = real_main(a->argc, a->argv);
+    return NULL;
+}
+
+int main(int argc, char **argv) {
+    MainArgs a;
+    a.argc = argc;
+    a.argv = argv;
+    a.rc = 0;
+    pthread_attr_t attr;
+    pthread_t th;
+    pthread_attr_init(&attr);
+    if (pthread_attr_setstacksize(&attr, (size_t)256 << 20) == 0 && pthread_create(&th, &attr, big_stack_main, &a) == 0) {
+        pthread_join(th, NULL);
+        return a.rc;
+    }
+    return real_main(argc, argv);
 }

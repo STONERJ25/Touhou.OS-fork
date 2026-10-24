@@ -70,3 +70,30 @@ L"wide" L"x" "y"
 '\n' '\\' '\'' '\0' '\x41' 'ab' L'x'
 0x1F 017 0b101 1.5e3 .5f 0x1.8p3 100ULL 1u 'a'
 a ## b # c ??=
+#define OPT(a, ...) f(a __VA_OPT__(,) __VA_ARGS__)
+#define OPT2(x, ...) g(x __VA_OPT__(+ __VA_ARGS__ +) 0)
+OPT(1) OPT(1, 2) OPT(1, 2, 3) OPT2(a) OPT2(a, b, c)
+#define EXPAND(x) x
+#define PASTE3(a, b, c) a ## b ## c
+#define STRCAT3(a, b, c) STR(PASTE3(a, b, c))
+EXPAND(PASTE3(x, y, z)) STRCAT3(1, 2, 3) PASTE3(, mid, ) PASTE3(a_, , _b)
+#define REC1 REC2 + 1
+#define REC2 REC1 + 2
+REC1 REC2
+#define f(x) #x x
+f(f) f(f(1)) f((a, b)) f( spaced   out )
+#define CALL(fn, ...) fn(__VA_ARGS__)
+CALL(g) CALL(g, 1) CALL(g, 1, 2) CALL(CALL, g, 3)
+#define EMPTY_ARG(a, b) [a][b]
+EMPTY_ARG(, ) EMPTY_ARG(1, ) EMPTY_ARG(, 2)
+#if (defined(REC1) || 0) && !defined(REC3) && (1 ? 2 : (1 / 0))
+conditional ok
+#endif
+#if 0x7fffffffffffffff > 0 && -1 < 0 && 10u - 20u > 0 && (1 << 62) == 4611686018427387904
+big arithmetic ok
+#endif
+#ifdef __has_include
+#if __has_include(<stdio.h>) && !__has_include("no_such_header.h")
+has_include ok
+#endif
+#endif

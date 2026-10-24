@@ -120,6 +120,32 @@ Type *struct_type(void) {
     return new_type(TY_STRUCT, 0, 1);
 }
 
+static i64 eval(Node *node);
+
+/* wraps a value to the width and signedness of an integer type */
+static i64 wrap_int(i64 v, Type *ty) {
+    if (ty->kind == TY_BOOL) return v != 0;
+    switch (ty->size) {
+    case 1:
+        return ty->is_unsigned ? (i64)(u8)v : (i64)(i8)v;
+    case 2:
+        return ty->is_unsigned ? (i64)(u16)v : (i64)(i16)v;
+    case 4:
+        return ty->is_unsigned ? (i64)(u32)v : (i64)(i32)v;
+    default:
+        return v;
+    }
+}
+
+static bool is_int_const(Node *n) {
+    return n && n->kind == ND_NUM && n->ty && is_integer(n->ty);
+}
+
+static bool is_flo_const(Node *n) {
+    return n && n->kind == ND_NUM && n->ty && is_flonum(n->ty);
+}
+
+/* A cast of a constant is a constant (the compiler folds what it cheaply can). */
 Node *new_cast(Node *expr, Type *ty) {
     add_type(expr);
     Node *node = xcalloc(sizeof(Node));
@@ -127,6 +153,20 @@ Node *new_cast(Node *expr, Type *ty) {
     node->tok = expr->tok;
     node->lhs = expr;
     node->ty = copy_type(ty);
+    if (is_int_const(expr) && is_integer(ty)) {
+        node->kind = ND_NUM;
+        node->val = wrap_int(expr->val, ty);
+        node->lhs = NULL;
+    } else if (is_int_const(expr) && is_flonum(ty)) {
+        node->kind = ND_NUM;
+        double d = expr->ty->is_unsigned && expr->ty->size == 8 ? (double)(u64)expr->val : (double)expr->val;
+        node->fval = ty->kind == TY_FLOAT ? (double)(float)d : d;
+        node->lhs = NULL;
+    } else if (is_flo_const(expr) && is_flonum(ty)) {
+        node->kind = ND_NUM;
+        node->fval = ty->kind == TY_FLOAT ? (double)(float)expr->fval : expr->fval;
+        node->lhs = NULL;
+    }
     return node;
 }
 
@@ -150,6 +190,53 @@ static void usual_arith_conv(Node **lhs, Node **rhs) {
     Type *ty = get_common_type((*lhs)->ty, (*rhs)->ty);
     *lhs = new_cast(*lhs, ty);
     *rhs = new_cast(*rhs, ty);
+}
+
+/* Constant folding of integer operators whose operands are constants. */
+static void fold_const(Node *node) {
+    if (!node->ty || !is_integer(node->ty)) return;
+    bool two = false;
+    switch (node->kind) {
+    case ND_ADD:
+    case ND_SUB:
+    case ND_MUL:
+    case ND_DIV:
+    case ND_MOD:
+    case ND_BITAND:
+    case ND_BITOR:
+    case ND_BITXOR:
+    case ND_SHL:
+    case ND_SHR:
+    case ND_EQ:
+    case ND_NE:
+    case ND_LT:
+    case ND_LE:
+    case ND_LOGAND:
+    case ND_LOGOR:
+        two = true;
+        break;
+    case ND_NEG:
+    case ND_NOT:
+    case ND_BITNOT:
+        break;
+    default:
+        return;
+    }
+    if (!is_int_const(node->lhs)) return;
+    if (two) {
+        if (!is_int_const(node->rhs)) return;
+        if (node->kind == ND_DIV || node->kind == ND_MOD) {
+            if (node->rhs->val == 0 || node->rhs->val == -1) return;
+        }
+        if (node->kind == ND_SHL || node->kind == ND_SHR) {
+            if (node->rhs->val < 0 || node->rhs->val >= node->lhs->ty->size * 8) return;
+        }
+        if (node->lhs->ty->size < 4 && node->kind != ND_LOGAND && node->kind != ND_LOGOR) return;
+    }
+    i64 v = eval(node);
+    node->kind = ND_NUM;
+    node->val = wrap_int(v, node->ty);
+    node->lhs = node->rhs = NULL;
 }
 
 void add_type(Node *node) {
@@ -180,11 +267,19 @@ void add_type(Node *node) {
     case ND_BITXOR:
         usual_arith_conv(&node->lhs, &node->rhs);
         node->ty = node->lhs->ty;
+        fold_const(node);
         return;
     case ND_NEG: {
         Type *ty = get_common_type(ty_int, node->lhs->ty);
         node->lhs = new_cast(node->lhs, ty);
         node->ty = ty;
+        if (is_flo_const(node->lhs)) {
+            node->kind = ND_NUM;
+            node->fval = -node->lhs->fval;
+            node->lhs = NULL;
+            return;
+        }
+        fold_const(node);
         return;
     }
     case ND_ASSIGN:
@@ -198,6 +293,7 @@ void add_type(Node *node) {
     case ND_LE:
         usual_arith_conv(&node->lhs, &node->rhs);
         node->ty = ty_int;
+        fold_const(node);
         return;
     case ND_FUNCALL:
         node->ty = node->func_ty->return_ty;
@@ -206,6 +302,7 @@ void add_type(Node *node) {
     case ND_LOGOR:
     case ND_LOGAND:
         node->ty = ty_int;
+        fold_const(node);
         return;
     case ND_BITNOT:
     case ND_SHL:
@@ -217,6 +314,7 @@ void add_type(Node *node) {
             ty = ty_int;
         }
         node->ty = ty;
+        fold_const(node);
         return;
     }
     case ND_VAR:

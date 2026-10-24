@@ -8,7 +8,10 @@ that only ever runs in QEMU.  The guest runs of this file:
   mcc_selfhost         mcc compiles mcc: stage 2 (host) and the guest's stage 3 are the same file
   mcc_kappabox         all of kappabox, built with mcc, passes the shell test table
   mld_relinks_clang    objects made by clang are relinked by mld and the programs still run
+  mld_got_relocations  an object made by clang -fPIC (GOTPCREL) is linked statically by mld and runs
   mcc_libgap           libgap itself (all but math and setjmp) compiled by mcc passes the OS's own utest suite
+  mcc_userland         the whole userland (34 programs) built by mcc boots the desktop and passes utest and the shell table
+  mcc_fuzz             (host) random expression programs: mcc and gcc print the same numbers
 """
 import re
 import subprocess
@@ -211,6 +214,18 @@ def mcc_driver_options():
     assert rc == 0, se
     rc, so, se = U.host("mcc", ["build/mcc-out/undef.o", "-o", "build/mcc-out/undef"])
     assert rc == 1 and "undefined reference to 'missing'" in se and "Marisa" in se, se
+    # a static library: only the member that is needed is linked in
+    (out / "lib_a.c").write_text("int a_fn(void) { return 1; }\n")
+    (out / "lib_b.c").write_text("int b_unused(void) { return 2; }\n")
+    (out / "use.c").write_text("int a_fn(void);\nint main(void) { return a_fn(); }\n")
+    for n in ("lib_a", "lib_b"):
+        rc, so, se = U.host("mcc", ["-c", f"build/mcc-out/{n}.c", "-o", f"build/mcc-out/{n}.o"])
+        assert rc == 0, se
+    (out / "libab.a").unlink(missing_ok=True)
+    rc, so, se = U.host("mar", ["rcs", "build/mcc-out/libab.a", "build/mcc-out/lib_a.o", "build/mcc-out/lib_b.o"])
+    assert rc == 0, se
+    rc, so, se = U.host("mcc", ["build/mcc-out/use.c", "build/mcc-out/libab.a", "-M", "-o", "build/mcc-out/use"])
+    assert rc == 0 and re.search(r" a_fn$", so, re.M) and "b_unused" not in so, so + se
     # two definitions of a function
     (out / "dup1.c").write_text("int twice(void) { return 1; }\n")
     (out / "dup2.c").write_text("int twice(void) { return 2; }\nint main(void) { return twice(); }\n")
@@ -313,6 +328,11 @@ def mcc_selfhost():
                     expect_output(n + " (compiled by stage 3)", out, (CORPUS_DIR / f"{n}.out").read_text())
                 except AssertionError as e:
                     failures.append(str(e))
+            # the clang-built compiler and stage 3 write the very same object files and executables
+            out, rc = U.run(vm, "cd /tmp && for n in algo crypt structs varargs; do /bin/mcc -c /mcc-src/$n.c -o $n.a.o && /tmp/mcc3 -c /mcc-src/$n.c -o $n.b.o "
+                                "&& cmp $n.a.o $n.b.o && /bin/mcc /mcc-src/$n.c -o $n.a && cmp $n.a $n.3 || echo DIFFERENT $n; done; echo checked", timeout=600)
+            if "DIFFERENT" in out or "checked" not in out:
+                failures.append("stage 3 and the clang-built mcc disagree:\n" + out)
     assert not failures, "\n\n".join(failures)
 
 
@@ -390,3 +410,77 @@ def mcc_libgap():
         for section in case_threads.THREAD_SECTIONS:
             assert f"utest: threads: {section}" in text, f"thread section did not run: {section}"
         assert vm.wait_exit(10) == 0
+
+
+@test
+def mld_got_relocations():
+    """mld serves GOT-relative relocations (clang -fPIC code) in a static executable, with crt0 and libgap."""
+    prepare()
+    obj = U.OUT / "pic.o"
+    flags = ["-target", "x86_64-unknown-none-elf", "-ffreestanding", "-fPIC", "-O1", "-fno-stack-protector", "-fno-asynchronous-unwind-tables",
+             "-I", str(ROOT / "user" / "libc" / "include"), "-I", str(ROOT / "shared")]
+    r = subprocess.run([str(LLVM / "clang.exe"), *flags, "-c", str(CORPUS_DIR / "clang" / "pic.c"), "-o", str(obj)], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    rd = subprocess.run([str(LLVM / "llvm-readobj.exe"), "--relocations", str(obj)], capture_output=True, text=True)
+    assert "GOTPCREL" in rd.stdout, "the clang object has no GOT relocations: " + rd.stdout[:600]
+    rc, so, se = U.host("mld", ["-o", "build/mcc-out/pic", "build/mcc-root/lib/crt0.o", "build/mcc-out/pic.o", "-lgap"])
+    assert rc == 0, so + se
+    with boot_with({"mcc-tests/pic": U.OUT / "pic"}, "t-mld-got") as vm:
+        vm.expect(U.PROMPT, timeout=300)
+        out, rc = U.run(vm, "/mcc-tests/pic one two", timeout=60)
+        expect_output("pic", out, (CORPUS_DIR / "clang" / "pic.out").read_text())
+
+
+@test
+def mcc_fuzz():
+    """mcc against gcc on 40 random programs: integer expressions over every type (promotions, conversions, shifts, division), compound assignments, floats (host only)."""
+    prepare()
+    r = subprocess.run([sys.executable, str(ROOT / "tools" / "mcc_fuzz.py"), "--count", "40", "--seed", "11"], capture_output=True, text=True, cwd=ROOT)
+    assert r.returncode == 0 and "fuzz: all ok" in r.stdout, r.stdout + r.stderr
+
+
+@test
+def mcc_userland():
+    """The whole userland built by mcc (libgap but math and setjmp, five libraries, 34 programs: init, login, gapsh, the greeter, the compositor...) boots the desktop, passes utest and the shell table."""
+    prepare()
+    import test_shell
+    import time
+    from case_desktop import near
+    r = subprocess.run(["wsl.exe", "-e", "bash", U.wsl_path(ROOT / "tools" / "mcc_build_userland.sh")], capture_output=True, text=True, cwd=ROOT)
+    # the calculator needs x87 inline assembly: its clang build stays
+    assert "FAIL" not in r.stdout.replace("FAIL bin/calculator", "") and "built " in r.stdout, r.stdout + r.stderr
+    repl = {}
+    for kind in ("bin", "sbin"):
+        for p in sorted((ROOT / "build" / "mcc-user" / kind).glob("*")):
+            if p.is_file() and not p.name.endswith(".err"):
+                repl[f"{kind}/{p.name}"] = p
+    assert len(repl) >= 30 and "sbin/init" in repl and "bin/gapsh" in repl, sorted(repl)
+    esp = U.make_esp("t-mcc-userland", repl)
+    # 1. the desktop: compositor, wallpaper, panel
+    with Qemu(cmdline="", name="t-mcc-userland", esp=esp, mem="768M") as vm:
+        vm.expect(r"opening the desktop for reimu", timeout=120)
+        deadline = time.time() + 40
+        ok = False
+        while time.time() < deadline:
+            shot = vm.screen_ppm()
+            if near(vm.pixel(118, 756, shot), (0xB5, 0x12, 0x2B), 60):
+                ok = True
+                break
+            time.sleep(0.5)
+        assert ok, "the panel never appeared; serial tail:\n" + vm.text()[-500:]
+    # 2. the user-space unit suite
+    with Qemu(cmdline="utest", name="t-mcc-userland-ut", esp=esp) as vm:
+        vm.expect(r"UTEST (PASS|FAIL)", timeout=240)
+        assert "UTEST PASS" in vm.text(), vm.text()[-2000:]
+    # 3. the shell and its utilities
+    failures = []
+    with Qemu(cmdline="text", name="t-mcc-userland-sh", esp=esp) as vm:
+        vm.expect(U.PROMPT, timeout=300)
+        for cmd, expect, status in test_shell.CHECKS:
+            try:
+                out, rc = test_shell.run(vm, cmd)
+                assert expect in out, f"expected {expect!r} in output:\n{out}"
+                assert status is None or rc == status, f"exit status {rc}, expected {status}; output:\n{out}"
+            except Exception as e:  # noqa: BLE001
+                failures.append(f"{cmd}\n    {str(e)[-500:]}")
+    assert not failures, "\n".join(failures)
