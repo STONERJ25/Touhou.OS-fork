@@ -148,3 +148,29 @@ New tasks, roughly in priority order. 10 to 13 serve the owner's two goals (an i
     as D88/HDI/FDI, beeper). **No game data, BIOS ROMs or copyrighted assets in the repository**; boot a raw boot sector from a test image as the demo.
 
 Suggested order for the free capacity: 10 and 11 first (they unblock 5 and 12), 13 and 15 in parallel with them, then 5, 12 and 14 once task 2 is merged, and the stretch tasks last.
+
+---
+
+## Owner constraint, 2026-10-24: the Dell's internal disk holds a fresh, activated Windows 11 Education (retail licence) that must NOT be lost
+
+The owner's Dell has nothing on its internal disk except that Windows install. They want to keep it. What follows from that:
+
+- **The permanent medium for now is the USB stick** (or a USB SSD): it boots, `HUMANVILLAGE` on it holds the homes, and updates (task 5) change the files on its ESP, which is why task 10 matters. No BIOS change is
+  needed for that. The internal disk is also invisible to the OS today: the SATA controller is in Intel RAID (RST) mode, and it only becomes visible after the BIOS is set to AHCI, a switch that can stop an
+  existing Windows from booting unless it is prepared first (safe-mode trick: `bcdedit /set {current} safeboot minimal`, switch to AHCI, boot Windows in safe mode, then `bcdedit /deletevalue {current} safeboot`).
+- **`install` must never be able to wipe a Windows disk by accident.** On top of "refuse a disk with any partition unless `--force`": recognise other operating systems (an NTFS or exFAT partition, the Microsoft
+  reserved or basic data partition types, a BitLocker signature, Linux root types) and refuse even with `--force` unless the user types a long explicit phrase that names the disk model and what will be erased.
+- **The OS has not yet seen the internal disk at all.** Before any write support is trusted there, the first contact must be read-only (`blk.ro`, `lsblk`, partition tables), and the write-path review (task 13)
+  matters even more.
+- **The Dell's clock is stale** (the hardware clock, and Windows' own "trusted time", say 2025-04-30). The update client (task 5) must not depend on the system clock for signature checks (the manifest carries its own
+  `issued` value); run `sntp` first when the clock matters, and know that HTTPS certificate dates are checked against the system clock, so with a stale clock HTTPS fails until the clock is set.
+
+Two more tasks that follow from it:
+
+19. **Install into free space next to another OS (dual boot).** The `install` tool needs a mode that never modifies an existing partition: find the largest unallocated gap on a GPT disk (the owner would shrink the
+    Windows partition from Windows first), create a 64 MiB ESP and a `HUMANVILLAGE` partition inside it, update both GPT headers correctly, leave the protective MBR and every other partition byte for byte untouched, and
+    leave the Windows ESP alone (our files live on our own ESP). Tests in QEMU on disk images that already carry a Windows-like layout (ESP, MSR, NTFS-typed data, recovery): after the install the old partitions are
+    byte-identical, the new ones boot to the desktop, and a damaged GPT or a gap that is too small is refused. Document the owner's side (shrinking the volume, the AHCI switch above) in `docs/INSTALL.md`.
+20. **The loader registers a UEFI boot entry for an installed system.** A second ESP on an internal disk is not always offered by the firmware's boot menu. On the first start from an installed medium the loader (it still
+    has boot services) should add a boot entry named after the OS (`Boot####` plus an entry in `BootOrder`, placed after the existing entries, never replacing Windows' entry) pointing at `\EFI\BOOT\BOOTX64.EFI` of its
+    own ESP, once, recorded so that it is not repeated. Refuse to touch an existing entry, handle a full variable store, and test with QEMU's OVMF variable store (list the variables before and after, boot twice).
