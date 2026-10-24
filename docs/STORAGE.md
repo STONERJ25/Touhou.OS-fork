@@ -223,6 +223,47 @@ between the classes are what protects a real stick.
 **Cost:** the barriers are extra device flushes; the unmount log line counts them (`unmounted cleanly (N extra flushes for the
 write order)`). See "Crash test" below for numbers.
 
+## Crash test
+
+`tests/case_storagecrash.py`, `python tests/run_all.py storage_crash`. Each run builds a fresh image with a HUMANVILLAGE volume (one of
+FAT32 with the default, 512-byte or 4 KiB clusters, or FAT16), boots, starts `fstest -churn SEED /HumanVillage/reimu` in the guest and
+pulls the plug: QMP `quit` after a random number of operations (0 to 1200, read from the workload's `churn N` lines) plus a random
+0 to 1 s, so the cut lands inside an operation, between operations or in the middle of a flush. No `sync`, no `poweroff`, the kernel
+gets no warning. Then the host looks at the image with `tools/mkdisk.py`'s checker (no code shared with the kernel):
+
+* allowed: lost clusters, a chain longer than its file's size, FAT copy 2 behind copy 1, a stale FSInfo count, the dirty flags;
+* anything else fails the run (a cross-link, a chain into a free cluster, a size beyond the chain, a broken directory, a long name
+  without its short entry, bytes after a directory's end), and so does a file holding a byte it never held: every byte of the
+  workload's file `k<id>` is either 0 or `churn_byte(id, offset)` (`user/bin/fstest.c`; a numpy twin in the test), whatever renames
+  it went through, so another file's or a directory's bytes in it are caught;
+* a call that failed in the guest (`CHURNFAIL`, anything but a full volume) fails the run too.
+
+The workload (`fstest -churn SEED DIR [OPS]`): creates (empty, small, cluster-boundary and 40 KB sizes; 8.3 names in both cases and long
+names of up to 9 slots), appends, overwrites inside and across the end, truncates down and up, deletes, renames to a new name and into
+another directory, the editor's save (a `.tmp` copy renamed over the file, spelled alike or in the other case), mkdir, rmdir, moving
+and renaming whole directories, bursts of 10 to 30 small files and of 10 deletes, a big file growing in 64 to 256 KiB steps up to 8 MiB,
+and an occasional `sync`; a full volume deletes files instead of failing.
+
+`TOUHOU_CRASH_RUNS=N` sets the number of runs (default 3, the full run is 50), `TOUHOU_CRASH_SEED=S` the seed of the first (default: from
+the clock; run i uses S+i). A failing run prints its seed, geometry and kill point and the checker's report; `TOUHOU_CRASH_SEED=<seed>
+TOUHOU_CRASH_RUNS=1` replays its workload and kill point (the exact moment varies with the guest's speed), `TOUHOU_KEEP_IMAGES=1` keeps
+the image. `storage_crash_checker_selftest` (no VM) damages images by hand to make sure the judge lets the leftovers through and
+catches a cross-link, a chain into a free cluster, a size beyond the chain and another file's bytes.
+
+**Results** (2026-10-24, Ubuntu 24.04, QEMU 8.2 TCG, `TOUHOU_TIMEOUT_SCALE=3`):
+
+* 50 runs, seeds 7000..7049: **50 passed**, 491 s. Geometries: 17 FAT32 default clusters, 16 FAT32 4 KiB, 6 FAT32 512 B, 11 FAT16; cuts
+  after 0 to 1180 operations. Leftovers seen: lost clusters in 33 runs (1 to 77 clusters), a stale FSInfo count in 34, FAT copy 2
+  behind copy 1 in 8, a chain longer than its size in 6, nothing at all in 5.
+* Control: with the classes switched off (every dirty page in one class, so the cache writes in disk order as a plain write-back cache
+  would), 2 of 12 runs failed (seeds 505 and 506; 506 passed when replayed, the moment of the cut differs); seed 505 replayed shows the gap of the LINK class: `K91.DAT: chain runs into a free
+  cluster after 625`, `size 1180 needs 3 cluster(s) but the chain has 1` (the link of an append reached the disk, the new clusters'
+  own entries did not). So the test does see a wrong order.
+* Cost: `fstest -churn 11` and `-churn 12` with 600 operations each and an unmount: 691 and 703 extra device flushes (about 1.2 per
+  operation; mostly a FAT page going from frees to allocations and back, and the barriers of renames and new entry sets). In QEMU a flush
+  is almost free (the 600 operations took 3.2 and 3.4 s of wall time; the old order was not timed); on a USB stick each one is a SYNCHRONIZE CACHE, which can take milliseconds.
+  Not measured on hardware.
+
 ## FAT specifics and limits
 
 * FAT32 and FAT16 (the QEMU `fat:` ESP is FAT16) read/write. **FAT12, exFAT and NTFS are not supported.**
