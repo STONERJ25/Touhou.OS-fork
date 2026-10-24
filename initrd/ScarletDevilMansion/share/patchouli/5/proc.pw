@@ -20,7 +20,7 @@
     A directory with one symbolic link per open file descriptor, named by the descriptor number. The target is the path the file was opened by, or `pipe:[N]`, `socket:[N]` or `anon_inode:[...]` for descriptors that have no path (both ends of a pipe show the same number). Opening the link opens the file again. Only the owner of the process and root may look in this directory.
 
 @ `/proc/bootdisk`
-    The partition the loader was read from, as the firmware named it (`partition`, `table`, `start`, `size` in sectors, `signature`: the partition's GPT GUID or the MBR disk signature), and a `device` line for each registered partition with that number, start and size. `unknown` when the firmware did not say. install(1) uses it to find its files and to leave that disk alone.
+    The partition the loader was read from, as the firmware named it (`partition`, `table`, `start`, `size` in sectors, `signature`: the partition's GPT GUID or the MBR disk signature), and a `device` line for each registered partition with that number, start and size. `unknown` when the firmware did not say. Then `esp` names the partition the ESP write grant may be given for (signature checked on the disk; `esp -` with the reason when there is none), and a `grant` line shows each grant held: the partition, the pid and name of the program, and where it is mounted. install(1) uses the file to find its files and to leave that disk alone, espgrant(1) to find the ESP.
 
 # SEE ALSO
-ps(1), jobcontrol(7), mount(8), install(1)
+ps(1), jobcontrol(7), mount(8), install(1), espgrant(1)
