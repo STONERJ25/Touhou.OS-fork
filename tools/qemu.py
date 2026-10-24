@@ -17,6 +17,7 @@ import codecs
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -26,10 +27,71 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 BUILD = ROOT / "build"
-QEMU_DIR = Path(r"C:\Program Files\qemu")
-QEMU = QEMU_DIR / "qemu-system-x86_64.exe"
-OVMF_CODE = QEMU_DIR / "share" / "edk2-x86_64-code.fd"
-OVMF_VARS = QEMU_DIR / "share" / "edk2-i386-vars.fd"
+
+
+# Where QEMU and the UEFI firmware live. Each comes from, in order: an environment variable (TOUHOU_QEMU = the
+# qemu-system-x86_64 program, TOUHOU_OVMF_CODE / TOUHOU_OVMF_VARS = the two firmware images), the PATH (for QEMU), and
+# then the usual places: the Windows installer's folder first (what this was written on), then the Linux packages.
+# docs/LINUX.md has the details.
+WINDOWS_QEMU_DIR = Path(r"C:\Program Files\qemu")
+# (code, vars) pairs that belong together; the first pair whose files both exist wins.
+OVMF_PAIRS = [
+    ("{qemu}/share/edk2-x86_64-code.fd", "{qemu}/share/edk2-i386-vars.fd"),        # QEMU for Windows (and a QEMU built from source)
+    ("{qemu}/../share/qemu/edk2-x86_64-code.fd", "{qemu}/../share/qemu/edk2-i386-vars.fd"),
+    ("/usr/share/OVMF/OVMF_CODE_4M.fd", "/usr/share/OVMF/OVMF_VARS_4M.fd"),            # Debian / Ubuntu (package ovmf)
+    ("/usr/share/OVMF/OVMF_CODE.fd", "/usr/share/OVMF/OVMF_VARS.fd"),                  # older Debian / Ubuntu
+    ("/usr/share/edk2/x64/OVMF_CODE.4m.fd", "/usr/share/edk2/x64/OVMF_VARS.4m.fd"),    # Arch (edk2-ovmf)
+    ("/usr/share/edk2/ovmf/OVMF_CODE.fd", "/usr/share/edk2/ovmf/OVMF_VARS.fd"),        # Fedora (edk2-ovmf)
+    ("/usr/share/qemu/edk2-x86_64-code.fd", "/usr/share/qemu/edk2-i386-vars.fd"),
+]
+
+
+def find_qemu():
+    env = os.environ.get("TOUHOU_QEMU")
+    if env:
+        return Path(env)
+    found = shutil.which("qemu-system-x86_64")
+    if found:
+        return Path(found)
+    return WINDOWS_QEMU_DIR / "qemu-system-x86_64.exe"
+
+
+def find_ovmf(qemu):
+    """Returns (code, vars). Missing files are reported when a VM starts, not at import time, so that host-only users of
+    this module (tests that only build disk images) work without QEMU."""
+    code, vars_ = os.environ.get("TOUHOU_OVMF_CODE"), os.environ.get("TOUHOU_OVMF_VARS")
+    if code and vars_:
+        return Path(code), Path(vars_)
+    qdir = str(Path(qemu).resolve().parent) if Path(qemu).exists() else str(WINDOWS_QEMU_DIR)
+    for c, v in OVMF_PAIRS:
+        c, v = Path(c.format(qemu=qdir)), Path(v.format(qemu=qdir))
+        if c.is_file() and v.is_file():
+            return Path(code) if code else c, Path(vars_) if vars_ else v
+    c, v = OVMF_PAIRS[0]
+    return Path(code or c.format(qemu=qdir)), Path(vars_ or v.format(qemu=qdir))
+
+
+QEMU = find_qemu()
+OVMF_CODE, OVMF_VARS = find_ovmf(QEMU)
+
+# TOUHOU_TIMEOUT_SCALE=3 multiplies every timeout of the harness by 3, for slow hosts (QEMU without KVM/WHPX, a busy CI
+# runner). The guest itself is not slowed down or sped up; only the waiting gets more patient. Default 1: no change.
+try:
+    TIMEOUT_SCALE = max(1.0, float(os.environ.get("TOUHOU_TIMEOUT_SCALE", "1") or 1))
+except ValueError:
+    TIMEOUT_SCALE = 1.0
+
+
+def scaled(seconds):
+    """A timeout in seconds, stretched by TOUHOU_TIMEOUT_SCALE."""
+    return seconds * TIMEOUT_SCALE
+
+
+def check_tools():
+    for what, path, var in (("QEMU", QEMU, "TOUHOU_QEMU"), ("UEFI firmware (code)", OVMF_CODE, "TOUHOU_OVMF_CODE"),
+                            ("UEFI firmware (vars)", OVMF_VARS, "TOUHOU_OVMF_VARS")):
+        if not Path(path).is_file():
+            raise RuntimeError(f"{what} not found at {path}: install it or set {var} (see docs/LINUX.md)")
 
 
 _ANSI = re.compile(r"\x1b\[[0-9;?=]*[A-Za-z]|\x1b[()][A-Za-z0-9]|\x1b[=>]")
@@ -101,6 +163,7 @@ class Qemu:
 
     # ------------------------------------------------------------ lifecycle
     def _prepare(self):
+        check_tools()
         BUILD.mkdir(exist_ok=True)
         vars_copy = BUILD / f"{name_safe(self.name)}-vars.fd"
         if not vars_copy.exists():
@@ -196,9 +259,9 @@ class Qemu:
         vars_copy = self._prepare()
         sp, qp = free_port(), free_port()
         args = self._args(vars_copy, sp, qp)
-        flags = subprocess.CREATE_NO_WINDOW if self.display == "none" else 0
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if self.display == "none" else 0     # Windows only: no console window
         self.proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, creationflags=flags)
-        deadline = time.time() + 15
+        deadline = time.time() + scaled(15)
         while True:
             try:
                 self._serial_sock = socket.create_connection(("127.0.0.1", sp), timeout=1)
@@ -256,7 +319,7 @@ class Qemu:
     def wait_exit(self, timeout=30):
         """Waits for QEMU to exit by itself (isa-debug-exit); returns the guest's exit code or None on timeout."""
         try:
-            rc = self.proc.wait(timeout=timeout)
+            rc = self.proc.wait(timeout=scaled(timeout))
         except subprocess.TimeoutExpired:
             return None
         time.sleep(0.2)
@@ -294,7 +357,7 @@ class Qemu:
     def expect(self, pattern, timeout=30, flags=re.S):
         """Waits for pattern in serial output after the previous match; returns the match object."""
         rx = re.compile(pattern, flags)
-        end = time.time() + timeout
+        end = time.time() + scaled(timeout)
         while True:
             with self._lock:
                 m = rx.search(self.serial, self._pos)
@@ -415,6 +478,7 @@ def name_safe(s):
 # ---------------------------------------------------------------------- CLI
 
 def cmd_run(args):
+    check_tools()
     BUILD.mkdir(exist_ok=True)
     vars_copy = BUILD / "vars.fd"
     if not vars_copy.exists():
