@@ -13,6 +13,8 @@ void  *realloc(void *p, size_t n);
 void   free(void *p);
 void  *aligned_alloc(size_t align, size_t n);
 int    posix_memalign(void **out, size_t align, size_t n);
+void  *memalign(size_t align, size_t n);
+size_t malloc_usable_size(void *p);
 
 __attribute__((noreturn)) void exit(int status);
 __attribute__((noreturn)) void _exit(int status);
@@ -24,8 +26,10 @@ long   labs(long x);
 long long llabs(long long x);
 typedef struct { int quot, rem; } div_t;
 typedef struct { long quot, rem; } ldiv_t;
+typedef struct { long long quot, rem; } lldiv_t;
 div_t  div(int a, int b);
 ldiv_t ldiv(long a, long b);
+lldiv_t lldiv(long long a, long long b);
 
 int    atoi(const char *s);
 long   atol(const char *s);
@@ -37,6 +41,8 @@ long long strtoll(const char *s, char **end, int base);
 unsigned long long strtoull(const char *s, char **end, int base);
 double strtod(const char *s, char **end);
 float  strtof(const char *s, char **end);
+long double strtold(const char *s, char **end);
+long double atold(const char *s);
 
 int    rand(void);
 void   srand(unsigned seed);
