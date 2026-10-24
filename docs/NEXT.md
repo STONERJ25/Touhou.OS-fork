@@ -1,6 +1,6 @@
 # What is next (hand-over notes)
 
-Written on 2026-10-23 at about 21:00, when the user paused all work. Read [STATUS.md](STATUS.md) for what exists and this file for what is
+Written on 2026-10-23 at about 20:45, when the user paused all work. Read [STATUS.md](STATUS.md) for what exists and this file for what is
 parked on branches and what to do first when work resumes.
 
 ## Where things stand
