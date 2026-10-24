@@ -6,5 +6,10 @@
 # DESCRIPTION
 `sync` asks the kernel to write pending changes to the storage devices.
 
+If a disk refuses the writes (an I/O error), `sync` says so and exits with status 1; the changes stay in memory and the next `sync`, `umount` or the background writer tries again. `umount` refuses a volume that cannot be written back, and the kernel log (`dmesg`) names the disk and the failing sectors.
+
+# EXIT STATUS
+0 when everything was written, 1 when a write-back failed.
+
 # SEE ALSO
 dd(1), mount(8)
