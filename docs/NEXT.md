@@ -1,6 +1,6 @@
 # What is next (hand-over notes)
 
-Written on 2026-10-23 at about 20:45, when the user paused all work. Read [STATUS.md](STATUS.md) for what exists and this file for what is
+Written on 2026-10-23 at about 20:50, when the user paused all work; all ten agents have reported. Read [STATUS.md](STATUS.md) for what exists and this file for what is
 parked on branches and what to do first when work resumes.
 
 ## Where things stand
@@ -35,7 +35,7 @@ All paused with a clean, building tree unless a row says otherwise. Each has its
 | a93e3061dde450b33 | `mcc`, a C compiler | 83acf6a | `mcc`/`cc`/`mld`/`mar` run on the OS; the docs claim byte-identical self-hosting (stage 2 = stage 3). The newest edits (constant folding, jump peephole, inline `mem*`, merged string literals) were **never run in QEMU**; with the whole userland built by `mcc`, 12 GUI tests failed (8 notebook, 4 sketchbook; two causes fixed, not re-run). An early commit contains a stray 400 KB binary: squash-merge it. `docs/MCC.md` |
 | abec503ce2c98467a | utilities (parent), with `vi` hardening | c61ba0d | merged with main; `vi` has ~950 scripted checks plus screen tests, a differential test against the host's vim still shows differences (listed in `docs/VI.md`). Nothing shared touched. **Not started:** gapsh job control, the gapsh audit and conformance test, the small new tools and the extensions of the weak applets |
 | a503fea82ea373559 | libc accuracy and speed (helper of the utilities agent) | 3a99e04 | exact `strtod` and `printf %f %e %g %a`, block-wise stdio, a faster `malloc`, accurate libm, a leftmost-longest regex: `sort -n` 38 s to 14 s, a 1 MB-line `grep 'a.*b'` no longer crashes. **Conflicts with main in `user/libc/src/stdio.c`** (main has per-stream locks); the resolution recipe and test list are in `docs/UTILITIES.md`; keep its worktree until merged |
-| a4adbf8e4aa5804b3 | kernel hardening | c889090 | sysfuzz and groundwork (`kwarn`, `/proc/kstats`, heap limits); was still working when this file was written, see its report and `docs/HARDENING.md` if it exists. Planned: OOM killer, SMEP/SMAP, lockup detector, and raising the `exec` argument limits (today 256 entries and about 32 KiB) |
+| a4adbf8e4aa5804b3 | kernel hardening | 46e03d0 | **`exec` limits raised** (32768 arguments, 128 KiB per string, 512 KiB total; `rm *` and `xargs` work on big folders); `sysfuzz` plus `tools/fuzz.py` found **two kernel panics an ordinary user could cause** (taking init down through `TIOCSPGRP`/`kill`, and a huge offset in tmpfs), both fixed along with ~15 smaller bugs; `kwarn`, `/proc/kstats`, `/proc/vnodes`, heap double-free detection, backtraces that cannot fault. Merges cleanly into main (dry run). Nothing is half-enabled: **SMAP, the OOM killer and the soft-lockup detector are not done** (`kernel/mm/oom.c` and `kernel/sched/watchdog.c` are counter-only stubs). Not run on the final head: the `crash_*` tests (backtrace code was rewritten after the last run). `docs/HARDENING.md` has the findings, the open list and the resume steps |
 | a31f584d8c0674dd6 | `vi` helper | 2dfc883 | merged into abec503ce2c98467a; nothing more to do |
 
 Old helper worktrees that are merged and can be deleted: `agent-a8e93238212e069d8`, `agent-ac04a73bcf43119ad`, `agent-a1fd026321d1dbac3`,
@@ -53,7 +53,7 @@ Old helper worktrees that are merged and can be deleted: `agent-a8e93238212e069d
    4. a46f2d415c0a1a9ca (HTTPS): `net,tls,manual`
    5. abec503ce2c98467a (utilities and `vi`): `manual,vi,shell`
    6. a503fea82ea373559 (libc): hand-merge `stdio.c`, then `threads,utest,shell,libc` and everything that uses stdio
-   7. a4adbf8e4aa5804b3 (hardening) once it has a final report: everything
+   7. a4adbf8e4aa5804b3 (hardening, touches many kernel files, so merge it after the smaller ones): `crash,hardening,selftest,utest,shell,jobctl`, then everything
    8. a93e3061dde450b33 (`mcc`), squashed: `mcc,mld,manual`
 2. Run the whole suite on a quiet machine in six parallel worktrees (the split that worked: usb / storage / blk,crash,selftest,utest,kshell,jobctl /
    notebook,sketchbook / the rest of tools, audio, net, threads / power, accounts, login, time, apps, desktop and the games). Mouse-driven GUI
@@ -73,7 +73,11 @@ Old helper worktrees that are merged and can be deleted: `agent-a8e93238212e069d
   text; `k_confirm_dialog` has only two buttons; there is no triple click.
 - `sed` and `grep` call `regexec` on `line + pos` with `REG_NOTBOL`, so `\<`, `\b`, `\B` lose the previous character (`echo aa | sed 's/\<a/X/g'` prints
   `XX`); they should use `REG_STARTEND`. gapsh: `"$@"` with no arguments expands to one empty word; the `printf` builtin needs `\0NNN`.
-- Kernel: user-mode SIGSEGV handlers never seem to run; `alarm()` is a stub; `exec` refuses more than 256 arguments or 32 KiB of strings.
+- Kernel: user-mode SIGSEGV handlers never seem to run; `alarm()` is a stub; `exec` refuses more than 256 arguments or 32 KiB of strings (fixed on the hardening branch).
+- **A kernel panic while the desktop is running is not drawn**: `fbdev.c` switches the console off while the window server owns `/dev/fb0` and `panic()`
+  does not switch it back, so on the Dell (no serial) the screen would just freeze on the last desktop frame. The fix is small (recipe in
+  `docs/HARDENING.md`, "How to resume" item 5); do it before the first real boot.
+- The fuzz seed 105 with `heapdebug` (`python tools/fuzz.py --secs 30 --extra heapdebug 105`) probably hangs the guest; look at it first.
 - `/etc` is rebuilt in RAM at every boot, so passwords, new accounts and a planned `/etc/network.conf` do not persist; only `/HumanVillage` does.
 - The `bc_language` test once caught the kernel log line about a SIGPIPE-killed `echo` (a race in the test, not in bc).
 - Security: libtls has no side-channel guarantees, no revocation or OCSP, and the CA bundle is frozen at build time (see `docs/TLS.md`).
