@@ -86,3 +86,8 @@ void *realloc(void *p, size_t n) {
 }
 
 long time(long *t) { if (t) *t = 0; return 0; }
+
+/* the OS services of os_io.c: the tests always pass tls_config.random and tls_config.now themselves */
+int tls_os_random(void *buf, size_t n) { (void)buf; (void)n; return -1; }
+int tls_os_random_ready(void) { return 1; }
+int64_t tls_os_time(void) { return 0; }
