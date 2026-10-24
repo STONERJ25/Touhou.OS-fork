@@ -213,8 +213,14 @@ adduser(8), deluser(8), timezone(5), accounts(7).
 
 ## State when paused
 
-Done and passing in QEMU (Ubuntu 24.04, QEMU 8.2 TCG): everything above. Not verified: a real power cut during a write (the
-ordering argument above is by reading `fat32.c`/`fat_cache.c`, not by a kill-the-VM test), and anything on the owner's PC.
+Done and passing in QEMU (Ubuntu 24.04, QEMU 8.2 TCG, `TOUHOU_TIMEOUT_SCALE=3`): everything above. The run of
+`etc_,accounts,login,lock,autologin,time,power,storage,usbstor,selftest,utest,shell,manual,desktop` gave 81 tests, 80 passed; the
+one failure is `usbstor_4k_blocks`, which needs a QEMU newer than 8.2 (LINUX.md) and fails on `main` the same way.
+
+Not done or not verified: a real power cut during a write (the ordering argument above is by reading `fat32.c`/`fat_cache.c`,
+not by a kill-the-VM test); a USB stick that is mounted only after the first session (the late restore in `init` is written but
+no test makes a stick that slow); the volume's FAT time zone following the kept `timezone`; anything on the owner's PC. Nothing
+applies `network.conf` or reads `update.conf` yet: tasks 12 and 5 do that.
 
 ## How to resume
 
