@@ -759,8 +759,7 @@ static long sys_umount(TrapFrame *tf) {
 
 static long sys_sync(TrapFrame *tf) {
     (void)tf;
-    vfs_sync_all();
-    return 0;
+    return vfs_sync_all();                                  /* the first write-back error (EIO from a failing disk), so `sync` can say so */
 }
 
 static long sys_statfs(TrapFrame *tf) {

@@ -97,7 +97,7 @@ int chmod(const char *p, mode_t m) { return (int)__ret(__sc2(SYS_chmod, (long)p,
 int chown(const char *p, uid_t u, gid_t g) { return (int)__ret(__sc3(SYS_chown, (long)p, (long)u, (long)g)); }
 mode_t umask(mode_t m) { return (mode_t)__sc1(SYS_umask, (long)m); }
 int link(const char *a, const char *b) { return (int)__ret(__sc2(SYS_link, (long)a, (long)b)); }
-int sync(void) { return (int)__sc0(SYS_sync); }
+int sync(void) { return (int)__ret(__sc0(SYS_sync)); }        /* -1 and errno when a write-back failed (POSIX sync is void; ours tells) */
 int stat(const char *p, struct stat *st) { return (int)__ret(__sc2(SYS_stat, (long)p, (long)st)); }
 int lstat(const char *p, struct stat *st) { return (int)__ret(__sc2(SYS_lstat, (long)p, (long)st)); }
 int fstat(int fd, struct stat *st) { return (int)__ret(__sc2(SYS_fstat, fd, (long)st)); }

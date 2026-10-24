@@ -462,30 +462,40 @@ static int nvme_blk_flush(BlockDev *d) {
     mutex_lock(&c->io_lock);
     if (c->dead) { mutex_unlock(&c->io_lock); return -EIO; }
     NvmeQueue *q = &c->io;
-    NvmeCmd cmd;
-    memset(&cmd, 0, sizeof cmd);
-    cmd.opc = NVM_FLUSH;
-    cmd.cid = 0;
-    cmd.nsid = ns->nsid;
-    sq_submit(q, &cmd);
-    sq_ring(q);
-    c->n_cmds++;
-    c->n_flushes++;
     int rc = 0;
-    if (!wait_cqe(c, q, T_FLUSH_MS)) {
-        ctrl_fail(c, (REG32(c, NVME_CSTS) & CSTS_CFS) ? "controller fatal status" : "flush timed out");
-        rc = -EIO;
-    } else {
+    /* A failure with the do-not-retry bit clear is tried again, like a read or write (NVMe 1.4 4.6.1.2.1, "DNR"). */
+    for (unsigned attempt = 0;; attempt++) {
+        NvmeCmd cmd;
+        memset(&cmd, 0, sizeof cmd);
+        cmd.opc = NVM_FLUSH;
+        cmd.cid = 0;
+        cmd.nsid = ns->nsid;
+        sq_submit(q, &cmd);
+        sq_ring(q);
+        c->n_cmds++;
+        c->n_flushes++;
+        if (!wait_cqe(c, q, T_FLUSH_MS)) {
+            ctrl_fail(c, (REG32(c, NVME_CSTS) & CSTS_CFS) ? "controller fatal status" : "flush timed out");
+            rc = -EIO;
+            break;
+        }
         NvmeCqe e;
         cq_pop(q, &e);
         cq_ring(q);
         u32 st = e.status >> 1;
-        if (e.cid != 0) { ctrl_fail(c, "completion for the wrong command"); rc = -EIO; }
-        else if (st & 0x7FF) {
-            c->n_errors++;
-            klog("Kappa", "nvme%d: flush of nsid %u failed: status type %u code %#x", c->index, ns->nsid, (st >> 8) & 7, st & 0xFF);
-            rc = -EIO;
+        if (e.cid != 0) { ctrl_fail(c, "completion for the wrong command"); rc = -EIO; break; }
+        if (!(st & 0x7FF)) { rc = 0; break; }
+        if (!(st & 0x4000) && attempt < NVME_RETRIES) {
+            klog("Kappa", "nvme%d: flush of nsid %u: status type %u code %#x, trying again (%u of %u)", c->index, ns->nsid, (st >> 8) & 7, st & 0xFF,
+                 attempt + 1, NVME_RETRIES);
+            task_sleep_ms(2);
+            continue;
         }
+        c->n_errors++;
+        klog("Kappa", "nvme%d: flush of nsid %u failed: status type %u code %#x%s", c->index, ns->nsid, (st >> 8) & 7, st & 0xFF,
+             (st & 0x4000) ? " (do not retry)" : "");
+        rc = -EIO;
+        break;
     }
     mutex_unlock(&c->io_lock);
     return rc;
