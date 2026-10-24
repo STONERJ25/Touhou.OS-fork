@@ -365,7 +365,7 @@ repeats every time. The GUI tests (`audio_jukebox`, `audio_desktop_sounds`, `aud
 
 ## State when paused
 
-Branch `worktree-agent-a3d380c78d6285728`; its head is the commit that adds this section (the one before it is `37ba4c7`),
+Branch `worktree-agent-a3d380c78d6285728`; its head is a few documentation-only commits on top of `37ba4c7`,
 the working tree is clean, and it builds with `python tools/build.py`. The last
 merge of `main` (up to `3265225`: USB mass storage, network drivers, Explorer, priorities, job control) is in; it merged
 without conflicts in code (one in `docs/REAL_HARDWARE.md`, resolved by keeping both sides). Nothing is pushed.
