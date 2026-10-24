@@ -200,6 +200,19 @@ class SuiteTests(unittest.TestCase):
         self.assertIn("**Failed (also when rerun alone):** `w` (three)", md)
         self.assertIn("boom \\| 'x'", suite.group_markdown("three", failing))
 
+    def test_aggregate_command_uses_the_plan(self):
+        plan = json.dumps({"include": [{"group": "kernel", "part": "1/1", "label": "kernel"},
+                                       {"group": "usb", "part": "1/2", "label": "usb-1of2"}]})
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "a").mkdir()
+            Path(tmp, "a", "suite-kernel.json").write_text(json.dumps(
+                {"label": "kernel", "exit": 0, "results": [{"name": "selftest", "status": "PASS", "seconds": 5.0}]}))
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(suite.main(["--aggregate", tmp, "--expect-plan", plan]), 1)     # usb-1of2 left nothing
+                self.assertEqual(suite.main(["--aggregate", tmp]), 0)                            # without the plan: what is there
+            self.assertIn("| usb-1of2 | did not finish", out.getvalue())
+
     def test_ci_plan_matches_the_groups(self):
         plan = suite.ci_plan()
         labels = [e["label"] for e in plan]
