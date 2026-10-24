@@ -35,7 +35,7 @@ Until a program asks otherwise the terminal collects a whole line before handing
 @ ^\\
     Quit: SIGQUIT.
 @ ^Z
-    SIGTSTP.
+    Suspend: SIGTSTP stops the foreground job and the shell takes the terminal back (`fg` continues it, see jobs(1)).
 
 A program in raw mode turns these off and gets every byte, including ^C as the byte 3.
 

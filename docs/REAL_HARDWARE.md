@@ -1,7 +1,8 @@
 # Running TouhouOS on a real PC
 
-**Everything here has only ever run in QEMU.** The drivers follow the specifications and Linux's behaviour, and they are
-written to fail soft (log one line, stay out of the way), but the first boot on real hardware is an experiment. The
+**Most of this has only been run in QEMU; one real PC, the Dell below, has booted it to the desktop from a stick since 2026-10-23**
+([HARDWARE_AUDIT.md](HARDWARE_AUDIT.md) has what that showed). The drivers follow the specifications and Linux's behaviour, and they are
+written to fail soft (log one line, stay out of the way), but a first boot on other hardware is an experiment. The
 design rule that makes it a safe one: **the OS never writes to a disk you did not ask it to**, and the default command
 line makes every SATA and NVMe disk read-only on top of that.
 
@@ -100,6 +101,7 @@ clock is hours off on the first boot, the PC's clock chip holds local time (Wind
 | `video=max` | the largest mode the display offers, up to 2560x1600 |
 | `video=1280x800` | exactly that mode (default without any `video=`: 1024x768 with fallbacks) |
 | `blk.ro` | register every SATA disk and NVMe drive read-only: **keep this for the first boots**. It does not apply to USB sticks: the stick you booted from is where `/HumanVillage` lives |
+| `blk.rw=GUID` | the GPT partition with this unique partition GUID stays writable despite `blk.ro` (the rest of its disk does not): `install` writes it into the `cmdline.txt` of the disk it installs on, see [INSTALL.md](INSTALL.md) |
 | `usbstorage=off` | do not drive USB sticks at all (they are listed by `lsusb` but never read or written) |
 | `bootlog=off` | do not keep `TOUHOU.LOG` / `TOUHOU.PRV` on the stick |
 | `nonet` | leave every network card alone (no I219/RTL8168/e1000 probing at all; the loopback still works): the escape hatch if the boot stops around the network lines |

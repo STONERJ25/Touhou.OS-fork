@@ -11,7 +11,7 @@ The signals known by name are HUP INT QUIT ILL TRAP ABRT BUS FPE KILL USR1 SEGV 
 
 `kill -STOP` freezes a process (all its threads): `ps` shows state `T` until `kill -CONT` lets it run again. `TSTP` is the stop that Ctrl-Z sends; a program may catch or ignore it, `STOP` it cannot. `TTIN` and `TTOU` stop a background job that wanted the terminal. `CONT` always continues a stopped process, even one that blocks or ignores it.
 
-gapsh has a builtin `kill` as well. It does the same and also accepts job specifications such as `%1`.
+gapsh has a builtin `kill` as well. It does the same and also accepts job names such as `%1` or `%%` (see jobs(1)): the signal goes to every process of the job. A stopped job also gets `CONT` after the signal, unless the signal is a stop or `KILL`, so that it can act on it at once.
 
 # OPTIONS
 @ *-l*

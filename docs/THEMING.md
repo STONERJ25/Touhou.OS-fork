@@ -46,7 +46,7 @@ Thematic directories are real; conventional POSIX names are symlinks to them.
 | `/ScarletDevilMansion` | installed applications, libraries, docs (Patchouli's library) | `/usr` |
 | `/YoukaiMountain` | devices and news (Kappa workshop, Bunbunmaru) | |
 | `/BambooForest` | temporary files (you get lost in there) | `/tmp` |
-| `/Netherworld` | trash: `rm` sends files here, `purge` really deletes | |
+| `/Netherworld` | trash: `trash` and the Explorer's Delete send files here; `rm` deletes for good | |
 | `/.boundary` | hidden system metadata | |
 | `/bin`, `/dev`, `/proc`, `/sys` | as usual | |
 
@@ -75,7 +75,7 @@ Prompt: `reimu@gensokyo ~ $`. See [ACCOUNTS.md](ACCOUNTS.md).
   the source line, a caret and a remark (`^ Marisa: I never borrowed that one, ze. Did you declare it?`), and ends with
   `mcc: 1 error -- nothing was built, ze.`; `mld` reports `undefined reference to 'x' -- Marisa: that book isn't in the library, ze`;
   a successful build prints nothing. `mcc --version` says who she is.
-- `rm` -> Netherworld, `shutdown` -> "Yukari opens a gap...", `fortune`/`omikuji` -> shrine fortune slips, `saisen` -> offering box.
+- `trash` -> Netherworld (`rm` deletes for good), `poweroff` -> "The shrine maiden is closing up for the night. Goodbye!", `fortune`/`omikuji` -> shrine fortune slips, `saisen` -> offering box.
 - The Explorer: Delete sends things to the Netherworld (with a note of where they came from), an empty Netherworld says `Yuyuko is
   hungry.`, deleting for good or emptying asks whether Yuyuko may eat it, an empty folder shows `Nothing here but the wind`, and
   the permission errors keep their Eiki flavour from `strerror`. The plain fact (what failed, which path) is always in the text.

@@ -1,7 +1,7 @@
 .page jobcontrol 7 stopping, continuing and prioritising processes
 
 # DESCRIPTION
-A process can be stopped and continued. A stopped process keeps its memory and its open files but none of its threads runs, and `ps` shows the state `T` for it. The kernel half of this is complete; what a shell builds on it (`jobs`, `fg`, `bg`) is described in gapsh(1).
+A process can be stopped and continued. A stopped process keeps its memory and its open files but none of its threads runs, and `ps` shows the state `T` for it. The shell builds job control on it: ^Z stops the job in front, and `jobs`, `fg`, `bg`, `wait` and `disown` are described in jobs(1) and gapsh(1).
 
 # SIGNALS
 @ *STOP*

@@ -22,6 +22,7 @@ static EFI_GUID sfsGuid         = EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID;
 static EFI_GUID fileInfoGuid    = EFI_FILE_INFO_ID;
 static EFI_GUID acpi20Guid      = EFI_ACPI_20_TABLE_GUID;
 static EFI_GUID acpi10Guid      = EFI_ACPI_10_TABLE_GUID;
+static EFI_GUID devPathGuid     = EFI_DEVICE_PATH_PROTOCOL_GUID;
 
 static UINT64 alloc_pages(UINT32 memtype, UINTN pages) {
     EFI_PHYSICAL_ADDRESS addr = 0;
@@ -497,6 +498,35 @@ static int load_kernel(UINT64 file_phys, UINT64 file_size, KernelImage *k) {
     return 1;
 }
 
+/* Which partition the loader came from: the HardDrive media node (type 4, subtype 1) of the boot volume's device path. Only reads what
+ * the firmware already has in memory; a path without such a node (a CD, a network boot) leaves bp->valid at 0. */
+static void find_boot_partition(EFI_HANDLE dev, BootPartition *bp) {
+    const UINT8 *node = 0;
+    if (EFI_ERROR(g_bs->HandleProtocol(dev, &devPathGuid, (void **)&node)) || !node) return;
+    for (int guard = 0; guard < 64; guard++) {
+        UINT16 len = (UINT16)(node[2] | (node[3] << 8));
+        if (node[0] == 0x7F && node[1] == 0xFF) break;                  /* end of the whole path */
+        if (len < 4) break;
+        if (node[0] == 4 && node[1] == 1 && len >= 42) {
+            memcpy(&bp->part_number, node + 4, 4);
+            memcpy(&bp->part_start, node + 8, 8);
+            memcpy(&bp->part_size, node + 16, 8);
+            memcpy(bp->signature, node + 24, 16);
+            bp->table = node[40];
+            bp->sig_type = node[41];
+            bp->valid = 1;
+        }
+        node += len;
+    }
+    if (bp->valid) {
+        log_str("loader: booted from partition "); log_dec(bp->part_number);
+        log_str(bp->table == 2 ? " (GPT" : " (MBR"); log_str(", start "); log_dec(bp->part_start);
+        log_str(", "); log_dec(bp->part_size); log_str(" blocks)\n");
+    } else {
+        log_str("loader: the boot volume's device path names no partition\n");
+    }
+}
+
 /* An error message on a PC would flash by as the firmware moves on to the next boot entry (and there is no serial port to read it
  * from): keep it on the screen for a while before handing control back. */
 static EFI_STATUS fail_wait(EFI_STATUS code) {
@@ -523,6 +553,9 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st) {
         log_str("loader: cannot open the boot volume\n");
         return fail_wait(EFI_NOT_FOUND);
     }
+
+    BootPartition boot_part = {0};
+    find_boot_partition(li->DeviceHandle, &boot_part);
 
     /* --- files --- */
     UINT64 kfile_phys = 0, kfile_size = 0, initrd_phys = 0, initrd_size = 0, cmd_phys = 0, cmd_size = 0;
@@ -591,6 +624,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st) {
     bi->arena_phys  = arena_phys;
     bi->arena_size  = ARENA_PAGES * PAGE_SIZE;
     memcpy(bi->cmdline, cmdline, BOOTINFO_CMDLINE_MAX);
+    bi->boot_part   = boot_part;
 
     if (g_usbdisc) { disconnect_usb_hosts(); exit_mark(&fb, 7, 0); }
     if (g_stall3) { g_bs->Stall(3000000); exit_mark(&fb, 7, 1); }

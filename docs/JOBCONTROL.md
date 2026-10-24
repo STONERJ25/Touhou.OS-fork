@@ -2,8 +2,8 @@
 
 How a process is stopped and continued, what a terminal does about background jobs, what `waitpid` reports, what a shell
 has to do on top of it, and the smaller process-control pieces that came with it (nice values, hard links, `/proc/<pid>/fd`,
-`cwd` and `exe`). The kernel half is done and tested; gapsh's `jobs`/`fg`/`bg` are built on it by someone else (see
-"What the shell has to do").
+`cwd` and `exe`). The kernel half is done and tested; gapsh's job control (`jobs`, `fg`, `bg`, `wait %N`, `disown`, `kill %N`,
+Ctrl-Z) is built on it, see "What the shell has to do" and "How gapsh does it".
 
 ## Stopped processes
 
@@ -138,19 +138,44 @@ gapsh (or any shell) owns the terminal's job control; the kernel only provides t
 8. A shell running inside a pty needs nothing special: the terminal emulator makes the shell a session leader on the slave
    (`setsid`, `open`), which is what the kernel uses as the terminal's session.
 
-### Where gapsh stands (at the time of writing, `user/bin/gapsh/`)
+### How gapsh does it (`user/bin/gapsh/exec.c`, "jobs")
 
-Already right: `main.c` ignores `SIGTSTP`/`SIGTTIN`/`SIGTTOU` when interactive, makes the shell its own group leader and
-takes the terminal; `exec.c` puts every job in its own group (`setpgid` on both sides), hands it the terminal with
-`tcsetpgrp(0, pgid)` and takes it back, and `reset_signals()` restores the default dispositions in the child before `exec`.
-What is missing: nothing waits with `WUNTRACED`, so a stopped foreground job (Ctrl-Z, `kill -STOP`, a background
-read) leaves the shell waiting for ever. The call sites to change are `job_wait_fg` (`waitpid(-1, &status, 0)`),
-the foreground simple command (`waitpid(pid, &status, 0)` after `tcsetpgrp(0, pid)`), the two pipeline waits and the
-`wait` builtin's neighbours in `builtins.c`; `jobs_reap` should add `WUNTRACED | WCONTINUED`; `jobs` prints only `Running`
-and needs `Stopped`; there is no `bg`, and `fg` has no `SIGCONT`. Until then, Ctrl-Z in a text console freezes the job and the
-prompt (the stopped job can still be killed from another terminal with `kill -9`: `SIGKILL` wakes it). Also missing is the
-child's own `tcsetpgrp` of item 3 (`run_simple` and the first stage in `run_pipeline` only call it in the parent); the
-kernel's rule that `tcsetpgrp` releases a job stopped for the terminal makes that harmless for now.
+Job control is on in an interactive shell (`set -m` semantics, without the switch); scripts, `-c` commands and the shell's own
+children (pipeline stages, subshells, `$(...)`) have none and behave as before: their jobs stay in the shell's group, a background
+job's input is `/dev/null`, `fg` only waits.
+
+* **The table.** A `Job` is what one command started: an external command, a pipeline (all its stages: one job), a `( ... )`
+  subshell or an `&` list. It keeps every process with its own state (running, stopped, done) and status word; the job is running
+  while one process runs, stopped when the others are stopped, done when all are done, and its status is that of its last process.
+  `%+` is the job stopped last, otherwise the one put in the background last; `%-` the one before. Job specs: `%N`, `N`, `%%`, `%+`,
+  `%`, `%-`, `%NAME` (prefix of the command), `%?TEXT` (substring); several matches are "ambiguous".
+* **Starting a job** (items 2 and 3): `child_job_setup()` in the child, before `reset_signals()`, calls `setpgid(0, pgid)` and, for a
+  foreground job, `tcsetpgrp(0, pgid)`; the parent does `setpgid` too. `reset_signals()` also restores `SIGCHLD`. A background
+  job of an interactive shell keeps the terminal as its input (a read stops it with `SIGTTIN`, `fg` lets it go on); a background
+  pipeline is started stage by stage like a foreground one, so each stage is a member of the job.
+* **Waiting in front** (`job_wait_fg`): saves the shell's terminal settings, gives the job the terminal, and collects with
+  `waitpid(-1, &st, WUNTRACED | WCONTINUED)` until the job is done or stopped. Then: the job's settings are saved with `tcgetattr`
+  if it stopped, the terminal goes back to the shell, and the shell's settings are restored if the job stopped or was killed by a
+  signal (a full-screen program killed with `kill -9` no longer leaves the prompt in raw mode). A stop prints
+  `[N]+  Stopped  command` at once and the status is 128 + the stop signal (148 for ^Z).
+* **^C and ^Z drop the rest of the line** (`g_interrupted`): when the foreground job was stopped, or killed by `SIGINT`, the rest of
+  the command line (lists, loops, functions) is not run, so `while true; do cat; done` can be left. (bash continues a list after
+  ^Z; zsh suspends the whole loop. Dropping it is the simple safe choice.)
+* **Before each prompt** (`jobs_reap`): `waitpid(-1, WNOHANG | WUNTRACED | WCONTINUED)` until nothing is left, then one line per
+  job that stopped or finished in the background (`Done`, `Exit N`, `Terminated`, `Killed`, `Stopped (tty input)`, ...); finished
+  jobs are then forgotten. `jobs` reports (and forgets) finished jobs as well.
+* **The builtins**: `jobs [-lp] [JOB...]`; `fg [JOB]` prints the command, puts the job's saved terminal settings back, gives it the
+  terminal, sends `SIGCONT` to the group and waits as above; `bg [JOB...]` sends `SIGCONT` and prints `[N]+ command &`;
+  `disown [-a] [JOB...]` continues a stopped job and forgets it (`-h` is accepted and does the same); `wait [ID...]` waits for
+  termination only, keeps waiting through stops, warns when the job is already stopped, and an interactive shell's `wait` ends with
+  130 on ^C (a temporary `SIGINT` handler without `SA_RESTART`); `kill %N` signals the group and adds `SIGCONT` for a stopped job
+  unless the signal is a stop or `KILL`. `kill -l` names `TTIN` and `TTOU` too. `command PROGRAM` runs as a job like any program
+  (before, it ran in the shell's group with `SIGINT` ignored).
+* **Leaving** (item 7): `exit` or ^D with stopped jobs prints "There are stopped jobs: ..." once; an `exit` or ^D on the very next
+  line leaves, and `jobs_hangup_stopped()` sends the stopped jobs `SIGHUP` and `SIGCONT`. Running background jobs are left alone.
+* **Started in the background**: an interactive gapsh whose terminal belongs to another live group (`gapsh &` at a prompt)
+  sends itself `SIGTTIN` until it is in front, as other shells do, instead of taking the terminal from its parent. The loop is
+  bounded (100 tries, 10 ms apart) because an orphaned group drops `SIGTTIN`.
 
 Things a shell author may trip over: a pipeline's processes can report their stops in any order, a job is stopped when its
 processes are stopped, not when the first one is; `waitpid(pid, ..., WUNTRACED)` for an already collected stop returns 0
@@ -213,8 +238,18 @@ group rule (`SIGHUP` + `SIGCONT` for a stopped member, nothing without one, `SIG
 (`setpriority`/`getpriority`/`nice`, clamping, `EACCES`/`EPERM`, inheritance, `renice`, `ps -l`, `PRIO_PGRP`, and the CPU
 share of a polite process), hard links (counts, shared data, unlink of one name, an unlinked open file, the applet, the
 errors) and `/proc/<pid>/{fd,cwd,exe}` (files, pipes, sockets, listing, closed descriptors, another process).
+The shell's half: `jobctl_shell_console` types at an interactive gapsh on the serial console, `jobctl_shell_pty` runs the same
+session through a pseudo-terminal (`jctest pty` starts `gapsh -i` on a pty slave and relays the raw console to the master, like a
+terminal window), and `jobctl_desktop_terminal` presses Ctrl+Z in the desktop's terminal window (gapterm) and checks with `logger`.
+The session: ^Z stops a foreground job and the prompt comes back, `jobs` says `Stopped`, `/proc` says `T`, the next line goes to
+the shell, `fg %1` continues the job with the terminal, `bg` continues one in the background and `wait %1` returns its exit
+status, `%-`, `%%`, `%?TEXT`, an ambiguous `%NAME`, a stopped job killed with `kill` (`Terminated`) and `kill -9` (`Killed`) is
+reported, `disown` forgets a job and continues it, a pipeline is one job (`jobs -l` shows two pids), a background read stops with
+`Stopped (tty input)` and `fg` gives it the terminal, a stopped job's terminal settings are saved and given back by `fg` while the
+shell gets its own back (`jctest rawstop`, `jctest tmodes`), `gapsh &` waits for `fg`, ^C and ^Z drop the rest of the line, and
+`exit` with a stopped job warns; in the pty, leaving twice hangs the stopped job up. All three take about 15 to 25 s.
 The manual pages are checked by `python tests/run_all.py manual` (`nice(1)`, `renice(1)`, `ln(1)`, `ps(1)`, `kill(1)`,
-`jobcontrol(7)`, `proc(5)`).
+`jobs(1)`, `wait(1)`, `jobcontrol(7)`, `proc(5)`).
 
 ## Limits and deviations
 
@@ -228,3 +263,27 @@ The manual pages are checked by `python tests/run_all.py manual` (`nice(1)`, `re
   stopped until `SIGCONT`); see "Terminals". It does not look at which terminal caused the stop, so a job stopped by
   `kill -TTIN` is released the same way.
 * A stopped process still counts for `exit_group` races: a group exit or an `execve` wakes parked threads and they leave.
+
+## State when paused
+
+gapsh job control (task 6, branch `cloud/job-control`, 2026-10-24) is done: everything in "What the shell has to do" except
+what is listed below, the manual pages (`jobs(1)` with `fg`, `bg`, `disown`; `wait(1)`, `kill(1)`, `gapsh(1)`, `keys(7)`,
+`jobcontrol(7)`, `gapsh-builtins(7)`), and the three `jobctl_shell_*`/`jobctl_desktop_terminal` tests. Verified on Linux (QEMU 8.2,
+TCG) with `jobctl,shell,utest,selftest,kshell,manual,desktop_terminal,vi,pager`. Not tried on the Dell.
+
+Not done, on purpose or for lack of time:
+
+* The full-screen programs (`vi`, `pnote`, the pager) turn `ISIG` off and read ^Z as a key, so ^Z does not stop them; `vi`
+  also catches `SIGTSTP`. Making ^Z suspend them (restore the terminal, `raise(SIGTSTP)`, redraw on `SIGCONT`) is theirs to do.
+* No `set -m` / `set +m` switch, no `notify` (`set -b`): reports wait for the next prompt.
+* The shell does not hang up running background jobs when it exits or gets `SIGHUP` (bash's `huponexit`); the kernel's orphaned
+  group rule still wakes and hangs up stopped ones.
+* `wait PID` for a background job that was already reported as done (and forgotten) returns 127; bash remembers the statuses.
+* `jobs -l` puts all process ids of a pipeline on one line instead of one line per process.
+
+## How to resume
+
+Build, then `python tests/run_all.py jobctl` (all job-control tests: the kernel's `jobctl`, `jobctl_tools`, and the shell's).
+The table and the builtins are in `user/bin/gapsh/exec.c` ("jobs"), the start-up check in `main.c`, `exit` and `kill` in
+`builtins.c`. A full-screen program that should suspend on ^Z can be tested like `jctest rawstop` in `tests/case_jobctl.py`.
+

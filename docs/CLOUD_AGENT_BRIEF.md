@@ -94,3 +94,83 @@ Task 1 blocks everything that needs QEMU. Tasks 3 and 9 need no QEMU and can sta
    for statements that are stale after the merges (`docs/STATUS.md`, `docs/ROADMAP.md`, `docs/NEXT.md`). Facts only: check them against the code.
 
 Good parallel plan: task 1 and tasks 3 and 9 at once; when task 1 is merged, tasks 2, 4, 6, 8 in parallel (2 touches the most files, so merge it first), then 5 and 7.
+
+---
+
+## Status on 2026-10-24 (from the cloud agent's own report) and the next batch
+
+| Task | State |
+|------|-------|
+| 1 Linux tooling + CI | merged (PR #3) |
+| 3 Update server | merged (PR #1) |
+| 9 Docs | merged (PR #2) |
+| 6 Job control | merged (PR #4) |
+| 4 Installer | PR #5, final regressions running |
+| 2 Staging of the parked branches | in progress (`cloud/staging`) |
+| 7 FAT write ordering | in progress (`cloud/fat-ordering`) |
+| 8 Hi-dpi | in progress (`cloud/hidpi`) |
+| 5 Update client + loader fallback | waits for 2 and 4, and for task 10 below |
+
+Owner decisions so far: install goes from a USB stick onto an internal disk; `blk.rw=GUID` names the `HUMANVILLAGE` *partition* GUID, so the installed homes are writable while the installed ESP, the
+whole-disk node and every other disk stay read-only under `blk.ro`. The owner's PC has its SATA controller in Intel RAID mode (internal disks are invisible until the BIOS is set to AHCI), has an
+Ethernet cable that had not been plugged in yet, and a 2560x1440 monitor. Nothing from the cloud has been tried on the real PC yet; say what you could not verify.
+
+New tasks, roughly in priority order. 10 to 13 serve the owner's two goals (an installed system, updates over the network); 14 and 15 make both safer; 16 to 18 are stretch tasks for spare capacity.
+
+10. **A root-only, scoped way to mount the installed ESP read-write** (blocks task 5). Same spirit as the per-disk write unlock: only root, bound to one open file or one process, released at unmount or
+    when the process ends, never persisted, and the installed ESP stays read-only otherwise. Used by the update client for the moment of an update and by the "confirm this boot" step of the loader fallback.
+    Tests: a write is refused without it and works with it, the grant disappears with the unmount/close, other disks and the whole-disk node stay read-only, and an update interrupted by a power cut
+    (kill the VM mid-write) still leaves a bootable ESP (write `*.new`, flush, rename, in an order FAT survives). Update `docs/INSTALL.md` ("How to resume" is where the idea was left).
+11. **Persistent system configuration on the `HUMANVILLAGE` volume** ("/etc survives a reboot"). Today `/etc` is rebuilt in RAM at every boot, so passwords, new accounts, the time zone and any network or update
+    settings are lost. Overlay the initrd defaults with files kept on the volume (for example `/HumanVillage/.system/etc/`): `passwd`, `shadow` (mode 0600, root only), `group`, hostname, time zone,
+    `network.conf`, `update.conf` (URL and key id). Writes by `passwd`, `adduser`, `deluser`, `su` and the Control Panel go through an atomic rename; a missing or corrupt file falls back to the default with one
+    log line; no volume (`nohumanvillage`) means defaults as today. Tests across two boots of the same image: change a password, add a user, change the time zone, they are still there; a corrupt file; permissions.
+12. **Network configuration and a Kappa network page** (after tasks 2 and 11). `/etc/network.conf` (DHCP or static address, gateway, DNS, hostname) applied at boot; a Control Panel page and a small panel
+    indicator showing link state, address, gateway, DNS, MAC, counters and lease, with renew and static configuration, plus the update URL setting. The design is in `docs/NETWORK.md` ("the network panel") on
+    the network branch. Tests through QEMU's user-mode network, including link down and up.
+13. **Write-path review of AHCI and NVMe before the first real install.** The first real disk writes of this OS will happen when the owner installs it, and those drivers have never driven real hardware.
+    Read the write, flush and error paths against the specifications (cache flush after writes, FUA where it matters, command timeouts, error status handling, queue and PRP limits, 4K sectors); add error
+    injection tests in QEMU (NVMe error status, an AHCI task-file error, a timeout); make `install` read back and compare what it wrote. Findings and fixes go into `docs/HARDWARE_AUDIT.md`.
+14. **Kernel hardening, the unfinished half** (after task 2; the notes are in `docs/HARDENING.md` once the hardening branch is merged): an OOM killer (victim: the process with the largest resident set that is
+    not init or a kernel thread, announced in the log in the house style), SMAP (the owner's CPU has it; `stac`/`clac` around deliberate user accesses), a soft-lockup detector with `panic_on_lockup` off by
+    default, allocation failure injection (`failalloc=N`), and a regression test for what the syscall fuzzer found (also run the fuzz campaign again, seed 105 with `heapdebug` is suspected to hang the guest).
+    Acceptance: everything passes under `TOUHOU_CPU=Skylake-Client-noTSX-IBRS` and the default CPU, and `storage_small_ram` stays green.
+15. **Test infrastructure.** `tests/run_all.py --retry-failed` (rerun each failed test alone once; report "flaky" or "failed"), a helper that splits the suite into N groups over N worktrees, a manually
+    triggered and weekly GitHub Actions workflow that runs the seven groups as a matrix and writes a job summary, and an expected-failure marker with a reason for tests that need a newer QEMU
+    (`usbstor_4k_blocks` needs QEMU 9). Document it in `docs/LINUX.md`.
+16. **A web browser** (stretch; after task 2, which brings `libtls` and `libimg`): a Kappa application in the house style (the newspaper tengu: `Bunbunmaru Browser`): address bar, HTTP and HTTPS, a HTML subset
+    (headings, paragraphs, links, lists, preformatted text, images, simple tables, minimal forms), a little CSS (colours, sizes), history and bookmarks, no JavaScript. Tests against a local fixture server through
+    QEMU's user-mode network, with pixel checks; one optional test against a real public page when the host has internet.
+17. **Japanese text** (stretch): a double-width bitmap font (use a font with a clear, compatible licence and put the licence text next to it), UTF-8 decoding to glyphs, double-width cells in the terminal and in
+    Kappa text drawing, fallbacks for missing glyphs. Tests with pixel checks; keep ASCII rendering identical.
+18. **PC-98 emulation groundwork** (stretch, long term; the owner wants to play their own PC-98 games some day): start host-side, where it can be tested without the OS: a freestanding C library for an
+    8086/V30 and then 80286 real-mode CPU core with instruction tests, then a PC-98 machine skeleton (memory map, text VRAM, the uPD7220 graphics controller, keyboard, floppy and hard disk image formats such
+    as D88/HDI/FDI, beeper). **No game data, BIOS ROMs or copyrighted assets in the repository**; boot a raw boot sector from a test image as the demo.
+
+Suggested order for the free capacity: 10 and 11 first (they unblock 5 and 12), 13 and 15 in parallel with them, then 5, 12 and 14 once task 2 is merged, and the stretch tasks last.
+
+---
+
+## Owner constraint, 2026-10-24: the Dell's internal disk holds a fresh, activated Windows 11 Education (retail licence) that must NOT be lost
+
+The owner's Dell has nothing on its internal disk except that Windows install. They want to keep it. What follows from that:
+
+- **The permanent medium for now is the USB stick** (or a USB SSD): it boots, `HUMANVILLAGE` on it holds the homes, and updates (task 5) change the files on its ESP, which is why task 10 matters. No BIOS change is
+  needed for that. The internal disk is also invisible to the OS today: the SATA controller is in Intel RAID (RST) mode, and it only becomes visible after the BIOS is set to AHCI, a switch that can stop an
+  existing Windows from booting unless it is prepared first (safe-mode trick: `bcdedit /set {current} safeboot minimal`, switch to AHCI, boot Windows in safe mode, then `bcdedit /deletevalue {current} safeboot`).
+- **`install` must never be able to wipe a Windows disk by accident.** On top of "refuse a disk with any partition unless `--force`": recognise other operating systems (an NTFS or exFAT partition, the Microsoft
+  reserved or basic data partition types, a BitLocker signature, Linux root types) and refuse even with `--force` unless the user types a long explicit phrase that names the disk model and what will be erased.
+- **The OS has not yet seen the internal disk at all.** Before any write support is trusted there, the first contact must be read-only (`blk.ro`, `lsblk`, partition tables), and the write-path review (task 13)
+  matters even more.
+- **The Dell's clock is stale** (the hardware clock, and Windows' own "trusted time", say 2025-04-30). The update client (task 5) must not depend on the system clock for signature checks (the manifest carries its own
+  `issued` value); run `sntp` first when the clock matters, and know that HTTPS certificate dates are checked against the system clock, so with a stale clock HTTPS fails until the clock is set.
+
+Two more tasks that follow from it:
+
+19. **Install into free space next to another OS (dual boot).** The `install` tool needs a mode that never modifies an existing partition: find the largest unallocated gap on a GPT disk (the owner would shrink the
+    Windows partition from Windows first), create a 64 MiB ESP and a `HUMANVILLAGE` partition inside it, update both GPT headers correctly, leave the protective MBR and every other partition byte for byte untouched, and
+    leave the Windows ESP alone (our files live on our own ESP). Tests in QEMU on disk images that already carry a Windows-like layout (ESP, MSR, NTFS-typed data, recovery): after the install the old partitions are
+    byte-identical, the new ones boot to the desktop, and a damaged GPT or a gap that is too small is refused. Document the owner's side (shrinking the volume, the AHCI switch above) in `docs/INSTALL.md`.
+20. **The loader registers a UEFI boot entry for an installed system.** A second ESP on an internal disk is not always offered by the firmware's boot menu. On the first start from an installed medium the loader (it still
+    has boot services) should add a boot entry named after the OS (`Boot####` plus an entry in `BootOrder`, placed after the existing entries, never replacing Windows' entry) pointing at `\EFI\BOOT\BOOTX64.EFI` of its
+    own ESP, once, recorded so that it is not repeated. Refuse to touch an existing entry, handle a full variable store, and test with QEMU's OVMF variable store (list the variables before and after, boot twice).
