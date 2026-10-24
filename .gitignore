@@ -26,3 +26,7 @@ assets/local/
 
 # agent worktrees and local tool state
 .claude/
+
+# Update signing keys (tools/serve-update.py keygen writes to ~/.touhou-os/ by default): never committed
+*update-signing-key*
+.touhou-os/
