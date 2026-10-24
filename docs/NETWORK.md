@@ -89,7 +89,7 @@ machines (the kernel log tag is `[Yukari]`). Everything is IPv4, plain HTTP, and
 | `virtio_net.c` | virtio-net, legacy (I/O port) and modern (PCI capabilities) | tested in QEMU, both transports |
 | `e1000.c` | Intel 82540EM and relatives (QEMU `-device e1000`) | tested in QEMU |
 | `e1000.c` | Intel 82574L (QEMU `-device e1000e`) | tested in QEMU |
-| `e1000.c` | I217, I218, I219 (the Dell target's I219-LM, device ids 0x15B7..0x15E3 and the earlier PCH ids) | **never run on hardware**; the code path is exercised on QEMU's 82574L with `e1000.pch` on the kernel command line |
+| `e1000.c` | I217, I218, I219 (the Dell target's I219-LM5 `8086:15e3`, device ids 0x15B7..0x15E3 and the earlier PCH ids) | **run on the Dell once**: link and receive work, transmit hangs (see "The first contact with the Dell's I219-LM5" below); the code path is also exercised on QEMU's 82574L with `e1000.pch` on the kernel command line |
 | `rtl8139.c` | Realtek RTL8139 (QEMU `-device rtl8139`) | tested in QEMU |
 | `r8169.c` | Realtek RTL8168 / RTL8111 / RTL8169 (ids 0x8168, 0x8169, 0x8167, 0x8161) | **never run**: QEMU has no such device |
 
@@ -117,6 +117,27 @@ The I219 driver was written from Linux's e1000e as remembered, without the hardw
 
 If a first boot shows `[Yukari] ... did not answer sensibly; leaving it alone`, the card is left untouched and the rest of the
 system is unaffected; `cat /proc/pci` lists the device and who claimed it.
+
+### The first contact with the Dell's I219-LM5 (2026-10-24)
+
+Device `8086:15e3` (Sunrise Point / Kaby Lake, "SPT" in Linux's e1000e), cable plugged in after the boot. What `ifconfig` showed: `eth0` UP,RUNNING, a link,
+**receive worked** (32 frames, 20 of them dropped by the stack) and **every transmitted frame failed** (6 sent, 6 transmit errors, no DHCP address): the card
+never completed a transmit descriptor. Receive writes to memory, transmit reads from it and from the descriptor ring, which points at a card whose DMA read
+side (or the state the firmware left it in) is what is wrong. Everything below was added so that one more boot with the cable in answers the question:
+
+* **Always on (probe, every reset, every link-up)**, taken from Linux: the second transmit queue is set up like the first (`TXDCTL(1)`, `TARC(1)`), the
+  K1-off workaround of the SPT parts (`PCIEANACFG` bit 31 copied to `FEXTNVM6` bit 31: with K1 on at 1 Gb/s the MAC can miss DMA completions, which looks
+  exactly like this), and `FEXTNVM11` "disable MULR fix".
+* **A ladder of eight ways to start the transmit unit**, one per hang (the watchdog moves on after two seconds without progress while the link is up), the log
+  names each (`[Yukari] eth0: transmit variant N: ...`): 0 plain restart, 1 transmit unit off and idle first, 2 MAC reset, 3 no errata bits, 4 descriptor
+  ring flush (Linux's `e1000_flush_desc_rings`) then MAC reset, 5 MAC and PHY reset, 6 D3hot/D0 cycle then MAC reset, 7 receive stopped and transmit started
+  first. `transmit works with variant N` says which one finally moved the ring. `e1000.txvar=N` starts at a variant, `e1000.txstall=N` pretends a hang
+  until variant N (tests).
+* **Register dumps**: `as the firmware left it` at probe (before this driver wrote anything), `stuck` with the power, link, second-queue and descriptor
+  registers at each hang (`GPTC`/`TPT` count frames that really left the card; `TDH` where the transmit unit stopped; `pciE4` bit 8 is "descriptor rings
+  must be flushed"; `LNKCTL`/`PMCSR` the PCIe and power state), and `after` once a variant has been applied.
+
+`dmesg | grep -i -E 'yukari|eth0'` shows all of it; a photograph of that is what the next step needs.
 
 ## Tests
 

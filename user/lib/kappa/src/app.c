@@ -14,8 +14,9 @@ struct KWin {
     KApp *app;
     FairyWindow *win;
     KUI ui;
-    uint32_t *back;
-    int bw, bh;
+    uint32_t *back;                 /* (bw * scale) x (bh * scale) pixels */
+    int bw, bh;                     /* content size, logical */
+    int scale;                      /* buffer pixels per logical pixel (fairy_window_scale) */
     KDrawFn draw;
     void *user;
     bool dirty, popup, dead;
@@ -60,9 +61,14 @@ const char *k_basename(const char *path) {
 
 /* ---------------------------------------------------------------- windows */
 
+static bool g_hidpi = true;                     /* new windows ask for buffers at the screen's ui scale */
+
+void kapp_set_hidpi(bool enabled) { g_hidpi = enabled; }
+int kapp_scale(KApp *a) { return fairy_scale(a->d); }
+
 static void resize_back(KWin *w, int nw, int nh) {
     free(w->back);
-    w->back = calloc((size_t)nw * (size_t)nh, 4);
+    w->back = calloc((size_t)nw * (size_t)nh * (size_t)(w->scale * w->scale), 4);
     w->bw = nw;
     w->bh = nh;
 }
@@ -71,15 +77,17 @@ static KWin *kwin_create(KApp *a, int x, int y, int w, int h, const char *title,
     if (a->nwins >= MAX_WINDOWS) return NULL;
     KWin *kw = calloc(1, sizeof *kw);
     if (!kw) return NULL;
+    if (g_hidpi) flags |= FW_HIDPI;
     kw->win = fairy_window_create_at(a->d, x, y, w, h, title, flags, a->main ? a->main->win : NULL);
     if (!kw->win) { free(kw); return NULL; }
+    kw->scale = fairy_window_scale(kw->win);
     kw->app = a;
     kw->popup = popup;
     kw->draw = draw;
     kw->user = user;
     int cw, ch, stride;
     fairy_window_pixels(kw->win, &cw, &ch, &stride);
-    resize_back(kw, cw, ch);
+    resize_back(kw, cw / kw->scale, ch / kw->scale);
     kw->ui.theme = &k_theme_shrine;
     kw->ui.app = a;
     kw->ui.window = kw;
@@ -217,7 +225,8 @@ static void frame(KWin *kw) {
     ui->tooltip = NULL;
     ui->hot = 0;
     ui->input_blocked = ui->menu_open != 0;
-    kc_init(&ui->cv, kw->back, kw->bw, kw->bh, kw->bw);
+    int s = kw->scale;
+    kc_init_scaled(&ui->cv, kw->back, kw->bw, kw->bh, kw->bw * s, s);
     ui->has_damage = false;
     if (kw->draw) kw->draw(kw->app, ui, kw->user);
 
@@ -234,11 +243,14 @@ static void frame(KWin *kw) {
 
     int w, h, stride;
     uint32_t *px = fairy_window_pixels(kw->win, &w, &h, &stride);
-    if (px && w == kw->bw && h == kw->bh) {
-        KRect d = ui->has_damage ? kr_intersect(ui->damage, kr(0, 0, w, h)) : kr(0, 0, w, h);
-        if (tooltip_shown) d = kr(0, 0, w, h);
+    if (px && w == kw->bw * s && h == kw->bh * s) {
+        KRect all = kr(0, 0, kw->bw, kw->bh);
+        KRect d = ui->has_damage ? kr_intersect(ui->damage, all) : all;
+        if (tooltip_shown) d = all;
         if (!kr_empty(d)) {
-            for (int y = d.y; y < d.y + d.h; y++) memcpy(px + (size_t)y * stride + d.x, kw->back + (size_t)y * kw->bw + d.x, (size_t)d.w * 4);
+            size_t bstride = (size_t)kw->bw * s;
+            for (int y = d.y * s; y < (d.y + d.h) * s; y++)
+                memcpy(px + (size_t)y * stride + d.x * s, kw->back + (size_t)y * bstride + d.x * s, (size_t)d.w * s * 4);
             fairy_window_commit(kw->win, d.x, d.y, d.w, d.h);
         }
     }

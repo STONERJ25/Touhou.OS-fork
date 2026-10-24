@@ -110,6 +110,8 @@ Good parallel plan: task 1 and tasks 3 and 9 at once; when task 1 is merged, tas
 | 7 FAT write ordering | in progress (`cloud/fat-ordering`) |
 | 8 Hi-dpi | in progress (`cloud/hidpi`) |
 | 5 Update client + loader fallback | waits for 2 and 4, and for task 10 below |
+| 13 Write-path review | delivered as `cloud/write-path-review`, **merged into main** on 2026-10-24 (the local agent re-ran the 36 block-device and install tests on Windows: all pass) |
+| 2 Staging | delivered as `cloud/staging` (293 files, +50k lines); **not merged into main yet**: it rewrites the HDA path walk (`hda.c`, `hda_graph.c`) and the owner's Dell plays sound today through the old one, so it goes in after the Dell has run it (see "News from the Dell" below) |
 
 Owner decisions so far: install goes from a USB stick onto an internal disk; `blk.rw=GUID` names the `HUMANVILLAGE` *partition* GUID, so the installed homes are writable while the installed ESP, the
 whole-disk node and every other disk stay read-only under `blk.ro`. The owner's PC has its SATA controller in Intel RAID mode (internal disks are invisible until the BIOS is set to AHCI), has an
@@ -147,7 +149,18 @@ New tasks, roughly in priority order. 10 to 13 serve the owner's two goals (an i
     8086/V30 and then 80286 real-mode CPU core with instruction tests, then a PC-98 machine skeleton (memory map, text VRAM, the uPD7220 graphics controller, keyboard, floppy and hard disk image formats such
     as D88/HDI/FDI, beeper). **No game data, BIOS ROMs or copyrighted assets in the repository**; boot a raw boot sector from a test image as the demo.
 
-Suggested order for the free capacity: 10 and 11 first (they unblock 5 and 12), 13 and 15 in parallel with them, then 5, 12 and 14 once task 2 is merged, and the stretch tasks last.
+### News from the Dell, 2026-10-24 (read before touching drivers)
+
+- **The BIOS is in AHCI mode now** (Windows refused to start in RAID mode, and boots in AHCI). The AHCI and NVMe drivers meet the internal disk for the first time on the owner's next boot; `blk.ro` keeps it
+  read-only. `ahci=off` and `nvme=off` on the kernel command line (main) leave the controllers alone if that goes wrong.
+- **The network card hangs its transmit queue**: I219-LM5 `8086:15e3`, link and receive fine, no transmit descriptor ever completes (6 frames, 6 errors). The local agent is working on `kernel/drivers/e1000.c`
+  (Linux's SPT workarounds, a ladder of eight ways to restart the transmit unit, register dumps; see "The first contact with the Dell's I219-LM5" in `docs/NETWORK.md`). **Do not edit `e1000.c`, `ahci.c` or
+  `nvme.c`** without saying so in the PR description; two people changing the same driver blind is how this goes wrong. Tasks 5 and 12 must not assume a working NIC on the Dell until the owner has confirmed one.
+- Sound works on the Dell through the *old* HDA code (ALC255, codec `10ec:0255`: speaker pin 0x14 to DAC 0x02, line out 0x1b to 0x03, headphone 0x21 to 0x02). Whatever the new path walk in staging picks
+  for that codec must be the same; if you can, add a test that feeds the walker a codec model with exactly those pins and converters.
+
+Suggested order for the free capacity (updated 2026-10-24): **21 first** (it gives the owner updates over the network without waiting for the OS's own NIC driver), then 10 and 11 (they unblock 5 and 12), 19 and 20
+(the dual-boot install), 15 in parallel with them, then 5, 12 and 14, and the stretch tasks last. 13 is done.
 
 ---
 
@@ -174,3 +187,19 @@ Two more tasks that follow from it:
 20. **The loader registers a UEFI boot entry for an installed system.** A second ESP on an internal disk is not always offered by the firmware's boot menu. On the first start from an installed medium the loader (it still
     has boot services) should add a boot entry named after the OS (`Boot####` plus an entry in `BootOrder`, placed after the existing entries, never replacing Windows' entry) pointing at `\EFI\BOOT\BOOTX64.EFI` of its
     own ESP, once, recorded so that it is not repeated. Refuse to touch an existing entry, handle a full variable store, and test with QEMU's OVMF variable store (list the variables before and after, boot twice).
+
+21. **Loader-time update over the firmware's own network stack.** The OS's own driver for the Dell's I219 is not working yet (see "News from the Dell" above), but the *firmware* drives that card fine (it can
+    PXE boot), and the loader still has boot services when it runs. So: in `boot/`, after `cmdline.txt` is read and before the kernel is loaded, if the command line has `update=http://HOST[:PORT]/PATH/` the
+    loader uses the firmware's UEFI network protocols to fetch the manifest and the changed files from a `tools/serve-update.py` server and installs them on the boot ESP, then boots. What the firmware offers
+    depends on the build: the safe floor is `EFI_TCP4_PROTOCOL` with `EFI_DHCP4`/`EFI_IP4_CONFIG2` (a minimal HTTP/1.0 GET by hand, IPv4 literal host, no DNS needed); use `EFI_HTTP_PROTOCOL` when it is
+    present, and `EFI_DNS4` for names only if cheap. On the Dell, "Enable UEFI Network Stack" in the BIOS setup is probably what turns all of this on; with no network protocol the loader prints one line and
+    boots on. Rules: the same signed manifest, the same verification (ECDSA P-256 over SHA-256, public key in a file on the ESP, `shared/` code reused by the loader), the same A/B rule (`*.new`, flush,
+    rename, keep `kernel.old` and `initrd.old`) as task 5; never trust the system clock (it is stale on the Dell; use the manifest's counter and `issued`); refuse a manifest that is not newer than the
+    installed one; every failure leaves the old files in place; the whole attempt has a time budget of a few seconds when nothing answers and never blocks the boot; with no `update=` word there is no network
+    activity at all. The ESP is written through `EFI_SIMPLE_FILE_SYSTEM_PROTOCOL` (boot services, independent of the kernel's `blk.ro`). Tests: QEMU + OVMF with user-mode networking and the update server on
+    the host: updated, already current, bad signature, replayed old manifest, truncated download, wrong hash, server down (boot continues within the budget), no `update=` word, QEMU killed mid-download (the
+    ESP still boots). **Check first that the OVMF build used by the tests carries the network stack** (distributions differ; document the build or file you need). Document the owner's side (the BIOS switch,
+    `update=` in `cmdline.txt`, running the server on the PC, firewall) in `docs/UPDATE.md`.
+
+Facts for tests and the installer (owner's Disk Management, 2026-10-24): the internal disk is a 238.35 GB disk with a 500 MB ESP, a 55.87 GB NTFS volume that is **BitLocker encrypted** (so a BitLocker signature is
+present and `install` must refuse it), and 181.99 GB unallocated at the end. Task 19's tests should use a disk image with exactly this shape (scaled down).

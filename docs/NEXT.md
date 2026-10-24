@@ -41,9 +41,13 @@ The next two goals, in this order:
 
 Goal 1 has a first implementation on branch `cloud/installer` (task 4 of [CLOUD_AGENT_BRIEF.md](CLOUD_AGENT_BRIEF.md)): `install DISK`, a per-disk write unlock (`BLKWRUNLOCK`), `blk.rw=`, `/proc/bootdisk`, tested in QEMU only; see [INSTALL.md](INSTALL.md).
 
+Hi-dpi (brief task 8) is on branch `cloud/hidpi` (2026-10-24): ui scale 2 by itself at 2560x1440 (or `ui.scale=N`), Fairies/Kappa/shell drawn at full resolution, pixel-drawing apps enlarged by the server, 1x unchanged; tests `hidpi_`, details in [DESKTOP.md](DESKTOP.md) "Hi-dpi screens".
+
 The server half of goal 2 is on branch `cloud/update-server` (2026-10-24): `tools/serve-update.py` signs a manifest and serves it over HTTP, host tests in `tests/host/test_serve_update.py`; format, protocol and the loader fallback design are in [UPDATE.md](UPDATE.md). The OS client and the fallback are not started.
 
 gapsh job control is on branch `cloud/job-control` (2026-10-24): Ctrl-Z, `jobs`, `fg`, `bg`, `wait %N`, `disown`, `%` job names; tests `jobctl_shell_console`, `jobctl_shell_pty`, `jobctl_desktop_terminal`; see [JOBCONTROL.md](JOBCONTROL.md) "State when paused".
+
+Test infrastructure is on branch `cloud/test-infra` (task 15, 2026-10-24): `tests/run_all.py --retry-failed` (flaky or failed), an `@xfail` marker (only `usbstor_4k_blocks`, on QEMU before 9), `tools/suite.py` (the seven groups in parallel worktrees) and the manual/weekly `full-suite.yml` workflow (not run yet: it appears once it is on `main`); see [LINUX.md](LINUX.md) "Test runner".
 
 Before both: merge the parked branches (below) and run the whole suite on the result, in particular the network/HTTPS branch, the dirty-volume `fsck` branch (an installed disk and a
 stick that is switched off with the button need it) and the audio branch.

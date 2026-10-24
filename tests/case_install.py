@@ -57,6 +57,69 @@ def bare_fat(name, size_mib):
     return p
 
 
+GPT_MSR = uuid.UUID("E3C9E316-0B5C-4DB8-817D-F92DF00215AE")
+GPT_WINRE = uuid.UUID("DE94BBA4-06D1-4D40-A16A-BFD50179D6AC")
+GPT_LINUX_ROOT = uuid.UUID("4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709")
+GPT_LINUX_SWAP = uuid.UUID("0657FD6D-A4AB-43C4-84E5-0933C84B4F4F")
+GPT_LINUX_HOME = uuid.UUID("933AC7E1-2EB4-4F13-B844-0E14E2AEF915")
+
+
+def vbr(oem):
+    """A volume boot sector with the given OEM name (b'NTFS    ', b'-FVE-FS-'): what install looks at to recognise NTFS and BitLocker."""
+    b = bytearray(512)
+    b[0:3] = b"\xeb\x52\x90"
+    b[3:11] = oem
+    b[11:13] = (512).to_bytes(2, "little")
+    b[13] = 8
+    b[21] = 0xF8
+    b[510:512] = b"\x55\xaa"
+    return bytes(b)
+
+
+def poke(img, off, data):
+    with open(img, "r+b") as f:
+        f.seek(off)
+        f.write(data)
+
+
+def windows_disk(name, size_mib, bitlocker=False):
+    """What a fresh Windows 11 leaves on a disk: ESP (with the boot manager), MSR, the NTFS (or BitLocker) basic data partition C:, and an
+    NTFS recovery partition."""
+    p = blank(name, size_mib)
+    mkdisk.build_image(str(p), size_mib * MiB, [
+        dict(name="EFI system partition", kind="fat32", size=40 * MiB, label="SYSTEM", esp=True,
+             files={"/EFI/Microsoft/Boot/bootmgfw.efi": b"MZ not really windows " * 64}),
+        dict(name="Microsoft reserved partition", kind="raw", size=16 * MiB, type=GPT_MSR),
+        dict(name="Basic data partition", kind="raw", size=150 * MiB, type=mkdisk.GPT_TYPE_BASIC),
+        dict(name="", kind="raw", size="rest", type=GPT_WINRE)], seed=21)
+    _, parts = mkdisk.partitions(str(p))
+    poke(p, parts[2]["offset"], vbr(b"-FVE-FS-" if bitlocker else b"NTFS    "))
+    poke(p, parts[3]["offset"], vbr(b"NTFS    "))
+    return p
+
+
+def linux_disk(name, size_mib):
+    """A Linux install: ESP, an ext4 root, swap, an ext4 /home."""
+    p = blank(name, size_mib)
+    mkdisk.build_image(str(p), size_mib * MiB, [
+        dict(name="EFI", kind="fat32", size=40 * MiB, label="EFI", esp=True, files={"/EFI/debian/grubx64.efi": b"MZ not really grub " * 64}),
+        dict(name="root", kind="raw", size=120 * MiB, type=GPT_LINUX_ROOT),
+        dict(name="swap", kind="raw", size=32 * MiB, type=GPT_LINUX_SWAP),
+        dict(name="home", kind="raw", size="rest", type=GPT_LINUX_HOME)], seed=22)
+    _, parts = mkdisk.partitions(str(p))
+    for i in (1, 3):
+        poke(p, parts[i]["offset"] + 1080, b"\x53\xef")              # ext2/3/4 superblock magic
+    poke(p, parts[2]["offset"] + 4086, b"SWAPSPACE2")
+    return p
+
+
+def whole_ntfs(name, size_mib):
+    """An NTFS file system over the whole disk, no partition table (as some external disks come)."""
+    p = blank(name, size_mib)
+    poke(p, 0, vbr(b"NTFS    "))
+    return p
+
+
 def sha_file(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
@@ -409,3 +472,79 @@ def install_esp_stays_read_only():
         g.ok("sync")
     assert esp_sha() == before, "the installed ESP was modified by the installed system"
     assert sha_file(decoy) == decoy_sha, "the decoy was modified by the installed system"
+
+
+@test
+def install_other_systems():
+    """Disks that hold another operating system (Windows: ESP, MSR, NTFS C:, recovery; the same with BitLocker; Linux: ext4 root, swap,
+    /home; a whole-disk NTFS volume) are refused even with --force: with --yes-i-typed, with a wrong or differently-cased sentence, with
+    a wrong sentence typed at the prompt; the listing and --dry-run show everything that would be lost; nothing is written. Only the exact
+    sentence (ERASE <SYSTEMS> ON <model> <disk>) goes on, at the prompt (Windows) or with --erase-phrase (Linux)."""
+    win = windows_disk("os-windows", 256)
+    bitl = windows_disk("os-bitlocker", 256, bitlocker=True)
+    lin = linux_disk("os-linux", 256)
+    ntfs = whole_ntfs("os-ntfs", 128)
+    before = {p: sha_file(p) for p in (win, bitl, lin, ntfs)}
+    extra = (sata_disk("ow", win, "ide.1", model="WIN-SSD") + sata_disk("ob", bitl, "ide.3", model="BITLOCKER-SSD") +
+             nvme_ctrl("ol", "LINUX001", [(lin, 1)]) + drive("on", ntfs) + ["-device", "virtio-blk-pci,drive=on"])
+    with Guest("t-install-os", extra, cmdline="blk.ro") as g:
+        parts = g.partitions()
+        w, b = device_by_model(parts, "WIN-SSD"), device_by_model(parts, "BITLOCKER-SSD")
+        sentence = {w: f"ERASE WINDOWS ON WIN-SSD {w}", b: f"ERASE WINDOWS ON BITLOCKER-SSD {b}",
+                    "nvme0n1": "ERASE LINUX ON QEMU NVMe Ctrl nvme0n1", "vda": "ERASE WINDOWS ON Virtio block device vda"}
+        system = {w: "WINDOWS", b: "WINDOWS", "nvme0n1": "LINUX", "vda": "WINDOWS"}
+
+        def refused(cmd, *patterns):
+            out, rc = g.run(cmd, timeout=120)
+            assert rc != 0 and "nothing was written" in out, f"'{cmd}' should have been refused (rc {rc}):\n{out}"
+            for p in patterns:
+                must(out, p, f"(from '{cmd}')")
+            return out
+
+        listing = g.ok("install")
+        for dev in sentence:
+            must(listing, rf"(?m)^{dev}\s.*holds {system[dev]} \(protected: needs --force and a typed sentence\): ")
+        for dev, s in sentence.items():
+            refused(f"install --yes-i-typed={dev} {dev}", rf"{dev} holds another operating system \({system[dev]}\)", re.escape(s))
+            refused(f"install --force --yes-i-typed={dev} {dev}", r"--force and --yes-i-typed are not enough", re.escape(f"--erase-phrase='{s}'"))
+            refused(f"install --force --erase-phrase='{s.lower()}' {dev}", r"--erase-phrase does not match", re.escape(s))
+            refused(f"install --force --erase-phrase='{s.replace(' ON ', ' on ')}' --yes-i-typed={dev} {dev}", r"--erase-phrase does not match")
+        refused("install --force --erase-phrase='ERASE WINDOWS ON nvme0n1' nvme0n1", r"--erase-phrase does not match")   # the wrong system
+        # what would be lost, partition by partition
+        out = g.ok(f"install --force --dry-run {w}")
+        must(out, rf"install: {w} \(256 MiB, WIN-SSD\) holds WINDOWS\. Everything on it would be lost:")
+        must(out, r'partition 1\s+"EFI system partition"\s+40 MiB\s+EFI System Partition, FAT32 "SYSTEM"\r?\n')
+        must(out, r'partition 2\s+"Microsoft reserved partition"\s+16 MiB\s+Microsoft reserved\s+<- WINDOWS')
+        must(out, r'partition 3\s+"Basic data partition"\s+150 MiB\s+Microsoft basic data, NTFS\s+<- WINDOWS')
+        must(out, r'partition 4\s+\d+ MiB\s+Windows recovery, NTFS\s+<- WINDOWS')
+        must(out, re.escape(f"going on would need this sentence, typed exactly: {sentence[w]}"))
+        must(g.ok(f"install --force --dry-run {b}"), r'partition 3\s+"Basic data partition"\s+150 MiB\s+Microsoft basic data, BitLocker-encrypted volume\s+<- WINDOWS')
+        out = g.ok("install --force --dry-run nvme0n1")
+        must(out, r'partition 2\s+"root"\s+120 MiB\s+Linux root \(x86-64\), ext2/3/4\s+<- LINUX')
+        must(out, r'partition 3\s+"swap"\s+32 MiB\s+Linux swap, Linux swap\s+<- LINUX')
+        must(out, r'partition 4\s+"home"\s+\d+ MiB\s+Linux /home, ext2/3/4\s+<- LINUX')
+        must(g.ok("install --force --dry-run vda"), r"whole disk\s+128 MiB\s+no partition table, NTFS\s+<- WINDOWS")
+        # at the prompt: anything but the exact sentence stops it
+        for answer in (sentence[w].lower(), w, f"ERASE WINDOWS ON {w}", sentence[w] + " please"):
+            g.vm.send(f"install --force {w}; echo __RC''=$?\n")
+            g.vm.expect(r"To go on, type this sentence exactly", timeout=120)
+            g.vm.send(answer + "\n")
+            m = g.vm.expect(r"__RC=(\d+)", timeout=120)
+            assert m.group(1) == "1", f"typing {answer!r} must stop the installer"
+            must(g.vm.text()[-800:], re.escape(f"you typed '{answer}', not the sentence"))
+            g.vm.expect(PROMPT, timeout=30)
+        assert "unlocked for writing" not in g.ok("dmesg"), "no refusal may get as far as the unlock"
+        for p, h in before.items():
+            assert sha_file(p) == h, f"{p.name} was modified by a refused install"
+        # the exact sentence: typed at the prompt for the Windows disk, given with --erase-phrase for the Linux one
+        g.vm.send(f"install --force --cmdline '{INSTALLED_CMDLINE}' {w}\n")
+        g.vm.expect(r"To go on, type this sentence exactly", timeout=120)
+        g.vm.send(sentence[w] + "\n")
+        g.vm.expect(rf"TouhouOS is installed on {w}", timeout=900)
+        g.vm.expect(PROMPT, timeout=60)
+        out = g.ok(f"install --force --erase-phrase='{sentence['nvme0n1']}' --cmdline '{INSTALLED_CMDLINE}' nvme0n1", timeout=900)
+        assert "the sentence matches: LINUX on nvme0n1 will be erased" in out and "TouhouOS is installed on nvme0n1" in out, out
+    for p in (bitl, ntfs):
+        assert sha_file(p) == before[p], f"{p.name} was modified"
+    check_installed(win)
+    check_installed(lin)

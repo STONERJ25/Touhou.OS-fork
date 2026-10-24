@@ -8,6 +8,14 @@ Why the BIOS has to change: the SATA controller is in *Intel RAID (RST)* mode, a
 (`[Kappa] ahci: ... SATA controller is in RAID (Intel RST) mode`). The setting is **SATA Operation: RAID On -> AHCI** in the BIOS (F2 at power-on, System Configuration). Windows installed in RAID mode
 loads Intel's driver at boot; when the mode changes it must switch to Microsoft's AHCI/NVMe drivers first or it stops with INACCESSIBLE_BOOT_DEVICE. Part C does that.
 
+## State on 2026-10-24 (from the owner's Disk Management)
+
+Disk 0, the internal 238.35 GB disk: a 500 MB EFI System Partition, `C:` 55.87 GB NTFS **BitLocker encrypted** (Windows 11 Education, activated), then **181.99 GB unallocated at the end of the disk**
+(the owner shrank `C:` and left the space alone). Disk 1 is the TouhouOS stick (64 MB ESP, `HUMANVILLAG` 959 MB FAT32, the rest unallocated). So Part E is done. **Later the same day the owner reported
+that the BIOS is already in AHCI mode and Windows boots in it** (Windows refused to start in RAID mode), so parts A to C are done as well; what is left is the read-only first look (part D) and the installer's
+free-space mode. Because `C:` is BitLocker encrypted, **the recovery key must be saved** (part A, step 1), and if protection was suspended for the change it has to be switched on again afterwards
+(`manage-bde -protectors -enable C:`); suspending for several reboots is safer than one: `manage-bde -protectors -disable C: -RebootCount 6`.
+
 ## A. In Windows, before touching the BIOS (nothing destructive)
 
 1. **BitLocker.** Open an administrator Command Prompt and run `manage-bde -status`. If C: says *Protection On* (Windows 11 may turn device encryption on by itself when you sign in with a Microsoft
@@ -38,10 +46,18 @@ lsblk
 cat /proc/partitions
 cat /proc/ahci /proc/nvme
 dmesg | grep -i -E 'ahci|nvme|blk|raid'
+su marisa
+sudo install
 ```
 
 and send the output (or a photo). It shows whether the disk is SATA or NVMe, its size and the Windows partitions (ESP, MSR, NTFS, recovery), and whether the drivers worked on real hardware for the first time.
+`install` without arguments only lists the disks and what it thinks of each (the boot stick, a disk that holds Windows and is therefore protected, a disk in use, an empty disk); it writes nothing. It needs root
+because the disk nodes are root-only: `reimu` may not use `sudo`, `marisa` may (no passwords at first; just press Enter if asked).
 This is the point to stop and look before anything is written.
+
+**If the first boot with the internal disk visible hangs or misbehaves** (it is the first time the SATA/NVMe drivers meet this controller): add `ahci=off nvme=off` to `cmdline.txt` on the stick's boot
+partition (the 64 MB one) and boot again; the two drivers then do not touch the controllers at all (`[Kappa] ahci: disabled on the kernel command line`). `ahci=off` and `nvme=off` work separately, which also
+tells which driver it was. Send `TOUHOU.LOG` from the stick's HUMANVILLAGE volume.
 
 ## E. Make room (when the installer for free space is ready)
 

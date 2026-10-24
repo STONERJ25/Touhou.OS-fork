@@ -40,7 +40,8 @@ typedef struct Win {
     unsigned state;
     char title[64];
     uint32_t *buf;                  /* client's pixels (shared mapping) */
-    int bw, bh, bstride;
+    int bw, bh, bstride;                    /* buffer size in buffer pixels */
+    int bscale;                             /* buffer pixels per logical pixel: S.scale for FW_HIDPI windows, else 1 */
     size_t map_len;
     int rx, ry, rcw, rch;           /* geometry to restore after maximize */
     int minw, minh;
@@ -59,8 +60,10 @@ typedef KRect Rect;
 enum { Z_NONE, Z_CONTENT, Z_TITLE, Z_CLOSE, Z_MAX, Z_MIN, Z_N, Z_S, Z_E, Z_W, Z_NE, Z_NW, Z_SE, Z_SW };
 
 typedef struct Server {
-    int screen_w, screen_h;
-    uint32_t *back;                 /* composed screen, 0x00RRGGBB */
+    int screen_w, screen_h;         /* logical: what clients see; the window manager works in these units */
+    int scale;                      /* ui scale: physical pixels per logical pixel (1, 2, ...), see comp_init() */
+    int phys_w, phys_h;             /* the part of the framebuffer in use: screen_w * scale x screen_h * scale */
+    uint32_t *back;                 /* composed screen, 0x00RRGGBB, phys_w x phys_h */
     uint32_t *fb;                   /* mapped framebuffer */
     int fb_pitch;                   /* bytes */
     bool swap_rb;
@@ -71,7 +74,8 @@ typedef struct Server {
     Win *lock;                      /* the screen-lock window while one exists */
     Client *clients;
     uint32_t next_client, next_win;
-    int cursor_x, cursor_y;
+    int cursor_x, cursor_y;         /* logical pointer position (ptr / scale) */
+    int ptr_x, ptr_y;               /* the pointer in physical pixels: mouse motion counts in screen pixels */
     unsigned cursor_shape;
     int work_x, work_y, work_w, work_h;
     uint8_t buttons, mods;
@@ -151,7 +155,8 @@ void comp_screenshot(const char *path);
 Rect rect_union(Rect a, Rect b);
 Rect rect_intersect(Rect a, Rect b);
 bool rect_empty(Rect r);
-void cursor_move_to(int x, int y);
+void cursor_move_to(int x, int y);          /* logical position */
+void cursor_move_by(int dx, int dy);        /* relative motion in physical pixels (the mouse) */
 void cursor_set_shape(unsigned shape);
 
 #endif
