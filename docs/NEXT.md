@@ -5,19 +5,21 @@ parked on branches and what to do first when work resumes.
 
 ## Where things stand
 
-`main` (`b73b7d4` and later docs commits) holds everything that has been merged so far:
+`main` (`b73b7d4`, the loader fix `5c0d74b` and docs commits since) holds everything that has been merged so far:
 
 - first wave: kernel foundations, desktop, accounts and login, power and time, FAT32 and the HUMANVILLAGE mount policy, AHCI and NVMe,
   xHCI USB with HID, the desktop apps, the games, Patchouli's library, Notebook and Sketchbook;
 - merged today: the network stack with its tools, DNS and the NIC drivers (I219 and RTL8168 never ran on hardware), audio core
   (HDA, AC'97, mixer, `play`, `beep`, `volume`), threads, the kernel half of job control, `nice`/`renice`, hard links, `/proc/<pid>/fd`,
   libz with gzip/tar/zip, awk/diff/patch/bc/dc and a first `vi`, **USB mass storage with `TOUHOU.LOG` on the stick**, the Gensokyo
-  Explorer, hardware audit round 1 (console rewrite, write-combining framebuffer, timer and APIC fallbacks, loader robustness), image
+  Explorer, hardware audit rounds 1 (console rewrite, write-combining framebuffer, timer and APIC fallbacks, loader robustness) and 2 (merged as `88acd67`: MTRR fallback, PCI BAR sizing fix, D0 wake-up), image
   decoders, the Gallery, wallpapers, PNG screenshots, the PS/2 wheel fix, `/bin/sh` as a link to gapsh and `TOUHOU_CPU` in `tools/qemu.py`.
 
 How well `main` is verified: the whole suite (261 tests, seven parallel groups) passed on the loader with the memory-type fix (`5c0d74b`, docs commits since); the only failure was one mouse-driven GUI test (`notebook_menus_and_recent`) that fails under load and passes alone. The parked branches below are verified only by their own authors.
 
 The OS has booted on the real PC (Dell, i5-7500) since 2026-10-23 evening; [HARDWARE_AUDIT.md](HARDWARE_AUDIT.md) has what that showed and the checklist for the rest (network link, the internal disks).
+
+- Docs (cloud task 9, branch `cloud/docs`): [USER_GUIDE.md](USER_GUIDE.md) for someone at the desktop, a refreshed README, and STATUS / ROADMAP / NEXT checked against the code on main.
 
 ## Goals for the next session (the owner, 2026-10-23 night)
 
@@ -60,11 +62,14 @@ USB hot-plug of a hub after boot matters.
 ## Branches that are not merged
 
 All paused with a clean, building tree unless a row says otherwise. Each has its own `docs/<AREA>.md` with "State when paused" and
-"How to resume". Branch names are `worktree-agent-<id>`; the worktrees are under `.claude/worktrees/agent-<id>`.
+"How to resume". Locally the branches were `worktree-agent-<id>` (worktrees under `.claude/worktrees/agent-<id>`); on `origin` they are `parked/<area>`:
+a504bf8a5a198d471 = `parked/usb-dirty-fsck`, a3d380c78d6285728 = `parked/audio-jukebox`, a46f2d415c0a1a9ca = `parked/network-https`,
+a93e3061dde450b33 = `parked/mcc-compiler`, abec503ce2c98467a = `parked/utilities-vi`, a503fea82ea373559 = `parked/libc-accuracy`,
+a4adbf8e4aa5804b3 = `parked/kernel-hardening`, `wip/usb-storage-soft-fallbacks` = `parked/usb-stick-quirks-wip`.
 
 | Id | Area | Head | What it holds / what to know |
 |----|------|------|------------------------------|
-| a6d5e6306014eb8c7 | hardware audit, round 2 | 9efbc0a | MTRR write-combining as a measured fallback (`fb.mtrr=auto|on|off`), **a PCI BAR sizing fix** (the old code could loop over ~2^47 pages on a 64-bit BAR and hang the first boot), `pci_set_d0` for every device, NVMe admin queue clamped to MQES; 15 `hwaudit` tests pass. Not re-run after it: usb, net, audio, desktop, the full suite. Side branch `wip/usb-storage-soft-fallbacks` (5bd592f) holds half-done stick quirk handling (size ladder 64K to 4K, quirk table, bring-up retries); it does **not compile** yet, the missing list is in `docs/HARDWARE_AUDIT.md` |
+| a6d5e6306014eb8c7 | hardware audit, round 2: **merged into main** (`88acd67`); only its side branch is left, `parked/usb-stick-quirks-wip` | 9efbc0a | The round itself (MTRR fallback, PCI BAR sizing fix, D0 wake-up, NVMe admin queue clamp) is on main and the whole suite passed after it. Side branch `wip/usb-storage-soft-fallbacks` (5bd592f, pushed as `parked/usb-stick-quirks-wip`) holds half-done stick quirk handling (size ladder 64K to 4K, quirk table, bring-up retries); it does **not compile** yet, the missing list is in `docs/HARDWARE_AUDIT.md` |
 | a504bf8a5a198d471 | USB follow-up: dirty volumes, fsck | 55638b8 | A dirty HUMANVILLAGE volume is checked read-only at mount (FAT copies, chains, cross-links, sizes, names): consistent means read-write (so `TOUHOU.LOG` keeps working after a hard power-off), problems mean read-only with the reason in the log and `/proc/fatcheck`; `hvforce` and `hvcheck=off` switches; one C scanner shared by the kernel and a host DLL, agreeing with `tools/mkdisk.py --check` on ~50 damage kinds; 7 `fsck_*` tests pass. The `fsck` program and its repair engine (`shared/fatfix.c`) are written but **have never run in the guest**; the FAT write-order review found four ordering gaps (listed in `docs/STORAGE.md`) and nothing is changed there yet |
 | a3d380c78d6285728 | audio, round 2 | 797966a | generic HDA codec path walk (unit-tested on 12 invented Realtek-style graphs), Reimu's Jukebox, five original songs (`.tms`, nobody has listened to them), a ProTracker `.mod` player, system sounds with `nosounds`, volume slider in the panel; 20 audio tests pass, the suite was 207/0 with 39 not reached. Merging main conflicts only in `user/bin/hakurei-shell/launch.c`: keep both menu lines (Gallery and Jukebox) |
 | a46f2d415c0a1a9ca | network, round 2: HTTPS | 0212736 | `libtls` (TLS 1.3 and 1.2 client with its own crypto, strict X.509), a new kernel RNG (ChaCha20 seeded from RDSEED/RDRAND), a 119-root CA bundle in the initrd, `https://` in `fetch`/`wget`, 14 `tls_*` tests (they need the Python package `cryptography`). The kernel DHCP-stop commit `361314b` was never run in QEMU: if `net_ifconfig_set` or `net_link_*` fail, `git revert 361314b`. **The network panel is not started** (design in `docs/NETWORK.md`). New man pages were not checked by the `manual` test |
@@ -83,7 +88,7 @@ Old helper worktrees that are merged and can be deleted: `agent-a8e93238212e069d
 
 1. Merge in this order, building after each and running the tests named (the usual suspects for conflicts are `docs/STATUS.md`,
    `docs/ROADMAP.md`, `tools/qemu.py`, `tools/build.py` EXTRA_LINKS, `user/bin/hakurei-shell/launch.c`, `shared/syscall.h`):
-   1. a6d5e6306014eb8c7 (audit round 2, small and important): `hwaudit,usb,blk,selftest`
+   1. ~~a6d5e6306014eb8c7 (audit round 2)~~: merged (`88acd67`)
    2. a504bf8a5a198d471 (dirty volumes): `fsck,storage,usbstor`, then run `/bin/fsck` in a VM for the first time
    3. a3d380c78d6285728 (audio): `audio,manual,desktop`
    4. a46f2d415c0a1a9ca (HTTPS): `net,tls,manual`
@@ -91,15 +96,14 @@ Old helper worktrees that are merged and can be deleted: `agent-a8e93238212e069d
    6. a503fea82ea373559 (libc): hand-merge `stdio.c`, then `threads,utest,shell,libc` and everything that uses stdio
    7. a4adbf8e4aa5804b3 (hardening, touches many kernel files, so merge it after the smaller ones): `crash,hardening,selftest,utest,shell,jobctl`, then everything
    8. a93e3061dde450b33 (`mcc`), squashed: `mcc,mld,manual`
-2. Run the whole suite on a quiet machine in six parallel worktrees (the split that worked: usb / storage / blk,crash,selftest,utest,kshell,jobctl /
-   notebook,sketchbook / the rest of tools, audio, net, threads / power, accounts, login, time, apps, desktop and the games). Mouse-driven GUI
+2. Run the whole suite on a quiet machine in seven parallel worktrees (the groups are listed in [CLOUD_AGENT_BRIEF.md](CLOUD_AGENT_BRIEF.md), "Rules of the house"). Mouse-driven GUI
    tests (`notebook_*`, `sketchbook_*`, `audio_panel_volume`) flake when the host is busy; rerun a failure alone before suspecting the code.
-3. Only then build a stick image (`python tools/mkimage.py --zip`) for the Dell. Before that, finish **gapsh job control**: in this tree Ctrl-Z in a
+3. Only then build a stick image (`python tools/mkimage.py --zip`) for the Dell. (The 2026-10-23 images were built before either of the following; both are still open.) Before that, finish **gapsh job control**: in this tree Ctrl-Z in a
    terminal freezes the foreground job and the shell with it (`docs/JOBCONTROL.md` lists what the shell has to do). Raise the `exec` argument
    limits (hardening branch) so `rm *` and `xargs` work on big folders.
-4. First real boot: use a spare stick, Secure Boot off, follow [REAL_HARDWARE.md](REAL_HARDWARE.md); read the on-screen log (photograph it) and, after
+4. First real boot (done on 2026-10-23, see above; the advice holds for the next one): use a spare stick, Secure Boot off, follow [REAL_HARDWARE.md](REAL_HARDWARE.md); read the on-screen log (photograph it) and, after
    a clean shutdown or a bad one, `TOUHOU.LOG` and `TOUHOU.PRV` on the stick from another PC. Useful command-line words: `video=1024x768`, `text`,
-   `usbstorage=off`, `bootlog=off`, `noaudio`, `fb.mtrr=off`, `fb.cache=uc`, `hvforce`, `hvcheck=off`.
+   `usbstorage=off`, `bootlog=off`, `noaudio`, `fb.mtrr=off`, `fb.cache=uc`, and once `parked/usb-dirty-fsck` is merged `hvforce`, `hvcheck=off`.
 
 ## Problems found along the way (not fixed)
 
@@ -135,4 +139,4 @@ Old helper worktrees that are merged and can be deleted: `agent-a8e93238212e069d
 - Agents started with worktree isolation get a worktree made from `origin/main`: tell them to run `git merge main` first, or push before starting them.
 - `TOUHOU_CPU=Skylake-Client-noTSX-IBRS` runs QEMU as a CPU closer to the target i5-7500.
 - Linux works too (`cloud/linux-tooling`): packages, `TOUHOU_*` variables (tool paths, `TOUHOU_TIMEOUT_SCALE` for slow hosts) and the GitHub Actions smoke run are in [LINUX.md](LINUX.md).
-- Commits stay local; push to `origin` (`stonerj/Touhou.OS-fork`, private) only when the user asks. Never push to `upstream`.
+- Commits stay local; push to `origin` (`STONERJ25/Touhou.OS-fork`, private) only when the user asks. Never push to `upstream`.
