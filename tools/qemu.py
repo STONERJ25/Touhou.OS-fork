@@ -87,6 +87,23 @@ def scaled(seconds):
     return seconds * TIMEOUT_SCALE
 
 
+_QEMU_VERSION = None
+
+
+def qemu_version():
+    """QEMU's version as a tuple (major, minor, micro), from `QEMU --version` of the QEMU the harness uses (TOUHOU_QEMU, PATH, ...).
+    Asked once per process. (0, 0, 0) when QEMU cannot be run or prints no version, so "older than X" holds for an unknown QEMU."""
+    global _QEMU_VERSION
+    if _QEMU_VERSION is None:
+        try:
+            out = subprocess.run([str(QEMU), "--version"], capture_output=True, text=True, timeout=30).stdout
+            m = re.search(r"version (\d+)\.(\d+)(?:\.(\d+))?", out)
+            _QEMU_VERSION = tuple(int(g or 0) for g in m.groups()) if m else (0, 0, 0)
+        except (OSError, subprocess.SubprocessError):
+            _QEMU_VERSION = (0, 0, 0)
+    return _QEMU_VERSION
+
+
 def check_tools():
     for what, path, var in (("QEMU", QEMU, "TOUHOU_QEMU"), ("UEFI firmware (code)", OVMF_CODE, "TOUHOU_OVMF_CODE"),
                             ("UEFI firmware (vars)", OVMF_VARS, "TOUHOU_OVMF_VARS")):
