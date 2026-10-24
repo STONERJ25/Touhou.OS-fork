@@ -214,6 +214,7 @@ int  fatd_create(FatNode *d, const char *name, u8 attr, u32 first, FatNode **out
 void fatd_remove(FatNode *d, FatNode *c);
 int  fatd_commit(FatNode *n);
 int  fatd_attach_renamed(FatNode *nd, FatNode *c, const char *newname, const FatNode *replaced);
+int  fatd_replace_file(FatNode *nd, FatNode *c, const char *newname, FatNode *dst);     /* rename over a file: the name never disappears */
 #define FAT_NODE_LIMIT 200000      /* cached nodes before idle directory listings are dropped */
 void fatd_trim(FatVol *v);
 void fatd_tree_free(FatNode *n);

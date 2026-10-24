@@ -51,6 +51,16 @@ static int write_checked(BlockDev *d, u64 lba, u32 count, const void *buf, bool 
 
 int blk_write(BlockDev *d, u64 lba, u32 count, const void *buf) { return write_checked(d, lba, count, buf, false); }
 
+/* The mounted volume that holds the boot ESP's write grant (blk_unlock.c) writes as itself: past blk.ro of that partition and its disk,
+ * and nobody else does. A medium that is write-protected by itself still refuses (write_checked only lifts the policy). */
+int blk_write_as(BlockDev *d, const void *holder, u64 lba, u32 count, const void *buf) {
+    if (!holder || !d->parent || !d->readonly || d->grant_holder != holder) return blk_write(d, lba, count, buf);
+    if (!count) return 0;
+    if (d->removed) return -ENODEV;
+    if (lba >= d->sectors || lba + count > d->sectors) return -EINVAL;
+    return write_checked(d->parent, d->part_start + lba, count, buf, true);
+}
+
 /* A partition named by blk.rw= (rw_grant) gets past its disk's blk.ro; blk_write() has already checked the partition's own bounds. */
 static int part_write(BlockDev *d, u64 lba, u32 count, const void *buf) {
     return write_checked(d->parent, d->part_start + lba, count, buf, d->rw_grant);
