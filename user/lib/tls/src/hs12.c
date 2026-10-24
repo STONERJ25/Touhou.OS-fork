@@ -1,6 +1,7 @@
 /*
  * The TLS 1.2 client handshake (RFC 5246, RFC 5289 GCM suites, RFC 7905 ChaCha20-Poly1305), ECDHE key exchange only.
- * It insists on the extended master secret (RFC 7627), so the triple-handshake attack does not apply, and it never renegotiates.
+ * It uses the extended master secret (RFC 7627) when the server offers it. It never resumes a session and never renegotiates,
+ * so the triple handshake attack, which needs both, has nothing to work with when a server does not have the extension.
  */
 #include "tlsconn.h"
 
@@ -146,10 +147,11 @@ int tls12_client(struct tls_conn *c) {
         if ((rc = tls_send_handshake(c, cke, 5 + our_len))) return rc;
     }
 
-    /* extended master secret: the PRF over the hash of the handshake so far (RFC 7627) */
+    /* extended master secret: the PRF over the hash of the handshake so far (RFC 7627); older servers get the classic derivation */
     u8 th[64];
     tls_transcript_hash(c, alg, th);
-    tlsc_prf(alg, pms, pms_len, "extended master secret", th, hl, NULL, 0, c->master, 48);
+    if (c->ems) tlsc_prf(alg, pms, pms_len, "extended master secret", th, hl, NULL, 0, c->master, 48);
+    else tlsc_prf(alg, pms, pms_len, "master secret", c->client_random, 32, c->server_random, 32, c->master, 48);
     tlsc_wipe(pms, sizeof pms);
 
     size_t kl = (size_t)tls_cipher_keylen(s->cipher);

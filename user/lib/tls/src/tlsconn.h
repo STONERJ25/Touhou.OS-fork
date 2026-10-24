@@ -80,6 +80,7 @@ struct tls_conn {
     int state;                                      /* 0 new, 1 handshaking, 2 established, 3 closed, 4 failed */
     int rx_eof, close_notify_sent, close_notify_rx;
     int last_error, alert_rx;
+    char where[40];                                 /* "hello.c:231": where the first error was raised */
     int hello_retry;
     int first_hello_sent;
 
@@ -135,7 +136,8 @@ struct tls_conn {
 
 /* record layer and handshake plumbing (tls.c) */
 int  tls_rand(struct tls_conn *c, void *buf, size_t n);
-int  tls_fail(struct tls_conn *c, int err, int alert);
+int  tls_fail_at(struct tls_conn *c, int err, int alert, const char *file, int line);
+#define tls_fail(c, err, alert) tls_fail_at((c), (err), (alert), __FILE__, __LINE__)     /* the place is kept for diagnostics (tls_error_where) */
 int  tls_send_record(struct tls_conn *c, int type, const u8 *data, size_t len);
 int  tls_recv_record(struct tls_conn *c, int *type, u8 **data, size_t *len);        /* 0 ok, 1 clean end of stream at a record boundary, < 0 error */
 int  tls_send_alert(struct tls_conn *c, int level, int desc);

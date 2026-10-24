@@ -364,6 +364,22 @@ int tls_x509_match_name(const uint8_t *der, size_t len, const char *host) {
     return x509_name_matches(&c, host);
 }
 
+int tls_x509_verify_chain(const tls_ctx *ctx, const uint8_t *const *der, const size_t *len, int n, const char *host, int64_t now) {
+    x509_cert chain[MAX_CHAIN];
+    if (n < 1 || n > MAX_CHAIN) return TLS_E_ARG;
+    for (int i = 0; i < n; i++) {
+        int rc = x509_parse(&chain[i], der[i], len[i]);
+        if (rc) return rc;
+    }
+    return x509_verify_chain(ctx, chain, n, host, now);
+}
+
+int tls_x509_self_check(const uint8_t *der, size_t len) {
+    x509_cert c;
+    int rc = x509_parse(&c, der, len);
+    return rc ? rc : x509_check_signature(&c, &c);
+}
+
 /* "C=US, O=Example Inc, CN=example.org": values are cut down to printable ASCII, a certificate must not be able to inject control characters */
 static void put(char *out, size_t cap, size_t *n, char ch) {
     if (*n + 1 < cap) out[(*n)++] = ch;
@@ -498,33 +514,41 @@ static int find_path(build_state *st, unsigned used, const x509_cert *cur, int d
 int x509_verify_chain(const tls_ctx *ctx, const x509_cert *chain, int n, const char *host, int64_t now) {
     if (n < 1) return TLS_E_CERT_EMPTY;
     if (n > MAX_CHAIN) return TLS_E_CERT_UNSUPPORTED;
-    build_state st = { ctx, chain, n, 0 };
-    int path[MAX_CHAIN];
-    const x509_cert *anchor = NULL;
-    int nint = find_path(&st, 1u, &chain[0], 0, path, &anchor);
-    if (nint < 0) {
-        if (st.why == TLS_E_CERT_UNSUPPORTED || st.why == TLS_E_CERT_SIGNATURE) return st.why;
-        /* is the best the server offered a self-signed certificate? */
-        const x509_cert *top = &chain[0];
-        for (int guard = 0; guard < n; guard++) {
-            if (top->self_issued) return TLS_E_CERT_SELF_SIGNED;
-            const x509_cert *next = NULL;
-            for (int j = 1; j < n; j++)
-                if (&chain[j] != top && same_name(chain[j].subject, top->issuer)) next = &chain[j];
-            if (!next) break;
-            top = next;
-        }
-        return TLS_E_CERT_UNTRUSTED;
+    /* a server certificate that is itself in the trust store (--cacert server.pem) is trusted as it stands */
+    int pinned = 0;
+    for (size_t i = 0; ctx && i < ctx->count; i++) {
+        const x509_cert *a = &ctx->anchors[i];
+        if (a->der_len == chain[0].der_len && memcmp(a->der, chain[0].der, a->der_len) == 0) { pinned = 1; break; }
     }
     const x509_cert *seq[MAX_CHAIN + 1];
     int m = 0;
     seq[m++] = &chain[0];
-    for (int d = 0; d < nint; d++) seq[m++] = &chain[path[d]];
-    seq[m++] = anchor;
+    if (!pinned) {
+        build_state st = { ctx, chain, n, 0 };
+        int path[MAX_CHAIN];
+        const x509_cert *anchor = NULL;
+        int nint = find_path(&st, 1u, &chain[0], 0, path, &anchor);
+        if (nint < 0) {
+            if (st.why == TLS_E_CERT_UNSUPPORTED || st.why == TLS_E_CERT_SIGNATURE) return st.why;
+            /* is the best the server offered a self-signed certificate? */
+            const x509_cert *top = &chain[0];
+            for (int guard = 0; guard < n; guard++) {
+                if (top->self_issued) return TLS_E_CERT_SELF_SIGNED;
+                const x509_cert *next = NULL;
+                for (int j = 1; j < n; j++)
+                    if (&chain[j] != top && same_name(chain[j].subject, top->issuer)) next = &chain[j];
+                if (!next) break;
+                top = next;
+            }
+            return TLS_E_CERT_UNTRUSTED;
+        }
+        for (int d = 0; d < nint; d++) seq[m++] = &chain[path[d]];
+        seq[m++] = anchor;
+    }
 
     for (int i = 0; i < m; i++) {
         const x509_cert *c = seq[i];
-        int is_anchor = i == m - 1;
+        int is_anchor = i == m - 1 && !pinned;
         if (!is_anchor && c->unknown_critical) return TLS_E_CERT_UNSUPPORTED;
         if (now < c->not_before) return TLS_E_CERT_NOT_YET_VALID;
         if (now > c->not_after) return TLS_E_CERT_EXPIRED;

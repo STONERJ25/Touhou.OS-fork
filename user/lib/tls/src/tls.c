@@ -99,14 +99,29 @@ int64_t tls_now(struct tls_conn *c) { return c->cfg.now ? c->cfg.now : tls_os_ti
 
 int tls_random_ready(void) { return tls_os_random_ready(); }
 
-int tls_fail(struct tls_conn *c, int err, int alert) {
+int tls_fail_at(struct tls_conn *c, int err, int alert, const char *file, int line) {
     if (c->state == 1 || c->state == 2) {
         if (alert >= 0 && !c->close_notify_sent) tls_send_alert(c, 2, alert);
+    }
+    if (c->state != 4) {                                             /* remember where the first error came from */
+        const char *base = file;
+        for (const char *p = file; *p; p++)
+            if (*p == '/' || *p == '\\') base = p + 1;
+        size_t n = 0;
+        while (base[n] && n < 24) { c->where[n] = base[n]; n++; }
+        c->where[n++] = ':';
+        char tmp[12];
+        int t = 0;
+        for (int v = line; v > 0 && t < 11; v /= 10) tmp[t++] = (char)('0' + v % 10);
+        while (t > 0) c->where[n++] = tmp[--t];
+        c->where[n] = 0;
     }
     c->last_error = err;
     c->state = 4;
     return err;
 }
+
+const char *tls_error_where(const tls_conn *c) { return c ? c->where : ""; }
 
 int tls_cipher_keylen(int cipher) { return cipher == CIPHER_AES128 ? 16 : 32; }
 

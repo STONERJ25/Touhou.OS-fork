@@ -90,9 +90,13 @@ def lib():
         L.tls_last_error.argtypes = [c_void_p]
         L.tls_strerror.argtypes = [c_int]
         L.tls_strerror.restype = c_char_p
+        L.tls_error_where.argtypes = [c_void_p]
+        L.tls_error_where.restype = c_char_p
         L.tls_alert_name.argtypes = [c_int]
         L.tls_alert_name.restype = c_char_p
         L.tls_x509_match_name.argtypes = [c_char_p, c_size_t, c_char_p]
+        L.tls_x509_self_check.argtypes = [c_char_p, c_size_t]
+        L.tls_x509_verify_chain.argtypes = [c_void_p, ctypes.POINTER(c_char_p), ctypes.POINTER(c_size_t), c_int, c_char_p, c_int64]
     return _lib
 
 
@@ -125,12 +129,21 @@ class Ctx:
         return lib().tls_ctx_skipped(self.h)
 
 
+def verify_chain(ctx, ders, host=None, now=None):
+    """libtls's certificate chain validation on DER certificates (leaf first); 0 or a negative error code."""
+    n = len(ders)
+    arr = (c_char_p * n)(*ders)
+    lens = (c_size_t * n)(*[len(d) for d in ders])
+    return lib().tls_x509_verify_chain(ctx.h if ctx else None, arr, lens, n, host.encode() if host else None, int(now if now is not None else time.time()))
+
+
 class Client:
     """libtls over a connected Python socket."""
 
     def __init__(self, sock, server_name="localhost", ctx=None, alpn=None, flags=0, suites=0, now=None, random_fn=None):
         self.sock = sock
         self.error = None
+        self.last_exc = None
 
         def send(user, buf, n):
             try:
@@ -142,7 +155,8 @@ class Client:
         def recv(user, buf, n):
             try:
                 data = self.sock.recv(min(n, 65536))
-            except OSError:
+            except OSError as e:
+                self.last_exc = e
                 return -1
             ctypes.memmove(buf, data, len(data))
             return len(data)
@@ -164,6 +178,9 @@ class Client:
     @property
     def info(self):
         return lib().tls_get_info(self.c).contents
+
+    def where(self):
+        return lib().tls_error_where(self.c).decode()
 
     def alert(self):
         a = lib().tls_alert_received(self.c)

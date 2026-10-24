@@ -117,6 +117,7 @@ void tls_free(tls_conn *c);
 const tls_info *tls_get_info(const tls_conn *c);
 int  tls_alert_received(const tls_conn *c);                                 /* the alert description of TLS_E_ALERT, else -1 */
 int  tls_last_error(const tls_conn *c);
+const char *tls_error_where(const tls_conn *c);                             /* "hello.c:231" -- for bug reports */
 
 /* a tls_io that sends and receives on a connected socket */
 void tls_io_fd(tls_io *io, int fd);
@@ -132,6 +133,8 @@ int  tls_random_ready(void);
 
 /* Certificate helpers, used by the tests and by fetch -v */
 int  tls_x509_match_name(const uint8_t *der, size_t len, const char *host);  /* 0 if the certificate is valid for host */
+int  tls_x509_verify_chain(const tls_ctx *ctx, const uint8_t *const *der, const size_t *len, int n, const char *host, int64_t now);   /* leaf first; 0 or a TLS_E_CERT_* code */
+int  tls_x509_self_check(const uint8_t *der, size_t len);                     /* 0 if the certificate parses and its signature verifies under its own key */
 
 #ifdef __cplusplus
 }

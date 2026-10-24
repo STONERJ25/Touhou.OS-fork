@@ -331,7 +331,6 @@ int tls_process_server_hello(struct tls_conn *c, const u8 *msg, size_t len, unsi
 
     /* TLS 1.2 */
     if (c->offer_13 && (memcmp(random + 24, "DOWNGRD\x01", 8) == 0 || memcmp(random + 24, "DOWNGRD\x00", 8) == 0)) return tls_fail(c, TLS_E_VERSION, AL_ILLEGAL_PARAMETER);
-    if (!ems) return tls_fail(c, TLS_E_PROTOCOL, AL_HANDSHAKE_FAILURE);                 /* RFC 7627: we do not talk to servers without extended master secret */
     if (alpn[0]) {
         if (!c->cfg.alpn || strcmp(alpn, c->cfg.alpn) != 0) return tls_fail(c, TLS_E_PROTOCOL, AL_UNSUPPORTED_EXTENSION);
         memcpy(c->info.alpn, alpn, sizeof c->info.alpn);
@@ -340,7 +339,7 @@ int tls_process_server_hello(struct tls_conn *c, const u8 *msg, size_t len, unsi
     c->version = 0x0303;
     c->suite = s;
     c->hash_alg = s->hash;
-    c->ems = 1;
+    c->ems = ems;                                                    /* without it (older servers) the classic master secret is used; see docs/TLS.md */
     memcpy(c->server_random, random, 32);
     tls_transcript_add(c, msg, len);
     tls_hs_consume(c, len);
