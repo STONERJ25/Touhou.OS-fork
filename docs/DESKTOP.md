@@ -142,11 +142,16 @@ an N x N block of screen pixels and the desktop looks like a 1280x720 one, only 
   drawn on a scaled canvas so it keeps its proportions). **Danmaku, Snake, Minesweeper, the Sketchbook and the Gallery** call
   `kapp_set_hidpi(false)` and are enlarged by the server: they look as they do at 1x, twice as large, and work the same (Gallery photos
   and Explorer thumbnails are therefore shown at logical resolution, enlarged).
-* **1x is unchanged**: every scaled path is a separate branch taken only when the scale is above 1. Checked by taking screenshots of the
-  desktop, the start menu, a terminal and six applications before and after the change at 1024x768 (identical except the clock and file
-  times), and by the existing desktop and application tests.
-* **Tests**: `tests/case_hidpi.py` (`hidpi_`): the 1x metrics, 2560x1440 (OVMF in QEMU offers it), `ui.scale=2` at 2048x1536 (the
-  1024x768 layout doubled) with a click into Minesweeper, `ui.scale=1` at 2560x1440 and `ui.scale=2` at 1280x800 (lowered to 1).
+* **1x is unchanged**: every scaled path is a separate branch taken only when the scale is above 1. `tests/pixel_identity.py` checks it bit
+  for bit: it boots two builds at 1024x768 with the clock set to a fixed time and compares screenshots of the desktop, the start menu, a
+  terminal and seven applications (Calculator, Notebook, Explorer, Minesweeper, Sketchbook, Control Panel, kdemo) byte for byte. Against
+  `origin/main` at b8f0e84 every scene matched (2026-10-24); the only differences were two figures of data, the memory in use and the
+  free space of `/tmp`, which differ by 0.1 MB between builds of different size and are blanked by the script. The existing desktop and
+  application tests pass unchanged.
+* **Tests**: `tests/case_hidpi.py` (`hidpi_`): the 1x metrics, 2560x1440 (OVMF in QEMU offers it; start menu and terminal opened with
+  clicks, title bar, glyphs exactly twice as large), `ui.scale=2` at 2048x1536 (the 1024x768 layout doubled) with a click into
+  Minesweeper, `ui.scale=2` at 1920x1080 (where the automatic choice is 1) with 7 + 2 = clicked on the Calculator's keypad,
+  `ui.scale=1` at 2560x1440 and `ui.scale=2` at 1280x800 (lowered to 1).
   Their `ScreenGui.home()` waits for the pointer to arrive in the corner before moving on: QEMU sums pending motion, and on a big,
   slow-to-paint screen the overshoot of the homing moves otherwise eats part of the way to the target.
 
@@ -184,8 +189,9 @@ the greeter, the lock screen and the Kappa dialogs do not call them yet, and Rei
 
 Done: the ui scale in `fairyd` (automatic at 2560 wide or 1440 high, `ui.scale=N`), logical protocol with `FW_HIDPI` buffers and the
 nearest-neighbour fallback, scaled Kappa canvases, the shell, lock and login screens and the wallpaper at full resolution, the five
-pixel-drawing programs opted out, `hidpi_` tests. Verified in QEMU at 1024x768, 1280x800, 2048x1536 and 2560x1440; not seen on the
-owner's monitor yet. Compose time per full-screen frame at 2560x1440 under QEMU TCG is about 24 ms (four times the pixels of 1280x720);
+pixel-drawing programs opted out, `hidpi_` tests, the bit-exact 1x comparison (`tests/pixel_identity.py`). Verified in QEMU at 1024x768,
+1280x800, 1920x1080, 2048x1536 and 2560x1440; merged with `main` after the job control and installer pull requests, and the desktop and
+application tests pass on the result. Not seen on the owner's monitor yet. Compose time per full-screen frame at 2560x1440 under QEMU TCG is about 24 ms (four times the pixels of 1280x720);
 on the Dell it should be far less, `/tmp/fairyd.stat` will tell.
 
 ## How to resume (hi-dpi)
