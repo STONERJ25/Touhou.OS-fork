@@ -37,6 +37,8 @@ uint64_t    k_wallpaper_stamp(void);
 /* Draws the wallpaper into a pixel buffer of the screen's size: the configured picture (decoded, scaled once to the
  * screen, the original dropped) or, when there is none or it cannot be read, the built-in night scene. */
 void        k_wallpaper_render(uint32_t *px, int w, int h, int stride);
+/* The same for a hi-dpi canvas: w, h logical, px holds (w * scale) x (h * scale) pixels (draw it with kc_blit_native). */
+void        k_wallpaper_render_scaled(uint32_t *px, int w, int h, int stride, int scale);
 
 /* ~/Pictures (created on demand); false when it cannot be made. */
 bool        k_pictures_dir(char *buf, size_t n);

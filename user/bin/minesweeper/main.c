@@ -642,6 +642,7 @@ int main(int argc, char **argv) {
     g->shown_hover_x = g->shown_hover_y = -2;
     g->shown_face = -1;
 
+    kapp_set_hidpi(false);                                   /* draws its own pixels: 1x windows, enlarged by the window server on a hi-dpi screen */
     g->app = kapp_new("Minesweeper", 206, 300, FW_CENTER);
     if (!g->app) return 1;
     {

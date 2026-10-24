@@ -113,6 +113,7 @@ clock is hours off on the first boot, the PC's clock chip holds local time (Wind
 | `init=kshell` | skip userland, start the kernel's own tiny shell |
 | `fb.cache=uc` | map the framebuffer uncached instead of write-combining: only for comparing the `framebuffer speed` log line when the screen feels slow (it also switches the MTRR fallback below off) |
 | `fb.mtrr=auto` (default), `on`, `off` | the slow-screen fallback: when the screen measures under 400 MB/s the kernel tries a write-combining MTRR over the display adapter's BAR, logs `fb speed before N MB/s after M MB/s` and takes it back if the screen did not get faster. `on` tries it even when the screen is fast, `off` never touches the MTRRs |
+| `ui.scale=N` | the desktop's ui scale (1 to 4): every logical pixel is N x N screen pixels. Without it the scale is 2 on screens at least 2560 wide or 1440 high (the Dell's monitor) and 1 otherwise; `ui.scale=1` keeps 1x there. See [DESKTOP.md](DESKTOP.md), "Hi-dpi screens" |
 | `fairyd.copy=rep`, `fairyd.damage=bbox` | the window server's old drawing paths (byte-string copy, one damage rectangle): for comparing `/tmp/fairyd.stat` |
 | `usb=debug` | log every USB enumeration step; `usb=off` leaves USB alone |
 

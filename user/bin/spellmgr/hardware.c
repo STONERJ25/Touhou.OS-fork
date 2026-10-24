@@ -83,7 +83,9 @@ static void section_display(void) {
     }
     int w = 0, h = 0;
     if (A.app) fairy_screen_size(kapp_display(A.app), &w, &h);
-    if (w) doc_kv(&g_doc, "Desktop", "%d x %d (window server)", w, h);
+    int us = A.app ? fairy_scale(kapp_display(A.app)) : 1;
+    if (w && us > 1) doc_kv(&g_doc, "Desktop", "%d x %d (window server, ui scale %d: %d x %d screen pixels)", w, h, us, w * us, h * us);
+    else if (w) doc_kv(&g_doc, "Desktop", "%d x %d (window server)", w, h);
     doc_gap(&g_doc);
 }
 
