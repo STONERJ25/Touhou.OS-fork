@@ -15,11 +15,9 @@ parked on branches and what to do first when work resumes.
   Explorer, hardware audit round 1 (console rewrite, write-combining framebuffer, timer and APIC fallbacks, loader robustness), image
   decoders, the Gallery, wallpapers, PNG screenshots, the PS/2 wheel fix, `/bin/sh` as a link to gapsh and `TOUHOU_CPU` in `tools/qemu.py`.
 
-How well `main` is verified: the whole suite (182 tests) passed at `711688b` (two mouse-driven GUI flakes passed when rerun alone); the Explorer (10 tests) and the manual-page test passed on top of
-it; the media agent's whole run (201 tests, 0 failed) covered `f9358db` plus the media branch, and the network, USB-storage and audit work
-were tested on their own branches. **There has been no full run on the exact final commit**; that is the first job when work resumes.
+How well `main` is verified: the whole suite (261 tests, seven parallel groups) passed on the loader with the memory-type fix (`5c0d74b`, docs commits since); the only failure was one mouse-driven GUI test (`notebook_menus_and_recent`) that fails under load and passes alone. The parked branches below are verified only by their own authors.
 
-Nothing has ever run on the real PC (Dell, i5-7500). [HARDWARE_AUDIT.md](HARDWARE_AUDIT.md) (in `main`) has the first-boot checklist.
+The OS has booted on the real PC (Dell, i5-7500) since 2026-10-23 evening; [HARDWARE_AUDIT.md](HARDWARE_AUDIT.md) has what that showed and the checklist for the rest (network link, the internal disks).
 
 ## Goals for the next session (the owner, 2026-10-23 night)
 
