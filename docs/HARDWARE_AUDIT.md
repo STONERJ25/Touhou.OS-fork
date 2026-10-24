@@ -11,6 +11,27 @@ to hurt on the real machine (high = would be visible on the first boot), *Status
 **fine** (read and judged correct against the specification and Linux's behaviour), **open** (not fixed, why), and *Check* is
 what to look for on the real machine. The tests are in `tests/case_hwaudit.py` (`python tests/run_all.py hwaudit`).
 
+## The first real boot (2026-10-23): what the Dell taught us
+
+The first image stopped on the line `loader: leaving boot services` and never reached the kernel: **the firmware's `ExitBootServices` call did not
+return**. QEMU/OVMF never showed it. How it was found, in one evening, with no serial port: squares drawn straight into the framebuffer at each
+stage (`shared/stagemark.h`: they showed that the first attempt of the exit call started and never came back), a restart probe (`exitreset`: the
+machine did not restart by itself, so the CPU was stuck inside the call), and a *ladder* (`ladder`, `strategy=N`) that tries one set of
+workarounds per boot, counted in an NVRAM variable named after the build.
+
+The rungs, from `boot/main.c`: 0 restart probe, 1 no loader writes to the screen after the exit call, **2 ordinary memory types for the kernel and the
+initrd (the fix)**, 3 plus interrupts off and no console text before the call, 4 plus no loader squares, 5 three seconds of patience, 6 the firmware's USB
+drivers released first, 7 everything, 8 no exit call at all, 9 that without interrupts and squares. Rung 2 booted to the desktop; rung 1 had not.
+
+Cause: the loader allocated the kernel image and the initrd with OS-defined UEFI memory types (`0x80000001`/`0x80000002`, which the specification
+reserves for OS loaders). On this firmware a memory map with those types makes the exit call hang. Now the kernel and the initrd are plain
+`EfiLoaderData`; the loader gives the kernel the same information by retyping those two ranges in the map it hands over (`BOOTMEM_KERNEL`,
+`BOOTMEM_MODULE`; `retype_range`/`sort_merge`), and writes nothing to the screen once the exit call has returned. The old behaviour is still there
+as the words `customtypes` and `exitmarks` for experiments. Lesson for every other loader: do not use OS-defined memory types.
+
+The debug words, all handled by the loader and (where it makes sense) the kernel: `stagehold=N` (stop after square N), `stagebeep` (N beeps for stage N,
+needs a PC speaker, this Dell has one), `exitreset`, `noexit`, `cliexit`, `quietexit`, `nomarks`, `stall3`, `usbdisc`, `ladder`, `ladderstart=N`, `strategy=N`.
+
 ## What the boot log looks like now
 
 Lines added or changed for this audit, in the order they appear (the tags follow [THEMING.md](THEMING.md)):
