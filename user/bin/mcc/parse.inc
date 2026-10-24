@@ -283,11 +283,29 @@ static Obj *new_anon_gvar(Type *ty) {
     return var;
 }
 
+/* Identical string literals of one translation unit share one object, as they do with gcc and clang (code compares them, and the
+   program gets smaller).  The key is the element size followed by the bytes, the terminator included. */
+static Map string_pool;
+
 static Obj *new_string_literal(char *p, Type *ty) {
+    char *key = NULL;
+    int keylen = 0;
+    if (ty->kind == TY_ARRAY && ty->size > 0 && ty->size <= 65536) {
+        keylen = ty->size + 1;
+        key = xmalloc((size_t)keylen);
+        key[0] = (char)ty->base->size;
+        memcpy(key + 1, p, (size_t)ty->size);
+        Obj *old = map_get2(&string_pool, key, keylen);
+        if (old) {
+            free(key);
+            return old;
+        }
+    }
     Obj *var = new_anon_gvar(ty);
     var->init_data = p;
     var->is_string = true;
     var->is_const_data = true;
+    if (key) map_put2(&string_pool, key, keylen, var);
     return var;
 }
 

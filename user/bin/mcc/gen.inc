@@ -654,7 +654,65 @@ static void copy_struct_mem(void) {
     load_mem(RAX, mem_rbp(var->offset), 8, true);
 }
 
+/* memcpy, memmove and memset of a small constant size are expanded in line.  The library versions are `rep movsb`, which is slow
+   to start (and very slow on an emulated machine), and `memcpy(&v, p, 8)` is how portable code spells an unaligned load. */
+static bool gen_inline_mem(Node *node) {
+    Node *f = node->lhs;
+    if (f->kind != ND_VAR || !f->var->is_function || f->var->is_local || f->var->is_definition || !f->var->name) return false;
+    bool is_set = !strcmp(f->var->name, "memset");
+    bool is_mov = !strcmp(f->var->name, "memmove");
+    bool is_cpy = !strcmp(f->var->name, "memcpy");
+    if (!is_set && !is_mov && !is_cpy) return false;
+    Node *a0 = node->args, *a1 = a0 ? a0->next : NULL, *a2 = a1 ? a1->next : NULL;
+    if (!a2 || a2->next || a2->kind != ND_NUM || !a2->ty || !is_integer(a2->ty)) return false;
+    if (!a0->ty || a0->ty->kind == TY_STRUCT || a0->ty->kind == TY_UNION || is_flonum(a0->ty)) return false;
+    if (!a1->ty || a1->ty->kind == TY_STRUCT || a1->ty->kind == TY_UNION || is_flonum(a1->ty)) return false;
+    i64 n = a2->val;
+    if (n < 0 || n > 64) return false;
+    if (is_mov && n > 32) return false;
+    if (is_set && !(a1->kind == ND_NUM && is_integer(a1->ty))) return false;
+
+    if (is_set) {
+        gen_expr(a0);
+        mov_rr(RDI, RAX);
+        u64 pat = (u64)(a1->val & 0xFF) * 0x0101010101010101ULL;
+        mov_ri(R8, (i64)pat);
+        int off = 0;
+        while (off < n) {
+            int p = n - off >= 8 ? 8 : n - off >= 4 ? 4 : n - off >= 2 ? 2 : 1;
+            store_mem(mem_reg(RDI, off), R8, p);
+            off += p;
+        }
+        mov_rr(RAX, RDI);
+        return true;
+    }
+
+    gen_expr(a0);
+    push();
+    gen_expr(a1);
+    pop(RDI); /* rdi = destination, rax = source */
+    if (is_cpy) {
+        copy_bytes(RAX, RDI, 0, (int)n);
+    } else {
+        /* memmove: everything is read before anything is written (at most six pieces for 32 bytes) */
+        static const int tmp[6] = {RCX, RDX, R8, R9, R10, R11};
+        int offs[6], sizes[6], k = 0, off = 0;
+        while (off < n) {
+            int p = n - off >= 8 ? 8 : n - off >= 4 ? 4 : n - off >= 2 ? 2 : 1;
+            load_mem(tmp[k], mem_reg(RAX, off), p, true);
+            offs[k] = off;
+            sizes[k] = p;
+            k++;
+            off += p;
+        }
+        for (int i = 0; i < k; i++) store_mem(mem_reg(RDI, offs[i]), tmp[i], sizes[i]);
+    }
+    mov_rr(RAX, RDI);
+    return true;
+}
+
 static void gen_funcall(Node *node) {
+    if (gen_inline_mem(node)) return;
     int stack_args = push_args(node);
 
     bool direct = node->lhs->kind == ND_VAR && node->lhs->var->is_function && !node->lhs->var->is_local;

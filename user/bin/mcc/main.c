@@ -104,6 +104,7 @@ static void reset_frontend(void) {
     memset(&global_scope, 0, sizeof global_scope);
     scope = &global_scope;
     locals = globals = NULL;
+    memset(&string_pool, 0, sizeof string_pool);
     gotos = labels = NULL;
     current_fn = NULL;
     current_switch = NULL;
