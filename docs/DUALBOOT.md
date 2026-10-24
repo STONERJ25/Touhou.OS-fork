@@ -51,7 +51,8 @@ In Windows: right-click Start -> Disk Management -> right-click the C: volume ->
 ## F. Install
 
 `install` from the stick, in its free-space mode (task 19): it creates its own ESP and `HUMANVILLAGE` partition in the unallocated gap, changes no existing partition, and the loader adds a boot menu
-entry (task 20). It refuses a disk that holds Windows unless it is told, in an explicit typed sentence, to erase it. Afterwards: Windows must still boot (it keeps its own entry), and the TouhouOS entry
+entry (task 20). It refuses a disk that holds Windows unless it is told, in an explicit typed sentence, to erase it (`ERASE WINDOWS ON <model> <disk>`, after a list of
+everything that would be lost; this exists now, see [INSTALL.md](INSTALL.md), "Other operating systems": never type it for the Windows disk). Afterwards: Windows must still boot (it keeps its own entry), and the TouhouOS entry
 appears in the F12 menu.
 
 ## If something goes wrong
