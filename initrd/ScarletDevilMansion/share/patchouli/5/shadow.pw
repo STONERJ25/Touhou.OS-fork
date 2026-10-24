@@ -16,5 +16,7 @@ The hash field is one of:
 
 The tools that read this file are login(1), su(1), sudo(1), passwd(1), the login screen and the screen lock (through pwcheck(8)). `adduser -L` creates a locked account, `passwd` sets and clears hashes.
 
+With a HUMANVILLAGE volume the file is also kept as `/HumanVillage/.system/etc/shadow` and comes back after a restart (etckeep(8)). FAT stores no permissions, so the kernel presents the folder `.system` as root's, mode 0700, and its files as 0600: nobody else can read the kept copy on this system. Anyone who takes the stick to another computer can.
+
 # SEE ALSO
-passwd(5), passwd(1), adduser(8), accounts(7)
+passwd(5), passwd(1), adduser(8), etckeep(8), accounts(7)

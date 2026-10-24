@@ -1,10 +1,19 @@
-.page hostname 1 print the name of this machine
+.page hostname 1 print or set the name of this machine
 
 # SYNOPSIS
-*hostname*
+*hostname* [_NAME_]
 
 # DESCRIPTION
-`hostname` prints the host name. It is initially `gensokyo`, read from `/Hakurei/etc/hostname`. Setting the name is not supported: with an argument `hostname` only apologises.
+`hostname` prints the host name, the first line of `/Hakurei/etc/hostname`; it is `gensokyo` out of the box, and also when the file is missing or does not hold a name. uname(1), the shell prompt and the `HOSTNAME` variable show the same name.
+
+With _NAME_, root renames the machine: the name goes into `/Hakurei/etc/hostname` and, when a HUMANVILLAGE volume is mounted, is kept there so it is still the name after a restart (see etckeep(8)). A name is made of letters, digits and `-`, does not start or end with `-`, and has at most 31 characters. New shells and programs see it at once.
+
+# EXIT STATUS
+0 on success; 1 for a bad name, a file that cannot be written, or a caller who is not root; 2 for a usage error.
+
+# EXAMPLES
+    hostname
+    sudo hostname hakugyokurou
 
 # SEE ALSO
-uname(1)
+uname(1), etckeep(8)

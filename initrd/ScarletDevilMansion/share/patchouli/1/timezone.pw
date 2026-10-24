@@ -1,0 +1,24 @@
+.page timezone 1 show or set the time zone
+
+# SYNOPSIS
+*timezone* [_ZONE_]
+
+# DESCRIPTION
+Without an argument `timezone` prints the zone in effect, its abbreviation and its offset from UTC right now:
+
+    EST5EDT,M3.2.0,M11.1.0 (EDT, UTC-04:00)
+
+When `TZ` is set in the environment (the kernel command line word `tz=` does that for every session) it wins over the file, and `timezone` says so.
+
+With _ZONE_, root makes it the system's zone: it goes into `/Hakurei/etc/timezone` and, when a HUMANVILLAGE volume is mounted, is kept there so it is still set after a restart (see etckeep(8)). Programs started afterwards follow it. The zone is written the POSIX way described in timezone(5); a zone the C library cannot read (such as `Asia/Tokyo`) is refused rather than quietly meaning UTC.
+
+# EXIT STATUS
+0 on success; 1 if the zone cannot be understood, the file cannot be written, or the caller is not root; 2 for a usage error.
+
+# EXAMPLES
+    timezone
+    sudo timezone JST-9
+    sudo timezone CET-1CEST,M3.5.0,M10.5.0/3
+
+# SEE ALSO
+timezone(5), date(1), hwclock(8), etckeep(8), clock(7)

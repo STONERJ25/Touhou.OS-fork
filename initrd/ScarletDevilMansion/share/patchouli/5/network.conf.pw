@@ -1,0 +1,34 @@
+.page network.conf 5 how each network card gets its address
+
+# DESCRIPTION
+`/Hakurei/etc/network.conf` says, card by card, whether an address comes from DHCP or is set by hand. A card that is not listed uses DHCP, which is also what every card does while the file holds only comments, as it does out of the box. The file is kept on the HUMANVILLAGE volume across restarts (etckeep(8)).
+
+Today the file is read and checked, but nothing applies it yet: the network panel and the tool that will set static addresses at boot are still to come. The format is fixed now so that both can rely on it.
+
+One line per card; blank lines and lines starting with `#` are ignored:
+
+    eth0  dhcp
+    eth0  static 192.168.1.20/24  gateway 192.168.1.1  dns 1.1.1.1
+    eth1  static 10.0.0.5/8  mac 52:54:00:12:34:56
+
+@ _IFACE_ *dhcp*
+    Ask a DHCP server, as without the file.
+@ _IFACE_ *static* _ADDR_/_PREFIX_
+    A fixed address. _ADDR_ is a dotted IPv4 address that is not 0.x, 127.x or multicast; _PREFIX_ is 1 to 30.
+@ *gateway* _GW_
+    The default route. It must lie inside _ADDR_/_PREFIX_ and differ from _ADDR_.
+@ *dns* _D1_ [_D2_ [_D3_]]
+    Up to three name servers, written to resolv.conf(5).
+@ *mac* _XX:XX:XX:XX:XX:XX_
+    Use the line only on the card with this hardware address. A stick that boots several machines can carry one line per machine for the same _IFACE_; on a machine whose card has another address the card uses DHCP.
+
+A line that breaks these rules makes the whole file damaged: at boot it is left out and the default is used.
+
+# FILES
+@ /Hakurei/etc/network.conf
+    The file.
+@ /HumanVillage/.system/etc/network.conf
+    The copy kept on the volume.
+
+# SEE ALSO
+etckeep(8), resolv.conf(5), ifconfig(1), route(1), network(7)

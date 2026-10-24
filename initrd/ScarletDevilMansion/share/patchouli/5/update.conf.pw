@@ -1,0 +1,25 @@
+.page update.conf 5 where system updates come from
+
+# DESCRIPTION
+`/Hakurei/etc/update.conf` names the server that system updates are fetched from and the key their list of files must be signed with. It is kept on the HUMANVILLAGE volume across restarts (etckeep(8)). The update client that reads it is still to come; the format is fixed now.
+
+Lines are `key=value`; blank lines and lines starting with `#` are ignored:
+
+    url=http://192.168.1.10:8080/
+    key=0123456789abcdef
+
+@ *url=*
+    The update server, starting with `http://` or `https://`, without spaces, at most 200 characters. Empty means that no server is set.
+@ *key=*
+    The id of the signing key: 16 lower-case hex digits, the first 8 bytes of SHA-256 over the public key, as the server's manifest prints it in its `key` line. Empty means the key built into the system.
+
+Other keys made of lower-case letters, digits and `_` are allowed and left alone. A key given twice, a `url` of another kind or a `key` that is not 16 hex digits makes the file damaged: at boot it is left out and the default (both values empty) is used.
+
+# FILES
+@ /Hakurei/etc/update.conf
+    The file.
+@ /HumanVillage/.system/etc/update.conf
+    The copy kept on the volume.
+
+# SEE ALSO
+etckeep(8), network.conf(5)

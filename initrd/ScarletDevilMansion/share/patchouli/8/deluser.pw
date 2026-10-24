@@ -23,7 +23,7 @@ Accounts with a number below 1000 belong to the shrine itself and are refused un
 
 # FILES
 @ /Hakurei/etc/passwd, /Hakurei/etc/shadow, /Hakurei/etc/group
-    The databases that are edited.
+    The databases that are edited. Each is replaced in one step and, with a HUMANVILLAGE volume, kept on it as well (etckeep(8)), so the change survives a restart.
 
 # SEE ALSO
 adduser(8), passwd(5), group(5)

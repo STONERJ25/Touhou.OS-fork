@@ -200,10 +200,12 @@ The directories are named after places in Gensokyo; the usual Unix names are lin
 | `/dev`, `/proc` | devices and live kernel information (`cat /proc/meminfo`, `cat /proc/mounts`, `cat /proc/usb`) | |
 | `/mnt` | an empty folder for mounting another volume by hand | |
 
-**What survives a restart.** Almost everything above lives in memory and is rebuilt from the boot image at every start, `/etc` included.
-The one exception is the **HUMANVILLAGE volume**: a FAT32 partition (or disk) whose label is `HUMANVILLAGE`. The kernel looks for it at boot
+**What survives a restart.** Almost everything above lives in memory and is rebuilt from the boot image at every start.
+The exception is the **HUMANVILLAGE volume**: a FAT32 partition (or disk) whose label is `HUMANVILLAGE`. The kernel looks for it at boot
 and when a USB stick is plugged in, and mounts it read-write on `/HumanVillage`, so the home folders and everything in them are on that
-volume and survive. Without one, the home folders are in memory too and are lost at power-off.
+volume and survive. It also keeps copies of the settings in `/etc` that people change (passwords, accounts, the computer's name, the time
+zone) in a root-only folder, `/HumanVillage/.system`, and they are put back at every start ([PERSISTENT_ETC.md](PERSISTENT_ETC.md)).
+Without such a volume, the home folders and `/etc` are in memory and are lost at power-off.
 
 - **On a boot stick** made with `tools/mkimage.py` the big second partition is the HUMANVILLAGE volume, so your files are on the stick.
   It is ordinary FAT32: any Windows, macOS or Linux computer can read the files (the homes are the folders `reimu/`, `marisa/` ...).
@@ -252,8 +254,8 @@ and mouse and to power off or restart the machine. Full details: [ACCOUNTS.md](A
   not work: to run something as root, become `marisa` and use `sudo COMMAND`. Anyone not in `/etc/sudoers` is refused with "*reimu is not in
   the sudoers file. This incident will be reported to Eiki.*" and a line in the kernel log.
 - **New residents**: `sudo adduser NAME` (and `sudo deluser NAME`).
-- **None of this persists yet**: `/etc` is rebuilt from the boot image at every start, so new passwords and new accounts are forgotten at
-  the next boot. Only the home folders on a HUMANVILLAGE volume survive.
+- **What lasts**: with a HUMANVILLAGE volume, new passwords and accounts (and `sudo timezone ZONE`, `sudo hostname NAME`) are kept on it
+  and survive a restart; `etckeep` shows what is kept. Without one they are forgotten at the next boot.
 
 ## Shutting down and restarting
 
@@ -305,7 +307,8 @@ More words, for diagnosing a PC that does not boot, are in [REAL_HARDWARE.md](RE
 ## Limits and known problems
 
 - **Ctrl+Z in a terminal freezes it** (see [the shell](#the-terminal-and-the-shell)); the shell's job control is not finished.
-- Settings in `/etc` (passwords, new accounts) are forgotten at every restart; only the HUMANVILLAGE volume keeps files.
+- Without a HUMANVILLAGE volume, settings in `/etc` (passwords, new accounts) are forgotten at every restart. With one, only the files listed
+  in [PERSISTENT_ETC.md](PERSISTENT_ETC.md) are kept; `sudoers` and the rest come from the boot image each time.
 - The screen is drawn at 1x: on a large monitor (2560x1440) the 8x16 text is small. There is no scaling yet.
 - US keyboard layout only; no Japanese text.
 - Only one processor core is used.

@@ -122,6 +122,12 @@ Any other option fails the mount. The option string reaches the kernel through t
   write bits of a file sets/clears the read-only attribute and is persisted. Everything else fails with `EPERM`, because
   the filesystem would only pretend to store it.
 * New files take their mode and owner from these rules, not from the creating process or its umask.
+* **A directory named `.system` at the top of any FAT volume**, and everything below it, belongs to root with directories 0700 and
+  files 0600, whatever `uid=`/`fmask=` say and with or without `userdirs` (also when something is renamed to `.system`). It holds the
+  `/etc` files kept across restarts ([PERSISTENT_ETC.md](PERSISTENT_ETC.md)), the shadow file among them.
+* Root can hand a mounted `userdirs` volume the residents of `/etc/passwd` (uid 1000 to 59999, at most 32) with
+  `ioctl(fd, FATIOC_USERS_RELOAD)` on any of its directories (`shared/abi.h`); `init`, `adduser` and `deluser` do, so a home made
+  after boot belongs to its resident at once.
 
 ## Safety design
 
