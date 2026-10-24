@@ -558,6 +558,7 @@ void ui_run(const Options *opt) {
     U.shot = SHOT_A;
     kg_scores_init(&U.scores, false, 10);
     kg_scores_load(&U.scores, SCORE_FILE);
+    kapp_set_hidpi(false);                                   /* draws its own pixels: 1x windows, enlarged by the window server on a hi-dpi screen */
     U.app = kapp_new("Danmaku", WIN_W, WIN_H, FW_CENTER);
     if (!U.app) return;
     kapp_set_draw(U.app, draw, NULL);

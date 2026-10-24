@@ -474,6 +474,7 @@ int main(int argc, char **argv) {
     canvas_init();
     if (!doc_new(SK_DEF_W, SK_DEF_H, S.bg)) { fprintf(stderr, "sketchbook: not enough memory\n"); return 1; }
     set_untitled("untitled");
+    kapp_set_hidpi(false);                                   /* draws its own pixels: 1x windows, enlarged by the window server on a hi-dpi screen */
     KApp *app = kapp_new("Sketchbook", 770, 640, FW_RESIZABLE);
     if (!app) return 1;
     S.app = app;

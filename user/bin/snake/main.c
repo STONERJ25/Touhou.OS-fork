@@ -710,6 +710,7 @@ int main(int argc, char **argv) {
     kg_scores_load(&A.scores, SCORE_FILE);
     kg_rng_seed(&A.fx_rng, 12345);
     A.state = S_LOADING;
+    kapp_set_hidpi(false);                                   /* draws its own pixels: 1x windows, enlarged by the window server on a hi-dpi screen */
     A.app = kapp_new("Snake", WIN_W, WIN_H, FW_CENTER);
     if (!A.app) return 1;
     kapp_set_draw(A.app, draw, NULL);

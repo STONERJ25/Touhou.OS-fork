@@ -811,6 +811,7 @@ int main(int argc, char **argv) {
         else if (argv[i][0] == '-' && argv[i][1]) { fprintf(stderr, "usage: gallery [--trace] [--slideshow SECONDS] [FILE | FOLDER]\n       gallery --info FILE...\n"); return 2; }
         else target = argv[i];
     }
+    kapp_set_hidpi(false);                                   /* draws its own pixels: 1x windows, enlarged by the window server on a hi-dpi screen */
     KApp *app = kapp_new("Gallery", 800, 600, FW_RESIZABLE);
     if (!app) return 1;
     G.app = app;

@@ -3,6 +3,8 @@
  *
  * Meant for games and anything else that draws the same art many times per second: paint a sprite once at start-up with
  * the ks_* primitives (circles, ellipses, polygons, capsules, glows), then put it on a KCanvas with ks_blit*.
+ * The KCanvas functions here write pixels directly and expect a 1x canvas: a program that uses them on its window calls
+ * kapp_set_hidpi(false) first (see kappa.h), and the window server enlarges its windows on a hi-dpi screen.
  *
  * Pixel encoding of a KSprite (stride = width):
  *     0x00RRGGBB            opaque colour
