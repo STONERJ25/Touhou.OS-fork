@@ -43,6 +43,8 @@ Goal 1 has a first implementation on branch `cloud/installer` (task 4 of [CLOUD_
 
 The server half of goal 2 is on branch `cloud/update-server` (2026-10-24): `tools/serve-update.py` signs a manifest and serves it over HTTP, host tests in `tests/host/test_serve_update.py`; format, protocol and the loader fallback design are in [UPDATE.md](UPDATE.md). The OS client and the fallback are not started.
 
+PC-98 emulation groundwork is on branch `cloud/pc98` (2026-10-24, task 18): `user/lib/pc98` (an 8086/V30/286 real-mode CPU core, a PC-98 machine skeleton, D88/FDI/HDI readers), host tests only, no ROM or game data; see [PC98.md](PC98.md).
+
 gapsh job control is on branch `cloud/job-control` (2026-10-24): Ctrl-Z, `jobs`, `fg`, `bg`, `wait %N`, `disown`, `%` job names; tests `jobctl_shell_console`, `jobctl_shell_pty`, `jobctl_desktop_terminal`; see [JOBCONTROL.md](JOBCONTROL.md) "State when paused".
 
 Before both: merge the parked branches (below) and run the whole suite on the result, in particular the network/HTTPS branch, the dirty-volume `fsck` branch (an installed disk and a
