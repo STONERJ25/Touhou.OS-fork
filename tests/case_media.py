@@ -561,6 +561,29 @@ class View:
         wait_for(lambda: self.centre_is(rgb), timeout, what=what)
 
 
+def seen(vm, pattern):
+    """True if pattern has appeared in the serial output since the last match (consumes it)."""
+    try:
+        vm.expect(pattern, timeout=0)
+        return True
+    except TimeoutError:
+        return False
+
+
+def click_until(g, x, y, done, what, tries=4, wait=40):
+    """Clicks and waits for done(). A mouse packet lost while the guest is busy would fail a whole test, so the click is
+    repeated after `wait` seconds, with the pointer homed first (its believed position may be wrong after a lost packet)."""
+    for _ in range(tries):
+        g.home()
+        g.click(x, y)
+        end = time.time() + wait
+        while time.time() < end:
+            if done():
+                return
+            time.sleep(0.25)
+    raise AssertionError(f"timed out waiting for {what}")
+
+
 def launch(g, args):
     g.sh("pkill gallery; true")
     wait_for(lambda: "gallery" not in g.sh("ps"), 60, what="the previous Gallery to quit")
@@ -757,16 +780,14 @@ def media_panel_wallpaper():
         vm.expect(r"kappa-panel: ready", timeout=180)
         wait_for(lambda: near(g.pixel(140, 340), SHRINE_RED, 60) and near(g.pixel(600, 250), PAPER, 16), 180, what="the Control Panel window (Appearance selected in the sidebar)")
         wait_for(lambda: not near(g.pixel(*top), BLUE, 60) and near(g.pixel(*mid), BLUE, 30), 120, what="the fitted wallpaper (a bar above, blue on the right)")
-        g.click(686, 217)                                   # the "Stretch" radio button of the Placement row (the panel is the first window: content at 44, 56)
-        vm.expect(r"kappa-panel: wallpaper /media/rb.png stretch", timeout=180)
+        # the "Stretch" radio button of the Placement row (the panel is the first window: content at 44, 56)
+        click_until(g, 686, 217, lambda: seen(vm, r"kappa-panel: wallpaper /media/rb.png stretch"), "the Stretch button to take effect")
         assert g.sh("cat ~/.config/hakurei/wallpaper").split()[-2:] == ["/media/rb.png", "stretch"], "the setting file should hold the picture and the placement"
         wait_for(lambda: near(g.pixel(*top), BLUE, 30), 120, what="the stretched wallpaper")
-        g.click(505, 185)                                   # "Night scene"
-        vm.expect(r"kappa-panel: wallpaper \(none\)", timeout=180)
+        click_until(g, 505, 185, lambda: seen(vm, r"kappa-panel: wallpaper \(none\)"), "Night scene to take effect")
         assert "built-in night scene" in g.sh("wallpaper")
         wait_for(lambda: not near(g.pixel(*top), BLUE, 60), 120, what="the night scene")
-        g.click(346, 185)                                   # "Choose picture...": the file dialog opens, the name field has the focus
-        wait_for(lambda: near(g.pixel(500, 166), SHRINE_RED, 70), 120, what="the file dialog")
+        click_until(g, 346, 185, lambda: near(g.pixel(500, 166), SHRINE_RED, 70), "the file dialog")       # "Choose picture...": the name field has the focus
         g.type("/media/rb.png\n")
         vm.expect(r"kappa-panel: wallpaper /media/rb.png cover", timeout=180)
         assert "/media/rb.png (cover)" in g.sh("wallpaper")
