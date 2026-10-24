@@ -19,8 +19,9 @@ Group `shrine` (gid 100) is the *seat* group: members may use the display and in
 desktop) and may restart or power off the machine. Everyone except Sumireko is a member.
 
 The default accounts have **empty passwords** so the system boots straight into a usable desktop; set real ones with
-`passwd` (see below). Nothing is persistent yet: `/etc` lives in the in-memory root filesystem and is rebuilt from the
-initrd on every boot, so password changes last until the next restart. (Persistent storage is on the roadmap.)
+`passwd` (see below). Accounts are not persistent yet: `/etc` lives in the in-memory root filesystem and is rebuilt from the
+initrd on every boot, so password changes last until the next restart. (The home folders do persist when a HUMANVILLAGE volume is
+mounted, see [STORAGE.md](STORAGE.md).)
 
 ## The files
 

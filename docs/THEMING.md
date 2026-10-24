@@ -46,7 +46,7 @@ Thematic directories are real; conventional POSIX names are symlinks to them.
 | `/ScarletDevilMansion` | installed applications, libraries, docs (Patchouli's library) | `/usr` |
 | `/YoukaiMountain` | devices and news (Kappa workshop, Bunbunmaru) | |
 | `/BambooForest` | temporary files (you get lost in there) | `/tmp` |
-| `/Netherworld` | trash: `rm` sends files here, `purge` really deletes | |
+| `/Netherworld` | trash: `trash` and the Explorer's Delete send files here; `rm` deletes for good | |
 | `/.boundary` | hidden system metadata | |
 | `/bin`, `/dev`, `/proc`, `/sys` | as usual | |
 
@@ -71,7 +71,7 @@ Prompt: `reimu@gensokyo ~ $`. See [ACCOUNTS.md](ACCOUNTS.md).
   over the river as sdb`, a write-protected stick is "the kappa keep the sluice gate shut (read-only)"; the volume belongs to Keine
   (`the Human Village keeps its records on the stick now`, `... vanished while it was mounted`); the kernel log on the stick is
   "Shikieiki's ledger, readable on any other computer". The block layer's own lines (`blk: sdb removed ...`) stay Marisa's.
-- `rm` -> Netherworld, `shutdown` -> "Yukari opens a gap...", `fortune`/`omikuji` -> shrine fortune slips, `saisen` -> offering box.
+- `trash` -> Netherworld (`rm` deletes for good), `poweroff` -> "The shrine maiden is closing up for the night. Goodbye!", `fortune`/`omikuji` -> shrine fortune slips, `saisen` -> offering box.
 - The Explorer: Delete sends things to the Netherworld (with a note of where they came from), an empty Netherworld says `Yuyuko is
   hungry.`, deleting for good or emptying asks whether Yuyuko may eat it, an empty folder shows `Nothing here but the wind`, and
   the permission errors keep their Eiki flavour from `strerror`. The plain fact (what failed, which path) is always in the text.
