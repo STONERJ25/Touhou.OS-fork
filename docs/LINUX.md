@@ -142,8 +142,8 @@ The host-side unit tests of all this (no QEMU): `python3 tests/host/test_test_in
 `ubuntu-24.04`, builds with clang 20, and runs the smoke set with `TOUHOU_TIMEOUT_SCALE=3` (about two minutes in all). Serial and QEMU logs and screenshots of a failed run are kept for a week as the `smoke-logs` artifact.
 The whole suite is not run there (about 25 minutes in seven parallel groups on a fast desktop); `full-suite.yml` does that.
 
-`.github/workflows/full-suite.yml` runs the whole suite by hand (`workflow_dispatch`, with an optional list of groups such as `usb,rest`) and every
-Monday at 03:23 UTC (`schedule`). A `plan` job asks `tools/suite.py --ci-plan` for the matrix: the named groups plus `rest`, with `usb` and `storage`
+`.github/workflows/full-suite.yml` runs the whole suite by hand only (`workflow_dispatch`, the
+"Run workflow" button, with an optional list of groups such as `usb,rest`); there is no schedule, to save runner minutes. A `plan` job asks `tools/suite.py --ci-plan` for the matrix: the named groups plus `rest`, with `usb` and `storage`
 split into two parts each (every second test, `--part 1/2` and `2/2`), ten jobs today. Each matrix job installs the same packages as the smoke run on
 `ubuntu-24.04`, builds with clang 20 and `TOUHOU_TIMEOUT_SCALE=3`, runs `tools/suite.py --run-group GROUP --part K/N` (the group's tests with
 `--retry-failed`, in that checkout) and writes a job summary: counts, a table of the tests that did not simply pass (failed with the first error line,
@@ -152,10 +152,9 @@ only for a failed group as `logs-<group>` (7 days). A last `summary` job combine
 failed or when a planned group left no results (build failure, crash, time limit). A group job may take 150 minutes (GitHub's limit is 360); to split
 another long group, add it to `CI_PARTS` in `tools/suite.py`, the workflow follows.
 
-Two things to know: GitHub offers `workflow_dispatch` (the "Run workflow" button) and runs `schedule` only for workflow files on the default branch,
-so the workflow appears once it is merged into `main`; and in a private repository the runner minutes count against the account's monthly allowance
-(ten jobs of very roughly 20 to 50 minutes each is several hundred minutes per run, once a week): change the `cron` line or remove `schedule` if that
-is too much.
+Two things to know: GitHub offers `workflow_dispatch` only for workflow files on the default branch; and in a private repository the runner
+minutes count against the account's monthly allowance (ten jobs of very roughly 20 to 50 minutes each is several hundred minutes per run), which is
+why the owner chose manual runs only. A weekly run would be a `schedule:` block with a `cron` line under `on:`.
 
 ## Results of the whole suite on Linux
 

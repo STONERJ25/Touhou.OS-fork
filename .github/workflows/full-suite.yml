@@ -1,5 +1,5 @@
 # The whole QEMU suite (about 270 tests) on Ubuntu, as a matrix of the groups of tools/suite.py (the seven groups of
-# docs/CLOUD_AGENT_BRIEF.md plus "rest"; usb and storage are split in two parts). By hand and once a week; docs/LINUX.md.
+# docs/CLOUD_AGENT_BRIEF.md plus "rest"; usb and storage are split in two parts). By hand only (the owner's choice: runner minutes); docs/LINUX.md.
 # Each group job builds once, runs its tests with --retry-failed (a test that fails and then passes alone is reported as
 # flaky and does not fail the job) and writes a job summary; the last job combines them.
 name: full-suite
@@ -11,8 +11,6 @@ on:
         description: "Groups to run, comma-separated (usb,storage,usbstor,kernel,gui,desktop,tools,rest); empty runs all"
         required: false
         default: ""
-  schedule:
-    - cron: "23 3 * * 1"        # Mondays 03:23 UTC (scheduled runs use the default branch)
 
 permissions:
   contents: read
