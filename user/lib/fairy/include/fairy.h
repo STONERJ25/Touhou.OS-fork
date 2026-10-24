@@ -35,6 +35,8 @@
 #define FW_CENTER      0x0400               /* open in the middle of the work area */
 #define FW_NO_CLOSE    0x0800               /* the close button is disabled */
 #define FW_LOCK        0x1000               /* the screen lock: above everything, keeps keyboard and pointer to itself (one at a time) */
+#define FW_HIDPI       0x2000               /* the pixel buffer is at the server's ui scale (w*scale x h*scale pixels); without it a buffer of
+                                               w x h is enlarged by the server (nearest neighbour). Ignored at scale 1. See fairy_scale(). */
 
 /* ---- window states ---- */
 #define FS_NORMAL      0
@@ -66,8 +68,8 @@ typedef struct FairyHdr {
 /* client -> server */
 typedef struct { uint32_t version; int32_t pid; char name[32]; } FmHello;
 typedef struct { int32_t w, h; uint32_t flags; int32_t x, y; uint32_t parent; char title[64]; char shm[64]; } FmCreate;   /* x,y = -1: let the server place it */
-typedef struct { int32_t w, h, stride; char shm[64]; } FmAttach;            /* new pixel buffer; the old one is released */
-typedef struct { int32_t x, y, w, h; } FmCommit;                            /* w <= 0: the whole window */
+typedef struct { int32_t w, h, stride; char shm[64]; } FmAttach;            /* new pixel buffer; the old one is released (w, h: content size) */
+typedef struct { int32_t x, y, w, h; } FmCommit;                            /* content coordinates; w <= 0: the whole window */
 typedef struct { char title[64]; } FmTitle;
 typedef struct { uint32_t state; } FmState;
 typedef struct { uint32_t shape; } FmCursor;
@@ -80,7 +82,7 @@ typedef struct { int32_t x, y; } FmWarp;
 typedef struct { int32_t w, h; } FmMode;
 
 /* server -> client */
-typedef struct { uint32_t version; uint32_t client_id; int32_t screen_w, screen_h; int32_t work_x, work_y, work_w, work_h; } FeWelcome;
+typedef struct { uint32_t version; uint32_t client_id; int32_t screen_w, screen_h; int32_t work_x, work_y, work_w, work_h; int32_t scale; } FeWelcome;   /* sizes in logical pixels; scale: physical pixels per logical pixel */
 typedef struct { int32_t content_w, content_h; int32_t outer_x, outer_y, outer_w, outer_h; uint32_t decor_l, decor_t, decor_r, decor_b; } FeCreated;
 typedef struct { int32_t w, h; uint32_t state; uint32_t focused; } FeConfigure;     /* content size to adopt; reattach a buffer of that size */
 typedef struct { uint8_t code, mods, down, pad; uint32_t ch; } FeKey;              /* down: 1 press, 0 release, 2 repeat; ch: Unicode code point or 0 */
@@ -120,7 +122,12 @@ typedef struct FairyEvent {
     } u;
 } FairyEvent;
 
+/* Coordinates: everything the protocol carries (screen and work area, window positions and sizes, pointer events, commits)
+ * is in logical pixels. At ui scale N (2 on large screens, or ui.scale=N on the kernel command line) the screen has N x N
+ * physical pixels per logical pixel: windows created with FW_HIDPI draw into a buffer N times as wide and high, the others are
+ * enlarged by the server. At scale 1 the two are the same thing. */
 FairyDisplay *fairy_connect(const char *app_name);                  /* NULL if no window server answers */
+int           fairy_scale(FairyDisplay *d);                         /* the ui scale: 1, 2, ... */
 void          fairy_disconnect(FairyDisplay *d);
 int           fairy_fd(FairyDisplay *d);                            /* poll() this to learn about events */
 void          fairy_screen_size(FairyDisplay *d, int *w, int *h);
@@ -129,9 +136,10 @@ void          fairy_work_area(FairyDisplay *d, int *x, int *y, int *w, int *h); 
 FairyWindow  *fairy_window_create(FairyDisplay *d, int w, int h, const char *title, unsigned flags);
 FairyWindow  *fairy_window_create_at(FairyDisplay *d, int x, int y, int w, int h, const char *title, unsigned flags, FairyWindow *parent);
 void          fairy_window_destroy(FairyWindow *win);
-uint32_t     *fairy_window_pixels(FairyWindow *win, int *w, int *h, int *stride);   /* stride in pixels */
-void          fairy_window_commit(FairyWindow *win, int x, int y, int w, int h);    /* w <= 0: everything */
-int           fairy_window_resize(FairyWindow *win, int w, int h);  /* give the window a new buffer (answer to FEV_CONFIGURE); contents are lost */
+uint32_t     *fairy_window_pixels(FairyWindow *win, int *w, int *h, int *stride);   /* buffer size and stride in buffer pixels */
+int           fairy_window_scale(FairyWindow *win);                 /* buffer pixels per logical pixel: fairy_scale() for FW_HIDPI windows, else 1 */
+void          fairy_window_commit(FairyWindow *win, int x, int y, int w, int h);    /* logical content rectangle; w <= 0: everything */
+int           fairy_window_resize(FairyWindow *win, int w, int h);  /* give the window a new buffer for content size w x h (answer to FEV_CONFIGURE); contents are lost */
 void          fairy_window_set_title(FairyWindow *win, const char *title);
 void          fairy_window_set_state(FairyWindow *win, unsigned state);
 void          fairy_window_set_cursor(FairyWindow *win, unsigned shape);

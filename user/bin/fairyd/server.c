@@ -88,7 +88,11 @@ void server_flush_list(void) {
 
 /* ---------------------------------------------------------------- windows */
 
+/* bw, bh: the content size in logical pixels; the buffer holds w->bscale times as many in each direction. */
 static int map_buffer(Win *w, const char *path, int bw, int bh) {
+    if (bw > 8192 || bh > 8192) return -1;
+    bw *= w->bscale;
+    bh *= w->bscale;
     int fd = open(path, O_RDWR);
     if (fd < 0) return -1;
     struct stat st;
@@ -156,6 +160,7 @@ static void handle_create(Client *c, const FairyHdr *h, const FmCreate *m) {
     w->id = S.next_win++;
     w->client = c;
     w->flags = m->flags;
+    w->bscale = (w->flags & FW_HIDPI) && S.scale > 1 ? S.scale : 1;
     if (w->flags & FW_LOCK) w->flags |= FW_FULLSCREEN | FW_NO_DECOR | FW_SKIP_TASKS;
     strncpy(w->title, m->title, sizeof w->title - 1);
     w->cw = m->w; w->ch = m->h;
@@ -204,7 +209,7 @@ static void handle_msg(Client *c, const FairyHdr *h, const uint8_t *p) {
         const FmHello *m = (const FmHello *)p;
         c->pid = m->pid;
         strncpy(c->name, m->name, sizeof c->name - 1);
-        FeWelcome wl = { FAIRY_VERSION, c->id, S.screen_w, S.screen_h, S.work_x, S.work_y, S.work_w, S.work_h };
+        FeWelcome wl = { FAIRY_VERSION, c->id, S.screen_w, S.screen_h, S.work_x, S.work_y, S.work_w, S.work_h, S.scale };
         send_msg(c, FE_WELCOME, 0, h->serial, &wl, sizeof wl);
         break;
     }

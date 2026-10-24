@@ -29,10 +29,15 @@ static int shrink_or_grow(const Image *im, int tw, int th, Image *out) {
     return img_scale(im, tw, th, (tw < im->w || th < im->h) ? IMG_AREA : IMG_BILINEAR, out);
 }
 
-void k_wallpaper_render(uint32_t *px, int w, int h, int stride) {
+/* w, h: the size in logical pixels; px holds (w * scale) x (h * scale) pixels. A picture is scaled to the whole buffer (all its
+ * pixels are used: center and tile show it pixel for pixel on the screen), the night scene is drawn on a scaled canvas so it
+ * keeps its proportions. */
+void k_wallpaper_render_scaled(uint32_t *px, int lw, int lh, int stride, int scale) {
+    if (scale < 1) scale = 1;
+    int w = lw * scale, h = lh * scale;
     KWallConfig cfg;
     Image im, sc;
-    if (!k_wallpaper_config(&cfg) || img_load(cfg.path, &im) != IMG_OK) { k_scenery_night(px, w, h, stride); return; }
+    if (!k_wallpaper_config(&cfg) || img_load(cfg.path, &im) != IMG_OK) { k_scenery_night_scaled(px, lw, lh, stride, scale); return; }
     img_composite_over(&im, KC_NIGHT);
     fill(px, w, h, stride, KC_NIGHT);
     int rc = 0;
@@ -67,8 +72,10 @@ void k_wallpaper_render(uint32_t *px, int w, int h, int stride) {
     }
     }
     img_free(&im);
-    if (rc) k_scenery_night(px, w, h, stride);
+    if (rc) k_scenery_night_scaled(px, lw, lh, stride, scale);
 }
+
+void k_wallpaper_render(uint32_t *px, int w, int h, int stride) { k_wallpaper_render_scaled(px, w, h, stride, 1); }
 
 /* ---------------------------------------------------------------- thumbnails */
 

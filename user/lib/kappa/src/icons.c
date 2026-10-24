@@ -65,6 +65,11 @@ static const char *const g_names[KI_COUNT] = {
 const char *k_icon_name(KIcon i) { return i >= 0 && i < KI_COUNT ? g_names[i] : "?"; }
 
 void k_icon(KCanvas *c, KIcon icon, int X, int Y, int s) {
+    if (c->scale > 1) {                                           /* hi-dpi: the same icon drawn with all the pixels there are */
+        KCanvas v = kc_native_view(c);
+        k_icon(&v, icon, X * c->scale, Y * c->scale, s * c->scale);
+        return;
+    }
 #define U(v) ((v) * s / 32)
 #define X_(v) (X + U(v))
 #define Y_(v) (Y + U(v))

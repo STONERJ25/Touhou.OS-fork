@@ -42,7 +42,7 @@ static void process_input(void) {
         struct ginput_event *e = &evs[i];
         bool flush_motion = e->type != EV_REL || e->code == REL_WHEEL;
         if (flush_motion && (dx || dy)) {
-            cursor_move_to(S.cursor_x + dx, S.cursor_y + dy);
+            cursor_move_by(dx, dy);
             wm_pointer_event(S.cursor_x, S.cursor_y, S.buttons, 0, false, 0);
             dx = dy = 0;
         }
@@ -62,7 +62,7 @@ static void process_input(void) {
         }
     }
     if (dx || dy) {
-        cursor_move_to(S.cursor_x + dx, S.cursor_y + dy);
+        cursor_move_by(dx, dy);
         wm_pointer_event(S.cursor_x, S.cursor_y, S.buttons, 0, false, 0);
     }
 }
@@ -93,7 +93,10 @@ int main(int argc, char **argv) {
     S.work_w = S.screen_w;
     S.work_h = S.screen_h;
     S.numlock = true;
-    fprintf(stderr, "fairyd: %dx%d, the fairies are holding the pixels\n", S.screen_w, S.screen_h);
+    if (S.scale > 1)
+        fprintf(stderr, "fairyd: %dx%d, the fairies are holding the pixels %d by %d (ui scale %d: clients see %dx%d)\n", S.phys_w, S.phys_h,
+                S.scale, S.scale, S.scale, S.screen_w, S.screen_h);
+    else fprintf(stderr, "fairyd: %dx%d, the fairies are holding the pixels\n", S.screen_w, S.screen_h);
 
     while (!S.quit && !g_term) {
         struct pollfd pf[2 + 64];

@@ -17,7 +17,8 @@
 struct FairyWindow {
     FairyDisplay *d;
     uint32_t id;
-    int w, h, stride;
+    int w, h, stride;                       /* w, h: content size (logical); stride in buffer pixels */
+    int bs;                                 /* buffer scale: buffer pixels per logical pixel */
     uint32_t *px;
     size_t map_len;
     int ox, oy, ow, oh;                     /* outer geometry as last reported */
@@ -32,6 +33,7 @@ struct FairyDisplay {
     int fd;
     uint32_t client_id;
     int screen_w, screen_h;
+    int scale;
     int work_x, work_y, work_w, work_h;
     uint32_t serial;
     int shm_counter;
@@ -87,6 +89,7 @@ static int dispatch(FairyDisplay *d, const FairyHdr *h, const uint8_t *payload, 
         const FeWelcome *m = (const FeWelcome *)payload;
         d->client_id = m->client_id;
         d->screen_w = m->screen_w; d->screen_h = m->screen_h;
+        d->scale = h->size - sizeof *h >= sizeof *m && m->scale > 1 ? m->scale : 1;
         d->work_x = m->work_x; d->work_y = m->work_y; d->work_w = m->work_w; d->work_h = m->work_h;
         break;
     }
@@ -227,6 +230,7 @@ void fairy_disconnect(FairyDisplay *d) {
 
 int fairy_fd(FairyDisplay *d) { return d->fd; }
 void fairy_screen_size(FairyDisplay *d, int *w, int *h) { if (w) *w = d->screen_w; if (h) *h = d->screen_h; }
+int fairy_scale(FairyDisplay *d) { return d && d->scale > 1 ? d->scale : 1; }
 void fairy_work_area(FairyDisplay *d, int *x, int *y, int *w, int *h) {
     if (x) *x = d->work_x; if (y) *y = d->work_y; if (w) *w = d->work_w; if (h) *h = d->work_h;
 }
@@ -258,9 +262,11 @@ FairyWindow *fairy_window_create_at(FairyDisplay *d, int x, int y, int w, int h,
     if (!win) return NULL;
     FmCreate cr;
     memset(&cr, 0, sizeof cr);
-    if (map_buffer(d, win, w, h, cr.shm, sizeof cr.shm, &win->px, &win->map_len) < 0) { free(win); return NULL; }
+    int bs = (flags & FW_HIDPI) ? fairy_scale(d) : 1;
+    if (bs == 1) flags &= ~(unsigned)FW_HIDPI;
+    if (map_buffer(d, win, w * bs, h * bs, cr.shm, sizeof cr.shm, &win->px, &win->map_len) < 0) { free(win); return NULL; }
     win->d = d;
-    win->w = w; win->h = h; win->stride = w;
+    win->w = w; win->h = h; win->stride = w * bs; win->bs = bs;
     win->flags = flags;
     cr.w = w; cr.h = h; cr.flags = flags; cr.x = x; cr.y = y;
     cr.parent = parent ? parent->id : 0;
@@ -300,9 +306,11 @@ void fairy_window_destroy(FairyWindow *win) {
 }
 
 uint32_t *fairy_window_pixels(FairyWindow *win, int *w, int *h, int *stride) {
-    if (w) *w = win->w; if (h) *h = win->h; if (stride) *stride = win->stride;
+    if (w) *w = win->w * win->bs; if (h) *h = win->h * win->bs; if (stride) *stride = win->stride;
     return win->px;
 }
+
+int fairy_window_scale(FairyWindow *win) { return win->bs; }
 
 void fairy_window_commit(FairyWindow *win, int x, int y, int w, int h) {
     FmCommit c = { x, y, w, h };
@@ -317,11 +325,11 @@ int fairy_window_resize(FairyWindow *win, int w, int h) {
     memset(&at, 0, sizeof at);
     uint32_t *px;
     size_t len;
-    if (map_buffer(win->d, win, w, h, at.shm, sizeof at.shm, &px, &len) < 0) return -1;
-    at.w = w;                                               /* contents are lost; the caller redraws */ at.h = h; at.stride = w;
+    if (map_buffer(win->d, win, w * win->bs, h * win->bs, at.shm, sizeof at.shm, &px, &len) < 0) return -1;
+    at.w = w;                                               /* contents are lost; the caller redraws */ at.h = h; at.stride = w * win->bs;
     send_msg(win->d, FM_ATTACH, win->id, &at, sizeof at);
     munmap(win->px, win->map_len);
-    win->px = px; win->map_len = len; win->w = w; win->h = h; win->stride = w;
+    win->px = px; win->map_len = len; win->w = w; win->h = h; win->stride = w * win->bs;
     return 0;
 }
 

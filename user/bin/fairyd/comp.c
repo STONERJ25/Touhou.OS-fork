@@ -35,11 +35,18 @@ Rect rect_union(Rect a, Rect b) {
 
 /* ---------------------------------------------------------------- pointer sprites (generated at start-up) */
 
-#define SPR 26
-typedef struct { uint8_t px[SPR * SPR]; int hotx, hoty; } Sprite;
+/* The sprites are drawn at the ui scale (26 x 26 physical pixels at scale 1, 52 x 52 at scale 2): the same shapes at a finer
+ * resolution, not enlarged pixels. */
+#define SPR1 26
+#define SPR_MAX_SCALE 4
+typedef struct { uint8_t px[SPR1 * SPR_MAX_SCALE * SPR1 * SPR_MAX_SCALE]; int hotx, hoty; } Sprite;
 static Sprite g_spr[FC_NONE + 1];
+static int SPR = SPR1;                          /* sprite side in physical pixels: SPR1 * the sprite scale */
+static int g_k = 1;                             /* the sprite scale */
 
 typedef struct { int x, y; } Pt;
+
+static void scale_pts(Pt *p, int n) { for (int i = 0; i < n; i++) { p[i].x *= g_k; p[i].y *= g_k; } }
 
 static void mask_poly(uint8_t *m, const Pt *p, int n) {
     for (int y = 0; y < SPR; y++) {
@@ -61,20 +68,21 @@ static void mask_rect(uint8_t *m, int x, int y, int w, int h) {
 }
 
 static void finish_sprite(Sprite *s, int hotx, int hoty) {
-    uint8_t out[SPR * SPR];
-    memcpy(out, s->px, sizeof out);
+    static uint8_t out[sizeof s->px];
+    size_t bytes = (size_t)SPR * SPR;
+    memcpy(out, s->px, bytes);
     for (int y = 0; y < SPR; y++)
         for (int x = 0; x < SPR; x++) {
             if (s->px[y * SPR + x]) continue;
-            for (int dy = -1; dy <= 1; dy++)
-                for (int dx = -1; dx <= 1; dx++) {
+            for (int dy = -g_k; dy <= g_k; dy++)                 /* the black outline is one logical pixel wide */
+                for (int dx = -g_k; dx <= g_k; dx++) {
                     int nx = x + dx, ny = y + dy;
                     if (nx >= 0 && ny >= 0 && nx < SPR && ny < SPR && s->px[ny * SPR + nx] == 1) out[y * SPR + x] = 2;
                 }
         }
-    memcpy(s->px, out, sizeof out);
-    s->hotx = hotx;
-    s->hoty = hoty;
+    memcpy(s->px, out, bytes);
+    s->hotx = hotx * g_k;
+    s->hoty = hoty * g_k;
 }
 
 static void rotate_pts(Pt *p, int n, int cx, int cy, int quarter_turns_45) {
@@ -88,26 +96,33 @@ static void rotate_pts(Pt *p, int n, int cx, int cy, int quarter_turns_45) {
     }
 }
 
-static void build_cursors(void) {
+static void build_cursors(int scale) {
     memset(g_spr, 0, sizeof g_spr);
+    g_k = scale < 1 ? 1 : scale > SPR_MAX_SCALE ? SPR_MAX_SCALE : scale;
+    SPR = SPR1 * g_k;
+    const int K = g_k;
     {   /* arrow */
         Pt p[] = { { 1, 1 }, { 1, 18 }, { 5, 14 }, { 8, 20 }, { 11, 19 }, { 8, 13 }, { 13, 13 } };
+        scale_pts(p, 7);
         mask_poly(g_spr[FC_ARROW].px, p, 7);
         finish_sprite(&g_spr[FC_ARROW], 1, 1);
     }
     {   /* text I-beam */
         uint8_t *m = g_spr[FC_TEXT].px;
-        mask_rect(m, 5, 2, 2, 17); mask_rect(m, 2, 1, 8, 2); mask_rect(m, 2, 18, 8, 2);
+        mask_rect(m, 5 * K, 2 * K, 2 * K, 17 * K); mask_rect(m, 2 * K, 1 * K, 8 * K, 2 * K); mask_rect(m, 2 * K, 18 * K, 8 * K, 2 * K);
         finish_sprite(&g_spr[FC_TEXT], 6, 10);
     }
     {   /* hand */
         Pt p[] = { { 7, 1 }, { 10, 1 }, { 10, 9 }, { 12, 8 }, { 14, 8 }, { 16, 9 }, { 18, 9 }, { 20, 11 }, { 20, 17 }, { 17, 21 }, { 9, 21 }, { 5, 15 }, { 3, 12 }, { 5, 11 }, { 7, 13 } };
+        scale_pts(p, 15);
         mask_poly(g_spr[FC_HAND].px, p, 15);
         finish_sprite(&g_spr[FC_HAND], 8, 1);
     }
     {   /* busy: hourglass */
         Pt top[] = { { 5, 2 }, { 19, 2 }, { 13, 11 }, { 11, 11 } };
         Pt bot[] = { { 11, 12 }, { 13, 12 }, { 19, 21 }, { 5, 21 } };
+        scale_pts(top, 4);
+        scale_pts(bot, 4);
         mask_poly(g_spr[FC_BUSY].px, top, 4);
         mask_poly(g_spr[FC_BUSY].px, bot, 4);
         finish_sprite(&g_spr[FC_BUSY], 12, 11);
@@ -115,38 +130,72 @@ static void build_cursors(void) {
     {   /* resize arrows */
         Pt h[] = { { 1, 12 }, { 7, 6 }, { 7, 10 }, { 17, 10 }, { 17, 6 }, { 23, 12 }, { 17, 18 }, { 17, 14 }, { 7, 14 }, { 7, 18 } };
         Pt hh[10]; memcpy(hh, h, sizeof h);
+        scale_pts(hh, 10);
         mask_poly(g_spr[FC_RESIZE_H].px, hh, 10);
         finish_sprite(&g_spr[FC_RESIZE_H], 12, 12);
         Pt v[10]; memcpy(v, h, sizeof h);
         rotate_pts(v, 10, 12, 12, 2);
+        scale_pts(v, 10);
         mask_poly(g_spr[FC_RESIZE_V].px, v, 10);
         finish_sprite(&g_spr[FC_RESIZE_V], 12, 12);
         Pt d1[10]; memcpy(d1, h, sizeof h);
         rotate_pts(d1, 10, 12, 12, 1);
+        scale_pts(d1, 10);
         mask_poly(g_spr[FC_RESIZE_NWSE].px, d1, 10);
         finish_sprite(&g_spr[FC_RESIZE_NWSE], 12, 12);
         Pt d2[10]; memcpy(d2, h, sizeof h);
         rotate_pts(d2, 10, 12, 12, 3);
+        scale_pts(d2, 10);
         mask_poly(g_spr[FC_RESIZE_NESW].px, d2, 10);
         finish_sprite(&g_spr[FC_RESIZE_NESW], 12, 12);
         Pt m1[10]; memcpy(m1, h, sizeof h);
         Pt m2[10]; memcpy(m2, h, sizeof h);
         rotate_pts(m2, 10, 12, 12, 2);
+        scale_pts(m1, 10);
+        scale_pts(m2, 10);
         mask_poly(g_spr[FC_MOVE].px, m1, 10);
         mask_poly(g_spr[FC_MOVE].px, m2, 10);
         finish_sprite(&g_spr[FC_MOVE], 12, 12);
     }
     {   /* crosshair */
         uint8_t *m = g_spr[FC_CROSS].px;
-        mask_rect(m, 11, 3, 2, 18); mask_rect(m, 3, 11, 18, 2);
+        mask_rect(m, 11 * K, 3 * K, 2 * K, 18 * K); mask_rect(m, 3 * K, 11 * K, 18 * K, 2 * K);
         finish_sprite(&g_spr[FC_CROSS], 12, 12);
     }
 }
 
-static Rect cursor_rect(void) {
+/* The pointer sprite in physical pixels. */
+static Rect cursor_rect_phys(void) {
     Sprite *sp = &g_spr[S.cursor_shape <= FC_NONE ? S.cursor_shape : FC_ARROW];
-    Rect r = { S.cursor_x - sp->hotx, S.cursor_y - sp->hoty, SPR, SPR };
+    Rect r = { S.ptr_x - sp->hotx, S.ptr_y - sp->hoty, SPR, SPR };
     return r;
+}
+
+static int floor_div(int a, int b) { return a >= 0 ? a / b : -((-a + b - 1) / b); }
+
+/* Physical rectangle -> the logical rectangle that covers it (damage is kept in logical pixels). */
+static Rect logical_cover(Rect p) {
+    int s = S.scale;
+    int x0 = floor_div(p.x, s), y0 = floor_div(p.y, s);
+    int x1 = floor_div(p.x + p.w + s - 1, s), y1 = floor_div(p.y + p.h + s - 1, s);
+    return (Rect){ x0, y0, x1 - x0, y1 - y0 };
+}
+
+static Rect cursor_rect(void) { return logical_cover(cursor_rect_phys()); }
+
+/* Moves the pointer to physical (px, py); the logical position is the logical pixel under it. */
+static void pointer_set_phys(int px, int py) {
+    if (px < 0) px = 0;
+    if (py < 0) py = 0;
+    if (px >= S.phys_w) px = S.phys_w - 1;
+    if (py >= S.phys_h) py = S.phys_h - 1;
+    if (px == S.ptr_x && py == S.ptr_y) return;
+    comp_damage(cursor_rect());
+    S.ptr_x = px;
+    S.ptr_y = py;
+    S.cursor_x = px / S.scale;
+    S.cursor_y = py / S.scale;
+    comp_damage(cursor_rect());
 }
 
 void cursor_move_to(int x, int y) {
@@ -154,12 +203,10 @@ void cursor_move_to(int x, int y) {
     if (y < 0) y = 0;
     if (x >= S.screen_w) x = S.screen_w - 1;
     if (y >= S.screen_h) y = S.screen_h - 1;
-    if (x == S.cursor_x && y == S.cursor_y) return;
-    comp_damage(cursor_rect());
-    S.cursor_x = x;
-    S.cursor_y = y;
-    comp_damage(cursor_rect());
+    pointer_set_phys(x * S.scale + S.scale / 2, y * S.scale + S.scale / 2);
 }
+
+void cursor_move_by(int dx, int dy) { pointer_set_phys(S.ptr_x + dx, S.ptr_y + dy); }
 
 void cursor_set_shape(unsigned shape) {
     if (shape > FC_NONE) shape = FC_ARROW;
@@ -169,15 +216,17 @@ void cursor_set_shape(unsigned shape) {
     comp_damage(cursor_rect());
 }
 
+static Rect to_phys(Rect r) { return (Rect){ r.x * S.scale, r.y * S.scale, r.w * S.scale, r.h * S.scale }; }
+
 static void draw_cursor(Rect clip) {
     if (S.cursor_shape == FC_NONE) return;
     Sprite *sp = &g_spr[S.cursor_shape];
-    Rect cr = cursor_rect();
-    Rect v = rect_intersect(cr, clip);
+    Rect cr = cursor_rect_phys();
+    Rect v = rect_intersect(cr, to_phys(clip));
     for (int y = v.y; y < v.y + v.h; y++)
         for (int x = v.x; x < v.x + v.w; x++) {
             uint8_t p = sp->px[(y - cr.y) * SPR + (x - cr.x)];
-            if (p) S.back[y * S.screen_w + x] = p == 1 ? 0xFFFFFF : 0x000000;
+            if (p) S.back[y * S.phys_w + x] = p == 1 ? 0xFFFFFF : 0x000000;
         }
 }
 
@@ -207,6 +256,8 @@ static inline uint64_t rdtsc_u(void) {
     return ((uint64_t)hi << 32) | lo;
 }
 
+static int g_scale_asked;                      /* ui.scale=N on the kernel command line, 0 = choose by the screen size */
+
 static void read_knobs(void) {
     FILE *f = fopen("/proc/cmdline", "r");
     if (!f) return;
@@ -215,24 +266,49 @@ static void read_knobs(void) {
         for (char *p = strtok(line, " \t\r\n"); p; p = strtok(NULL, " \t\r\n")) {
             if (!strcmp(p, "fairyd.copy=rep")) g_copy_nt = false;
             else if (!strcmp(p, "fairyd.damage=bbox")) g_dmg_bbox_only = true;
+            else if (!strncmp(p, "ui.scale=", 9)) g_scale_asked = atoi(p + 9);
         }
     }
     fclose(f);
 }
 
+/* The ui scale (physical pixels per logical pixel). Automatic: 2 when the screen is at least 2560 wide or 1440 high (a 27-inch
+ * 2560x1440 monitor, 4K), else 1. ui.scale=N on the kernel command line forces N (1 to 4). Either way the logical screen must
+ * stay at least 640x480, which every application promises to fit in: a scale that would make it smaller is lowered. */
+#define UI_SCALE_AUTO_W 2560
+#define UI_SCALE_AUTO_H 1440
+#define UI_SCALE_MAX    SPR_MAX_SCALE
+static int choose_scale(int w, int h, const char **why) {
+    int s;
+    if (g_scale_asked >= 1) { s = g_scale_asked > UI_SCALE_MAX ? UI_SCALE_MAX : g_scale_asked; *why = "ui.scale"; }
+    else { s = (w >= UI_SCALE_AUTO_W || h >= UI_SCALE_AUTO_H) ? 2 : 1; *why = "automatic"; }
+    while (s > 1 && (w / s < 640 || h / s < 480)) s--;
+    return s;
+}
+
 void comp_init(int w, int h, uint32_t *fb, int pitch, bool swap_rb) {
-    S.screen_w = w;
-    S.screen_h = h;
-    S.back = calloc((size_t)w * (size_t)h, 4);
+    read_knobs();
+    const char *why;
+    int s = choose_scale(w, h, &why);
+    S.scale = s;
+    S.screen_w = w / s;
+    S.screen_h = h / s;
+    S.phys_w = S.screen_w * s;
+    S.phys_h = S.screen_h * s;
+    S.back = calloc((size_t)S.phys_w * (size_t)S.phys_h, 4);
     S.fb = fb;
     S.fb_pitch = pitch;
     S.swap_rb = swap_rb;
-    kc_init(&g_cv, S.back, w, h, w);
-    S.cursor_x = w / 2;
-    S.cursor_y = h / 2;
+    kc_init_scaled(&g_cv, S.back, S.screen_w, S.screen_h, S.phys_w, s);
+    S.ptr_x = w / 2 < S.phys_w ? w / 2 : S.phys_w - 1;
+    S.ptr_y = h / 2 < S.phys_h ? h / 2 : S.phys_h - 1;
+    S.cursor_x = S.ptr_x / s;
+    S.cursor_y = S.ptr_y / s;
     S.cursor_shape = FC_ARROW;
-    build_cursors();
-    read_knobs();
+    build_cursors(s);
+    w = S.screen_w;
+    h = S.screen_h;
+    fprintf(stderr, "fairyd: ui scale %d (%s)\n", s, why);
     Rect all = { 0, 0, w, h };
     S.dirty = all;
     g_dmg[0] = all;
@@ -245,6 +321,7 @@ void comp_init(int w, int h, uint32_t *fb, int pitch, bool swap_rb) {
 
 static long rect_area(Rect r) { return (long)r.w * r.h; }
 
+/* Damage is kept in logical pixels; compose() and flush_rect() turn it into physical ones. */
 void comp_damage(Rect r) {
     Rect screen = { 0, 0, S.screen_w, S.screen_h };
     r = rect_intersect(r, screen);
@@ -338,12 +415,37 @@ static void draw_frame(const Win *w, Rect clip) {
 }
 
 static void shade_rect(Rect r, int pct) {
-    r = rect_intersect(r, (Rect){ 0, 0, S.screen_w, S.screen_h });
+    r = to_phys(rect_intersect(r, (Rect){ 0, 0, S.screen_w, S.screen_h }));
     for (int y = r.y; y < r.y + r.h; y++) {
-        uint32_t *row = S.back + (size_t)y * S.screen_w;
+        uint32_t *row = S.back + (size_t)y * S.phys_w;
         for (int x = r.x; x < r.x + r.w; x++) {
             uint32_t p = row[x];
             row[x] = (((p >> 16) & 255) * pct / 100) << 16 | (((p >> 8) & 255) * pct / 100) << 8 | ((p & 255) * pct / 100);
+        }
+    }
+}
+
+/* A window whose buffer has fewer pixels than the screen (a program that draws its own pixels and did not ask for FW_HIDPI):
+ * every buffer pixel becomes a block of pixels on the screen (nearest neighbour). c is the content rectangle, cv the part to
+ * paint, both logical. */
+static void draw_content_enlarged(const Win *w, Rect c, Rect cv) {
+    int k = S.scale / w->bscale;                                /* screen pixels per buffer pixel */
+    if (k < 1) k = 1;
+    Rect pc = to_phys(c), pv = to_phys(cv);
+    for (int y = pv.y; y < pv.y + pv.h; y++) {
+        uint32_t *dst = S.back + (size_t)y * S.phys_w;
+        int sy = (y - pc.y) / k;
+        const uint32_t *src = w->buf && sy < w->bh ? w->buf + (size_t)sy * w->bstride : NULL;
+        int x = pv.x, x_end = pv.x + pv.w;
+        int sx = (x - pc.x) / k, sub = (x - pc.x) % k;
+        while (x < x_end) {
+            uint32_t p = src && sx < w->bw ? src[sx] : TH->window_bg;
+            int run = k - sub;
+            if (run > x_end - x) run = x_end - x;
+            for (int i = 0; i < run; i++) dst[x + i] = p;
+            x += run;
+            sx++;
+            sub = 0;
         }
     }
 }
@@ -362,8 +464,11 @@ static void draw_window(const Win *w, Rect clip) {
     Rect c = win_content(w);
     Rect cv = rect_intersect(c, clip);
     if (rect_empty(cv)) return;
+    if (w->bscale != S.scale) { draw_content_enlarged(w, c, cv); return; }
+    c = to_phys(c);                                             /* the buffer is at the screen's scale: copy it pixel for pixel */
+    cv = to_phys(cv);
     for (int y = cv.y; y < cv.y + cv.h; y++) {
-        uint32_t *dst = S.back + (size_t)y * S.screen_w + cv.x;
+        uint32_t *dst = S.back + (size_t)y * S.phys_w + cv.x;
         int sy = y - c.y;
         int sx = cv.x - c.x;
         if (w->buf && sy < w->bh) {
@@ -441,6 +546,7 @@ static void copy_to_fb(uint32_t *dst, const uint32_t *src, size_t n) {
 }
 
 static void flush_rect(Rect r) {
+    r = to_phys(r);
     static uint32_t *swapped;                                       /* one row with red and blue exchanged, for RGBX displays */
     static int swapped_len;
     if (S.swap_rb && swapped_len < r.w) {
@@ -450,7 +556,7 @@ static void flush_rect(Rect r) {
         swapped_len = r.w;
     }
     for (int y = r.y; y < r.y + r.h; y++) {
-        const uint32_t *src = S.back + (size_t)y * S.screen_w + r.x;
+        const uint32_t *src = S.back + (size_t)y * S.phys_w + r.x;
         uint32_t *dst = (uint32_t *)((uint8_t *)S.fb + (size_t)y * S.fb_pitch) + r.x;
         if (S.swap_rb) {
             for (int x = 0; x < r.w; x++) {
@@ -475,7 +581,7 @@ static void report_stats(void) {
     uint64_t mbps = flush_us ? g_st.pixels * 4 / flush_us : 0;                 /* bytes per microsecond is MB/s */
     FILE *f = fopen("/tmp/fairyd.stat", "w");
     if (!f) return;
-    fprintf(f, "screen %dx%d, copy: %s, damage: %s\n", S.screen_w, S.screen_h, g_copy_nt ? "nt" : "rep", g_dmg_bbox_only ? "bbox" : "list");
+    fprintf(f, "screen %dx%d, copy: %s, damage: %s, ui scale %d\n", S.phys_w, S.phys_h, g_copy_nt ? "nt" : "rep", g_dmg_bbox_only ? "bbox" : "list", S.scale);
     fprintf(f, "frames %llu, rectangles %llu, %llu kpixels (%llu per frame)\n", (unsigned long long)g_st.frames, (unsigned long long)g_st.rects,
             (unsigned long long)(g_st.pixels / 1000), (unsigned long long)(g_st.pixels / 1000 / g_st.frames));
     fprintf(f, "compose %llu us per frame, flush %llu us per frame (~%llu MB/s), worst frame %llu us\n", (unsigned long long)(compose_us / g_st.frames),
@@ -498,7 +604,7 @@ void comp_flush(void) {
     uint64_t t2 = rdtsc_u();
     g_st.frames++;
     g_st.rects += (uint64_t)n;
-    for (int i = 0; i < n; i++) g_st.pixels += (uint64_t)rect_area(list[i]);
+    for (int i = 0; i < n; i++) g_st.pixels += (uint64_t)rect_area(list[i]) * (uint64_t)(S.scale * S.scale);
     g_st.compose_cy += t1 - t0;
     g_st.flush_cy += t2 - t1;
     if (t2 - t0 > g_st.worst_cy) g_st.worst_cy = t2 - t0;
@@ -513,15 +619,15 @@ static void snapshot_ppm(const char *path) {
     snprintf(tmp, sizeof tmp, "%s.part", path);
     FILE *f = fopen(tmp, "w");
     if (!f) return;
-    fprintf(f, "P6\n%d %d\n255\n", S.screen_w, S.screen_h);
-    uint8_t *row = malloc((size_t)S.screen_w * 3);
+    fprintf(f, "P6\n%d %d\n255\n", S.phys_w, S.phys_h);
+    uint8_t *row = malloc((size_t)S.phys_w * 3);
     if (row) {
-        for (int y = 0; y < S.screen_h; y++) {
-            for (int x = 0; x < S.screen_w; x++) {
-                uint32_t p = S.back[(size_t)y * S.screen_w + x];
+        for (int y = 0; y < S.phys_h; y++) {
+            for (int x = 0; x < S.phys_w; x++) {
+                uint32_t p = S.back[(size_t)y * S.phys_w + x];
                 row[x * 3] = (uint8_t)(p >> 16); row[x * 3 + 1] = (uint8_t)(p >> 8); row[x * 3 + 2] = (uint8_t)p;
             }
-            fwrite(row, 1, (size_t)S.screen_w * 3, f);
+            fwrite(row, 1, (size_t)S.phys_w * 3, f);
         }
         free(row);
     }
@@ -532,8 +638,8 @@ static void snapshot_ppm(const char *path) {
 /* The screen as a libimg picture, then PNG (kind 0) or BMP. */
 static int snapshot_image(const char *path, int bmp) {
     Image im;
-    if (img_alloc(&im, S.screen_w, S.screen_h) != IMG_OK) return -1;
-    for (size_t i = 0; i < (size_t)S.screen_w * S.screen_h; i++) im.px[i] = 0xFF000000u | S.back[i];
+    if (img_alloc(&im, S.phys_w, S.phys_h) != IMG_OK) return -1;
+    for (size_t i = 0; i < (size_t)S.phys_w * S.phys_h; i++) im.px[i] = 0xFF000000u | S.back[i];
     int rc = bmp ? img_save_bmp(path, &im) : img_save_png(path, &im, 2);
     img_free(&im);
     return rc;
@@ -548,7 +654,7 @@ static void snapshot_png_in_background(const char *path) {
         gap_setname("aya");
         int rc = snapshot_image(path, 0);
         char note[400];
-        if (rc == 0) snprintf(note, sizeof note, "Aya took a photo of the screen (%dx%d): %s", S.screen_w, S.screen_h, path);
+        if (rc == 0) snprintf(note, sizeof note, "Aya took a photo of the screen (%dx%d): %s", S.phys_w, S.phys_h, path);
         else snprintf(note, sizeof note, "Aya's film jammed: could not write %s", path);
         gap_log(note);
         _exit(rc == 0 ? 0 : 1);
