@@ -25,7 +25,7 @@ typedef struct {
     const char *extra_header;
     int verify;                                     /* TLS: check the certificate (the default) */
     const char *cacert;
-    unsigned tls_flags;
+    unsigned tls_flags, tls_suites;
     tls_ctx *ctx;
     int ctx_tried;
 } FetchOpts;
@@ -125,9 +125,9 @@ static tls_ctx *get_ctx(FetchOpts *o) {
     tls_ctx *ctx = tls_ctx_new();
     int rc = ctx ? tls_ctx_load_file(ctx, path) : TLS_E_NOMEM;
     if (rc < 0) {
-        kb_error("cannot read the CA certificates in %s: %s", path, rc == TLS_E_IO ? strerror(errno) : tls_strerror(rc));
+        if (o->verify) kb_error("cannot read the CA certificates in %s: %s", path, rc == TLS_E_IO ? strerror(errno) : tls_strerror(rc));
     } else if (rc == 0) {
-        kb_error("%s holds no usable CA certificates", path);
+        if (o->verify) kb_error("%s holds no usable CA certificates", path);
     } else {
         o->ctx = ctx;
         if (o->verbose) fprintf(stderr, "trusting %zu root certificates from %s\n", tls_ctx_count(ctx), path);
@@ -161,10 +161,9 @@ static int open_tls(Conn *c, const Url *u, FetchOpts *o) {
     cfg.server_name = u->host;
     cfg.alpn = "http/1.1";
     cfg.flags = o->tls_flags | (o->verify ? 0 : TLS_F_NO_VERIFY);
-    if (o->verify) {
-        cfg.ctx = get_ctx(o);
-        if (!cfg.ctx) return 5;
-    }
+    cfg.suites = o->tls_suites;
+    cfg.ctx = get_ctx(o);                           /* also with -k: it lets the warning say what is really wrong with the certificate */
+    if (o->verify && !cfg.ctx) return 5;
     tls_io io;
     tls_io_fd(&io, c->fd);
     c->tls = tls_new(&io, &cfg);
@@ -416,7 +415,7 @@ static int do_fetch(const char *start_url, const char *outname, int to_file_defa
     return 1;
 }
 
-enum { OPT_CACERT = 256, OPT_NOCHECK, OPT_TLS12, OPT_TLS13, OPT_WEAK, OPT_SOFTAES };
+enum { OPT_CACERT = 256, OPT_NOCHECK, OPT_TLS12, OPT_TLS13, OPT_WEAK, OPT_SOFTAES, OPT_CIPHER };
 
 static int fetch_main(int argc, char **argv, int wget_style) {
     FetchOpts o;
@@ -435,6 +434,7 @@ static int fetch_main(int argc, char **argv, int wget_style) {
         { "tls13", no_argument, NULL, OPT_TLS13 },
         { "weak-random", no_argument, NULL, OPT_WEAK },
         { "soft-aes", no_argument, NULL, OPT_SOFTAES },
+        { "cipher", required_argument, NULL, OPT_CIPHER },
         { "verbose", no_argument, NULL, 'v' },
         { NULL, 0, NULL, 0 },
     };
@@ -456,6 +456,12 @@ static int fetch_main(int argc, char **argv, int wget_style) {
         case OPT_TLS13: o.tls_flags |= TLS_F_TLS13_ONLY; break;
         case OPT_WEAK: o.tls_flags |= TLS_F_WEAK_RANDOM; break;
         case OPT_SOFTAES: o.tls_flags |= TLS_F_NO_AESNI; break;
+        case OPT_CIPHER:
+            if (!strcmp(optarg, "aes128")) o.tls_suites = TLS_S_AES128_GCM;
+            else if (!strcmp(optarg, "aes256")) o.tls_suites = TLS_S_AES256_GCM;
+            else if (!strcmp(optarg, "chacha20")) o.tls_suites = TLS_S_CHACHA20;
+            else { kb_error("--cipher is aes128, aes256 or chacha20"); return 2; }
+            break;
         case 'L': case '4': break;
         default:
             kb_error("usage: %s [-qvik] [-O FILE|-] [-T SECONDS] [-U AGENT] [-H 'Header: v'] [-r REDIRECTS] [--cacert FILE] URL...", kb_name);
