@@ -274,6 +274,11 @@ void panel_draw(KApp *app, KUI *ui, void *user) {
     }
     if (k_clicked(ui, cr)) calendar_toggle();
     tx = cr.x - 8;
+    if (volume_present()) {
+        KRect vr = kr(tx - 30, 4, 30, PANEL_H - 8);
+        volume_tray(ui, vr);
+        tx = vr.x - 8;
+    }
     KRect meters = kr(tx - 46, 6, 46, PANEL_H - 12);
     draw_meter(cv, meters.x, meters.y, 20, meters.h, G.cpu_percent, 0xE8B83C, 0x0B1030);
     draw_meter(cv, meters.x + 24, meters.y, 20, meters.h, G.mem_percent, 0x5BC0E0, 0x0B1030);

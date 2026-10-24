@@ -169,6 +169,8 @@ any editor will do. If there is no `cmdline.txt` at all the loader uses `video=n
 - **Wrong time**: `rtc=local` and `tz=`; fix the chip with `sudo hwclock -w` (see [POWER_AND_TIME.md](POWER_AND_TIME.md)).
 - **Boots, then reboots**: the log's last lines name the subsystem; every driver polls and has timeouts, so a stall is
   normally one device being skipped after a few seconds, not a hang.
+- **Sound** (Intel HD Audio, AC'97 as a fallback; never run on a real codec yet): `volume`, then `beep`; if the jack stays
+  silent, `cat /proc/audio` and `dmesg | grep Nitori` say what the driver found; see [AUDIO.md](AUDIO.md).
 - **Network** (see [NETWORK.md](NETWORK.md)): the I219-LM of the target machine (and RTL8168/8111 boards) have drivers that have
   never run on hardware. On boot the log shows `[Yukari] eth0: Intel I219-LM at ..., MAC ...` and, when a cable is plugged in
   and autonegotiation finishes, `link up, N Mb/s` followed by the DHCP lease line; `ifconfig`, `ip addr` and `cat /proc/net/dev`

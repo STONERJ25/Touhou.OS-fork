@@ -1,6 +1,7 @@
 /* Non-blocking dialogs: text prompt, confirmation and file open/save. Each opens a window in the caller's KApp and calls
  * back when the user decides; the window closes itself. */
 #include <kappa.h>
+#include <audio.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -58,6 +59,7 @@ void k_input_dialog(KApp *app, const char *title, const char *prompt, const char
     snprintf(d->prompt, sizeof d->prompt, "%s", prompt);
     snprintf(d->text, sizeof d->text, "%s", initial ? initial : "");
     d->win = kwin_new(app, -1, -1, 400, 110, title, FW_DIALOG | FW_CENTER | FW_TOP, input_draw, d);
+    audio_event(AUDIO_EV_DIALOG);
     if (!d->win) { free(d); return; }
     kwin_set_close_handler(d->win, input_closed, d);
 }
@@ -123,6 +125,7 @@ void k_confirm_dialog(KApp *app, const char *title, const char *message, KIcon i
     for (const char *c = message; *c; c++) if (*c == '\n') lines++;
     int h = 100 + lines * 18;
     d->win = kwin_new(app, -1, -1, 440, h < 140 ? 140 : h, title, FW_DIALOG | FW_CENTER | FW_TOP, confirm_draw, d);
+    audio_event(icon == KI_ERROR ? AUDIO_EV_ERROR : AUDIO_EV_DIALOG);          /* a quiet bell, or the low buzz for an error */
     if (!d->win) { free(d); return; }
     kwin_set_close_handler(d->win, confirm_closed, d);
 }

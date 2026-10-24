@@ -466,14 +466,28 @@ static int audio_ioctl(VNode *v, File *f, unsigned long req, void *arg) {
             task_sleep_ms(5);
         }
     }
-    case AUDIO_FLUSH:
+    case AUDIO_FLUSH: {
         if (!s) return -EBUSY;
         mutex_lock(&g.lock);
+        s->frames_out += (s->head - s->tail) / s->bpf;
         s->tail = s->head;
         s->have = 0; s->phase = 0;
+        /* If nobody else has sound waiting, cut what is already mixed into the ring as well: pausing, seeking and stopping
+         * should be heard at once, not 100 ms later. With other programs playing, their share of the ring stays. */
+        bool others = false;
+        for (int k = 0; k < MAX_STREAMS; k++) if (g.streams[k] && g.streams[k] != s && g.streams[k]->head != g.streams[k]->tail) others = true;
+        if (!others && g.running && g.be && g.produced > g.played) {
+            u32 n = g.be->ring_frames;
+            u64 start = g.played, count = g.produced - g.played;
+            if (count > n) count = n;
+            zero_frames((u32)(start & (n - 1)), (u32)count);
+            g.produced = g.played;
+            g.in_burst = false;
+        }
         mutex_unlock(&g.lock);
         wq_wake_all(&s->wq);
         return 0;
+    }
     default:
         return -ENOTTY;
     }

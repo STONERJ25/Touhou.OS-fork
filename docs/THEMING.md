@@ -81,4 +81,4 @@ Prompt: `reimu@gensokyo ~ $`. See [ACCOUNTS.md](ACCOUNTS.md).
 Late-90s / PC-98 flavoured, restrained: shrine red (`#C8102E`) and white, deep night-blue backgrounds, procedurally drawn
 yin-yang, torii, moon and bamboo. Applications: Gensokyo Explorer (files), gapsh Terminal, Spell Manager (processes as
 "spell cards"), Bunbunmaru News, Kappa Control Panel (settings/hardware), Patchouli's Notebook (editor), Ran's Calculator,
-Sakuya's Pocket Watch (clock), a danmaku shooter, and small games.
+Sakuya's Pocket Watch (clock), Reimu's Jukebox (the Prismriver Concert Hall: Lunasa, Merlin and Lyrica play on a stage), a danmaku shooter, and small games.

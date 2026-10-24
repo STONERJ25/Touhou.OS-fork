@@ -1,0 +1,42 @@
+tms 1
+title Moonlit Lake Ripples
+mood a slow tune over still water, the moon coming and going behind cloud
+author Claude (original)
+tempo 66
+loop yes
+
+; D minor, slow, no drums. An FM electric piano sings over a rolling bell arpeggio and a held pad.
+channel lead  inst=fm-epiano pan=-0.10 gain=0.85
+channel arp   inst=fm-bell   pan=0.40  gain=0.55
+channel pad   inst=fm-pad    pan=0.00  gain=0.60
+channel bass  inst=fm-bass   pan=0.00  gain=0.90
+
+pattern intro
+  lead: r1 | r1
+  arp:  o4 [d8 a8 >d8 a8 <]2 | o3 [b-8 >f8 b-8 f8 <]2
+  pad:  o4 a1 | b-1
+  bass: o2 d1 | b-1
+
+pattern A
+  lead: o5 d2 f4 a4 | o5 b-2 a4 f4 | o5 a2 >c4 <a4 | o5 g2 e4 g4 |
+        o5 a2 >d4 <a4 | o5 b-4 a4 f2 | o5 g2 b-4 >d4 | o5 e2. c+4
+  arp:  o4 [d8 a8 >d8 a8 <]2 | o3 [b-8 >f8 b-8 f8 <]2 | o4 [f8 >c8 f8 c8 <]2 | o4 [c8 g8 >c8 g8 <]2 |
+        o4 [d8 a8 >d8 a8 <]2 | o3 [b-8 >f8 b-8 f8 <]2 | o3 [g8 >d8 g8 d8 <]2 | o3 [a8 >e8 a8 e8 <]2
+  pad:  o4 a1 | b-1 | a1 | g1 | a1 | b-1 | b-1 | a1
+  bass: o2 d1 | b-1 | f1 | c1 | d1 | b-1 | g1 | a1
+
+pattern B
+  lead: o5 a4 >c4 <a4 f4 | o5 g4 e4 g4 >c4 | o5 a4 f4 d4 f4 | o5 b-4 f4 d4 f4 |
+        o5 c4 f4 a4 >c4 | o5 e4 g4 >c2 | o5 e4 a4 >c+4 e4 | o5 d1
+  arp:  o4 [f8 >c8 f8 a8 <]2 | o4 [c8 g8 >c8 e8 <]2 | o4 [d8 a8 >d8 f8 <]2 | o3 [b-8 >f8 b-8 d8 <]2 |
+        o4 [f8 >c8 f8 a8 <]2 | o4 [c8 g8 >c8 e8 <]2 | o3 [a8 >e8 a8 c+8 <]2 | o4 [d8 a8 >d8 f8 <]2
+  pad:  o4 a1 | g1 | a1 | b-1 | a1 | g1 | a1 | a1
+  bass: o2 f1 | c1 | d1 | b-1 | f1 | c1 | a1 | d1
+
+pattern outro
+  lead: o5 d2 f2 | b-2 a2 | f2 e2 | d1
+  arp:  o4 [d8 a8 >d8 a8 <]2 | o3 [b-8 >f8 b-8 f8 <]2 | o4 [f8 >c8 f8 c8 <]2 | o4 d1
+  pad:  o4 a1 | b-1 | a1 | a1
+  bass: o2 d1 | b-1 | f1 | d1
+
+order intro A B A outro

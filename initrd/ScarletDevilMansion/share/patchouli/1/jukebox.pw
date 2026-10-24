@@ -1,0 +1,40 @@
+.page jukebox 1 Reimu's Jukebox, the music player
+
+# SYNOPSIS
+*jukebox* [*-p*] [*--trace*] [_FILE_ | _DIRECTORY_ ...]
+*jukebox* *--list*
+
+# DESCRIPTION
+`jukebox` is the desktop's music player. Its window is the Prismriver Concert Hall: Lunasa, Merlin and Lyrica stand on a stage and play whatever the playlist holds, and the three of them jump to the low, middle and high parts of the sound while a row of bars in the orchestra pit shows its spectrum. The playlist on the left is made of the songs that ship with the system (`/ScarletDevilMansion/share/music`, see tms(5)) followed by the `.wav`, `.tms` and `.mod` files in `~/Music`; files named on the command line come first, and *Open music...* adds more. WAV files may be 8, 16, 24 or 32 bits, mono or stereo, at any rate; `.mod` files are ProTracker modules (see audio(7)).
+
+Below the stage are the title and mood of the song, a seek bar with the time, the buttons (previous, play and pause, stop, next) and the master volume. The volume is the one of the whole machine, the same as `volume(1)` and the speaker in the panel. When the playlist ends it starts again unless *Repeat* is off.
+
+The sound goes through `/dev/audio` like any other program's, so the Jukebox can play while other programs beep. Without a sound device the window still opens, says so, and cannot play.
+
+# OPTIONS
+@ *-p*
+    Start playing at once.
+@ *--trace*
+    Print a line on standard output for each thing that happens (`jukebox: playing ...`, `paused at ...`, `seek ...`, `volume ...`).
+@ *--list*
+    Print the playlist (number, title, length, file) and exit; no window.
+
+# KEYS
+@ Space
+    Play or pause. Enter plays the selected song, double click does too.
+@ S, N, P
+    Stop, next, previous (P restarts a song that has played for a few seconds).
+@ Left, Right
+    Five seconds back or forward. Clicking the seek bar jumps there.
+@ Up, Down, Home, End
+    Move through the playlist.
+@ Ctrl+Up, Ctrl+Down, M
+    Louder, quieter, mute.
+@ R, Ctrl+O, Ctrl+Q, F1
+    Repeat on or off, open a file, quit, about.
+
+# EXIT STATUS
+0 normally; 1 if there is no window server; 2 for a usage error.
+
+# SEE ALSO
+play(1), volume(1), tms(5), audio(7)
