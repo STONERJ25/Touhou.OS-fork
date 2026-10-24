@@ -1,7 +1,7 @@
 """The graphical session: boots into the desktop, then drives it with the pointer and keyboard."""
 import time
 
-from harness import test, Qemu, BUILD
+from harness import test, Qemu, BUILD, scaled
 
 
 def near(p, q, tol=40):
@@ -13,7 +13,7 @@ def desktop_boots():
     """Booting with no options opens fairyd, the wallpaper and the panel (the start button is shrine red)."""
     with Qemu(cmdline="", name="t-desktop", mem="768M") as vm:
         vm.expect(r"opening the desktop for reimu", timeout=90)
-        deadline = time.time() + 25
+        deadline = time.time() + scaled(25)
         ok = False
         while time.time() < deadline:
             shot = vm.screen_ppm()

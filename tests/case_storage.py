@@ -16,7 +16,7 @@ import shutil
 import struct
 from pathlib import Path
 
-from harness import test, Qemu, BUILD
+from harness import test, Qemu, BUILD, scaled
 import mkdisk
 
 MIB = 1 << 20
@@ -136,7 +136,7 @@ class Guest:
             self.vm.qmp("quit")
         except Exception:                       # noqa: BLE001 -- QEMU may close the socket before it answers
             pass
-        return self.vm.proc.wait(timeout=timeout)
+        return self.vm.proc.wait(timeout=scaled(timeout))
 
 
 @contextlib.contextmanager
@@ -952,7 +952,7 @@ def storage_periodic_flush():
                 vm.qmp("quit")                                      # pull the plug: no sync, no poweroff
             except Exception:                                       # noqa: BLE001
                 pass
-            vm.proc.wait(timeout=20)
+            vm.proc.wait(timeout=scaled(20))
         img.check()                                                 # clean: the idle flush cleared the dirty flags
         v = img.volume(1)
         try:
@@ -972,7 +972,7 @@ def storage_unclean_power_loss():
                 vm.qmp("quit")
             except Exception:                                       # noqa: BLE001
                 pass
-            vm.proc.wait(timeout=20)
+            vm.proc.wait(timeout=scaled(20))
         rep = img.check(allow_dirty=True)
         assert not rep.stats["p1"]["clean"], "the volume must be marked dirty while it has unwritten changes"
         h1 = img.sha()

@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
-from qemu import Qemu, BUILD  # noqa: E402,F401
+from qemu import Qemu, BUILD, scaled  # noqa: E402,F401
 
 TESTS = []
 

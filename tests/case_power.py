@@ -1,6 +1,6 @@
 """Power: ACPI tables, soft-off and reset through the firmware's own registers, who may close the shrine."""
 import test_shell
-from harness import test, Qemu
+from harness import test, Qemu, scaled
 
 
 @test
@@ -62,7 +62,7 @@ def power_button_desktop():
     import time
     with Qemu(cmdline="", name="t-pwrbtn-gui", mem="768M") as vm:
         vm.expect(r"opening the desktop for reimu", timeout=90)
-        deadline = time.time() + 40
+        deadline = time.time() + scaled(40)
         while time.time() < deadline:
             p = vm.pixel(118, 756, vm.screen_ppm())
             if all(abs(a - b) <= 60 for a, b in zip(p, (0xB5, 0x12, 0x2B))):
@@ -74,7 +74,7 @@ def power_button_desktop():
         vm.qmp("system_powerdown")
         vm.expect(r"the power button was pressed", timeout=30)
         dialog = False
-        deadline = time.time() + 30
+        deadline = time.time() + scaled(30)
         while time.time() < deadline and not dialog:                 # the dialog's red title bar sits at the middle of the screen
             p = vm.pixel(400, 301, vm.screen_ppm())
             dialog = all(abs(a - b) <= 50 for a, b in zip(p, (0xA0, 0x10, 0x28)))

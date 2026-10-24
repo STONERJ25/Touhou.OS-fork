@@ -6,7 +6,7 @@ import shutil
 import time
 from pathlib import Path
 
-from harness import test, Qemu, BUILD
+from harness import test, Qemu, BUILD, scaled
 
 ROOT = BUILD.parent
 PROMPT = r"reimu@gensokyo \S+ \$ "
@@ -265,7 +265,7 @@ def hwaudit_console_scroll_pixels():
         vm.send("i=1; while [ $i -le 500 ]; do echo $i; i=$((i+1)); done\n")
         vm.expect(r"\n500\n", timeout=90)
         vm.expect(PROMPT, timeout=60)
-        deadline = time.time() + 20
+        deadline = time.time() + scaled(20)
         bad = None
         while time.time() < deadline:
             shot = vm.screen_ppm()
@@ -342,7 +342,7 @@ def hwaudit_panic_on_desktop():
     """A kernel panic while the desktop owns the screen is drawn: killing init as root stops the compositor's picture and shows the incident text (red) on the console."""
     with Qemu(cmdline="autologin=root", name="t-hw-panic-desktop", mem="768M") as vm:
         vm.expect(r"opening the desktop for", timeout=120)
-        deadline = time.time() + 40
+        deadline = time.time() + scaled(40)
         while time.time() < deadline:                                       # the panel's start button is shrine red once the desktop is up
             shot = vm.screen_ppm()
             if all(abs(a - b) <= 60 for a, b in zip(vm.pixel(118, 756, shot), (0xB5, 0x12, 0x2B))):

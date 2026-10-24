@@ -5,7 +5,7 @@ effect: the tests knock again until the serial console shows what they are waiti
 import time
 
 import test_shell
-from harness import test, Qemu, BUILD
+from harness import test, Qemu, BUILD, scaled
 
 
 def near(p, q, tol=40):
@@ -13,7 +13,7 @@ def near(p, q, tol=40):
 
 
 def wait_for_pixel(vm, x, y, want, timeout=40, tol=50):
-    deadline = time.time() + timeout
+    deadline = time.time() + scaled(timeout)
     while time.time() < deadline:
         if near(vm.pixel(x, y, vm.screen_ppm()), want, tol):
             return True

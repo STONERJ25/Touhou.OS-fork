@@ -19,7 +19,7 @@ exact afterwards as long as every move goes through this class.
 """
 import time
 
-from harness import Qemu, BUILD  # noqa: F401  (re-exported for the test modules)
+from harness import Qemu, BUILD, scaled  # noqa: F401  (re-exported for the test modules)
 
 PROMPT = r"reimu@gensokyo \S+ \$ "
 START_BUTTON = (118, 756)         # the start button of the panel; shrine red once the panel is up
@@ -50,7 +50,7 @@ class Gui:
         self.vm.send("fairyd &\n")
         time.sleep(1.5)
         self.vm.send("hakurei-shell &\n")
-        deadline = time.time() + timeout
+        deadline = time.time() + scaled(timeout)
         while time.time() < deadline:
             if near(self.vm.pixel(*START_BUTTON), SHRINE_RED, 60):
                 time.sleep(0.5)
@@ -157,7 +157,7 @@ class Gui:
         return n
 
     def wait_pixel(self, x, y, rgb, tol=24, timeout=10):
-        deadline = time.time() + timeout
+        deadline = time.time() + scaled(timeout)
         while time.time() < deadline:
             if self.pixel_near(x, y, rgb, tol):
                 return True
