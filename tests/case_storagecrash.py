@@ -26,30 +26,9 @@ import numpy as np
 
 from harness import test, scaled
 import mkdisk
-from case_storage import Image, MIB, H, boot, hv_part
+from case_storage import Image, MIB, H, boot, hv_part, serious_errors
 
 CHURN_DIR = "/reimu/churn"          # on the volume (H is /HumanVillage/reimu in the guest)
-
-# What a power cut may leave behind (the error texts of mkdisk.FatReader.check)
-BENIGN = (
-    re.compile(r"lost cluster\(s\)"),
-    re.compile(r"FAT copy \d+ differs from copy 1"),
-    re.compile(r"FSInfo free count \d+ but the FAT has \d+ free clusters"),
-)
-SIZE_VS_CHAIN = re.compile(r"size (\d+) needs (\d+) cluster\(s\) but the chain has (\d+)")
-
-
-def serious_errors(rep):
-    """The errors of a check report that are worse than a power cut's leftovers."""
-    bad = []
-    for e in rep.errors:
-        if any(rx.search(e) for rx in BENIGN):
-            continue
-        m = SIZE_VS_CHAIN.search(e)
-        if m and int(m.group(3)) > int(m.group(2)):       # a chain longer than the size: FAT written, size not yet
-            continue
-        bad.append(e)
-    return bad
 
 
 def churn_bytes(ident, n):

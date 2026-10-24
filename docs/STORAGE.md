@@ -137,15 +137,91 @@ Any other option fails the mount. The option string reaches the kernel through t
   both are forced to the device. `sync`, `umount`, `reboot`/`poweroff` and the periodic flush (when the volume has been
   idle for 3 s) write everything back and restore the flags (flag byte and FSInfo first, FAT[1] last). A volume found
   flagged dirty (or with the "disk errors seen" bit) mounts **read-only** with a warning unless `-o force` is given.
-* **Write ordering.** The cache flushes file data first, then the FAT, then directory entries/FSInfo/boot sector, with a
-  device cache flush between the classes. A power cut can therefore leak clusters (fsck reclaims them) but not leave
-  an entry pointing at data that was never written. Unlinking while open keeps the clusters until the last close.
+* **Write ordering.** The cache writes its dirty pages in six classes (file data, new FAT entries, links, directory
+  entries, chain cuts, frees) with a device cache flush after each, and a dirty page that changes class is written with its
+  old contents first. A power cut at any moment leaves at worst lost clusters (and the other harmless leftovers listed in
+  "Write ordering" below), never a cross-link, an entry pointing at free or foreign clusters, a size that exposes stale
+  bytes or a broken directory. Unlinking while open keeps the clusters until the last close. `tests/case_storagecrash.py`
+  pulls the plug at random moments to hold the kernel to that.
 * **Periodic and explicit flushing.** A kernel thread (`fat-flush`) writes back dirty pages older than 3 s; `sync(2)`
   (the `sync` applet, `dd`, `reboot`, `poweroff`) flushes every writable filesystem; a large backlog is flushed by the
   writer itself.
 * **No overlap.** A device cannot be mounted twice, nor can a disk and one of its partitions.
 * Everything is behind one mutex per volume; the vnode release path is lock-free and defers cleanup to the next locked
   operation.
+
+## Write ordering
+
+FAT has no journal, so what a power cut leaves behind depends only on the order in which the cache's writes reach the
+device. `kernel/fs/fat_cache.c` keeps one flush class per dirty 4 KiB page and writes the classes in this order, each in
+disk order, with a device cache flush (`blk_flush`) after each class:
+
+| # | Class | What goes in it | Why it waits for the classes before it |
+|---|-------|-----------------|-----------------------------------------|
+| 0 | DATA  | file data; the zeros of new clusters; a new directory's cluster with its `.` and `..`; `0xE5` fillers and the zeroing of garbage past a directory's end marker | nothing points at any of it yet |
+| 1 | ALLOC | FAT entries of newly allocated clusters (their chain among themselves and the end mark) | still nothing points at them: a cut leaves lost clusters |
+| 2 | LINK  | the FAT entry that hooks new clusters onto a chain in use (an append, a growing directory), when the new entries are not all in the link's own 512-byte sector | a link that lands before the entries it points at makes a chain run into free clusters, which a later allocation hands to another file |
+| 3 | META  | directory entries (create, size and first cluster, rename, delete), FSInfo, the boot-sector flag | an entry may only point at clusters whose data, FAT entries and links are on the disk |
+| 4 | CUT   | the end mark that shortens a chain (truncate to a smaller size) | the entry with the smaller size goes first, so a cut leaves a chain longer than the size, never a size the chain cannot hold |
+| 5 | FREE  | FAT entries set to 0 (delete, rmdir, rename over a file, truncate) | the entry that pointed at the clusters is gone first (and the cut is in), so a cut leaves lost clusters, never an entry pointing at free clusters |
+
+Three rules make the classes hold across operations and at any moment, not only at the end of a quiet `sync`:
+
+* **A page holds one class.** A write of another class into a dirty page first writes everything dirty of classes up to
+  the page's old class and flushes the device (`pg_reclass`): "write the old state of the page first". So a cluster that a
+  delete freed is not handed to a new file before the delete is durable (the allocation touches the same FAT page and
+  forces the flush), and a new directory cluster is zeroed on the disk before the first entry lands in it.
+* **Program order follows the dependencies.** Every operation changes what others depend on first (data before the FAT
+  before the entry; the entry with the smaller size before the cut; the removed entry before the frees), so a flush that
+  starts at any point - the 3 s flusher, the dirty-limit throttle, an eviction when the cache is full, a barrier - writes
+  a consistent state.
+* **The atomic unit is a 512-byte sector** (`FAT_ATOMIC`), the smallest a device writes in one piece. A directory entry set
+  of up to 16 slots (names up to 195 characters) never straddles one: `dir_reserve()` starts it in the next sector and
+  fills the rest of the current one with `0xE5` slots, which are durable before the set (a barrier). A link whose new
+  entries all sit in its own sector rides in ALLOC with them; otherwise the new entries are written first.
+
+**Renames** are three steps with a barrier (classes 0..3 written and flushed) between them: (1) the old entry set goes,
+together with a replaced entry that is spelled differently (two names that differ only in case must never be on the disk
+together); (2) the `..` of a directory that changes parent; (3) the new entry. A cut in between leaves the file without
+a name - its clusters are lost clusters, which `fsck` saves as `FOUND.000/FILEnnnn.CHK` - but never two names for one chain
+(deleting one of them later would free the other's clusters). When a rename replaces a file whose name is spelled exactly
+like the new one (an editor saving `notes.txt` through `notes.tmp`), step 3 rewrites that file's short entry in place to
+point at the new clusters instead, so a cut leaves either the old file or the new one under the name, and the old
+clusters are freed after it.
+
+**What a power cut may leave** (and `tests/case_storagecrash.py` accepts): lost clusters (a file being created or
+extended, a delete whose frees did not land, a file or a whole directory between the steps of a rename); a chain longer
+than its file's size (an append whose size did not land; a truncate whose cut did not); FAT copy 2 behind copy 1 (copy 1
+is written first within a class); a stale FSInfo free count; the dirty flags. On `main` a file whose chain is longer than
+its size is read-only for the boot until a checker has tidied it (with the `fsck` work, a checked mount trims it).
+
+**The four gaps** the review of the old order found ("data, FAT, metadata"; a page took the class of its last writer, and
+the order inside a class was by disk offset), and what closed them:
+
+1. *Freeing a chain wrote the FAT before the entry that stopped pointing at it* (a cut between them left an entry pointing
+   at free clusters; a truncate left a size beyond its chain): frees are FREE and cuts CUT, both after META, and a
+   truncate writes the smaller size before it cuts.
+2. *A new directory's cluster (zeros, `.`, `..`) had the class of the entry that makes it visible* (by disk offset the
+   entry could land first and point at a cluster of stale bytes): the cluster is DATA.
+3. *A growing directory was linked in the FAT before its new cluster was zeroed*: the cluster is zeroed as DATA, and the
+   link waits for it and for the new FAT entries (LINK, or ALLOC within one sector).
+4. *A rename wrote the new entry and the removal of the old one in the same class* (two names for one chain): the three
+   steps above.
+
+Found and closed on the way: an append's link (old tail -> new cluster) and the new clusters' own FAT entries were in the
+same class in different pages (a chain into free clusters: the LINK class); a truncate's cut and its frees likewise (the
+CUT class); entry sets straddling a sector or a page (half a long name: the sector rule); zeroing garbage past a
+directory's end in the class of the entries written behind it (DATA now).
+
+**Not covered:** names longer than 195 characters (17 to 21 slots cannot fit one sector), and entry sets that another
+system wrote across a sector boundary, can still be cut in half (long-name fragments without their short entry, which
+`fsck` removes); the bytes inside a file are not written atomically (an overwrite in place can leave a mix of old and new
+data, never another file's); a device that acknowledges a cache flush it did not do defeats all of this. In QEMU the test
+checks the order of the requests (QEMU keeps every acknowledged write when it is killed); the device cache flushes
+between the classes are what protects a real stick.
+
+**Cost:** the barriers are extra device flushes; the unmount log line counts them (`unmounted cleanly (N extra flushes for the
+write order)`). See "Crash test" below for numbers.
 
 ## FAT specifics and limits
 

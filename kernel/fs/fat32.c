@@ -1053,7 +1053,8 @@ static void fat_unmount(Mount *m) {
     int rc = gone ? 0 : vol_sync(v, true);
     if (gone) klog("Keine", "%s: %s was dropped without a write-back: its device is gone (the volume stays dirty; run a file system check when it is back)", v->fstype, v->dev->name);
     else if (rc) klog("Keine", "%s: %s: could not write everything back to the device (%d) -- run a file system check", v->fstype, v->dev->name, rc);
-    else if (!v->ro) klog("Keine", "%s: %s unmounted cleanly", v->fstype, v->dev->name);
+    else if (!v->ro) klog("Keine", "%s: %s unmounted cleanly (%lu extra flushes for the write order)", v->fstype, v->dev->name,
+                          (unsigned long)v->barriers);
     if (v->label_set) v->dev->label[0] = 0;
     if (m->root) m->root->priv = NULL;                          /* the mount's own reference is dropped by the VFS afterwards */
     v->root->vn = NULL;

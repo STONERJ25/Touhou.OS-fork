@@ -20,6 +20,7 @@ How well `main` is verified: the whole suite (261 tests, seven parallel groups) 
 The OS has booted on the real PC (Dell, i5-7500) since 2026-10-23 evening; [HARDWARE_AUDIT.md](HARDWARE_AUDIT.md) has what that showed and the checklist for the rest (network link, the internal disks).
 
 - Docs (cloud task 9, branch `cloud/docs`): [USER_GUIDE.md](USER_GUIDE.md) for someone at the desktop, a refreshed README, and STATUS / ROADMAP / NEXT checked against the code on main.
+- FAT write order (cloud task 7, branch `cloud/fat-ordering`): the four ordering gaps are closed (six flush classes, a page that changes class is written first, renames in three steps) and `storage_crash_consistency` pulls the plug at random moments of a write-heavy workload; results and what is left in [STORAGE.md](STORAGE.md) ("Write ordering", "Crash test").
 
 ## Goals for the next session (the owner, 2026-10-23 night)
 

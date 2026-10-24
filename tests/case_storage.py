@@ -88,6 +88,28 @@ class Image:
                 pass
 
 
+# What a power cut may leave on a FAT volume without a journal (docs/STORAGE.md, "Write ordering"); the error texts of mkdisk
+BENIGN_AFTER_CUT = (
+    re.compile(r"lost cluster\(s\)"),
+    re.compile(r"FAT copy \d+ differs from copy 1"),
+    re.compile(r"FSInfo free count \d+ but the FAT has \d+ free clusters"),
+)
+SIZE_VS_CHAIN = re.compile(r"size (\d+) needs (\d+) cluster\(s\) but the chain has (\d+)")
+
+
+def serious_errors(rep):
+    """The errors of a check report that are worse than a power cut's leftovers."""
+    bad = []
+    for e in rep.errors:
+        if any(rx.search(e) for rx in BENIGN_AFTER_CUT):
+            continue
+        m = SIZE_VS_CHAIN.search(e)
+        if m and int(m.group(3)) > int(m.group(2)):       # a chain longer than the size: FAT written, size not yet
+            continue
+        bad.append(e)
+    return bad
+
+
 def hv_part(files=None, cluster=None, kind="fat32", label="HUMANVILLAGE", name="HUMANVILLAGE", size="rest"):
     return dict(name=name, kind=kind, size=size, label=label, files=files or {}, cluster=cluster)
 
@@ -973,7 +995,8 @@ def storage_unclean_power_loss():
             except Exception:                                       # noqa: BLE001
                 pass
             vm.proc.wait(timeout=scaled(20))
-        rep = img.check(allow_dirty=True)
+        rep = mkdisk.check_image(img.path)                          # a cut may leave lost clusters (docs/STORAGE.md, "Write ordering")
+        assert not serious_errors(rep), "disk check failed:\n" + rep.text(True)
         assert not rep.stats["p1"]["clean"], "the volume must be marked dirty while it has unwritten changes"
         h1 = img.sha()
         with boot(img, name="t-storage-loss2") as (g, vm):
