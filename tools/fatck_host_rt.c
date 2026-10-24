@@ -1,6 +1,6 @@
 /*
- * The little C runtime that shared/fatck.c needs when tools/fatck_host.py builds it into a freestanding Windows DLL (there is
- * no C library on the build machine's clang): mem* and strlen, plus a size report so the ctypes mirrors can be checked.
+ * The little C runtime that shared/fatck.c needs when tools/fatck_host.py builds it into a freestanding Windows DLL or Linux shared
+ * object (there is no C library on the build machine's clang): mem* and strlen, plus a size report so the ctypes mirrors can be checked.
  * Compiled with -fno-builtin so these loops are not turned back into calls to themselves.
  */
 #include <stddef.h>

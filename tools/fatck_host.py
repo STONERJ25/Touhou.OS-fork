@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """fatck_host -- the kernel's FAT checker (shared/fatck.c) and the fsck repair engine (shared/fatfix.c) on the host.
 
-The same C source that the kernel and /bin/fsck use is built into a freestanding Windows DLL with the clang/lld that tools/build.py
-already needs, and driven through ctypes. That makes it cheap to hold the C checker against tools/mkdisk.py's independent Python
+The same C source that the kernel and /bin/fsck use is built into a freestanding Windows DLL (a shared object on Linux) with the
+clang/lld that tools/build.py already needs, and driven through ctypes. That makes it cheap to hold the C checker against tools/mkdisk.py's independent Python
 checker over hundreds of damaged images (tests/case_fsck.py does so), without booting a VM for each.
 
   python tools/fatck_host.py IMAGE[:N]            scan partition N of an image (default: the first FAT volume) and print the findings
   python tools/fatck_host.py -a IMAGE[:N]         repair what is safe, then scan again       (-y: repair everything)
 """
 import ctypes
+import os
 import re
 import shutil
 import subprocess
@@ -19,6 +20,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SHARED = ROOT / "shared"
 OUT = ROOT / "build" / "fatck-host"
 LLVM = Path(r"C:\Program Files\LLVM\bin")
+WINDOWS = os.name == "nt"
 
 FS_NOTE, FS_WARN, FS_LEAK, FS_ERR = range(4)
 SEV_NAMES = ["note", "warning", "leftover", "error"]
@@ -29,15 +31,21 @@ class HostBuildError(RuntimeError):
 
 
 def _tool(name):
-    for d in (LLVM,):
+    # the same order as tools/build.py: TOUHOU_LLVM_DIR, then the PATH, then the Windows install folder
+    dirs = [Path(os.environ["TOUHOU_LLVM_DIR"])] if os.environ.get("TOUHOU_LLVM_DIR") else []
+    for d in dirs:
         for ext in ("", ".exe"):
             p = d / (name + ext)
             if p.is_file():
                 return str(p)
     found = shutil.which(name)
-    if not found:
-        raise HostBuildError(f"cannot find {name}")
-    return found
+    if found:
+        return found
+    for ext in ("", ".exe"):
+        p = LLVM / (name + ext)
+        if p.is_file():
+            return str(p)
+    raise HostBuildError(f"cannot find {name}")
 
 
 def _sources():
@@ -48,19 +56,20 @@ def _sources():
 
 
 def build_dll():
-    """Compiles and links the DLL if any source is newer than it; returns its path."""
+    """Compiles and links the DLL (Windows) or shared object (elsewhere) if any source is newer than it; returns its path."""
     OUT.mkdir(parents=True, exist_ok=True)
-    dll = OUT / "fatck_host.dll"
+    dll = OUT / ("fatck_host.dll" if WINDOWS else "fatck_host.so")
     srcs = _sources()
     headers = sorted(SHARED.glob("fat*.h"))
     newest = max(p.stat().st_mtime for p in srcs + headers + [Path(__file__)])
     if dll.exists() and dll.stat().st_mtime >= newest:
         return dll
-    clang, lld = _tool("clang"), _tool("lld-link")
+    clang, lld = _tool("clang"), _tool("lld-link" if WINDOWS else "ld.lld")
+    target = ["-target", "x86_64-unknown-windows"] if WINDOWS else ["-target", "x86_64-unknown-linux-gnu", "-fPIC"]
     objs = []
     for s in srcs:
         o = OUT / (s.stem + ".obj")
-        cmd = [clang, "-target", "x86_64-unknown-windows", "-ffreestanding", "-fno-stack-protector", "-mno-red-zone", "-O2", "-g0",
+        cmd = [clang, *target, "-ffreestanding", "-fno-stack-protector", "-mno-red-zone", "-O2", "-g0",
                "-std=gnu17", "-Wall", "-Wextra", "-Wno-unused-parameter", "-DFATCK_REPAIR", "-DFATCK_HOST", "-I", str(SHARED),
                "-I", str(ROOT / "tools")]
         if s.name == "fatck_host_rt.c":
@@ -76,7 +85,12 @@ def build_dll():
     for h in headers:
         exports.update(re.findall(r"\b((?:fatck|fatfix)_\w+)\s*\(", h.read_text()))
     exports.update(["fatck_host_sizes"])
-    cmd = [lld, "/dll", "/noentry", "/nodefaultlib", "/machine:x64", f"/out:{dll}"] + [f"/export:{e}" for e in sorted(exports)] + [str(o) for o in objs]
+    if WINDOWS:
+        cmd = [lld, "/dll", "/noentry", "/nodefaultlib", "/machine:x64", f"/out:{dll}"] + [f"/export:{e}" for e in sorted(exports)]
+    else:
+        # -Bsymbolic: the object's own mem*/strlen stay its own, whatever the host process has loaded
+        cmd = [lld, "-shared", "-Bsymbolic", "-o", str(dll)]
+    cmd += [str(o) for o in objs]
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
         raise HostBuildError(f"linking the DLL failed:\n{r.stdout}{r.stderr}")
