@@ -563,7 +563,7 @@ static void execute(C *c) {
         else if (op == 0xF0 || (op == 0xF1 && !IS286(c))) { /* LOCK (and its 8086 alias F1): no effect here */ }
         else if ((op == 0x64 || op == 0x65) && c->model == X86_MODEL_V30) c->rep = op;
         else break;
-        c->cycles += 2;
+        if (!c->in_rep) c->cycles += 2;         /* a REP iteration does not pay for its prefixes again */
         if (++prefixes >= 0x10000) { c->stop = X86_STOP_PREFIXES; c->ip = c->op_ip; return; }
     }
     if (c->rep && !is_string(op) && !(op >= 0xF6 && op <= 0xF7)) c->rep = 0;

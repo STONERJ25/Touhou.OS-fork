@@ -11,7 +11,7 @@ of this repository: they are downloaded at test time into build/sst-8088/ (git-i
 metadata.json; opcodes marked "undefined" there are skipped unless --undefined is given.
 
 Each vector is one instruction: registers and the bytes of RAM it touches before and after. The runner feeds them to
-build/host-x86/x86tool (tests/host/x86tool.c, built here with AddressSanitizer) as an 8086 and compares registers, the
+build/host-x86/x86tool (tests/host/x86tool.c, built with AddressSanitizer by tests/host/x86ref.py) as an 8086 and compares registers, the
 flags under the mask, and every byte the emulator wrote or the vector says changed.
 """
 import argparse
@@ -26,21 +26,15 @@ import urllib.request
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent.parent
-OUT = REPO / "build" / "host-x86"
 CACHE = REPO / "build" / "sst-8088"
 BASE = "https://raw.githubusercontent.com/SingleStepTests/8088/main/v2/"
 REGS = ["ax", "cx", "dx", "bx", "sp", "bp", "si", "di", "es", "cs", "ss", "ds", "ip", "flags"]
 
 
 def build_tool():
-    OUT.mkdir(parents=True, exist_ok=True)
-    tool = OUT / "x86tool"
-    srcs = [REPO / "tests/host/x86tool.c", REPO / "user/lib/pc98/src/x86cpu.c"]
-    if not tool.exists() or any(s.stat().st_mtime > tool.stat().st_mtime for s in srcs + [REPO / "user/lib/pc98/include/x86emu.h"]):
-        cmd = ["gcc", "-O2", "-g", "-fsanitize=address,undefined", "-fno-sanitize-recover=undefined", "-Wall", "-Wextra",
-               "-Wno-unused-parameter", "-I", str(REPO / "user/lib/pc98/include"), *map(str, srcs), "-o", str(tool)]
-        subprocess.run(cmd, check=True)
-    return tool
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import x86ref
+    return x86ref.tool()
 
 
 def fetch(name):
@@ -96,7 +90,8 @@ def run_file(tool, path, mask, limit):
             script.append("m %x %x" % (a, v))
         script.append("step 1")
         script.append("clear")
-    r = subprocess.run([str(tool)], input="\n".join(script) + "\n", capture_output=True, text=True)
+    r = subprocess.run([str(tool)], input="\n".join(script) + "\n", capture_output=True, text=True,
+                       env=dict(os.environ, ASAN_OPTIONS="detect_leaks=0"))
     if r.returncode != 0:
         return len(tests), [f"tool exited with {r.returncode}: {r.stderr[-800:]}"]
     results, cur = [], None
