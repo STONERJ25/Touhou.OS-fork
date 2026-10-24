@@ -57,6 +57,8 @@ struct VNode {
     Mount *mount;
     void *priv;
     VNode *mounted;         /* root of the filesystem mounted on this directory, if any */
+    VNode *dbg_next, *dbg_prev;     /* the ledger of live vnodes (/proc/vnodes): where each one was made, for finding leaks */
+    u64 alloc_ip[4];
 };
 
 struct VNodeOps {

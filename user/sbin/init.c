@@ -227,6 +227,8 @@ int main(void) {
         int status = 0;
         pid_t r;
         while ((r = wait(&status)) != pid && r >= 0) { }       /* orphans of the test are adopted by init: collect them as they come */
+        fflush(stdout);
+        sleep(1);                                               /* the last lines of its report are still on their way through the serial port */
         gap_reboot(0x100 | (WIFEXITED(status) ? WEXITSTATUS(status) : 99));
     }
 

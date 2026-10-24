@@ -19,6 +19,8 @@ static const char *const exc_name[32] = {
 bool (*g_user_fault_hook)(TrapFrame *tf, u64 cr2);
 bool (*g_pagefault_hook)(TrapFrame *tf, u64 cr2);
 
+extern char __kprobe_start[], __kprobe_end[], __kprobe_fault[];
+
 static int g_panic_depth;
 
 void dump_trapframe(const TrapFrame *tf) {
@@ -61,6 +63,10 @@ static void handle_exception(TrapFrame *tf) {
     u64 v = tf->vector;
     bool from_user = (tf->cs & 3) == 3;
 
+    if (v == 14 && !from_user && tf->rip >= (u64)__kprobe_start && tf->rip < (u64)__kprobe_end) {      /* a probe of memory that may not exist */
+        tf->rip = (u64)__kprobe_fault;
+        return;
+    }
     if (v == 14) {
         u64 cr2 = read_cr2();
         if (g_pagefault_hook && g_pagefault_hook(tf, cr2)) return;

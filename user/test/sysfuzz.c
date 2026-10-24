@@ -151,7 +151,7 @@ static const Spec g_specs[] = {
     { SYS_unlink, "unlink", "P", 0, 3, 0 },
     { SYS_rmdir, "rmdir", "P", 0, 3, 0 },
     { SYS_rename, "rename", "PP", 0, 3, 0 },
-    { SYS_chdir, "chdir", "p", 0, 2, 0 },
+    { SYS_chdir, "chdir", "P", 0, 2, 0 },
     { SYS_getcwd, "getcwd", "Bl", 0, 3, 0 },
     { SYS_dup, "dup", "f", 0, 3, 0 },
     { SYS_dup2, "dup2", "fF", 0, 3, 0 },
@@ -773,7 +773,7 @@ static int gen_args(W *w, const Spec *sp, u64 a[6], Canary can[2]) {
     /* now the pointers */
     for (int i = 0; i < nk; i++) {
         switch (sp->kinds[i]) {
-        case 'p': a[i] = gen_path(w, 0); break;
+        case 'p': a[i] = gen_path(w, g_cfg.root && sp->nr == SYS_open && (a[1] & (O_WRONLY | O_RDWR | O_CREAT | O_TRUNC | O_APPEND | 3))); break;
         case 'P': a[i] = gen_path(w, 1); break;
         case 'b': a[i] = gen_ptr(w, have_len ? len : 16, 0); break;
         case 'B': {
@@ -1413,6 +1413,60 @@ static int kill_fuzz_procs(int orphans_only) {
 }
 static int kill_fuzz_users(void) { return kill_fuzz_procs(0); }
 
+static void read_file_into(const char *path, char *buf, size_t cap) {
+    buf[0] = 0;
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return;
+    size_t total = 0;
+    for (;;) {
+        ssize_t n = read(fd, buf + total, cap - 1 - total);
+        if (n <= 0) break;
+        total += (size_t)n;
+    }
+    close(fd);
+    buf[total] = 0;
+}
+
+/* What the vnode ledger holds now that it did not hold before: the first lines, newest first, are the leaks. */
+static void print_new_vnodes(const char *before, char *after) {
+    int shown = 0;
+    for (char *line = after; *line && shown < 12;) {
+        char *nl = strchr(line, 10);
+        if (nl) *nl = 0;
+        char key[24];
+        size_t k = 0;
+        while (line[k] && line[k] != ' ' && k < sizeof key - 1) { key[k] = line[k]; k++; }
+        key[k] = 0;
+        if (k && !strstr(before, key)) { printf("sysfuzz:   new vnode %s\n", line); shown++; }
+        if (!nl) break;
+        line = nl + 1;
+    }
+}
+
+static void remove_tree(const char *path, int depth);
+
+/* Entries of the fuzz user directly in /tmp (a worker that changed directory there made some). */
+static void sweep_tmp(void) {
+    DIR *d = opendir("/tmp");
+    if (!d) return;
+    char names[64][64];
+    int n = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) && n < 64) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+        char sub[300];
+        snprintf(sub, sizeof sub, "/tmp/%s", e->d_name);
+        struct stat st;
+        if (lstat(sub, &st) == 0 && st.st_uid == FUZZ_UID) snprintf(names[n++], sizeof names[0], "%s", e->d_name);
+    }
+    closedir(d);
+    for (int i = 0; i < n; i++) {
+        char sub[300];
+        snprintf(sub, sizeof sub, "/tmp/%s", names[i]);
+        remove_tree(sub, 1);
+    }
+}
+
 static void remove_tree(const char *path, int depth) {
     for (int pass = 0; pass < 50; pass++) {                  /* until a pass finds nothing to remove */
         DIR *d = opendir(path);
@@ -1474,6 +1528,8 @@ static int supervisor(void) {
         sleep_ms(50);
     }
     read_kstats(&before);
+    static char vn_before[20000], vn_after[20000];
+    read_file_into("/proc/vnodes", vn_before, sizeof vn_before);
     char scratch[96];
     snprintf(scratch, sizeof scratch, "/tmp/sysfuzz.%d", getpid());
     g_cfg.scratch = scratch;
@@ -1587,6 +1643,7 @@ static int supervisor(void) {
     munmap(g_sh, 3 * 4096);
     close(shfd);
     remove_tree(scratch, 0);
+    sweep_tmp();
     sleep_ms(300);
 
     read_kstats(&after);
@@ -1601,6 +1658,7 @@ static int supervisor(void) {
     /* what must come back: every counted object. Memory: free + slab pages may not shrink by more than a few hundred KiB. */
     #define SAME(field, what) do { if (after.field != before.field) { printf("sysfuzz: LEAK: %s %ld -> %ld\n", what, before.field, after.field); fail = 1; } } while (0)
     SAME(files, "open files"); SAME(pipes, "pipes"); SAME(unix_sockets, "unix sockets"); SAME(ptys, "ptys");
+    if (after.vnodes != before.vnodes) { read_file_into("/proc/vnodes", vn_after, sizeof vn_after); print_new_vnodes(vn_before, vn_after); }
     SAME(processes, "processes"); SAME(user_threads, "user threads"); SAME(kstacks, "kernel stacks"); SAME(vnodes, "vnodes"); SAME(tasks, "tasks");
     if (after.inet_sockets > before.inet_sockets + 64) { printf("sysfuzz: LEAK: inet sockets %ld -> %ld\n", before.inet_sockets, after.inet_sockets); fail = 1; }
     if (after.heap_bytes > before.heap_bytes + 256 * 1024) { printf("sysfuzz: LEAK: heap in use %lu -> %lu bytes\n", before.heap_bytes, after.heap_bytes); fail = 1; }

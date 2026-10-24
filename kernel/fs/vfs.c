@@ -3,6 +3,8 @@
 #include "kernel.h"
 #include "mm.h"
 #include "cpu.h"
+#include "arch.h"
+#include "initcall.h"
 
 const Cred g_root_cred = { 0, 0 };
 
@@ -22,6 +24,7 @@ static bool fs_owns_ids(const VNode *v) {
 }
 
 static u64 g_nvnodes, g_nfiles;                         /* live objects: /proc/kstats shows them, the leak checks compare them */
+static VNode *g_vnode_ledger;                           /* every live vnode, newest first: /proc/vnodes */
 u64 vfs_vnode_count(void) { return g_nvnodes; }
 u64 vfs_file_count(void) { return g_nfiles; }
 
@@ -29,6 +32,14 @@ VNode *vnode_alloc(const VNodeOps *ops, Mount *m, u32 mode) {
     VNode *v = kzalloc(sizeof *v);
     if (!v) return NULL;
     __atomic_fetch_add(&g_nvnodes, 1, __ATOMIC_RELAXED);
+    u64 stk[5];
+    backtrace_capture(stk, 5);
+    for (int i = 0; i < 4; i++) v->alloc_ip[i] = stk[i + 1];            /* [0] is vnode_alloc itself */
+    u64 lf = irq_save();
+    v->dbg_next = g_vnode_ledger;
+    if (g_vnode_ledger) g_vnode_ledger->dbg_prev = v;
+    g_vnode_ledger = v;
+    irq_restore(lf);
     v->ops = ops;
     v->mount = m;
     v->mode = mode;
@@ -53,8 +64,32 @@ void vnode_put(VNode *v) {
     if (r < 0) panic("vnode_put: refcount underflow (ino %lu)", (unsigned long)v->ino);
     if (v->ops && v->ops->release) v->ops->release(v);
     __atomic_fetch_sub(&g_nvnodes, 1, __ATOMIC_RELAXED);
+    u64 lf = irq_save();
+    if (v->dbg_prev) v->dbg_prev->dbg_next = v->dbg_next; else g_vnode_ledger = v->dbg_next;
+    if (v->dbg_next) v->dbg_next->dbg_prev = v->dbg_prev;
+    irq_restore(lf);
     kfree(v);
 }
+
+/* /proc/vnodes: one line per live vnode with the call chain that made it (symbols from the kernel's own table). */
+static size_t gen_vnodes(char *b, size_t cap) {
+    size_t n = 0;
+    u64 lf = irq_save();
+    for (VNode *v = g_vnode_ledger; v && n + 200 < cap; v = v->dbg_next) {
+        n += (size_t)snprintf(b + n, cap - n, "%p ino=%lu mode=%o refs=%d nlink=%u size=%lu <-", (void *)v, (unsigned long)v->ino, v->mode, v->refs, v->nlink,
+                              (unsigned long)v->size);
+        for (int i = 0; i < 4 && v->alloc_ip[i]; i++) {
+            u64 off = 0;
+            const char *s = ksym_lookup(v->alloc_ip[i], &off);
+            n += (size_t)snprintf(b + n, cap - n, " %s+%#lx", s ? s : "?", (unsigned long)off);
+        }
+        b[n++] = '\n';
+    }
+    irq_restore(lf);
+    return n;
+}
+static void vnodes_init(void) { procfs_register("vnodes", gen_vnodes); }
+INITCALL(vnodes_init);
 
 void vnode_stat(VNode *v, struct gstat *st) {
     memset(st, 0, sizeof *st);
