@@ -603,8 +603,8 @@ static int ahci_blk_read(BlockDev *d, u64 lba, u32 count, void *buf) { return ah
 /*
  * FLUSH CACHE (EXT). A disk that cannot write a sector of its cache stops the flush there and reports an error (ATA ACS-3, FLUSH
  * CACHE EXT: the LBA field names the sector); only a further flush command writes the rest of the cache. So after a reported error the flush
- * is sent once more, as Linux does (ata_eh_maybe_retry_flush), to get everything else onto the medium. The request still fails
- * with -EIO: one sector of it is lost. Timeouts and link errors are already retried inside ahci_issue_retry.
+ * is sent once more (one attempt), as Linux does (ata_eh_maybe_retry_flush), to get everything else onto the medium. The request
+ * still fails with -EIO: one sector of it is lost. Timeouts and link errors are already retried inside ahci_issue_retry.
  */
 static int ahci_blk_flush(BlockDev *d) {
     AhciPort *p = d->priv;
@@ -614,7 +614,7 @@ static int ahci_blk_flush(BlockDev *d) {
     int rc = ahci_issue_retry(p, &c, 0, T_FLUSH_MS);
     p->n_flushes++;
     if (rc && !p->dead) {
-        int again = ahci_issue_retry(p, &c, 0, T_FLUSH_MS);
+        int again = ahci_issue(p, &c, 0, T_FLUSH_MS);          /* one attempt: a disk that keeps timing out has had its retries */
         p->n_flushes++;
         klog("Kappa", "ahci%d port %d: the cache flush failed; flushed once more for the rest of the cache (%s); the write is reported as failed",
              p->hba->index, p->num, again ? "failed again" : "that went through");
