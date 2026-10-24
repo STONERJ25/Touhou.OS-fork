@@ -312,6 +312,8 @@ gets no warning. Then the host looks at the image with `tools/mkdisk.py`'s check
   without its short entry, bytes after a directory's end), and so does a file holding a byte it never held: every byte of the
   workload's file `k<id>` is either 0 or `churn_byte(id, offset)` (`user/bin/fstest.c`; a numpy twin in the test), whatever renames
   it went through, so another file's or a directory's bytes in it are caught;
+* the kernel's own ledger check (`shared/fatck.c`, run on the host through `tools/fatck_host.py`) must find no error either, which is
+  what lets the next boot mount the volume read-write ("Dirty volumes");
 * a call that failed in the guest (`CHURNFAIL`, anything but a full volume) fails the run too.
 
 The workload (`fstest -churn SEED DIR [OPS]`): creates (empty, small, cluster-boundary and 40 KB sizes; 8.3 names in both cases and long
@@ -324,13 +326,18 @@ and an occasional `sync`; a full volume deletes files instead of failing.
 the clock; run i uses S+i). A failing run prints its seed, geometry and kill point and the checker's report; `TOUHOU_CRASH_SEED=<seed>
 TOUHOU_CRASH_RUNS=1` replays its workload and kill point (the exact moment varies with the guest's speed), `TOUHOU_KEEP_IMAGES=1` keeps
 the image. `storage_crash_checker_selftest` (no VM) damages images by hand to make sure the judge lets the leftovers through and
-catches a cross-link, a chain into a free cluster, a size beyond the chain and another file's bytes.
+catches a cross-link, a chain into a free cluster, a size beyond the chain and another file's bytes; the ledger check is held to the
+same images (all but the last, which only the contents show).
 
 **Results** (2026-10-24, Ubuntu 24.04, QEMU 8.2 TCG, `TOUHOU_TIMEOUT_SCALE=3`):
 
 * 50 runs, seeds 7000..7049: **50 passed**, 491 s. Geometries: 17 FAT32 default clusters, 16 FAT32 4 KiB, 6 FAT32 512 B, 11 FAT16; cuts
   after 0 to 1180 operations. Leftovers seen: lost clusters in 33 runs (1 to 77 clusters), a stale FSInfo count in 34, FAT copy 2
   behind copy 1 in 8, a chain longer than its size in 6, nothing at all in 5.
+* After the merge of `cloud/staging` (the ledger check added to the judge), 50 runs, seeds 8000..8049: **50 passed**, 517 s. 15 FAT16,
+  13 FAT32 default, 12 FAT32 512 B, 10 FAT32 4 KiB; cuts after 20 to 1180 operations. Lost clusters in 32 runs (up to 127), a stale FSInfo
+  count in 29, a chain longer than its size in 10, FAT copy 2 behind in 2, nothing in 7; the ledger check found 0 to 7 leftovers per run
+  and never an error.
 * Control: with the classes switched off (every dirty page in one class, so the cache writes in disk order as a plain write-back cache
   would), 2 of 12 runs failed (seeds 505 and 506; 506 passed when replayed, the moment of the cut differs); seed 505 replayed shows the gap of the LINK class: `K91.DAT: chain runs into a free
   cluster after 625`, `size 1180 needs 3 cluster(s) but the chain has 1` (the link of an append reached the disk, the new clusters'
@@ -469,9 +476,25 @@ log and `/proc/fatcheck` say what, the image is untouched), `hvforce` and `hvche
 clusters). Tests that used to expect "dirty means read-only" (`storage_dirty_volume_readonly`, `storage_unclean_power_loss`, the bootlog test) run with
 `hvcheck=off`; `usbstor_hotplug_idle` now expects the check and a writable mount.
 
+`python tests/run_all.py storage_crash` (`tests/case_storagecrash.py`, part of the `storage` group): the power-cut test of "Crash test" above, 3 runs by
+default (about 30 s), `TOUHOU_CRASH_RUNS=50` for the full run (about 9 minutes here).
+
 ## State when paused
 
-The "dirty-flag trap" work (a dirty HUMANVILLAGE volume is checked instead of refused; a repair tool; a safer write order) was paused part-way. What is what:
+The "dirty-flag trap" work (a dirty HUMANVILLAGE volume is checked instead of refused; a repair tool; a safer write order) was paused part-way; the
+write order was then done on `cloud/fat-ordering` (cloud task 7, 2026-10-24), which also holds the merge of `cloud/staging`. What is what:
+
+**FAT write order (task 7): done and tested**
+* The six flush classes, `pg_reclass`, the sector rule for entry sets, renames in three steps ("Write ordering"); the code is in `fat_cache.c`, `fat_chain.c`,
+  `fat_dir.c`, `fat32.c`, `fatfs.h`.
+* `fstest -churn` and `tests/case_storagecrash.py`: 50 power cuts passed before the merge with staging (seeds 7000..7049) and 50 after it (seeds 8000..8049,
+  now also judged by the kernel's ledger check: 0 to 7 leftovers per run, never an error); the control with the order switched off fails ("Crash test").
+* After the merge: `storage`, `usbstor` and the regression set `blk,selftest,utest,shell,explorer_netherworld` - results in the pull request and in docs/NEXT.md.
+* Not covered: names of more than 195 characters and entry sets another system wrote across a sector can still be cut in half; the cost of the extra flushes on a
+  real stick is not measured; the test runs on virtio-blk only (QEMU keeps every acknowledged write, so it checks the order of the requests; whether a USB stick
+  honours SYNCHRONIZE CACHE is not something QEMU can show).
+
+The rest of this section is the state of the check and `fsck` work as it was handed over (only the write-order item changed).
 
 **Done and tested**
 * The checker, `shared/fatck.c`/`.h`, FAT12/16/32. `fsck_c_agrees_with_python` and `fsck_c_agrees_on_random_damage` passed against the Python checker; the
@@ -494,8 +517,7 @@ The "dirty-flag trap" work (a dirty HUMANVILLAGE volume is checked instead of re
   check, the interactive prompts, the exit codes, and `patchouli --check-all` (the `manual` test) accepting `fsck.pw`. The kernel's advice (`fsck -a /dev/sdb2`) points at it.
 
 **Not started**
-* Any change to the FAT write path (item 4 of the task): no code changed, so nothing half-finished is enabled. The review is done and is in "Safety design" ("Known
-  gaps") and below. The random-power-cut test (kill the VM at random moments of a write-heavy workload, run the host checker) is not written.
+* (The FAT write path, item 4 of that task, is done: see the first block of this section.)
 * `docs/REAL_HARDWARE.md` has the short version of what the owner does after a bad shutdown; the full walk-through with a real stick is not tried on hardware.
 
 ## How to resume
@@ -510,21 +532,9 @@ The "dirty-flag trap" work (a dirty HUMANVILLAGE volume is checked instead of re
    the guest has shut down; the refusals (mounted -> exit 8, not FAT -> 8, non-root -> 8); a FAT12 image; `-F`; the flow the kernel message promises
    (`umount /HumanVillage; fsck -a /dev/vda1`, then `reboot`, then the volume is clean and writable). Expect the first guest run to find libc/devfs surprises (see above).
    Then `python tests/run_all.py manual` for the page.
-4. The write order (item 4). The design that came out of the review, in order of value:
-   * *Classes with a barrier on conflict.* Make the classes data (0), FAT allocations (1), entry creation/updates (2), FAT frees and chain cuts (3) and keep the rule
-     "a page is written at its class's turn"; when a write would give a *dirty* page a different class (`fc_write`/`fc_zero` in `fat_cache.c`, before the `memcpy`),
-     first write everything of class <= the page's old class and flush the device ("write the old state of the page first"), then change the page. `fat_put()` takes the class
-     (alloc/link = 1, free and the EOC of a shrink = 3; the rollback paths after a failed allocation stay 1). Effects: a deletion's entry removal (2) now precedes the FAT free (3);
-     a cluster freed in this epoch cannot be reused before the free is durable (the allocation would touch the same FAT page and force the flush).
-   * *New directory clusters are data* (zeroing and `.`/`..` in `fat_mkdir`, `fatd_write_dots`, `chain_grow` for directories): they must be on disk before the FAT link and the
-     parent's entry. Creating an entry in such a page changes its class 0 -> 2 and costs one cheap barrier.
-   * *Rename without two names for one chain*: remove the source entry (and fix `..` of a moved directory), barrier, then add the new entry; when the destination exists and
-     has the same spelling, rewrite its short entry in place instead. A cut then leaves lost clusters (fsck saves them), never a cross-link.
-   * *Append*: data -> FAT -> size is already the order; a cut between the FAT and the size leaves a chain longer than the size, which the checker classes as a harmless leftover
-     and a verified mount trims.
-   * *Test*: boot with a data disk, run a write-heavy loop (create/append/delete/rename/mkdir/rmdir/truncate), `vm.qmp("quit")` at a random moment (50 times), then
-     `mkdisk.check_image(path).serious` must be empty (lost clusters, chains longer than the size, stale FSInfo/FAT copy 2 are the allowed leftovers), and `fatck_host.scan_volume`
-     must say `errors == 0`. QEMU keeps every acknowledged write when its process is killed, so this tests the order of the requests, not the device cache; the flushes between the
-     classes are what protects against the device cache on real hardware.
-   Measure the cost on `storage` (many small files, delete/create loops): the barrier flushes the dirty pages of lower classes.
+4. The write order is done (`cloud/fat-ordering`). To check it after a change to the FAT driver: `TOUHOU_CRASH_RUNS=50 python tests/run_all.py storage_crash`;
+   a failure prints its seed, replay it with `TOUHOU_CRASH_SEED=<seed> TOUHOU_CRASH_RUNS=1 TOUHOU_KEEP_IMAGES=1` and look at the kept image with
+   `python tools/mkdisk.py --check IMAGE`. What could come next: fewer barriers (most come from a FAT page going from frees to allocations and back; frees could
+   be collected per page and written in one go before an allocation reuses the page), a measurement of the flush cost on the real stick (the unmount log line
+   counts the extra flushes), and the same test on a USB stick in QEMU (`usb-storage`) instead of virtio-blk.
 5. `docs/REAL_HARDWARE.md`: section 5 (eject / dirty) now describes the check; add what the owner does when the log says the ledger does not add up, once `fsck` has been seen working.
