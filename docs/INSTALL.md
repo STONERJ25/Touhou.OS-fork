@@ -163,6 +163,63 @@ and MBR partitions (no GUID) cannot be named. The GUID is random (version 4), so
 of the disk carries the same GUID and would match too. Without `blk.ro` the word does nothing. Removing it from `cmdline.txt` (on any
 computer: the ESP is plain FAT32) makes the installed homes read-only like everything else.
 
+### The ESP write grant: the installed ESP writable for one mount
+
+The read-only ESP is the point of the paragraph above, but two things have to write it for a moment: an update (task 5 replaces
+`kernel.elf`, `initrd.img`, maybe the loader) and the "this boot worked" step of the loader's fallback (it deletes `update.try`, see
+[UPDATE.md](UPDATE.md)). Dropping `blk.ro` or naming the ESP in `blk.rw=` would make it writable all the time. Instead, root asks the
+kernel for a **grant** on the ESP's partition node, and one read-write mount takes it (`kernel/drivers/blk_unlock.c`, `shared/blkabi.h`):
+
+```c
+int fd = open("/dev/nvme0n1p1", O_RDWR | O_CLOEXEC);
+struct gblk_unlock u = { .name = "nvme0n1p1" };            // the caller repeats the partition's name
+ioctl(fd, BLKESPGRANT, &u);                                // 0, or EPERM / EINVAL / EBADF / EACCES / EBUSY / EROFS
+gap_mount_opts("/dev/nvme0n1p1", dir, "fat32", 0, "rw,espgrant");   // this mount takes the grant
+... write files below dir ...
+umount(dir);                                               // the grant ends with the unmount
+close(fd);                                                 // ends it too: a volume still mounted is written back, then read-only
+```
+
+The applet `espgrant` (`user/bin/kappabox/espgrant.c`, manual page `espgrant(1)`) wraps it: `espgrant` shows the state,
+`espgrant run CMD` runs a command with the ESP mounted read-write on `$ESP`, `espgrant put SRC NAME...` replaces files with the update
+sequence of [UPDATE.md](UPDATE.md) ("Writing the ESP"), `espgrant rm NAME` deletes one. The functions behind it (`espgrant.h`: `esp_open`,
+`esp_update`, `esp_close`) are what the update client is meant to call.
+
+| Rule | Enforced by |
+|------|-------------|
+| root only | `EPERM` at the ioctl unless the caller's uid is 0 (`[Eiki] ... asked for write access to the ESP nvme0n1p1 and was refused`), also for a non-root process that inherited the open file; `mount(2)` is root-only anyway and the mount checks the caller again |
+| only the ESP the system started from | `EACCES`, with the reason in the log, for any other partition (see "Which partitions" below); a whole-disk node gives `EINVAL` |
+| one mount, by the holder | a read-write FAT mount with the option `espgrant`, made by a process whose descriptor table holds the granted open file, takes it; `-o espgrant` without a grant gives `EPERM`, with `ro` `EINVAL`; a plain `mount -o rw` of the ESP still comes up read-only, as before |
+| nothing else | the partition stays registered read-only (`lsblk` shows `RO 1`); only that mounted volume's writes pass the policy (`blk_write_as()` in `blk.c`, the volume as holder); writes through the partition node (even through the granted file), the whole-disk node, the other partitions and every other disk keep getting `EROFS`; a second mount of the partition is refused (`EBUSY`) |
+| the right node, a writable file | the name must be the node's (`EINVAL`), a file opened `O_RDONLY` gives `EBADF` |
+| not while mounted | `EBUSY` while the partition is mounted (even read-only), and while another open file holds its grant |
+| no hardware overrides | a medium that is write-protected by itself gives `EROFS` |
+| a dirty volume | a mount with `espgrant` of a volume flagged dirty fails with `EROFS` instead of coming up read-only; `force` overrides (the flag then stays) |
+| released | at the unmount, after the last write-back; when the open file is closed (also at exit, `kill -9` or a crash, when the kernel closes the descriptors) or handed back with `BLKWRLOCK`: a volume that is still mounted is written back while the grant still holds, then turns read-only and stays mounted until someone unmounts it (`[Keine] fat32: nvme0n1p1 on DIR is read-only now: the ESP write grant ended`) |
+| never persisted | a table of two entries in kernel memory: nothing goes to the disk, NVRAM or the command line, a restart forgets it |
+| visible | `blk: nvme0n1p1, the ESP this system started from, is lent to espgrant (pid N) ...`, `... is writable through the volume mounted on DIR only ...`, `... is read-only again ...` in the kernel log; `/proc/bootdisk` gains `esp NAME read-only` and one `grant PART pid N PROGRAM mounted DIR` line per grant; `BLKWRSTATE` on the partition node adds `BLKWR_ESPGRANT` and `BLKWR_ESPMOUNTED` |
+
+**Why an open file and a mount.** As with the disk unlock, the open file is an object the kernel already reference-counts and closes when
+the program ends in any way, so the grant cannot outlive the program that asked for it, and no syscall number is needed. A mount option
+alone could not say who is allowed (and the `mount` applet exits right away, so a grant tied to the process that mounts would end at
+once); a grant alone would make the raw partition writable, which no updater needs. Bound to both, the grant covers exactly "this
+program's one mount of this partition". The grant does not restrict who writes *through* that mount while it exists: it is an ordinary mount
+(files owned by root, mode 0644 / directories 0755 by default), so `espgrant` mounts on a fresh directory of mode 0700 below
+`/BambooForest`.
+
+**Which partitions.** Only the partition the loader was read from, confirmed four ways: its number, first sector and size are the ones
+the firmware reported (`/proc/bootdisk`, as for `install`); on GPT its type is the EFI System Partition; the partition GUID (GPT) or disk
+signature (MBR) read back from the disk is the one in the device path; and no second registered partition matches all of that (two disks
+written from one image could not be told apart, so neither is granted). In practice:
+
+* booted from the installed disk: its ESP (`nvme0n1p1`, `sda1`), the case the grant is for;
+* booted from the USB stick, the owner's permanent medium for now: the stick's ESP. `blk.ro` does not cover USB, so it is writable
+  anyway and a plain `mount -o rw` works there too; the grant changes nothing about writability but behaves the same (the mount turns
+  read-only when the program ends), so the update client has one code path for both;
+* never: an ESP the system did not start from (the Windows ESP on the Dell, an older install, the ESP of the installed disk while the
+  stick is running), any other partition, a whole disk. Changing those stays `install`'s business (or a boot without `blk.ro`);
+* nothing at all when the firmware did not say where the loader came from (`/proc/bootdisk` says `unknown`, `esp -` gives the reason).
+
 ## The installed system
 
 It starts like the stick: the loader from the ESP, `[Marisa] blk: ...` for the disk with its two partitions, `fat32: sda2 mounted on
@@ -193,6 +250,15 @@ line, HUMANVILLAGE mounted read-write and (SATA, NVMe) the `blk.rw=` line.
 Results on this branch (Ubuntu 24.04, QEMU 8.2, TCG, `TOUHOU_TIMEOUT_SCALE=2`): all eight pass; the regression groups named in the report of
 the branch pass as well (see the pull request).
 
+The ESP write grant has its own tests, `python tests/run_all.py espgrant_` (`tests/case_espgrant.py`). They install once onto an NVMe image
+with `text user=root blk.ro` (kept as `build/install/espgrant-base.img` until `build/esp` changes) and boot a copy of it alone:
+
+| Test | What it covers |
+|------|----------------|
+| `espgrant_rules` | `user/bin/esptest.c` against the kernel, next to a SATA decoy: no grant (a plain `rw` mount is read-only, `-o espgrant` gives EPERM, the node is read-only); wrong name EINVAL, read-only file EBADF, HUMANVILLAGE and the decoy's partition EACCES, whole disks EINVAL, a non-root child holding the file EPERM (and the Eiki line), a mounted ESP EBUSY; the grant: state bits, a second file EBUSY, the node stays read-only, `ro,espgrant` EINVAL, the mount is read-write and a file reads back, a second mount EBUSY, the whole disk and the decoy stay read-only meanwhile; the unmount ends it (a new `espgrant` mount needs a new grant, a plain mount is read-only again); closing the file, the exit of a child that holds it, and `BLKWRLOCK` each turn the mounted volume read-only with what was written kept; host: the ESP checker-clean with exactly the files written under a grant, the whole-disk bytes and the decoy unchanged |
+| `espgrant_helper` | the applet: status, non-root refused, `run` with `dd` to the whole disk, the ESP's node and the decoy and its partition failing meanwhile and `/proc/bootdisk` showing the grant; `espgrant` killed with `kill -9` while its command runs (the command's next write fails, the mount stays read-only, the log says why); `put -k` of a new kernel (the step lines in order); host: ESP clean, `kernel.elf` new, `kernel.old` the previous one, no `.new` left; the disk then boots the new kernel (the loader's size line) and `espgrant rm` cleans up |
+| `espgrant_power_cut` | the update sequence cut by QMP `quit` after a given step plus a random delay (writes throttled to 4 per second so the cut lands between requests), 4 runs by default (`TOUHOU_ESP_CUT_RUNS`, `_SEED`, `_AT`, `_IOPS`): the ESP has no damage worse than lost clusters, `kernel.elf` is the old or the new kernel byte for byte, the other files are untouched, the disk boots that kernel, and a dirty ESP is then refused without `-f`. Details and results in [UPDATE.md](UPDATE.md) |
+
 ## Known gaps
 
 * **Never run on real hardware.** Everything above ran in QEMU/OVMF only. On the Dell nothing can be installed until SATA is in AHCI mode.
@@ -205,8 +271,11 @@ the branch pass as well (see the pull request).
 * A HUMANVILLAGE volume left dirty (power cut) mounts read-only until a file system check; on an installed disk that means the in-kernel
   check of the `parked/usb-dirty-fsck` branch (not merged here) or the stick.
 * No in-place upgrade: `install` replaces the whole disk, homes included. Updating `kernel.elf`/`initrd.img` on an installed ESP is task 5
-  (the update client). The installed ESP is read-only under `blk.ro` (only HUMANVILLAGE is named by `blk.rw=`), so by hand it is done from
-  the stick, or from a boot without `blk.ro`.
+  (the update client). The installed ESP is read-only under `blk.ro` (only HUMANVILLAGE is named by `blk.rw=`); by hand, from the
+  installed system itself: `sudo espgrant put /path/kernel.elf kernel.elf` (the ESP write grant above). The ESP of a disk the system did
+  not start from cannot be granted: from the stick, an installed disk's files are changed by reinstalling or by a boot without `blk.ro`.
+* The ESP write grant has run in QEMU only. On the Dell it depends on the firmware naming the boot partition in the device path, like
+  `install` does (`/proc/bootdisk`).
 * Two disks written from one image (same GUIDs) cannot be told apart: the first one the kernel lists (SATA before USB) counts as the boot
   disk and its ESP is where the files are copied from; both are refused as targets. The files are the same as long as the copies are.
 * The kernel does not re-read the partition table after `install`; the new partitions appear after a restart.
@@ -230,6 +299,13 @@ the branch pass as well (see the pull request).
 | `user/bin/unlocktest.c` | the unlock rules, from user space, for the tests |
 | `tests/case_install.py` | the tests above |
 | `initrd/.../patchouli/1/install.pw`, `5/proc.pw` | manual pages (`install(1)`, `/proc/bootdisk` in `proc(5)`) |
+| `kernel/drivers/blk_unlock.c` (second half) | the ESP write grant: BLKESPGRANT, the eligibility check, claim/attach/detach for the mount, the release at close, the `esp` and `grant` lines of `/proc/bootdisk` |
+| `kernel/drivers/blk.c`, `kernel/include/blk.h` | `blk_write_as()` (the holder's writes), `BlockDev.grant_holder`, the grant functions |
+| `kernel/fs/fat32.c`, `fat_cache.c` | the mount option `espgrant`, `fat_grant_revoke()` (write back, then read-only), the detach at unmount; the cache writes through `blk_write_as()` |
+| `kernel/fs/fat_dir.c`, `fat32.c` | `fatd_replace_file()`: a rename over a file keeps the name in place (the power-cut order of [UPDATE.md](UPDATE.md)) |
+| `user/bin/kappabox/espgrant.c`, `espgrant.h` | the `espgrant` applet and the functions the update client reuses (`esp_open`, `esp_update`, `esp_close`) |
+| `user/bin/esptest.c`, `tests/case_espgrant.py` | the grant's rules from user space, and the `espgrant_` tests |
+| `initrd/.../patchouli/1/espgrant.pw` | manual page `espgrant(1)` |
 
 ## State when paused
 
@@ -237,12 +313,20 @@ Done and tested in QEMU: the tool, the unlock, `blk.rw=` (one partition), `/proc
 hardware (the owner's Dell needs AHCI mode first and a decision about its internal disk), the mount-policy preference for a writable
 HUMANVILLAGE volume (Known gaps), an upgrade-in-place mode.
 
+The ESP write grant (task 10, branch `cloud/esp-grant`, 2026-10-24): done and tested in QEMU (the three `espgrant_` tests, power cuts in
+`espgrant_power_cut`), with the applet, its manual page and the FAT rename order it needs. Not done: the update client and the loader's
+fallback (task 5) that will use it; anything on real hardware.
+
 ## How to resume
 
 1. Merge after `cloud/staging` (task 2): the shared-file edits are small (`blk.c` about 20 lines, `blk.h` 8, `bootinfo.h` 16, `boot/main.c` 35,
    one line each in `ahci.c`/`nvme.c`), new files otherwise. Rerun `install_`, `blk_`, `image_`, `storage`, `usbstor`, `manual`.
 2. On the Dell: back up, decide what happens to Windows, switch SATA to AHCI, boot the stick, `sudo install` (the listing), `sudo install --dry-run DISK`,
    then the real thing; photograph `/proc/bootdisk` and the listing if anything looks wrong. Then remove the stick and start from the disk.
-3. Task 5 (updates): `/proc/bootdisk` tells the updater which ESP is the live one. The installed ESP stays read-only under `blk.ro` on purpose,
-   so the updater needs a root-only way to mount it read-write for the moment of the update, scoped like the write unlock (one partition,
-   released at unmount, never persisted); that mechanism does not exist yet.
+3. Task 5 (updates): `/proc/bootdisk` tells the updater which ESP is the live one (its `esp` line). The installed ESP stays read-only under
+   `blk.ro` on purpose; the updater writes it through the ESP write grant (above, task 10, branch `cloud/esp-grant`): call `esp_open()`,
+   `esp_update()`, `esp_close()` from `user/bin/kappabox/espgrant.h` (or run `espgrant put`), and the "confirm this boot" step is
+   `espgrant rm update.try`. The write sequence and what a power cut leaves are in [UPDATE.md](UPDATE.md), "Writing the ESP". When merging
+   `cloud/fat-ordering` (task 7), which rewrites `fat_rename()` as well: keep the in-place replacement (`fatd_replace_file()`) or make sure the
+   new order never takes the target name out of the directory, and rerun `TOUHOU_ESP_CUT_AT=replacing TOUHOU_ESP_CUT_RUNS=16 python
+   tests/run_all.py espgrant_power_cut` (the old order failed 1 run in 10, see UPDATE.md).

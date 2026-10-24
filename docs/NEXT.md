@@ -45,6 +45,8 @@ The server half of goal 2 is on branch `cloud/update-server` (2026-10-24): `tool
 
 gapsh job control is on branch `cloud/job-control` (2026-10-24): Ctrl-Z, `jobs`, `fg`, `bg`, `wait %N`, `disown`, `%` job names; tests `jobctl_shell_console`, `jobctl_shell_pty`, `jobctl_desktop_terminal`; see [JOBCONTROL.md](JOBCONTROL.md) "State when paused".
 
+The ESP write grant (task 10) is on branch `cloud/esp-grant` (2026-10-24): root mounts the installed ESP read-write for one mount (`BLKESPGRANT` + `mount -o rw,espgrant`, released at the unmount or when the program ends), the `espgrant` applet and `espgrant.h` with the power-cut-safe update sequence for task 5, a FAT rename that keeps the target name in place; tests `espgrant_rules`, `espgrant_helper`, `espgrant_power_cut`; see [INSTALL.md](INSTALL.md) "The ESP write grant" and [UPDATE.md](UPDATE.md) "Writing the ESP".
+
 Before both: merge the parked branches (below) and run the whole suite on the result, in particular the network/HTTPS branch, the dirty-volume `fsck` branch (an installed disk and a
 stick that is switched off with the button need it) and the audio branch.
 
