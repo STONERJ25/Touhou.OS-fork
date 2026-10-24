@@ -67,7 +67,7 @@ TOOLS = [
     ("renice 4 -p $! 2>&1", "failed to set priority", 1),
     ("renice 5 -p 1 2>&1", "failed to set priority", 1),
     ("ls -l /proc/$!/fd | grep -c '^l'", "3", 0),
-    ("ls -l /proc/$!/fd | grep -c /dev/console", "2", 0),
+    ("ls -l /proc/$!/fd | grep -c /dev/console", "3", 0),     # job control: a background job keeps the terminal as input
     ("ls -l /proc/$!/fd/1", "-> /dev/console", 0),
     ("readlink /proc/$!/exe", "/bin/sleep", 0),
     ("readlink /proc/self/cwd", "/HumanVillage/reimu", 0),

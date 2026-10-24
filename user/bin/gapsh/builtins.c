@@ -215,7 +215,8 @@ int g_exit_warned = -10;                /* the line on which `exit` last warned 
 /* An interactive shell with stopped jobs warns once; an `exit` (or ^D) right after the warning leaves, and the stopped
  * jobs get SIGHUP and SIGCONT (see jobs_hangup_stopped). */
 int exit_blocked_by_jobs(void) {
-    if (!g_interactive || g_exit_warned >= g_line_no - 1 || !jobs_stopped()) return 0;
+    if (!g_interactive || getpid() != g_shell_pgid) return 0;          /* not in $(...), which inherits the table */
+    if (g_exit_warned >= g_line_no - 1 || !jobs_stopped()) return 0;
     fprintf(stderr, "There are stopped jobs: Sakuya has stopped their clocks (`jobs` lists them).\n"
                     "Leave again at once to go anyway; they will get SIGHUP.\n");
     g_exit_warned = g_line_no;
