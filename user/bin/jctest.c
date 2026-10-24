@@ -921,7 +921,96 @@ static void test_proc_links(void) {
     rmdir("/tmp/jl");
 }
 
-int main(void) {
+/* ---------------------------------------------------------------- helpers for the shell tests (tests/case_jobctl.py)
+ *
+ * jctest pty [PROGRAM [ARG...]]: plays terminal emulator. Starts PROGRAM (by default an interactive gapsh) as a session
+ *     leader on a new pty and relays bytes: what arrives on the console goes to the pty, what the pty prints goes to the
+ *     console. The console is raw meanwhile, so ^Z and ^C reach the pty's line discipline instead of the relay. Ends when
+ *     the program has exited, with "pty: the shell left with status N".
+ * jctest rawstop: switches the terminal to non-canonical mode without echo (ISIG stays on, as in a pager), prints
+ *     "RAWSTOP ready" and reads keys; on 'q' it prints the terminal flags it sees, restores the old settings and exits.
+ *     Shows that the shell saves a stopped job's terminal settings and puts them back for fg.
+ * jctest tmodes: prints the terminal flags ("TMODES icanon=1 echo=1 isig=1"). */
+
+static int pty_relay(int argc, char **argv) {
+    char spath[40];
+    int mfd = ptyopen(spath, sizeof spath);
+    if (mfd < 0) { printf("jctest pty: no pty: %s\n", strerror(errno)); return 1; }
+    pid_t pid = fork();
+    if (pid == 0) {
+        close(mfd);
+        setsid();
+        int s = open(spath, O_RDWR);
+        if (s < 0) _exit(126);
+        dup2(s, 0); dup2(s, 1); dup2(s, 2);
+        if (s > 2) close(s);
+        if (argc > 2) execvp(argv[2], argv + 2);
+        else execl("/bin/gapsh", "gapsh", "-i", (char *)NULL);
+        _exit(127);
+    }
+    struct termios old, raw;
+    int have = tcgetattr(0, &old) == 0;
+    if (have) {
+        raw = old;
+        raw.c_lflag &= ~(tcflag_t)(ICANON | ECHO | ISIG);
+        raw.c_iflag &= ~(tcflag_t)ICRNL;
+        raw.c_cc[VMIN] = 1;
+        raw.c_cc[VTIME] = 0;
+        tcsetattr(0, TCSANOW, &raw);
+    }
+    char buf[512];
+    int st = 0;
+    long gone = 0;                                          /* when the program exited: drain its last output, then stop */
+    for (;;) {
+        if (!gone && waitpid(pid, &st, WNOHANG) == pid) gone = now_ms();
+        if (gone && now_ms() - gone > 300) break;
+        struct pollfd p[2] = { { 0, POLLIN, 0 }, { mfd, POLLIN, 0 } };
+        if (poll(p, 2, 50) <= 0) continue;
+        if (p[1].revents & (POLLIN | POLLHUP)) {
+            ssize_t n = read(mfd, buf, sizeof buf);
+            if (n > 0) write(1, buf, (size_t)n);
+            else if (n == 0 && gone) break;
+        }
+        if (p[0].revents & POLLIN) {
+            ssize_t n = read(0, buf, sizeof buf);
+            if (n > 0) write(mfd, buf, (size_t)n);
+        }
+    }
+    if (!gone) waitpid(pid, &st, 0);
+    if (have) tcsetattr(0, TCSANOW, &old);
+    close(mfd);
+    printf("pty: the shell left with status %d\n", WIFEXITED(st) ? WEXITSTATUS(st) : 128 + WTERMSIG(st));
+    return 0;
+}
+
+static void print_tmodes(const char *tag) {
+    struct termios t;
+    if (tcgetattr(0, &t) < 0) { printf("%s no terminal\n", tag); return; }
+    printf("%s icanon=%d echo=%d isig=%d\n", tag, !!(t.c_lflag & ICANON), !!(t.c_lflag & ECHO), !!(t.c_lflag & ISIG));
+    fflush(stdout);
+}
+
+static int raw_stop(void) {
+    struct termios old, t;
+    if (tcgetattr(0, &old) < 0) return 1;
+    t = old;
+    t.c_lflag &= ~(tcflag_t)(ICANON | ECHO);
+    t.c_cc[VMIN] = 1;
+    t.c_cc[VTIME] = 0;
+    tcsetattr(0, TCSANOW, &t);
+    printf("RAWSTOP ready\n");
+    fflush(stdout);
+    char c;
+    while (read(0, &c, 1) == 1 && c != 'q') { }
+    print_tmodes("RAWSTOP after");
+    tcsetattr(0, TCSANOW, &old);
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    if (argc > 1 && !strcmp(argv[1], "pty")) return pty_relay(argc, argv);
+    if (argc > 1 && !strcmp(argv[1], "rawstop")) return raw_stop();
+    if (argc > 1 && !strcmp(argv[1], "tmodes")) { print_tmodes("TMODES"); return 0; }
     printf("jctest: the shrine's job control test begins\n");
     setup_shared();
     test_stop_continue();

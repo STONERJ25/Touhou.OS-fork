@@ -209,7 +209,22 @@ static int bi_dirs(int argc, char **argv) {
     return 0;
 }
 
+int g_line_no;                          /* counts the lines typed at the prompt */
+int g_exit_warned = -10;                /* the line on which `exit` last warned about stopped jobs */
+
+/* An interactive shell with stopped jobs warns once; an `exit` (or ^D) right after the warning leaves, and the stopped
+ * jobs get SIGHUP and SIGCONT (see jobs_hangup_stopped). */
+int exit_blocked_by_jobs(void) {
+    if (!g_interactive || getpid() != g_shell_pgid) return 0;          /* not in $(...), which inherits the table */
+    if (g_exit_warned >= g_line_no - 1 || !jobs_stopped()) return 0;
+    fprintf(stderr, "There are stopped jobs: Sakuya has stopped their clocks (`jobs` lists them).\n"
+                    "Leave again at once to go anyway; they will get SIGHUP.\n");
+    g_exit_warned = g_line_no;
+    return 1;
+}
+
 static int bi_exit(int argc, char **argv) {
+    if (exit_blocked_by_jobs()) return 1;
     g_status = argc > 1 ? atoi(argv[1]) & 0xFF : g_status;
     g_exit_requested = 1;
     return g_status;
@@ -333,12 +348,9 @@ static int bi_command(int argc, char **argv) {
         char *path = find_in_path(argv[1]);
         if (is_builtin(argv[1])) return run_builtin(argc - 1, argv + 1);
         if (!path) { shell_error("%s: command not found", argv[1]); return 127; }
-        pid_t pid = fork();
-        if (pid == 0) { char **env = vars_environ(); execve(path, argv + 1, env); _exit(126); }
-        int status = 0;
-        waitpid(pid, &status, 0);
+        int st = run_program(path, argv + 1);
         free(path);
-        return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+        return st;
     }
     return 0;
 }
@@ -520,21 +532,14 @@ static int bi_jobs(int argc, char **argv) { return jobs_command(argc, argv, "job
 static int bi_fg(int argc, char **argv) { return jobs_command(argc, argv, "fg"); }
 static int bi_bg(int argc, char **argv) { return jobs_command(argc, argv, "bg"); }
 
-static int bi_wait(int argc, char **argv) {
-    int status = 0;
-    if (argc > 1) {
-        pid_t pid = atoi(argv[1]);
-        if (waitpid(pid, &status, 0) < 0) return 127;
-        return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
-    }
-    while (wait(&status) > 0) { }
-    return 0;
-}
+static int bi_wait(int argc, char **argv) { return jobs_command(argc, argv, "wait"); }
+static int bi_disown(int argc, char **argv) { return jobs_command(argc, argv, "disown"); }
 
 static const struct { const char *name; int num; } g_signames[] = {
     { "HUP", SIGHUP }, { "INT", SIGINT }, { "QUIT", SIGQUIT }, { "ILL", SIGILL }, { "ABRT", SIGABRT }, { "KILL", SIGKILL },
     { "USR1", SIGUSR1 }, { "SEGV", SIGSEGV }, { "USR2", SIGUSR2 }, { "PIPE", SIGPIPE }, { "ALRM", SIGALRM },
     { "TERM", SIGTERM }, { "CHLD", SIGCHLD }, { "CONT", SIGCONT }, { "STOP", SIGSTOP }, { "TSTP", SIGTSTP },
+    { "TTIN", SIGTTIN }, { "TTOU", SIGTTOU },
 };
 
 static int sig_from_name(const char *s) {
@@ -557,9 +562,8 @@ static int bi_kill(int argc, char **argv) {
     if (i >= argc) { shell_error("kill: usage: kill [-s sig | -sig] pid ..."); return 2; }
     int st = 0;
     for (; i < argc; i++) {
-        pid_t pid;
-        if (argv[i][0] == '%') pid = -atoi(argv[i] + 1);            /* job spec: resolved by the job table below */
-        else pid = atoi(argv[i]);
+        if (argv[i][0] == '%') { if (job_kill(argv[i], sig)) st = 1; continue; }     /* a job: its whole group */
+        pid_t pid = atoi(argv[i]);
         if (kill(pid, sig) < 0) { shell_error("kill: (%s) - %s", argv[i], strerror(errno)); st = 1; }
     }
     return st;
@@ -629,13 +633,13 @@ static int bi_help(int argc, char **argv) {
     (void)argc; (void)argv;
     printf("\x1b[1;31mgapsh\x1b[0m -- the shell of Gensokyo. Every command passes through a gap in the Boundary.\n\n");
     printf("builtins:  cd pwd echo printf exit export unset set shift local alias unalias type command\n");
-    printf("           source . eval exec read test [ jobs fg bg wait kill history umask trap getopts\n");
-    printf("           pushd popd dirs help true false :\n\n");
+    printf("           source . eval exec read test [ jobs fg bg wait disown kill history umask\n");
+    printf("           trap getopts pushd popd dirs help true false :\n\n");
     printf("syntax:    pipes | && || ; & ( ) { }   if/elif/else/fi   while/until/do/done   for x in ...\n");
     printf("           case/esac   name() { ... }   $var ${var:-x} $(cmd) $((1+2))   globs * ? [a-z]\n");
     printf("           < > >> 2> 2>&1 &> <<EOF heredocs\n\n");
     printf("keys:      Up/Down history, Tab completion, Ctrl-A/E home/end, Ctrl-K/U/W kill, Ctrl-L clear,\n");
-    printf("           Ctrl-R search, Ctrl-D exit, Ctrl-C cancel\n\n");
+    printf("           Ctrl-R search, Ctrl-D exit, Ctrl-C cancel; Ctrl-Z stops the running program (fg, bg)\n\n");
     printf("more:      'patchouli' for manual pages, 'omikuji' for a fortune, 'spellmgr' to see running spell cards.\n");
     return 0;
 }
@@ -650,6 +654,7 @@ static const Builtin g_builtins[] = {
     { "alias", bi_alias }, { "unalias", bi_unalias }, { "type", bi_type }, { "command", bi_command },
     { "source", bi_source }, { ".", bi_source }, { "eval", bi_eval }, { "exec", bi_exec }, { "read", bi_read },
     { "test", bi_test }, { "[", bi_test }, { "jobs", bi_jobs }, { "fg", bi_fg }, { "bg", bi_bg }, { "wait", bi_wait },
+    { "disown", bi_disown },
     { "kill", bi_kill }, { "history", bi_history }, { "umask", bi_umask }, { "trap", bi_trap }, { "ulimit", bi_ulimit },
     { "getopts", bi_getopts }, { "help", bi_help }, { "readonly", bi_export },
 };

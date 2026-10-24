@@ -65,7 +65,12 @@ static void interactive_loop(void) {
         char *prompt = build_prompt();
         char *line = edit_readline(prompt);
         free(prompt);
-        if (!line) break;                                  /* Ctrl-D */
+        g_line_no++;
+        g_interrupted = 0;
+        if (!line) {                                       /* Ctrl-D */
+            if (exit_blocked_by_jobs()) continue;
+            break;
+        }
         char *src = line;
         Node *prog = NULL;
         int failed = 0;
@@ -123,6 +128,15 @@ int main(int argc, char **argv, char **envp) {
     if (force_interactive) g_interactive = isatty(0);
 
     if (g_interactive) {
+        /* Started in the background (`gapsh &`): wait to be brought to the front instead of taking the terminal from
+         * the shell that started us. SIGTTIN stops us until fg; a group nobody could continue drops the signal, so the
+         * wait is bounded (about a second of running time) and then the shell takes the terminal as before. */
+        for (int tries = 0; tries < 100; tries++) {
+            pid_t fgp = tcgetpgrp(0);
+            if (fgp <= 1 || fgp == getpgrp() || kill(-fgp, 0) < 0) break;
+            kill(-getpgrp(), SIGTTIN);
+            usleep(10000);
+        }
         signal(SIGINT, SIG_IGN);
         signal(SIGQUIT, SIG_IGN);
         signal(SIGTSTP, SIG_IGN);
@@ -175,6 +189,7 @@ int main(int argc, char **argv, char **envp) {
                 }
             }
             interactive_loop();
+            jobs_hangup_stopped();
             history_save();
             status = g_status;
         } else {

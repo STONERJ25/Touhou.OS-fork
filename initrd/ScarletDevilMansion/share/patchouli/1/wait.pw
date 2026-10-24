@@ -1,13 +1,19 @@
-.page wait 1 wait for processes to finish
+.page wait 1 wait for jobs and processes to finish
 
 # SYNOPSIS
-*wait* [_PID_]
+*wait* [_PID_ | _JOB_]...
 
 # DESCRIPTION
-`wait` is a gapsh builtin. With a process id it waits for that process and returns its exit status; without one it waits for all child processes.
+`wait` is a gapsh builtin. With operands it waits for each process _PID_ or job _JOB_ (`%1`, `%%`, `%cat`, see jobs(1)) to finish and returns the status of the last one: its exit status, or 128 plus the signal that killed it. A job's status is that of its last process. Without operands it waits until no job runs any more and returns 0.
+
+`wait` waits for jobs to end, not to stop: a job that stops meanwhile is still waited for, and one that is already stopped (the shell says so) only ends after `fg` or `bg`. In an interactive shell ^C stops the waiting and `wait` returns 130.
+
+# EXIT STATUS
+The status of the last operand; 127 if it is not a child of the shell or no such job exists; 130 after ^C.
 
 # EXAMPLES
     sleep 2 & wait $!; echo done
+    (sleep 1; exit 7) & wait %1; echo $?
 
 # SEE ALSO
 jobs(1), kill(1)

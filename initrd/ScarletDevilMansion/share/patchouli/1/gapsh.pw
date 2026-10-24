@@ -54,7 +54,9 @@ The default prompt is `reimu@gensokyo ~ $`, the user in shrine red, the host in 
 The history keeps the last 1000 lines in memory and saves the last 500 in `~/.gapsh_history`. The builtin `history` lists it.
 
 # JOBS
-A command ending in `&` runs in the background; the shell prints its job number and process id. Finished background jobs are reported before the next prompt. `jobs`, `fg` and `bg` manage them. The shell itself ignores ^C, ^\ and ^Z; programs started from it get the default behaviour, so ^C interrupts the foreground job.
+An interactive shell does job control. Every command line it runs is a job in a process group of its own, and the job in front gets the terminal. ^C interrupts it; ^Z stops it and brings the prompt back with `[1]+  Stopped  COMMAND`. `jobs` lists the jobs, `fg` continues one in front, `bg` in the background, `wait %1` waits for one to finish, `disown` forgets one and `kill %1` signals all its processes; see jobs(1). A command ending in `&` runs in the background: the shell prints its job number and process id, and if the job tries to read the terminal it stops until `fg`. Jobs that stopped or finished in the background are reported before the next prompt.
+
+The shell keeps its own terminal settings: when a job stops, its settings are saved for `fg` and the shell's are put back. ^C or ^Z also drop the rest of the command line. Leaving with stopped jobs warns once; leaving again at once sends them `HUP` and `CONT`. An interactive shell started in the background waits, stopped, until it is brought to the front. The shell itself ignores ^C, ^\ and ^Z; programs started from it get the default behaviour. Scripts and `-c` commands have no job control: their jobs share the shell's process group, a background job reads `/dev/null`, and `fg` only waits.
 
 # EXIT STATUS
 The status of the last command; 127 if a script cannot be read; 2 for a bad option or a syntax error in `-c`.
@@ -74,4 +76,4 @@ The status of the last command; 127 if a script cannot be read; 2 for a bad opti
     gapsh script.sh one two
 
 # SEE ALSO
-gapsh-language(7), gapsh-builtins(7), profile(5), keys(7), kappabox(1)
+gapsh-language(7), gapsh-builtins(7), jobs(1), jobcontrol(7), profile(5), keys(7), kappabox(1)

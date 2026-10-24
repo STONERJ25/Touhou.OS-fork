@@ -41,6 +41,8 @@ The next two goals, in this order:
 
 The server half of goal 2 is on branch `cloud/update-server` (2026-10-24): `tools/serve-update.py` signs a manifest and serves it over HTTP, host tests in `tests/host/test_serve_update.py`; format, protocol and the loader fallback design are in [UPDATE.md](UPDATE.md). The OS client and the fallback are not started.
 
+gapsh job control is on branch `cloud/job-control` (2026-10-24): Ctrl-Z, `jobs`, `fg`, `bg`, `wait %N`, `disown`, `%` job names; tests `jobctl_shell_console`, `jobctl_shell_pty`, `jobctl_desktop_terminal`; see [JOBCONTROL.md](JOBCONTROL.md) "State when paused".
+
 Before both: merge the parked branches (below) and run the whole suite on the result, in particular the network/HTTPS branch, the dirty-volume `fsck` branch (an installed disk and a
 stick that is switched off with the button need it) and the audio branch.
 
