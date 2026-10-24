@@ -1,0 +1,10 @@
+crc32("123456789")=cbf43926 crc32("")=00000000
+ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592
+[]->[]->[] [f]->[Zg==]->[f] [fo]->[Zm8=]->[fo] [foo]->[Zm9v]->[foo] [foob]->[Zm9vYg==]->[foob] [fooba]->[Zm9vYmE=]->[fooba] [foobar]->[Zm9vYmFy]->[foobar] 
+xorshift acc=3dcb462997b1f24d next=c1775a75632296c7
+fnv1a: 4f9f2cab e30107d8
+rle: 17 -> 8 -> 17 (aaaabbbcccccccccd)
+rotl/rotr: 0000000c 0c000000 popcnt=2
+int64 min=-9223372036854775808 max=9223372036854775807 uint64 max=18446744073709551615

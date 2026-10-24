@@ -1,0 +1,23 @@
+.page mar 1 Marisa's archiver
+
+# SYNOPSIS
+*mar* *rcs* _ARCHIVE_ _FILE_...
+*mar* *t* _ARCHIVE_
+*mar* *x* _ARCHIVE_ [_MEMBER_...]
+*mar* *d* _ARCHIVE_ _MEMBER_...
+
+# DESCRIPTION
+`mar` keeps object files together in a library that `mld` can link: a GNU-format `ar` archive with an index of the global symbols of its members, the same file that llvm-ar and GNU ar write, so libraries made by either tool can be read by the others.
+
+The first argument says what to do. *r* (or *q*) adds the named files, replacing members of the same name, and creates the archive if there is none; *t* lists the members; *x* extracts all of them or the named ones into the current directory; *d* deletes members. The letters *c*, *s*, *v*, *u* are accepted and ignored: the symbol index is always written. Member names are the file names without their directory; names longer than 15 characters go into the long-name table.
+
+# EXIT STATUS
+0 on success, 1 for any error (a file that is not there, a damaged archive).
+
+# EXAMPLES
+    mcc -c list.c hash.c && mar rcs libcontainers.a list.o hash.o
+    mar t /ScarletDevilMansion/lib/libgap.a
+    mcc prog.c libcontainers.a -o prog
+
+# SEE ALSO
+mcc(1), mld(1)

@@ -1,0 +1,7 @@
+child: [child says hi] exited=1 status=7
+exec works
+exec: status=0
+signal: got=1
+1 2 4 7 8 9 
+1 MiB malloc: 1048575
+run-rc=0

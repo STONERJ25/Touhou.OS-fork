@@ -1,0 +1,13 @@
+second: line 2: even  3.00
+lines=6 chars=117 eof=1
+scanned: 1 odd 1.50
+tail: line (at 113)
+size=117 regular=1
+[0003.142|ab    |    cd|+7|0xff|Z] (34)
+sscanf: 12 + 30 = 42
+strtol: -42 31 511
+atoi/atof: 123 2.75
+removed: 1
+this goes to stderr
+getline read something: 1
+run-rc=0

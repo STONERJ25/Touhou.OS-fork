@@ -71,6 +71,10 @@ Prompt: `reimu@gensokyo ~ $`. See [ACCOUNTS.md](ACCOUNTS.md).
   over the river as sdb`, a write-protected stick is "the kappa keep the sluice gate shut (read-only)"; the volume belongs to Keine
   (`the Human Village keeps its records on the stick now`, `... vanished while it was mounted`); the kernel log on the stick is
   "Shikieiki's ledger, readable on any other computer". The block layer's own lines (`blk: sdb removed ...`) stay Marisa's.
+- The compiler speaks like Marisa, but the technical fact comes first and stays conventional: `mcc` prints `file:line: error: text`,
+  the source line, a caret and a remark (`^ Marisa: I never borrowed that one, ze. Did you declare it?`), and ends with
+  `mcc: 1 error -- nothing was built, ze.`; `mld` reports `undefined reference to 'x' -- Marisa: that book isn't in the library, ze`;
+  a successful build prints nothing. `mcc --version` says who she is.
 - `rm` -> Netherworld, `shutdown` -> "Yukari opens a gap...", `fortune`/`omikuji` -> shrine fortune slips, `saisen` -> offering box.
 - The Explorer: Delete sends things to the Netherworld (with a note of where they came from), an empty Netherworld says `Yuyuko is
   hungry.`, deleting for good or emptying asks whether Yuyuko may eat it, an empty folder shows `Nothing here but the wind`, and

@@ -1,0 +1,30 @@
+*p=1 p[2]=3 *(p+3)=4
+*p=3 p-a=2
+*p=4
+*p=3
+sum=21
+&a[5]-&a[1]=4
+p<&a[4]: 1, p>a: 1
+x=2 y=1
+m[2][3]=23 m[1][0]=10 sizeof(m)=48 sizeof(m[0])=16
+row[1][2]=12 (*(row+2))[1]=21
+flat[5]=11 flat[11]=23
+buf=Marisa len=6 strlen=6
+q=isa *q=i q[-1]=r
+buf=marisa
+ops[0](7,3)=10
+ops[1](7,3)=4
+ops[2](7,3)=21
+apply=42 42
+f(10,4)=6 (*f)(10,4)=6
+global_arr[1]=20 *global_ptr=30
+zero one two three 
+names[2][1]=w
+a[2]=99
+heap data grown 15
+null: 1 1
+void*: 2
+979899
+yo
+bytes=12
+aligned=0
