@@ -63,8 +63,8 @@ whole file system, from `/`), *Notebook*, *Spell Manager*.
 Lock screen, Shut down...
 
 **Windows** have a title bar with three buttons (minimise, maximise, close). Drag the title bar to move a window, drag an edge or a
-corner to resize it, double-click the title bar to maximise or restore it, or hold **Alt** and drag anywhere inside the window to move it.
-A window that has unsaved work marks its title with `*` and asks before it closes.
+corner to resize it, double-click the title bar of a resizable window to maximise or restore it, or hold **Alt** and drag anywhere inside the window to move it.
+The Notebook and the Sketchbook mark unsaved work with `*` in the title and ask before they close.
 
 Programs started from the panel or the menu write their messages to `/tmp/<program>.log` (for example `/tmp/explorer.log`), which is the
 first place to look when something closes by itself.
@@ -309,7 +309,7 @@ More words, for diagnosing a PC that does not boot, are in [REAL_HARDWARE.md](RE
 - The screen is drawn at 1x: on a large monitor (2560x1440) the 8x16 text is small. There is no scaling yet.
 - US keyboard layout only; no Japanese text.
 - Only one processor core is used.
-- Alt+F2 does nothing yet (the window server passes it on, but no run dialog exists).
+- Alt+F2 does nothing yet (the window server reserves it for a "run a command" dialog, which the desktop shell does not have).
 - The clipboard holds at most 1024 bytes.
 - The context menus of the applications (the Explorer, the Notebook) are drawn inside their window, so they cannot extend past its edges.
 - The desktop panel's clock is always 24-hour; the 12/24 hour setting only applies to the Pocket Watch.
