@@ -592,7 +592,7 @@ static void register_namespace(NvmeCtrl *c, u32 nsid) {
     bd->read = nvme_blk_read;
     bd->write = nvme_blk_write;
     bd->flush = nvme_blk_flush;
-    bd->readonly = blk_ro_requested();
+    bd->readonly = bd->ro_policy = blk_ro_requested();
     bd->priv = ns;
     if (c->nns < NVME_MAX_NS) c->ns[c->nns++] = ns;
     klog("Kappa", "nvme%d: nsid %u: %lu MiB, %lu blocks of %u bytes", c->index, nsid, (unsigned long)(ns->sectors * ns->sector_size >> 20),

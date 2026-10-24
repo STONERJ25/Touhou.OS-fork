@@ -9,7 +9,7 @@
 #include <stdint.h>
 
 #define BOOTINFO_MAGIC      0x4F4B59534E474F54ULL
-#define BOOTINFO_VERSION    1u
+#define BOOTINFO_VERSION    2u      /* 2: boot_part */
 
 /* Virtual address layout the loader sets up before jumping to the kernel. */
 #define HHDM_BASE           0xFFFF800000000000ULL   /* phys 0 is mapped here, RAM only is guaranteed */
@@ -55,6 +55,20 @@ typedef struct {
 
 #define BOOTINFO_CMDLINE_MAX 256
 
+/* The partition the loader was read from: the HardDrive node of the boot volume's UEFI device path (UEFI 2.x, 10.3.5.1). valid is 0 when the
+ * firmware gave none (a CD, a network boot). The kernel shows it in /proc/bootdisk; the installer uses it to find its source files and to
+ * refuse the disk the system is running from. */
+typedef struct {
+    uint32_t valid;
+    uint32_t part_number;       /* 1-based entry of the partition table */
+    uint64_t part_start;        /* first logical block */
+    uint64_t part_size;         /* logical blocks */
+    uint8_t  signature[16];     /* GPT: the partition's unique GUID (on-disk byte order); MBR: the 32-bit disk signature in the first 4 bytes */
+    uint8_t  table;             /* 1 MBR, 2 GPT */
+    uint8_t  sig_type;          /* 0 none, 1 MBR signature, 2 GUID */
+    uint8_t  reserved[6];
+} BootPartition;
+
 typedef struct {
     uint64_t magic;
     uint32_t version;
@@ -81,6 +95,8 @@ typedef struct {
     uint64_t arena_size;
 
     char cmdline[BOOTINFO_CMDLINE_MAX];
+
+    BootPartition boot_part;    /* version >= 2 */
 } BootInfo;
 
 #endif /* SHARED_BOOTINFO_H */

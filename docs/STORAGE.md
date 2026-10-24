@@ -23,7 +23,7 @@ builds and checks disk images. Without such a disk nothing changes: the homes li
 
 ## Layout of a TouhouOS disk
 
-`tools/mkdisk.py` builds the reference layout (the installer will one day do the same):
+`tools/mkdisk.py` builds the reference layout (`install` writes the same onto a disk of the running system, see [INSTALL.md](INSTALL.md)):
 
 | Partition | GPT name | FAT label | Contents |
 |-----------|----------|-----------|----------|
