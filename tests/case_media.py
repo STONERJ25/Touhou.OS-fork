@@ -22,7 +22,7 @@ import zlib
 import harness
 import test_shell
 from guitools import Gui, near, SHRINE_RED, PAPER
-from harness import Qemu, BUILD
+from harness import Qemu, BUILD, scaled
 from imgdata import make_png, expect_png, photo, build_corpus, mutate, clear_transparent, make_gif, many_scans_jpeg
 from PIL import Image, ImageOps
 
@@ -84,7 +84,7 @@ def watch(g):
 
 
 def wait_for(fn, timeout=60, interval=0.5, what="the condition"):
-    end = time.time() + timeout
+    end = time.time() + scaled(timeout)
     while True:
         v = fn()
         if v:
@@ -576,7 +576,7 @@ def click_until(g, x, y, done, what, tries=4, wait=40):
     for _ in range(tries):
         g.home()
         g.click(x, y)
-        end = time.time() + wait
+        end = time.time() + scaled(wait)
         while time.time() < end:
             if done():
                 return

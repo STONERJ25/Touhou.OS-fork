@@ -10,7 +10,7 @@ from pathlib import Path
 
 import test_shell
 from guitools import START_BUTTON, SHRINE_RED, near
-from harness import test, Qemu, BUILD
+from harness import test, Qemu, BUILD, scaled
 
 ROOT = Path(__file__).resolve().parent.parent
 IMG = BUILD / "t-stick.img"
@@ -29,7 +29,7 @@ def image_usb_stick_boots_desktop():
     make_image("video=1024x768 blk.ro")
     with Qemu(cmdline="", name="t-image-usb", mem="768M", boot_image=IMG, boot_bus="usb") as vm:
         vm.expect(r"opening the desktop for reimu", timeout=120)
-        deadline = time.time() + 60
+        deadline = time.time() + scaled(60)
         ok = False
         while time.time() < deadline and not ok:
             ok = near(vm.pixel(*START_BUTTON, vm.screen_ppm()), SHRINE_RED, 60)

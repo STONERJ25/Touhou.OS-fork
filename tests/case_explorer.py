@@ -17,7 +17,7 @@ import re
 import time
 from contextlib import contextmanager
 
-from harness import test, Qemu, BUILD
+from harness import test, Qemu, BUILD, scaled
 from guitools import Gui, PROMPT, PAPER, near
 
 OX, OY = 44, 56
@@ -56,7 +56,7 @@ def mark(vm):
 def wait_after(vm, m, pattern, timeout=25):
     """Waits until the console text after offset m contains pattern; returns the match."""
     rx = re.compile(pattern, re.S)
-    end = time.time() + timeout
+    end = time.time() + scaled(timeout)
     while time.time() < end:
         found = rx.search(vm.text()[m:])
         if found:
@@ -720,7 +720,7 @@ def explorer_open_apps():
         m = mark(vm)
         g.key("ret")
         wait_after(vm, m, r"ex: open /tmp/x/run.sh with terminal")
-        deadline = time.time() + 40
+        deadline = time.time() + scaled(40)
         while time.time() < deadline and not shell_has(g, "/tmp/x/ran.flag"):
             time.sleep(1.0)
         assert shell_has(g, "/tmp/x/ran.flag"), "the program did not run in the terminal"

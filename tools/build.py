@@ -27,29 +27,49 @@ ROOT = Path(__file__).resolve().parent.parent
 BUILD = ROOT / "build"
 OBJ = BUILD / "obj"
 
-LLVM_DIR = r"C:\Program Files\LLVM\bin"
-NASM_DIR = os.path.expandvars(r"%LOCALAPPDATA%\bin\NASM")
+# Where the tools come from, in order: TOUHOU_LLVM_DIR (the folder with clang, lld-link, ld.lld, llvm-ar, llvm-objcopy,
+# llvm-nm) and TOUHOU_NASM (the nasm program or its folder), then the PATH, then the Windows install folders this was
+# written with. docs/LINUX.md lists the Linux packages.
+WINDOWS_LLVM_DIR = r"C:\Program Files\LLVM\bin"
+WINDOWS_NASM_DIR = os.path.expandvars(r"%LOCALAPPDATA%\bin\NASM")
+EXE = ".exe" if os.name == "nt" else ""
 
 
-def find_tool(name, dirs):
-    for d in dirs:
-        for ext in ("", ".exe"):
-            p = Path(d) / (name + ext)
-            if p.is_file():
-                return str(p)
+def _in_dir(d, name):
+    p = Path(d) / (name + EXE)
+    return str(p) if p.is_file() else None
+
+
+def find_tool(name, env_var, windows_dir):
+    env = os.environ.get(env_var)
+    if env:
+        if Path(env).is_file():
+            return env
+        found = _in_dir(env, name)
+        if found:
+            return found
+        sys.exit(f"build: {env_var}={env} has no '{name}'")
     found = shutil.which(name)
     if found:
         return found
-    sys.exit(f"build: cannot find '{name}' -- install LLVM/NASM or edit tools/build.py")
+    if os.name == "nt":
+        found = _in_dir(windows_dir, name)
+        if found:
+            return found
+    sys.exit(f"build: cannot find '{name}' -- install LLVM/NASM or set {env_var} (see docs/LINUX.md)")
 
 
-CLANG = find_tool("clang", [LLVM_DIR])
-LLD_LINK = find_tool("lld-link", [LLVM_DIR])
-LD_LLD = find_tool("ld.lld", [LLVM_DIR])
-LLVM_AR = find_tool("llvm-ar", [LLVM_DIR])
-OBJCOPY = find_tool("llvm-objcopy", [LLVM_DIR])
-NASM = find_tool("nasm", [NASM_DIR])
-LLVM_NM = find_tool("llvm-nm", [LLVM_DIR])
+def find_llvm(name):
+    return find_tool(name, "TOUHOU_LLVM_DIR", WINDOWS_LLVM_DIR)
+
+
+CLANG = find_llvm("clang")
+LLD_LINK = find_llvm("lld-link")
+LD_LLD = find_llvm("ld.lld")
+LLVM_AR = find_llvm("llvm-ar")
+OBJCOPY = find_llvm("llvm-objcopy")
+NASM = find_tool("nasm", "TOUHOU_NASM", WINDOWS_NASM_DIR)
+LLVM_NM = find_llvm("llvm-nm")
 
 COMMON_WARN = ["-Wall", "-Wextra", "-Wno-unused-parameter", "-Wno-sign-compare", "-Wno-missing-field-initializers"]
 

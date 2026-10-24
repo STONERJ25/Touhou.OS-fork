@@ -132,4 +132,5 @@ Old helper worktrees that are merged and can be deleted: `agent-a8e93238212e069d
 - Every new kappabox applet needs a manual page (`initrd/ScarletDevilMansion/share/patchouli/1/NAME.pw`, lines at most 78 columns) or `manual` fails.
 - Agents started with worktree isolation get a worktree made from `origin/main`: tell them to run `git merge main` first, or push before starting them.
 - `TOUHOU_CPU=Skylake-Client-noTSX-IBRS` runs QEMU as a CPU closer to the target i5-7500.
+- Linux works too (`cloud/linux-tooling`): packages, `TOUHOU_*` variables (tool paths, `TOUHOU_TIMEOUT_SCALE` for slow hosts) and the GitHub Actions smoke run are in [LINUX.md](LINUX.md).
 - Commits stay local; push to `origin` (`stonerj/Touhou.OS-fork`, private) only when the user asks. Never push to `upstream`.
