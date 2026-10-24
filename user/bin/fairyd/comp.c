@@ -420,6 +420,7 @@ static void compose(Rect r) {
  * transactions of the dword stores a byte-string copy ends up doing there. Sequential and never reading the destination. */
 static void copy_to_fb(uint32_t *dst, const uint32_t *src, size_t n) {
     while (n && ((uintptr_t)dst & 15)) { *dst++ = *src++; n--; }
+#ifndef __MCC__                                                     /* mcc's inline assembly has no xmm registers: plain stores below */
     while (n >= 16) {
         __asm__ volatile (
             "movdqu    (%1), %%xmm0\n\t"
@@ -437,6 +438,7 @@ static void copy_to_fb(uint32_t *dst, const uint32_t *src, size_t n) {
         __asm__ volatile ("movdqu (%1), %%xmm0\n\tmovntdq %%xmm0, (%0)" : : "r"(dst), "r"(src) : "xmm0", "memory");
         dst += 4; src += 4; n -= 4;
     }
+#endif
     while (n) { *dst++ = *src++; n--; }
 }
 

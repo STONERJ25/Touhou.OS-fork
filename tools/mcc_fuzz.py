@@ -162,7 +162,7 @@ def main():
         "  ./$n.mcc > $n.mcc.out 2>&1; ./$n.gcc > $n.gcc.out 2>&1\n"
         "  if ! cmp -s $n.mcc.out $n.gcc.out; then echo \"FAIL $f: output differs\"; diff $n.mcc.out $n.gcc.out | head -4; fail=1; fi\n"
         "done\n[ $fail = 0 ] && echo \"fuzz: all ok\"\nexit $fail\n", newline="\n")
-    r = subprocess.run(["wsl.exe", "-e", "bash", U.wsl_path(script)], capture_output=True, text=True, cwd=ROOT)
+    r = subprocess.run(U.linux_cmd(["bash", U.wsl_path(script)]), capture_output=True, text=True, cwd=ROOT)
     print(r.stdout + r.stderr)
     sys.exit(r.returncode)
 

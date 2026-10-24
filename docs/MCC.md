@@ -127,7 +127,7 @@ function definitions, x87/SSE inline assembly, `-S` (there is no assembly text; 
 | `mcc_kappabox` | QEMU | all of kappabox (about 130 applets, 15,000 lines) compiled by mcc passes the 95-line shell test table |
 | `mld_relinks_clang` | QEMU | programs relinked by `mld` from clang's objects run like the originals |
 | `mld_got_relocations` | QEMU | an object made by `clang -fPIC` (so full of `GOTPCREL` relocations) is linked statically by `mld` and runs |
-| `mcc_libgap` | QEMU | libgap itself (all of it but `math.c`, which uses x87, and `setjmp.asm`), compiled by mcc, links with `utest` compiled by mcc and passes the OS's own user-space suite (libc, fork/exec, signals, mmap, 22 thread sections) |
+| `mcc_libgap` | QEMU | libgap itself (all of it but `math.c` and `fpconv.c`, which use x87 `long double` and `unsigned __int128`, and `setjmp.asm`), compiled by mcc, links with `utest` compiled by mcc and passes the OS's own user-space suite (libc, fork/exec, signals, mmap, 22 thread sections) |
 | `mcc_userland` | QEMU | libgap, the five libraries and 34 programs of `user/bin` and `user/sbin` (init, login, gapsh, the greeter, the compositor, the panel...) all built by mcc replace the clang builds in the initrd: the desktop comes up, `utest` passes, the shell test table passes |
 | `mcc_driver_options` | host | `-D -U -I -include -E -o -c -s -M`, error exits, undefined and duplicate symbols |
 | `mcc_fuzz` | host | 40 random programs (integer expressions over every type, compound assignments, floating point) print the same numbers when built by mcc and by gcc |
@@ -146,8 +146,9 @@ call per 8 bytes (the editor's benchmark ran 25 times slower than the clang buil
 
 ### The host build
 
-The Windows clang on the development machine has no C library, so the host copy of mcc is built with the Linux gcc of WSL:
-`bash tools/mcc_host.sh` produces `build/host/{mcc,mld,mar}` (tests/mcc_util.py runs it). `MCC_ASAN=1 bash tools/mcc_host.sh`
+The Windows clang on the development machine has no C library, so the host copy of mcc is built with the Linux gcc of WSL; on
+Linux the same scripts run directly with the host's gcc (`linux_cmd` in `tests/mcc_util.py`, LLVM tools found as `tools/build.py`
+finds them, through `TOUHOU_LLVM_DIR` or the `PATH`): `bash tools/mcc_host.sh` produces `build/host/{mcc,mld,mar}` (tests/mcc_util.py runs it). `MCC_ASAN=1 bash tools/mcc_host.sh`
 builds `mcc-asan` with the address sanitizer. `tools/mcc_lintest.sh FILE.c...` compiles with mcc and gcc, links both against
 glibc and compares what they print; `tools/mcc_compile_all.sh` compiles every C file of the OS tree and lists what mcc cannot
 digest yet. The programs mcc makes are TouhouOS ELF files: they only run in QEMU (except the differential tests, which link the
@@ -183,9 +184,12 @@ src/mcc/        the source of the compiler
 
 - Inline assembly: GNU extended asm works (`asm.inc`): operands in registers, memory or immediates, the `a b c d S D` constraints,
   matching operands, named operands, register variables, numeric local labels, and a small AT&T assembler for the integer
-  instructions programs use (see `mcc(1)`). x87 and SSE instructions are not understood, so `user/libc/src/math.c` and the
-  calculator's engine still need clang; the rest of libgap is built by mcc in the `mcc_libgap` test. File-scope `asm` is
-  ignored with a warning.
+  instructions programs use (see `mcc(1)`). x87 and SSE instructions are not understood, so the calculator's engine still needs
+  clang, and the compositor's non-temporal framebuffer copy (`copy_to_fb` in `user/bin/fairyd/comp.c`) falls back to plain
+  stores under `__MCC__`. File-scope `asm` is ignored with a warning.
+- `unsigned __int128` does not exist, so libgap's `math.c` and `fpconv.c` (exact `strtod`/`printf`) still need clang; the rest of
+  libgap is built by mcc in the `mcc_libgap` test. SSE2 intrinsics: `include/emmintrin.h` has the seven that libgap's
+  `string.c` uses, in plain C on two 64-bit halves (same results, no speed); anything else is a compile error.
 - Code quality: no register allocation, no constant propagation across statements; programs run perhaps 3 to 5 times slower than
   clang -O2 output, and code that leans on the optimiser (a byte loop clang turns into `memcpy`, tiny helpers it inlines) can be
   far slower: the notebook editor's benchmark was 25 times slower until `memcpy` of a constant size was expanded in line. The
@@ -228,6 +232,20 @@ host (native differential runs and the fuzzer against gcc), none in QEMU. Known 
 with the mcc-built userland (the notebook causes are fixed but not re-run, the sketchbook failures have not been looked at); the
 guest has not yet been seen to allocate the 256 MiB thread stack (if it cannot, the driver falls back to the main thread, which
 is only a problem for generated sources that nest thousands of levels deep).
+
+### After the merge into `cloud/staging` (2026-10-24, Linux, QEMU 8.2, TCG)
+
+The branch was squash-merged on top of the other parked branches. What they changed under mcc's feet, and the fixes: the libc
+branch's `fpconv.c` uses `unsigned __int128` (taken from clang like `math.c`) and its `string.c` uses SSE2 intrinsics (the new
+`include/emmintrin.h`, checked against the real intrinsics with gcc on 200,000 random cases); kappabox now needs `-ltls` (libtls
+stays a clang build: AES-NI intrinsics); `fsck` includes `shared/fatck.c` (`-I shared` in `mcc_build_userland.sh`, as in
+`tools/build.py`); the compositor's SSE copy (see "Limits"). `mcc_selfhost` compared `$n.a` with a file that is never written
+(`$n.3` for `${n}3`); fixed. The test helpers run natively on Linux now (see "The host build").
+
+`python tests/run_all.py mcc,mld,manual` (with `TOUHOU_TIMEOUT_SCALE=3`): all 13 `mcc_*`/`mld_*` tests and `manual` pass; four
+(`mcc_selfhost`, `mcc_kappabox`, `mcc_libgap`, `mcc_userland`) failed for the reasons above and passed after the fixes
+(`mcc_userland` included: the mcc-built userland boots the desktop and passes `utest` and the shell table). Not run: the other suites against the mcc-built
+userland (`tools/mcc_userland_suites.py`, item 4 below), so the notebook and sketchbook findings are still open.
 
 ## How to resume
 

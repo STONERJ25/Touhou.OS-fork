@@ -9,7 +9,7 @@ that only ever runs in QEMU.  The guest runs of this file:
   mcc_kappabox         all of kappabox, built with mcc, passes the shell test table
   mld_relinks_clang    objects made by clang are relinked by mld and the programs still run
   mld_got_relocations  an object made by clang -fPIC (GOTPCREL) is linked statically by mld and runs
-  mcc_libgap           libgap itself (all but math and setjmp) compiled by mcc passes the OS's own utest suite
+  mcc_libgap           libgap itself (all but math, fpconv and setjmp) compiled by mcc passes the OS's own utest suite
   mcc_userland         the whole userland (34 programs) built by mcc boots the desktop and passes utest and the shell table
   mcc_fuzz             (host) random expression programs: mcc and gcc print the same numbers
 """
@@ -26,7 +26,6 @@ ROOT = U.ROOT
 CORPUS_DIR = U.CORPUS
 GUEST_DIR = CORPUS_DIR / "guest"
 NOT_RUN = {"pp1", "allhdr"}      # compared with clang -E / only parsed on the host
-LLVM = Path(r"C:\Program Files\LLVM\bin")
 
 
 def corpus():
@@ -74,7 +73,7 @@ def mcc_preprocessor():
     for name in ("tests/mcc/pp1.c", "tests/mcc/allhdr.c", "user/bin/hello.c"):
         rc, so, se = U.host("mcc", ["-E", *inc, name])
         assert rc == 0, f"mcc -E {name}: {se}"
-        cl = subprocess.run([str(LLVM / "clang.exe"), "-E", "-P", "-undef", "-nostdinc", "-D__STDC_VERSION__=201112L", "-D__STDC__=1",
+        cl = subprocess.run([U.llvm_tool("clang"), "-E", "-P", "-undef", "-nostdinc", "-D__STDC_VERSION__=201112L", "-D__STDC__=1",
                              "-D__x86_64__=1", "-D__LP64__=1", "-D__MCC__=1", *inc, name], capture_output=True, text=True, cwd=ROOT)
         assert cl.returncode == 0, cl.stderr
         tok = lambda s: re.findall(r"[A-Za-z_0-9]+|\"(?:[^\"\\\n]|\\.)*\"|'(?:[^'\\\n]|\\.)*'|\.\.\.|<<=|>>=|[-+*/%&|^<>=!]=|->|\+\+|--|&&|\|\||<<|>>|##|\S", s)
@@ -141,12 +140,12 @@ def mcc_object_files():
     rc, so, se = U.host("mcc", ["-c", "tests/mcc/statics.c", "-o", "build/mcc-out/statics.o"])
     assert rc == 0, se
     obj = U.OUT / "statics.o"
-    r = subprocess.run([str(LLVM / "llvm-readobj.exe"), "--file-headers", "--symbols", "--relocations", "--sections", str(obj)], capture_output=True, text=True)
+    r = subprocess.run([U.llvm_tool("llvm-readobj"), "--file-headers", "--symbols", "--relocations", "--sections", str(obj)], capture_output=True, text=True)
     assert r.returncode == 0 and "Machine: EM_X86_64" in r.stdout and "Type: Relocatable" in r.stdout, r.stdout + r.stderr
     for sym in ("main", "counter_user", "entries", "tl_counter"):
         assert re.search(rf"Name: {sym} ", r.stdout), f"symbol {sym} missing from the object"
     assert "R_X86_64_TPOFF32" in r.stdout and "R_X86_64_PLT32" in r.stdout and "R_X86_64_PC32" in r.stdout and "R_X86_64_64" in r.stdout
-    d = subprocess.run([str(LLVM / "llvm-objdump.exe"), "-d", "--no-show-raw-insn", str(obj)], capture_output=True, text=True)
+    d = subprocess.run([U.llvm_tool("llvm-objdump"), "-d", "--no-show-raw-insn", str(obj)], capture_output=True, text=True)
     assert d.returncode == 0 and "<main>:" in d.stdout and "ret" in d.stdout, d.stderr
     # mar: a two-member archive that llvm-ar lists and reads back
     for n in ("algo", "crypt"):
@@ -157,9 +156,9 @@ def mcc_object_files():
         lib.unlink()
     rc, so, se = U.host("mar", ["rcs", "build/mcc-out/libt.a", "build/mcc-out/algo.o", "build/mcc-out/crypt.o"])
     assert rc == 0, se
-    t = subprocess.run([str(LLVM / "llvm-ar.exe"), "t", str(lib)], capture_output=True, text=True)
+    t = subprocess.run([U.llvm_tool("llvm-ar"), "t", str(lib)], capture_output=True, text=True)
     assert t.stdout.split() == ["algo.o", "crypt.o"], t.stdout + t.stderr
-    s = subprocess.run([str(LLVM / "llvm-nm.exe"), "--print-armap", str(lib)], capture_output=True, text=True)
+    s = subprocess.run([U.llvm_tool("llvm-nm"), "--print-armap", str(lib)], capture_output=True, text=True)
     armap = s.stdout.split("algo.o:")[0]       # only the globals of the members are indexed, statics are not
     assert "main in algo.o" in armap and "main in crypt.o" in armap and "crc32" not in armap, s.stdout
     rc, so, se = U.host("mar", ["t", "build/mcc-out/libt.a"])
@@ -330,7 +329,7 @@ def mcc_selfhost():
                     failures.append(str(e))
             # the clang-built compiler and stage 3 write the very same object files and executables
             out, rc = U.run(vm, "cd /tmp && for n in algo crypt structs varargs; do /bin/mcc -c /mcc-src/$n.c -o $n.a.o && /tmp/mcc3 -c /mcc-src/$n.c -o $n.b.o "
-                                "&& cmp $n.a.o $n.b.o && /bin/mcc /mcc-src/$n.c -o $n.a && cmp $n.a $n.3 || echo DIFFERENT $n; done; echo checked", timeout=600)
+                                "&& cmp $n.a.o $n.b.o && /bin/mcc /mcc-src/$n.c -o $n.a && cmp $n.a ${n}3 || echo DIFFERENT $n; done; echo checked", timeout=600)
             if "DIFFERENT" in out or "checked" not in out:
                 failures.append("stage 3 and the clang-built mcc disagree:\n" + out)
     assert not failures, "\n\n".join(failures)
@@ -345,7 +344,7 @@ def mcc_kappabox():
     srcs = sorted(str(p.relative_to(ROOT)).replace("\\", "/") for p in (ROOT / "user" / "bin" / "kappabox").glob("*.c"))
     table = ROOT / "build" / "gen" / "kappabox_table.c"
     assert table.exists(), "build/gen/kappabox_table.c is missing: run tools/build.py first"
-    rc, so, se = U.host("mcc", [*inc, *srcs, "build/gen/kappabox_table.c", "-lkappa", "-lfairy", "-laudio", "-limg", "-lz", "-o", "build/mcc-out/kappabox"], timeout=600)
+    rc, so, se = U.host("mcc", [*inc, *srcs, "build/gen/kappabox_table.c", "-lkappa", "-lfairy", "-laudio", "-limg", "-lz", "-ltls", "-o", "build/mcc-out/kappabox"], timeout=600)
     assert rc == 0, so + se
     failures = []
     with boot_with({"bin/kappabox": U.OUT / "kappabox"}, "t-mcc-kappabox") as vm:
@@ -393,14 +392,14 @@ def mld_relinks_clang():
 
 @test
 def mcc_libgap():
-    """libgap compiled by mcc (every file but math.c and setjmp.asm) links with utest compiled by mcc and passes the OS's own utest suite."""
+    """libgap compiled by mcc (every file but math.c, fpconv.c and setjmp.asm) links with utest compiled by mcc and passes the OS's own utest suite."""
     prepare()
     import case_threads
-    r = subprocess.run(["wsl.exe", "-e", "bash", U.wsl_path(ROOT / "tools" / "mcc_build_libgap.sh")], capture_output=True, text=True, cwd=ROOT)
+    r = subprocess.run(U.linux_cmd(["bash", U.wsl_path(ROOT / "tools" / "mcc_build_libgap.sh")]), capture_output=True, text=True, cwd=ROOT)
     assert r.returncode == 0 and "built build/mcc-libgap/libgap.a" in r.stdout, r.stdout + r.stderr
     env_root = U.wsl_path(ROOT / "build" / "mcc-root2")
-    r = subprocess.run(["wsl.exe", "-e", "env", f"MCC_ROOT={env_root}", U.wsl_path(U.HOST / "mcc"), "user/bin/utest.c", "-lkappa", "-lfairy", "-laudio",
-                        "-limg", "-lz", "-o", "build/mcc-out/utest"], capture_output=True, text=True, cwd=ROOT)
+    r = subprocess.run(U.linux_cmd(["env", f"MCC_ROOT={env_root}", U.wsl_path(U.HOST / "mcc"), "user/bin/utest.c", "-lkappa", "-lfairy", "-laudio",
+                        "-limg", "-lz", "-o", "build/mcc-out/utest"]), capture_output=True, text=True, cwd=ROOT)
     assert r.returncode == 0, r.stdout + r.stderr
     esp = U.make_esp("t-mcc-libgap", {"bin/utest": U.OUT / "utest"})
     with Qemu(cmdline="utest", name="t-mcc-libgap", esp=esp) as vm:
@@ -419,9 +418,9 @@ def mld_got_relocations():
     obj = U.OUT / "pic.o"
     flags = ["-target", "x86_64-unknown-none-elf", "-ffreestanding", "-fPIC", "-O1", "-fno-stack-protector", "-fno-asynchronous-unwind-tables",
              "-I", str(ROOT / "user" / "libc" / "include"), "-I", str(ROOT / "shared")]
-    r = subprocess.run([str(LLVM / "clang.exe"), *flags, "-c", str(CORPUS_DIR / "clang" / "pic.c"), "-o", str(obj)], capture_output=True, text=True)
+    r = subprocess.run([U.llvm_tool("clang"), *flags, "-c", str(CORPUS_DIR / "clang" / "pic.c"), "-o", str(obj)], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
-    rd = subprocess.run([str(LLVM / "llvm-readobj.exe"), "--relocations", str(obj)], capture_output=True, text=True)
+    rd = subprocess.run([U.llvm_tool("llvm-readobj"), "--relocations", str(obj)], capture_output=True, text=True)
     assert "GOTPCREL" in rd.stdout, "the clang object has no GOT relocations: " + rd.stdout[:600]
     rc, so, se = U.host("mld", ["-o", "build/mcc-out/pic", "build/mcc-root/lib/crt0.o", "build/mcc-out/pic.o", "-lgap"])
     assert rc == 0, so + se
@@ -441,12 +440,12 @@ def mcc_fuzz():
 
 @test
 def mcc_userland():
-    """The whole userland built by mcc (libgap but math and setjmp, five libraries, 34 programs: init, login, gapsh, the greeter, the compositor...) boots the desktop, passes utest and the shell table."""
+    """The whole userland built by mcc (libgap but math, fpconv and setjmp, five libraries, 34 programs: init, login, gapsh, the greeter, the compositor...) boots the desktop, passes utest and the shell table."""
     prepare()
     import test_shell
     import time
     from case_desktop import near
-    r = subprocess.run(["wsl.exe", "-e", "bash", U.wsl_path(ROOT / "tools" / "mcc_build_userland.sh")], capture_output=True, text=True, cwd=ROOT)
+    r = subprocess.run(U.linux_cmd(["bash", U.wsl_path(ROOT / "tools" / "mcc_build_userland.sh")]), capture_output=True, text=True, cwd=ROOT)
     # the calculator needs x87 inline assembly: its clang build stays
     assert "FAIL" not in r.stdout.replace("FAIL bin/calculator", "") and "built " in r.stdout, r.stdout + r.stderr
     repl = {}

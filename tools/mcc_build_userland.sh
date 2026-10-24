@@ -11,11 +11,12 @@ out=build/mcc-user
 rm -rf $out && mkdir -p $out/bin $out/sbin $out/lib $out/obj
 fail=0
 
-# libc: everything but math.c and setjmp.asm (x87 / assembly: the clang objects are used)
+# libc: everything but math.c, fpconv.c and setjmp.asm (x87 long double, unsigned __int128, which mcc does not have, and
+# assembly: the clang objects are used)
 mkdir -p $out/obj/libc
 for f in user/libc/src/*.c; do
     n=$(basename $f .c)
-    if [ "$n" = math ]; then cp build/obj/libc/user/libc/src/math.c.o $out/obj/libc/math.o; continue; fi
+    if [ "$n" = math ] || [ "$n" = fpconv ]; then cp build/obj/libc/user/libc/src/$n.c.o $out/obj/libc/$n.o; continue; fi
     $MCC -c -I user/libc/src $f -o $out/obj/libc/$n.o || fail=1
 done
 cp build/obj/libc/user/libc/src/setjmp.asm.o $out/obj/libc/setjmp.o
@@ -54,7 +55,8 @@ for kind in bin sbin; do
             dir=$e
             if [ "$name" = kappabox ]; then srcs="$srcs build/gen/kappabox_table.c"; fi
         fi
-        if ! MCC_ROOT=$PWD/build/mcc-root3 $MCC -I $dir $srcs -lkappa -lfairy -laudio -limg -lz -o $out/$kind/$name 2> $out/$name.err; then
+        # -I shared as in tools/build.py (fsck compiles shared/fatck.c); libtls stays the clang build (AES-NI intrinsics)
+        if ! MCC_ROOT=$PWD/build/mcc-root3 $MCC -I $dir -I shared $srcs -lkappa -lfairy -laudio -limg -lz -ltls -o $out/$kind/$name 2> $out/$name.err; then
             echo "FAIL $kind/$name: $(grep -m1 error $out/$name.err)"
             fail=1
         fi
