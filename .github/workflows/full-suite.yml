@@ -1,0 +1,129 @@
+# The whole QEMU suite (about 270 tests) on Ubuntu, as a matrix of the groups of tools/suite.py (the seven groups of
+# docs/CLOUD_AGENT_BRIEF.md plus "rest"; usb and storage are split in two parts). By hand and once a week; docs/LINUX.md.
+# Each group job builds once, runs its tests with --retry-failed (a test that fails and then passes alone is reported as
+# flaky and does not fail the job) and writes a job summary; the last job combines them.
+name: full-suite
+
+on:
+  workflow_dispatch:
+    inputs:
+      groups:
+        description: "Groups to run, comma-separated (usb,storage,usbstor,kernel,gui,desktop,tools,rest); empty runs all"
+        required: false
+        default: ""
+  schedule:
+    - cron: "23 3 * * 1"        # Mondays 03:23 UTC (scheduled runs use the default branch)
+
+permissions:
+  contents: read
+
+concurrency:
+  group: full-suite-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Python packages the test modules import
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends python3 python3-pil python3-numpy
+
+      - name: Plan the matrix
+        id: plan
+        env:
+          SUITE_GROUPS: ${{ inputs.groups }}       # not GROUPS: bash keeps the user's group ids in that name
+        run: |
+          matrix="$(python3 tools/suite.py --ci-plan --groups "$SUITE_GROUPS")"
+          echo "$matrix"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  group:
+    needs: plan
+    name: ${{ matrix.label }}
+    runs-on: ubuntu-24.04
+    # A group takes up to about 15 minutes on a fast 4-core desktop under TCG; a runner is 2-3 times slower, and
+    # --retry-failed adds the reruns. GitHub's own limit is 360 minutes per job.
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      # Same as smoke.yml: no KVM for QEMU (TCG) on a shared runner, so wait three times longer; clang 20 (docs/LINUX.md).
+      TOUHOU_TIMEOUT_SCALE: "3"
+      TOUHOU_LLVM_DIR: /usr/lib/llvm-20/bin
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install the toolchain, QEMU and OVMF
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang-20 lld-20 llvm-20 nasm qemu-system-x86 ovmf \
+            python3 python3-pil python3-numpy python3-cryptography
+
+      - name: Build
+        id: build
+        run: python3 tools/build.py
+
+      - name: Tests of ${{ matrix.label }}
+        env:
+          GROUP: ${{ matrix.group }}
+          PART: ${{ matrix.part }}
+        run: python3 tools/suite.py --run-group "$GROUP" --part "$PART"
+
+      - name: Note a failed build in the summary
+        if: failure() && steps.build.outcome == 'failure'
+        env:
+          LABEL: ${{ matrix.label }}
+        run: |
+          printf '### %s: build failed\n\nNo tests ran; see the Build step.\n' "$LABEL" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the results
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: results-${{ matrix.label }}
+          path: build/suite-${{ matrix.label }}.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Keep the logs of a failed group
+        if: failure()
+        uses: actions/upload-artifact@v5
+        with:
+          name: logs-${{ matrix.label }}
+          path: |
+            build/suite-*.log
+            build/*-serial.log
+            build/*-qemu.log
+            build/*.png
+          if-no-files-found: ignore
+          retention-days: 7
+
+  summary:
+    needs: [plan, group]
+    if: always() && needs.plan.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Fetch the group results
+        continue-on-error: true
+        uses: actions/download-artifact@v5
+        with:
+          pattern: results-*
+          merge-multiple: true
+          path: results
+
+      - name: Whole-suite summary
+        env:
+          PLAN: ${{ needs.plan.outputs.matrix }}
+        run: python3 tools/suite.py --aggregate results --expect-plan "$PLAN"

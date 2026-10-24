@@ -21,10 +21,11 @@ build/test-durations.json; --jobs uses them (unknown tests count as the median).
 
 For CI (.github/workflows/full-suite.yml), in the current checkout, without worktrees and without building:
 
-  python tools/suite.py --ci-plan                         the matrix as JSON (groups, the long ones split in parts)
+  python tools/suite.py --ci-plan [--groups a,b]          the matrix as JSON (groups, the long ones split in parts)
   python tools/suite.py --run-group usb --part 1/2        run one part of one group here; writes build/suite-<label>.json
                                                           and .log, and a Markdown summary to $GITHUB_STEP_SUMMARY
-  python tools/suite.py --aggregate DIR                   combine the .json files under DIR into one summary
+  python tools/suite.py --aggregate DIR [--expect-plan J]  combine the .json files under DIR into one summary; with the
+                                                          plan, a group that left no results counts as failed
 """
 import argparse
 import datetime
@@ -228,10 +229,18 @@ def read_json(path):
 
 # ---------------------------------------------------------------------------------------------- CI mode
 
-def ci_plan():
+def check_group_names(want):
+    unknown = [w for w in want if w not in [g for g, _ in GROUPS] + [REST]]
+    if unknown:
+        raise SystemExit(f"unknown group(s) {', '.join(unknown)}; the groups are {', '.join(g for g, _ in GROUPS)}, {REST}")
+
+
+def ci_plan(only_groups=None):
     """The matrix of .github/workflows/full-suite.yml: one entry per group part that has tests."""
     entries = []
     for gname, tests in named_groups(list_tests()):
+        if only_groups and gname not in only_groups:
+            continue
         n = CI_PARTS.get(gname, 1)
         for k in range(1, n + 1):
             if part_of(tests, f"{k}/{n}"):
@@ -244,6 +253,9 @@ def run_group_here(args):
     if args.run_group not in groups:
         raise SystemExit(f"no group {args.run_group!r} (have: {', '.join(groups)})")
     tests = groups[args.run_group]
+    if args.only:
+        only = set(list_tests(args.only))
+        tests = [t for t in tests if t in only]
     label = args.run_group
     if args.part:
         tests = part_of(tests, args.part)
@@ -280,7 +292,10 @@ def aggregate(args):
         data = read_json(p)
         if isinstance(data, dict) and "label" in data:
             found[data["label"]] = data
-    labels = [e["label"] for e in ci_plan()] if not args.no_plan else sorted(found)
+    if args.expect_plan:
+        labels = [e["label"] for e in json.loads(args.expect_plan)["include"]]
+    else:
+        labels = sorted(found)
     labels += [lb for lb in sorted(found) if lb not in labels]
     md, bad = aggregate_markdown([(lb, found.get(lb)) for lb in labels])
     print(md)
@@ -485,11 +500,13 @@ def main(argv=None):
     ap.add_argument("--part", metavar="K/N", help="with --run-group: only part K of N of the group")
     ap.add_argument("--results", help="with --run-group: where the JSON results go (default build/suite-<label>.json)")
     ap.add_argument("--aggregate", metavar="DIR", help="CI: combine the group results (*.json) under DIR into one summary")
-    ap.add_argument("--no-plan", action="store_true", help="with --aggregate: expect only the groups found, not the CI plan")
+    ap.add_argument("--expect-plan", metavar="JSON", help="with --aggregate: the --ci-plan output; a planned group without results counts as failed")
     args = ap.parse_args(argv)
 
     if args.ci_plan:
-        print(json.dumps({"include": ci_plan()}))
+        want = [w for w in (args.groups or "").split(",") if w]
+        check_group_names(want)
+        print(json.dumps({"include": ci_plan(want)}))
         return 0
     if args.run_group:
         return run_group_here(args)
@@ -507,9 +524,7 @@ def main(argv=None):
         groups = named_groups(names, only)
         if args.groups:
             want = [w for w in args.groups.split(",") if w]
-            unknown = [w for w in want if w not in [g for g, _ in GROUPS] + [REST]]
-            if unknown:
-                raise SystemExit(f"unknown group(s) {', '.join(unknown)}; the groups are {', '.join(g for g, _ in GROUPS)}, {REST}")
+            check_group_names(want)
             groups = [(g, t) for g, t in groups if g in want]
     if not groups:
         raise SystemExit("no tests selected")
