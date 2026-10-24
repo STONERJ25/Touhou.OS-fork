@@ -38,9 +38,23 @@ static inline void stage_mark(volatile uint8_t *fb, uint32_t pitch, uint32_t wid
     if (n >= 1 && n <= 24) mark_square(fb, pitch, width, height, 0, n - 1, 0x00FFFFFFu);
 }
 
-/* The low byte of a value as eight squares, most significant bit first: white for 1, dark grey for 0. */
+/* A hollow square: a white frame two pixels wide around black (a zero bit, which must be visible on any background). */
+static inline void mark_frame(volatile uint8_t *fb, uint32_t pitch, uint32_t width, uint32_t height, int row, int col) {
+    if (!fb || row < 0 || col < 0 || row > 8 || col > 40) return;
+    uint32_t x0 = 6 + (uint32_t)col * 20, y0 = 6 + (uint32_t)row * 18;
+    if (x0 + 14 > width || y0 + 14 > height || pitch < (x0 + 14) * 4) return;
+    for (uint32_t y = 0; y < 14; y++) {
+        volatile uint32_t *line = (volatile uint32_t *)(fb + (uint64_t)(y0 + y) * pitch) + x0;
+        for (uint32_t x = 0; x < 14; x++) line[x] = (x < 2 || x >= 12 || y < 2 || y >= 12) ? 0x00FFFFFFu : 0x00000000u;
+    }
+}
+
+/* The low byte of a value as eight squares, most significant bit first: a filled white square for 1, a hollow one for 0. */
 static inline void mark_byte(volatile uint8_t *fb, uint32_t pitch, uint32_t width, uint32_t height, int row, uint64_t value) {
-    for (int b = 0; b < 8; b++) mark_square(fb, pitch, width, height, row, b, ((value >> (7 - b)) & 1) ? 0x00FFFFFFu : 0x00303030u);
+    for (int b = 0; b < 8; b++) {
+        if ((value >> (7 - b)) & 1) mark_square(fb, pitch, width, height, row, b, 0x00FFFFFFu);
+        else mark_frame(fb, pitch, width, height, row, b);
+    }
 }
 
 #endif

@@ -63,6 +63,28 @@ void log_dec(UINT64 v) {
     log_str(&buf[i]);
 }
 
+/* The PC speaker, driven straight from PIT channel 2: about 1 kHz, 0.1 to 0.2 s per beep depending on the CPU (the delay counts TSC
+ * cycles, no timer service is needed, so it also works after ExitBootServices). Silent where there is no speaker. */
+static inline UINT64 tsc_now(void) { UINT32 lo, hi; __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi)); return ((UINT64)hi << 32) | lo; }
+
+static void tsc_wait(UINT64 cycles) {
+    UINT64 t = tsc_now();
+    while (tsc_now() - t < cycles) __asm__ volatile ("pause");
+}
+
+void pc_beep(int n) {
+    for (int i = 0; i < n; i++) {
+        outb(0x43, 0xB6);                       /* channel 2, lobyte/hibyte, square wave */
+        outb(0x42, 0xA9);
+        outb(0x42, 0x04);                       /* 1193 = 1.193182 MHz / 1 kHz */
+        outb(0x61, (UINT8)(inb(0x61) | 3));     /* gate on, speaker on */
+        tsc_wait(400000000ULL);
+        outb(0x61, (UINT8)(inb(0x61) & ~3));
+        tsc_wait(300000000ULL);
+    }
+    tsc_wait(600000000ULL);
+}
+
 /* IA32_EFER.NXE must be set before any page table entry uses the NX bit. */
 void enable_nxe(void) {
     UINT32 lo, hi;

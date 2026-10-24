@@ -118,9 +118,16 @@ static void parse_video(const char *cmdline, UINT32 *w, UINT32 *h) {
 /* Boot progress squares (shared/stagemark.h) and "stagehold=N": stop right after square N. The squares are the only thing a PC without a
  * serial port can show once the loader's text stops, so each stage of the handoff draws one. */
 static int g_stagehold;
+static int g_stagebeep;             /* "stagebeep": also say it on the PC speaker (stage N beeps N times; the kernel adds one long beep) */
 
 static void parse_stagehold(const char *cmdline) {
     static const char key[] = "stagehold=";
+    static const char beep[] = "stagebeep";
+    for (const char *p = cmdline; *p; p++) {
+        int b = 0;
+        while (beep[b] && p[b] == beep[b]) b++;
+        if (!beep[b]) g_stagebeep = 1;
+    }
     for (const char *p = cmdline; *p; p++) {
         int k = 0;
         while (key[k] && p[k] == key[k]) k++;
@@ -135,6 +142,7 @@ static void parse_stagehold(const char *cmdline) {
 
 static void stage(const BootFramebuffer *fb, int n) {
     if (fb->base) stage_mark((volatile UINT8 *)fb->base, fb->pitch, fb->width, fb->height, n);
+    if (g_stagebeep && n >= 2) pc_beep(n);
     if (g_stagehold == n) loader_halt();
 }
 
@@ -363,6 +371,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st) {
         log_str("loader: no cmdline.txt on the boot volume: using the safe default\n");
     }
     log_str("loader: cmdline '"); log_str(cmdline); log_str("'\n");
+    root->Close(root);                  /* nothing of the boot volume stays open when the firmware shuts its drivers down */
 
     /* --- framebuffer --- */
     BootFramebuffer fb = {0};
@@ -426,6 +435,8 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st) {
         /* A stale map key (something the firmware did while shutting down changed the map) is the normal reason for a failure: ask again. */
         exit_mark(&fb, 3, attempt);                 /* about to call ExitBootServices */
         EFI_STATUS es = g_bs->ExitBootServices(image, mapKey);
+        exit_mark(&fb, 6, 0);                       /* the call came back */
+        if (g_stagebeep) pc_beep(1);
         exit_status(&fb, 4, es);
         if (!EFI_ERROR(es)) exited = 1;
     }

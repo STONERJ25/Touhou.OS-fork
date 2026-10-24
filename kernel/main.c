@@ -83,6 +83,12 @@ static void stage(int n) {
     u64 end = f->base + (u64)f->pitch * f->height;
     if (f->base && end <= (4ULL << 30))             /* the direct map reaches at least the first 4 GiB */
         stage_mark((volatile u8 *)(g_hhdm + f->base), f->pitch, f->width, f->height, n);
+    if (n == 4 && cmdline_flag("stagebeep")) {      /* one long beep on the PC speaker: the kernel is running, whatever the screen shows */
+        outb(0x43, 0xB6); outb(0x42, 0xA9); outb(0x42, 0x04);
+        outb(0x61, (u8)(inb(0x61) | 3));
+        for (u64 t = rdtsc(); rdtsc() - t < 1200000000ULL;) __asm__ volatile ("pause");
+        outb(0x61, (u8)(inb(0x61) & ~3));
+    }
     if (g_stagehold == n) for (;;) hlt();
 }
 
