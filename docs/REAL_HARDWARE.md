@@ -1,7 +1,8 @@
 # Running TouhouOS on a real PC
 
-**Everything here has only ever run in QEMU.** The drivers follow the specifications and Linux's behaviour, and they are
-written to fail soft (log one line, stay out of the way), but the first boot on real hardware is an experiment. The
+**Most of this has only been run in QEMU; one real PC, the Dell below, has booted it to the desktop from a stick since 2026-10-23**
+([HARDWARE_AUDIT.md](HARDWARE_AUDIT.md) has what that showed). The drivers follow the specifications and Linux's behaviour, and they are
+written to fail soft (log one line, stay out of the way), but a first boot on other hardware is an experiment. The
 design rule that makes it a safe one: **the OS never writes to a disk you did not ask it to**, and the default command
 line makes every SATA and NVMe disk read-only on top of that.
 
