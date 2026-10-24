@@ -5,7 +5,7 @@ parked on branches and what to do first when work resumes.
 
 ## Where things stand
 
-`main` (`6be638f` at the time of writing) holds everything that has been merged so far:
+`main` (`b73b7d4` and later docs commits) holds everything that has been merged so far:
 
 - first wave: kernel foundations, desktop, accounts and login, power and time, FAT32 and the HUMANVILLAGE mount policy, AHCI and NVMe,
   xHCI USB with HID, the desktop apps, the games, Patchouli's library, Notebook and Sketchbook;
@@ -20,6 +20,23 @@ it; the media agent's whole run (201 tests, 0 failed) covered `f9358db` plus the
 were tested on their own branches. **There has been no full run on the exact final commit**; that is the first job when work resumes.
 
 Nothing has ever run on the real PC (Dell, i5-7500). [HARDWARE_AUDIT.md](HARDWARE_AUDIT.md) (in `main`) has the first-boot checklist.
+
+## The first-boot candidate for the Dell (2026-10-23, evening)
+
+Built from `main` at `b73b7d4` (the audit round 2 branch is merged: the PCI BAR sizing fix, the MTRR write-combining fallback, PCI D0 wake-up;
+`nonet` and `noaudio` switches; panics are drawn while the desktop runs, tested by `hwaudit_panic_on_desktop`). Verified: all 260 tests in seven
+parallel groups, 258 passed on the first run and the two that failed under load (`accounts_passwords`, `power_off`) pass alone. Rehearsed on copies
+of the two images: booted as a USB stick through OVMF, desktop up, `/HumanVillage` mounted on the stick, clean `poweroff`, `fsck` of the image clean,
+`TOUHOU.LOG` ends with the "clean run" line.
+
+| File (in `build/`) | Command line | sha256 of the `.img` |
+|--------------------|--------------|----------------------|
+| `touhou-os.img.zip` | `video=native blk.ro tz=EST5EDT,M3.2.0,M11.1.0` | `327c7ecf1f92cbe05659dd2358d10cb6885e1be5645656b62f8c124a2c21f944` |
+| `touhou-os-safe.img.zip` | `text video=1024x768 blk.ro noaudio nonet usbstorage=off bootlog=off tz=EST5EDT,M3.2.0,M11.1.0` | `b4060d93ce604c288bff657117a00c55cc4e1fc86eb2e030391219bf812e189e` |
+
+The safe image is the fallback if the normal one does not reach a desktop: a text console at 1024x768 with sound, network and USB sticks left alone
+(so no `TOUHOU.LOG` either). Known in these images: Ctrl-Z in a terminal freezes the job and the shell, the `exec` argument limit is still 256, and a stick
+that was not shut down cleanly mounts read-only next time (the fix is on a branch). Steps for the owner: [REAL_HARDWARE.md](REAL_HARDWARE.md).
 
 ## Branches that are not merged
 
