@@ -362,3 +362,39 @@ repeats every time. The GUI tests (`audio_jukebox`, `audio_desktop_sounds`, `aud
 * `play -g` exists because gapsh's `( a; b ) | cmd` closes the pipe after the first command of the group; not looked into.
 * A guest that the host starves for more than a second can still make the hardware lap the ring and repeat old sound
   (`underruns` in `/proc/audio` counts the dry spells).
+
+## State when paused
+
+Branch `worktree-agent-a3d380c78d6285728`; its head is the commit that adds this section (the one before it is `37ba4c7`),
+the working tree is clean, and it builds with `python tools/build.py`. The last
+merge of `main` (up to `3265225`: USB mass storage, network drivers, Explorer, priorities, job control) is in; it merged
+without conflicts in code (one in `docs/REAL_HARDWARE.md`, resolved by keeping both sides). Nothing is pushed.
+
+* **Done**: everything in the Status table above: the audio core, the HDA driver with the codec graph planner and its unit
+  tests, the AC'97 driver, libaudio, `beep` / `play` / `volume`, the chiptune and FM song engine with five original songs, the
+  ProTracker module player, Reimu's Jukebox, the system sounds, the panel's volume control, the manual pages, this document.
+* **Half done**: nothing is left half done in the tree.
+* **Not started**: S3M, XM and IT readers, recording (capture), digital outputs (S/PDIF, HDMI), Realtek `COEF` and GPIO
+  quirks, looking at an HD Audio controller that the BIOS shows as class 0x0401 (Intel DSP mode), a shutdown hook that stops
+  the DMA engine.
+* **Tests**: `python tests/run_all.py manual,audio_`: 20 of 20 pass (19 audio tests and the manual-page test), run on the
+  tree before the last merge of `main`. A full run of the whole suite on the final merged tree was stopped by the pause: 207
+  tests passed, none failed, and 39 were not reached (the last `usb_*`, all `usbstor_*` and the `vi_*` tests, none of which
+  touch sound). The full run before that (192 tests, `main` as of `b5cbb37`) had one failure, `audio_mix_two_clients`: the
+  busy host had starved the guest, the recording had two stretches of silence (an underrun is silence by design) and the
+  test saw them as jumps; the waveform tests now ask the guest for its `underruns` counter and run again when it was not
+  zero (`starved_retry`), and the test passes since. GUI tests (`audio_panel_volume` once) can fail when the host is
+  busy because the mouse pointer lags; the panel test now tries up to three times.
+
+## How to resume
+
+1. `git status` (clean), `python tools/build.py`.
+2. `python tests/run_all.py manual,audio_` (about five minutes on a quiet host). Then the tests that the pause cut off:
+   `python tests/run_all.py usb,vi_`.
+3. To hear it on the host: `tools/qemu.py run` has no audio option yet. The tests use `Qemu(audio="hda")`, which records
+   into a WAV file; for a live sound output give QEMU an `-audiodev` of the host (for example `dsound` on Windows; not tried
+   here) together with `-device intel-hda,id=hda0 -device hda-output,bus=hda0.0,audiodev=NAME`, then `beep`, `volume`,
+   `play /ScarletDevilMansion/share/music/*.tms` or the Jukebox from the start menu.
+4. The next steps in order of value: run it on the Dell (`cat /proc/audio`, `dmesg | grep Nitori`, `beep`; send the output of
+   `hda.dump` on the kernel command line if there is no sound), then listen to the songs and the module player and fix what
+   the ears find, then the S3M reader, then recording.
