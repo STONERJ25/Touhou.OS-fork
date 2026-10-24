@@ -20,6 +20,7 @@
 #include "pci.h"
 #include "acpi.h"
 #include "initcall.h"
+#include "stagemark.h"
 
 void virtio_blk_init(void);
 void ahci_init(void);
@@ -74,6 +75,17 @@ static void crash_test(const char *kind) {
     }
 }
 
+/* Boot progress squares (shared/stagemark.h), drawn through the loader's direct map of the framebuffer, and "stagehold=N". */
+static int g_stagehold;
+
+static void stage(int n) {
+    const BootFramebuffer *f = &g_boot.fb;
+    u64 end = f->base + (u64)f->pitch * f->height;
+    if (f->base && end <= (4ULL << 30))             /* the direct map reaches at least the first 4 GiB */
+        stage_mark((volatile u8 *)(g_hhdm + f->base), f->pitch, f->width, f->height, n);
+    if (g_stagehold == n) for (;;) hlt();
+}
+
 NORETURN void kmain(BootInfo *bi) {
     serial_init();
     if (bi->magic != BOOTINFO_MAGIC) {
@@ -85,14 +97,21 @@ NORETURN void kmain(BootInfo *bi) {
     g_kernel_phys = bi->kernel_phys;
     g_kernel_virt = bi->kernel_virt;
     cmdline_init(bi->cmdline);
+    char hold[8];
+    if (cmdline_value("stagehold", hold, sizeof hold)) for (const char *q = hold; *q >= '0' && *q <= '9'; q++) g_stagehold = g_stagehold * 10 + (*q - '0');
+    stage(4);
 
     cpu_init();
+    stage(5);
     gdt_init();
     idt_init();
+    stage(6);
 
     /* Early console on the loader's direct map. */
     fb_init(&g_boot.fb);
+    stage(7);
     fbcon_init();
+    stage(8);
     print_banner();
     klog("Gensokyo", "kernel %s \"%s\" starting", KERNEL_VERSION, KERNEL_CODENAME);
     klog("Gensokyo", "cpu: %s (%s)", g_cpu.brand, g_cpu.vendor);

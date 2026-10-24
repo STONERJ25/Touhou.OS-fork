@@ -6,6 +6,7 @@
  */
 #include "loader.h"
 #include "../shared/elf.h"
+#include "../shared/stagemark.h"
 
 EFI_SYSTEM_TABLE  *g_st;
 EFI_BOOT_SERVICES *g_bs;
@@ -112,6 +113,29 @@ static void parse_video(const char *cmdline, UINT32 *w, UINT32 *h) {
             return;
         }
     }
+}
+
+/* Boot progress squares (shared/stagemark.h) and "stagehold=N": stop right after square N. The squares are the only thing a PC without a
+ * serial port can show once the loader's text stops, so each stage of the handoff draws one. */
+static int g_stagehold;
+
+static void parse_stagehold(const char *cmdline) {
+    static const char key[] = "stagehold=";
+    for (const char *p = cmdline; *p; p++) {
+        int k = 0;
+        while (key[k] && p[k] == key[k]) k++;
+        if (!key[k]) {
+            int v = 0;
+            for (const char *q = p + k; *q >= '0' && *q <= '9'; q++) v = v * 10 + (*q - '0');
+            g_stagehold = v;
+            return;
+        }
+    }
+}
+
+static void stage(const BootFramebuffer *fb, int n) {
+    if (fb->base) stage_mark((volatile UINT8 *)fb->base, fb->pitch, fb->width, fb->height, n);
+    if (g_stagehold == n) loader_halt();
 }
 
 /* Which byte order a mode uses: BOOTFB_BGRX, BOOTFB_RGBX, or -1 when it is not a 32-bit linear framebuffer we can draw to.
@@ -334,7 +358,9 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st) {
     BootFramebuffer fb = {0};
     UINT32 want_w = 1024, want_h = 768;
     parse_video(cmdline, &want_w, &want_h);
+    parse_stagehold(cmdline);
     setup_gop(&fb, want_w, want_h);
+    stage(&fb, 1);
 
     /* --- kernel image --- */
     KernelImage kimg = {0};
@@ -390,6 +416,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st) {
     }
     if (!exited) { log_str("loader: ExitBootServices failed\n"); loader_halt(); }
     g_bs = 0;                       /* console logging is serial-only from here on */
+    stage(&fb, 2);                  /* the firmware's own page tables are still active: the framebuffer is reachable at its physical address */
 
     /* --- convert the memory map: classify, sort, merge --- */
     UINT64 ndesc = mapSize / descSize;
@@ -430,6 +457,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st) {
     /* --- page tables, then jump --- */
     enable_nxe();
     UINT64 pml4 = build_page_tables(&kimg, max_ram_end, (UINT64)(void *)handoff);
+    stage(&fb, 3);
     log_str("loader: entering kernel\n");
     handoff(pml4, kimg.entry, stack_top_virt, HHDM_BASE + (UINT64)bi);
 }

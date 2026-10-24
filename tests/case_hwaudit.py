@@ -309,6 +309,19 @@ def hwaudit_fairyd_frame_stats():
 
 
 @test
+def hwaudit_stage_marks():
+    """Boot progress squares (shared/stagemark.h): with stagehold=6 the loader and the kernel have drawn six white squares in the top-left corner and the machine stops there."""
+    with Qemu(cmdline="stagehold=6", name="t-hw-stage") as vm:
+        vm.expect(r"loader: entering kernel", timeout=90)
+        time.sleep(3)
+        shot = vm.screen_ppm()
+        centres = [vm.pixel(6 + 20 * i + 7, 13, shot) for i in range(8)]
+        white = [all(c > 240 for c in p) for p in centres]
+        assert white == [True] * 6 + [False] * 2, f"squares drawn: {white}, pixels {centres}"
+        assert "Gensokyo" not in vm.text(), "the kernel went on after stagehold=6"
+
+
+@test
 def hwaudit_panic_on_desktop():
     """A kernel panic while the desktop owns the screen is drawn: killing init as root stops the compositor's picture and shows the incident text (red) on the console."""
     with Qemu(cmdline="autologin=root", name="t-hw-panic-desktop", mem="768M") as vm:
