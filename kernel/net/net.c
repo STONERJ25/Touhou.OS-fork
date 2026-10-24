@@ -181,6 +181,7 @@ void net_set_link(NetDev *d, bool up) {
     bool was = (d->flags & NDF_LINK) != 0;
     if (up == was) return;
     if (up) d->flags |= NDF_LINK; else d->flags &= ~(u32)NDF_LINK;
+    arp_flush_dev(d);                                       /* the cable may lead to another network: what we knew about neighbours is stale */
     klog("Yukari", "%s: link %s", d->name, up ? "up, the gap is open" : "down, the gap closed");
     if (up && !(d->flags & NDF_LOOPBACK) && (!d->addr || (d->flags & NDF_DHCP))) dhcp_start(d);
 }
@@ -264,6 +265,10 @@ int netdev_set_addr(NetDev *d, u32 addr, u32 mask) {
 
 u32 ip_source_for(u32 dst) {
     if ((dst >> 24) == 127) return INADDR_LOOPBACK;
+    if (dst == 0xFFFFFFFFu) {                       /* limited broadcast: the first real interface's address, else the loopback's (as ip_pick does) */
+        for (NetDev *d = g_devs; d; d = d->next) if (!(d->flags & NDF_LOOPBACK) && (d->flags & NDF_UP)) return d->addr;
+        return INADDR_LOOPBACK;
+    }
     if (net_is_local(dst)) return dst;
     Route *r = ip_route(dst);
     return r ? r->dev->addr : 0;
@@ -491,8 +496,22 @@ void arp_tick(u64 now) {
     for (int i = 0; i < ARP_MAX; i++) {
         ArpEnt *e = &g_arp[i];
         if (e->state == 1 && now >= e->next_try) {
-            if (e->tries >= 3) {                              /* nobody answered: forget the packets, TCP will notice */
-                for (int j = 0; j < ARP_QUEUE; j++) { nb_free(e->q[j]); e->q[j] = NULL; }
+            if (e->tries >= 3) {                              /* nobody answered: "no route to host" for whoever was waiting */
+                for (int j = 0; j < ARP_QUEUE; j++) {
+                    NetBuf *q = e->q[j];
+                    if (q && q->len >= IP_HLEN + 4 && (nb_data(q)[0] >> 4) == 4) {
+                        const u8 *ip = nb_data(q);
+                        size_t ihl = (size_t)(ip[0] & 15) * 4;
+                        if (ihl >= IP_HLEN && q->len >= ihl + 4) {
+                            u32 src = rd32(ip + 12), dst = rd32(ip + 16);
+                            u16 sport = rd16(ip + ihl), dport = rd16(ip + ihl + 2);
+                            if (ip[9] == IPPROTO_TCP) tcp_error(src, sport, dst, dport, EHOSTUNREACH);
+                            else if (ip[9] == IPPROTO_UDP) udp_error(src, sport, dst, dport, EHOSTUNREACH);
+                        }
+                    }
+                    nb_free(q);
+                    e->q[j] = NULL;
+                }
                 e->state = 0;
             } else {
                 e->tries++;
@@ -502,6 +521,15 @@ void arp_tick(u64 now) {
         } else if (e->state == 2 && now - e->updated > 300000) {
             e->state = 0;                                      /* five minutes without a word: ask again when needed */
         }
+    }
+}
+
+void arp_flush_dev(NetDev *d) {
+    for (int i = 0; i < ARP_MAX; i++) {
+        ArpEnt *e = &g_arp[i];
+        if (!e->state || e->state == 3 || e->dev != d) continue;
+        for (int j = 0; j < ARP_QUEUE; j++) { nb_free(e->q[j]); e->q[j] = NULL; }
+        e->state = 0;
     }
 }
 
@@ -697,7 +725,10 @@ static int ip_pick(u32 *src, u32 dst, NetDev **dev, u32 *nexthop) {
         if (r->gw) *nexthop = r->gw;
     }
     if (!*dev || !((*dev)->flags & NDF_UP)) return -ENETDOWN;
-    if (!*src) *src = ((dst >> 24) == 127) ? INADDR_LOOPBACK : (*dev == g_lo ? dst : (*dev)->addr);
+    if (!*src) {
+        if (dst == 0xFFFFFFFFu) *src = (*dev == g_lo) ? INADDR_LOOPBACK : (*dev)->addr;
+        else *src = ((dst >> 24) == 127) ? INADDR_LOOPBACK : (*dev == g_lo ? dst : (*dev)->addr);
+    }
     return 0;
 }
 
@@ -1039,8 +1070,13 @@ long net_ctl(unsigned long cmd, void *arg) {
             if (r->mtu < 68 || r->mtu > 1500) { rc = -EINVAL; break; }
             d->mtu = r->mtu;
         }
-        if (r->flags & GIFF_UP) d->flags |= NDF_UP; else if (r->flags & 0x100) { d->flags &= ~(u32)NDF_UP; route_flush_dev(d); }
-        if (r->mask || r->addr) {
+        if (r->flags & GIFF_UP) d->flags |= NDF_UP;
+        else if (r->flags & GIFF_DOWN) { d->flags &= ~(u32)NDF_UP; route_flush_dev(d); }
+        if (r->flags & GIFF_CLEARADDR) {
+            route_flush_dev(d);
+            d->flags &= ~(u32)NDF_DHCP;
+            netdev_set_addr(d, 0, 0);
+        } else if (r->mask || r->addr) {
             if (!r->mask) r->mask = 0xFFFFFF00u;
             route_flush_dev(d);
             d->flags &= ~(u32)NDF_DHCP;

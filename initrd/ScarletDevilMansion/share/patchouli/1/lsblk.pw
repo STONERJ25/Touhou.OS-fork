@@ -6,8 +6,10 @@
 # DESCRIPTION
 `lsblk` reads `/proc/partitions` and prints a table of the block devices the kernel found: the name (as in `/dev`), the size, whether it is read-only (RO), whether it is a whole disk or a partition (TYPE), its filesystem label, the driver that serves it and the model. If there are no devices it says so.
 
+SATA disks are `sda`, `sdb` ...; USB sticks (driver `usb-storage`) take the next free letters, so the stick you booted from is `sda` when the machine has no SATA disk and `sdb` otherwise; NVMe drives are `nvme0n1`; partitions add a number (`sdb2`, `nvme0n1p2`). A stick whose write-protect switch is on, or a disk started with `blk.ro` on the kernel command line, shows `1` under RO. A stick that is pulled out disappears from the list.
+
 # EXAMPLES
     lsblk
 
 # SEE ALSO
-mount(8), dd(1), lspci(1)
+mount(8), dd(1), lspci(1), lsusb(1)

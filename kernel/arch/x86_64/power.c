@@ -3,8 +3,14 @@
 #include "cpu.h"
 #include "kernel.h"
 #include "acpi.h"
+#include "fbcon.h"
+#include "irq.h"
 
 NORETURN void qemu_exit(int code) {
+    /* The test harness reads the serial port over a TCP connection and QEMU leaves through exit(): on a loaded Windows host the connection
+     * can be reset before the harness has read the last lines, the verdict ("UTEST PASS") among them, and a passing run is reported as
+     * "QEMU exited (code 1)" (about 1 run in 60 for the utest suite while the host was busy, on main as well). Give the reader a moment. */
+    udelay(300000);
     outb(0xF4, (u8)code);               /* isa-debug-exit: QEMU exits with (code << 1) | 1 */
     for (;;) hlt();
 }
@@ -15,6 +21,9 @@ NORETURN void machine_poweroff(void) {
     outw(0x604, 0x2000);                /* QEMU q35 / ACPI PM1a_CNT shortcut */
     outw(0xB004, 0x2000);               /* older QEMU / Bochs */
     outw(0x4004, 0x3400);               /* VirtualBox */
+    /* Still running: none of the ways to switch off worked. Whoever is looking at a frozen desktop deserves to be told. */
+    fbcon_force_on();
+    printk("\n\x1b[1;33m[Gensokyo] the machine did not switch itself off (ACPI S5 failed). It is safe to hold the power button now.\x1b[0m\n");
     for (;;) hlt();
 }
 

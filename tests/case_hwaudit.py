@@ -1,0 +1,247 @@
+"""Real-hardware readiness (docs/HARDWARE_AUDIT.md): the things a real PC does that QEMU's defaults hide, reproduced with QEMU
+options where that is possible: no PIT, no PAT, no PS/2 controller, other processors, memory above 4 GiB, a cmdline.txt written by
+a Windows editor, and a text console whose screen is checked pixel by pixel."""
+import re
+import shutil
+import time
+from pathlib import Path
+
+from harness import test, Qemu, BUILD
+
+ROOT = BUILD.parent
+PROMPT = r"reimu@gensokyo \S+ \$ "
+
+
+# ---------------------------------------------------------------------------------------------- helpers
+
+class RawCmdlineQemu(Qemu):
+    """A Qemu whose cmdline.txt holds exactly these bytes (None: no such file on the boot volume)."""
+
+    def __init__(self, raw, **kw):
+        super().__init__(**kw)
+        self._raw = raw
+
+    def _prepare(self):
+        v = super()._prepare()
+        f = self.esp / "cmdline.txt"
+        if self._raw is None:
+            f.unlink()
+        else:
+            f.write_bytes(self._raw)
+        return v
+
+
+_GLYPHS = None
+
+
+def glyphs():
+    """The console font (shared/font8x16.c): code point -> 16 scanline bytes."""
+    global _GLYPHS
+    if _GLYPHS is None:
+        src = (ROOT / "shared" / "font8x16.c").read_text(encoding="utf-8")
+        _GLYPHS = {}
+        for m in re.finditer(r"\{ 0x([0-9A-Fa-f]+), \{([^}]*)\} \}", src):
+            _GLYPHS[int(m.group(1), 16)] = [int(x, 16) for x in re.findall(r"0x([0-9A-Fa-f]{2})", m.group(2))]
+    return _GLYPHS
+
+
+def row_pixels(text, fg, bg):
+    """What the console draws for one text row: 16 scanlines of len(text) * 8 RGB pixels."""
+    g = glyphs()
+    lines = []
+    for y in range(16):
+        line = []
+        for ch in text:
+            bits = g[ord(ch)][y]
+            for x in range(8):
+                line.append(fg if bits & (0x80 >> x) else bg)
+        lines.append(line)
+    return lines
+
+
+def screen_row_matches(shot, row, text, fg, bg):
+    """True if text row `row` of the screen shows exactly `text` (and blank to the right of it) in the given colours."""
+    w, h, rgb = shot
+    cells = w // 8
+    padded = text.ljust(cells)
+    want = row_pixels(padded, fg, bg)
+    for y in range(16):
+        base = ((row * 16 + y) * w) * 3
+        got = rgb[base:base + w * 3]
+        exp = bytes(c for px in want[y] for c in px)
+        if got[:len(exp)] != exp[:len(got)]:
+            return False
+    return True
+
+
+CONSOLE_FG = (0xD3, 0xD7, 0xCF)
+CONSOLE_BG = (0x0B, 0x0B, 0x14)
+
+
+# ---------------------------------------------------------------------------------------------- timers and interrupts
+
+@test
+def hwaudit_pit_missing():
+    """No 8254 PIT (QEMU pit=off): the TSC is calibrated from the ACPI timer, the local APIC timer becomes the tick, and tasks sleep and wake."""
+    with Qemu(cmdline="text", name="t-hw-nopit", extra=["-machine", "q35,pit=off"]) as vm:
+        vm.expect(r"TSC ~\d+ MHz \(ACPI timer\)", timeout=60)
+        vm.expect(r"no timer interrupt arrived in 200 ms", timeout=30)
+        vm.expect(r"the local APIC timer is the system tick now", timeout=30)
+        vm.expect(PROMPT, timeout=120)
+        vm.send("sleep 1; echo woke-$((6*7))\n")
+        vm.expect(r"woke-42", timeout=60)
+
+
+@test
+def hwaudit_other_processors_parked():
+    """With four processors the three others are sent to wait-for-SIPI (INIT) before the firmware memory they may be running in is reused."""
+    with Qemu(cmdline="text", name="t-hw-smp", extra=["-smp", "4"]) as vm:
+        vm.expect(r"acpi: .* 4 processors", timeout=60)
+        vm.expect(r"3 other processors sent to wait-for-SIPI", timeout=30)
+        vm.expect(PROMPT, timeout=120)
+        vm.send("echo smp-$((6*7))\n")
+        vm.expect(r"smp-42", timeout=30)
+
+
+# ---------------------------------------------------------------------------------------------- CPU features
+
+@test
+def hwaudit_cpu_without_pat():
+    """A CPU that does not advertise PAT: no wrmsr to a missing MSR, the framebuffer is mapped uncached and the console still works."""
+    with Qemu(cmdline="text", name="t-hw-nopat", extra=["-cpu", "qemu64,-pat"]) as vm:
+        vm.expect(r"\(no PAT: framebuffer uncached\)", timeout=60)
+        vm.expect(r"framebuffer .* uncached \(this CPU has no PAT\)", timeout=30)
+        vm.expect(PROMPT, timeout=120)
+        vm.send("echo nopat-$((6*7))\n")
+        vm.expect(r"nopat-42", timeout=30)
+
+
+@test
+def hwaudit_framebuffer_cache_knob():
+    """fb.cache=uc maps the framebuffer uncached (for comparing speeds on real hardware); the speed line is always printed."""
+    with Qemu(cmdline="text fb.cache=uc", name="t-hw-fbuc") as vm:
+        vm.expect(r"framebuffer .* uncached \(fb\.cache=uc\)", timeout=60)
+        vm.expect(r"framebuffer speed: a full-screen fill \(\d+ KiB\) took [\d.]+ ms, ~\d+ MB/s", timeout=30)
+        vm.expect(PROMPT, timeout=120)
+
+
+# ---------------------------------------------------------------------------------------------- buses and memory
+
+@test
+def hwaudit_no_ps2_controller():
+    """A USB-only PC without an i8042 (QEMU i8042=off): the floating bus is recognised, boot goes on, input comes from USB or serial."""
+    with Qemu(cmdline="text", name="t-hw-nops2", extra=["-machine", "q35,i8042=off"]) as vm:
+        vm.expect(r"no PS/2 controller found", timeout=60)
+        vm.expect(PROMPT, timeout=120)
+        vm.send("echo nops2-$((6*7))\n")
+        vm.expect(r"nops2-42", timeout=30)
+
+
+@test
+def hwaudit_memory_above_4g():
+    """6 GiB of RAM (2 GiB below the PCI hole, the rest above 4 GiB): the loader maps it, the kernel uses it, the map summary says so."""
+    with Qemu(cmdline="text", name="t-hw-6g", mem="6G") as vm:
+        vm.expect(r"memory map: \d+ regions, \d+ MiB usable .* RAM reaches 0x[0-9a-f]+, (\d+) MiB of it above 4 GiB", timeout=90)
+        high = int(re.search(r"(\d+) MiB of it above 4 GiB", vm.text()).group(1))
+        assert high >= 3000, f"expected about 4096 MiB above 4 GiB, the log says {high}"
+        vm.expect(PROMPT, timeout=120)
+        vm.send("grep MemTotal /proc/meminfo\n")
+        m = vm.expect(r"MemTotal:\s+(\d+) kB", timeout=30)
+        assert int(m.group(1)) > 5_500_000, m.group(0)
+
+
+# ---------------------------------------------------------------------------------------------- the loader and cmdline.txt
+
+CMDLINE_CASES = {
+    "utf8-bom-crlf": (b"\xef\xbb\xbftext blk.ro\r\n", "text blk.ro"),
+    "utf16-bom": ("text blk.ro tz=EST5EDT\r\n".encode("utf-16"), "text blk.ro tz=EST5EDT"),
+    "multi-line": (b"text\n\nblk.ro\r\n  nosounds \n", "text blk.ro nosounds"),
+    "tabs": (b"\ttext\tblk.ro\t\n", "text blk.ro"),
+}
+
+
+@test
+def hwaudit_cmdline_encodings():
+    """cmdline.txt saved by a Windows editor (UTF-8 BOM, UTF-16, CRLF, several lines, tabs) reaches the kernel as plain words: blk.ro must not get lost."""
+    for name, (raw, expected) in CMDLINE_CASES.items():
+        esp = BUILD / f"hwaudit-esp-{name}"
+        shutil.copytree(BUILD / "esp", esp, dirs_exist_ok=True)
+        with RawCmdlineQemu(raw, cmdline="", name=f"t-hw-cmd-{name}", esp=esp) as vm:
+            m = vm.expect(r"loader: cmdline '([^']*)'", timeout=60)
+            assert m.group(1) == expected, f"{name}: the loader passed '{m.group(1)}', expected '{expected}'"
+            vm.expect(r"Gensokyo\] image .*, cmdline '([^']*)'", timeout=60)
+            assert re.search(r"Gensokyo\] image .*, cmdline '%s'" % re.escape(expected), vm.text()), f"{name}: the kernel saw something else"
+
+
+@test
+def hwaudit_missing_cmdline_means_read_only():
+    """No cmdline.txt on the stick at all: the loader falls back to 'video=native blk.ro' so that no disk is ever writable by accident."""
+    esp = BUILD / "hwaudit-esp-missing"
+    shutil.copytree(BUILD / "esp", esp, dirs_exist_ok=True)
+    with RawCmdlineQemu(None, cmdline="", name="t-hw-cmd-missing", esp=esp) as vm:
+        vm.expect(r"loader: no cmdline\.txt on the boot volume: using the safe default", timeout=60)
+        vm.expect(r"loader: cmdline 'video=native blk\.ro'", timeout=30)
+        vm.expect(r"Gensokyo\] image .*, cmdline 'video=native blk\.ro'", timeout=60)
+
+
+# ---------------------------------------------------------------------------------------------- the screen
+
+@test
+def hwaudit_fbcon_selftest():
+    """The text console's diff renderer: after scrolls, cursor addressing, a disabled period, one huge write and a forced redraw the screen equals the grid."""
+    with Qemu(cmdline="selftest", name="t-hw-fbcon") as vm:
+        vm.expect(r"SELFTEST (PASS|FAIL)", timeout=90)
+        text = vm.text()
+        assert "[selftest] fbcon: ok" in text, text[-1500:]
+        assert "SELFTEST PASS" in text, text[-1500:]
+
+
+@test
+def hwaudit_console_scroll_pixels():
+    """500 numbered lines scroll the text console many screens; the last rows on screen are pixel-for-pixel the numbers 491..500."""
+    with Qemu(cmdline="text", name="t-hw-scroll") as vm:
+        vm.expect(PROMPT, timeout=120)
+        vm.send("i=1; while [ $i -le 500 ]; do echo $i; i=$((i+1)); done\n")
+        vm.expect(r"\n500\n", timeout=90)
+        vm.expect(PROMPT, timeout=60)
+        deadline = time.time() + 20
+        bad = None
+        while time.time() < deadline:
+            shot = vm.screen_ppm()
+            rows = shot[1] // 16
+            bad = [500 - k for k in range(10) if not screen_row_matches(shot, rows - 2 - k, str(500 - k), CONSOLE_FG, CONSOLE_BG)]
+            if not bad:
+                break
+            time.sleep(0.5)
+        assert not bad, f"rows showing {bad} do not match the font rendering of those numbers"
+        vm.screenshot(BUILD / "t-hw-scroll.png")
+
+
+# ---------------------------------------------------------------------------------------------- the window server
+
+def _desktop_stat(name, cmdline):
+    from guitools import Gui
+    with Qemu(cmdline=cmdline, name=name, mem="768M") as vm:
+        g = Gui(vm)
+        g.start_desktop()
+        g.sh("gapterm &")
+        g.sleep(3)
+        g.move_to(300, 300)
+        for i in range(20):
+            g.move_to(300 + 10 * i, 300 + 6 * i)
+        g.sleep(3)
+        return g.sh("cat /tmp/fairyd.stat")
+
+
+@test
+def hwaudit_fairyd_frame_stats():
+    """fairyd writes /tmp/fairyd.stat (compose and flush time per frame); fairyd.copy=rep and fairyd.damage=bbox select the old paths."""
+    out = _desktop_stat("t-hw-fairyd", "text")
+    assert "copy: nt, damage: list" in out, out
+    m = re.search(r"frames (\d+), rectangles (\d+)", out)
+    assert m and int(m.group(1)) > 5, out
+    assert re.search(r"compose \d+ us per frame, flush \d+ us per frame", out), out
+    out2 = _desktop_stat("t-hw-fairyd-old", "text fairyd.copy=rep fairyd.damage=bbox")
+    assert "copy: rep, damage: bbox" in out2, out2
+    m2 = re.search(r"frames (\d+), rectangles (\d+)", out2)
+    assert m2 and m2.group(1) == m2.group(2), "with one bounding box every frame is exactly one rectangle: " + out2

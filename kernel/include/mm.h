@@ -25,6 +25,7 @@ typedef struct Page {
 
 const BootMemRegion *boot_mmap(u32 *count);
 void    boot_mmap_save(const BootInfo *bi);          /* copies the loader's region list into kernel memory */
+void    boot_mmap_report(void);                      /* log lines: how much memory of which kind, where RAM ends */
 
 void    pmm_init(void);
 paddr_t pmm_alloc(unsigned order);                  /* 0 on failure */

@@ -64,6 +64,34 @@ static EFI_STATUS read_file(EFI_FILE_PROTOCOL *root, const char *ascii_name, UIN
     return EFI_SUCCESS;
 }
 
+/*
+ * cmdline.txt as the kernel gets it: plain ASCII, words separated by single spaces. The file is edited on another computer, and
+ * what an editor writes is not always plain: Windows editors and PowerShell save a UTF-8 byte order mark or whole UTF-16, a
+ * multi-line file leaves newlines inside words, and the kernel (which only splits on spaces) would then not find "blk.ro" and
+ * leave the disks writable without a word. Everything unusual is turned into spaces (or '?'), UTF-16 is narrowed to its low bytes.
+ */
+static void normalize_cmdline(const UINT8 *raw, UINT64 size, char *out, UINTN cap) {
+    UINT64 i = 0, step = 1, hi = 1;                         /* hi: which byte of a UTF-16 unit is the character (the other must be 0) */
+    int wide = 0;
+    if (size >= 3 && raw[0] == 0xEF && raw[1] == 0xBB && raw[2] == 0xBF) i = 3;                          /* UTF-8 BOM */
+    else if (size >= 2 && raw[0] == 0xFF && raw[1] == 0xFE) { wide = 1; i = 2; step = 2; hi = 1; }       /* UTF-16 little endian BOM */
+    else if (size >= 2 && raw[0] == 0xFE && raw[1] == 0xFF) { wide = 1; i = 2; step = 2; hi = 0; }       /* UTF-16 big endian BOM */
+    else if (size >= 4 && raw[0] && !raw[1] && raw[2] && !raw[3]) { wide = 1; step = 2; hi = 1; }       /* UTF-16 little endian without a BOM */
+    UINTN n = 0;
+    int pending_space = 0;
+    for (; i + (wide ? 1 : 0) < size && n + 1 < cap; i += step) {
+        UINT8 c = raw[i + (wide ? (hi ? 0 : 1) : 0)];
+        UINT8 other = wide ? raw[i + (hi ? 1 : 0)] : 0;
+        if (wide && other) c = '?';
+        if (c < 0x20 || c == 0x7F || c == ' ') { pending_space = 1; continue; }     /* NUL, CR, LF, TAB, ...: a word boundary */
+        if (c >= 0x80) c = '?';
+        if (pending_space && n) { if (n + 2 >= cap) break; out[n++] = ' '; }
+        pending_space = 0;
+        out[n++] = (char)c;
+    }
+    out[n] = 0;
+}
+
 /* video=WxH     that mode (default 1024x768, with fallbacks)
  * video=native   keep the mode the firmware already chose: on a PC that is normally the monitor's own resolution
  * video=max      the largest mode the display offers, up to 2560x1600 */
@@ -190,9 +218,13 @@ static UINT64 find_rsdp(void) {
 
 static UINT32 classify(UINT32 t) {
     switch (t) {
-    case EfiConventionalMemory:
+    case EfiConventionalMemory:      return BOOTMEM_USABLE;
+    /* The firmware's own memory (boot services code and data) is free by the specification the moment boot services are gone, but
+     * hardware or other processors it left running may still be using it: a NIC or controller with a ring in there, or a core
+     * parked in a loop in there. It is handed to the kernel as "reclaimable": the kernel gives it to the allocator only after
+     * it has silenced every PCI DMA master (pci_init) and parked the other processors, which is what Linux does as well. */
     case EfiBootServicesCode:
-    case EfiBootServicesData:        return BOOTMEM_USABLE;
+    case EfiBootServicesData:
     case EfiLoaderCode:
     case EfiLoaderData:              return BOOTMEM_BOOT_RECLAIMABLE;
     case EFI_MEMTYPE_KERNEL:         return BOOTMEM_KERNEL;
@@ -246,6 +278,14 @@ static int load_kernel(UINT64 file_phys, UINT64 file_size, KernelImage *k) {
     return 1;
 }
 
+/* An error message on a PC would flash by as the firmware moves on to the next boot entry (and there is no serial port to read it
+ * from): keep it on the screen for a while before handing control back. */
+static EFI_STATUS fail_wait(EFI_STATUS code) {
+    log_str("loader: stopping here; the firmware carries on in 30 seconds\n");
+    g_bs->Stall(30UL * 1000 * 1000);
+    return code;
+}
+
 EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st) {
     g_st = st;
     g_bs = st->BootServices;
@@ -262,14 +302,14 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st) {
         EFI_ERROR(g_bs->HandleProtocol(li->DeviceHandle, &sfsGuid, (void **)&fs)) ||
         EFI_ERROR(fs->OpenVolume(fs, &root))) {
         log_str("loader: cannot open the boot volume\n");
-        return EFI_NOT_FOUND;
+        return fail_wait(EFI_NOT_FOUND);
     }
 
     /* --- files --- */
     UINT64 kfile_phys = 0, kfile_size = 0, initrd_phys = 0, initrd_size = 0, cmd_phys = 0, cmd_size = 0;
     if (EFI_ERROR(read_file(root, "kernel.elf", EfiLoaderData, &kfile_phys, &kfile_size))) {
         log_str("loader: kernel.elf not found on the boot volume\n");
-        return EFI_NOT_FOUND;
+        return fail_wait(EFI_NOT_FOUND);
     }
     log_str("loader: kernel.elf "); log_dec(kfile_size); log_str(" bytes\n");
 
@@ -280,11 +320,13 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st) {
         log_str("loader: no initrd.img\n");
     }
     char cmdline[BOOTINFO_CMDLINE_MAX] = {0};
-    if (!EFI_ERROR(read_file(root, "cmdline.txt", EfiLoaderData, &cmd_phys, &cmd_size))) {
-        UINT64 n = cmd_size < BOOTINFO_CMDLINE_MAX - 1 ? cmd_size : BOOTINFO_CMDLINE_MAX - 1;
-        memcpy(cmdline, (const void *)cmd_phys, n);
-        while (n && (cmdline[n - 1] == '\n' || cmdline[n - 1] == '\r' || cmdline[n - 1] == ' ')) n--;
-        cmdline[n] = 0;
+    if (!EFI_ERROR(read_file(root, "cmdline.txt", EfiLoaderData, &cmd_phys, &cmd_size)))
+        normalize_cmdline((const UINT8 *)cmd_phys, cmd_size, cmdline, BOOTINFO_CMDLINE_MAX);
+    else {
+        /* No file at all (a stick prepared by hand): the safe defaults, which keep every SATA and NVMe disk read-only. */
+        static const char defaults[] = "video=native blk.ro";
+        memcpy(cmdline, defaults, sizeof defaults);
+        log_str("loader: no cmdline.txt on the boot volume: using the safe default\n");
     }
     log_str("loader: cmdline '"); log_str(cmdline); log_str("'\n");
 
@@ -296,7 +338,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st) {
 
     /* --- kernel image --- */
     KernelImage kimg = {0};
-    if (!load_kernel(kfile_phys, kfile_size, &kimg)) return EFI_LOAD_ERROR;
+    if (!load_kernel(kfile_phys, kfile_size, &kimg)) return fail_wait(EFI_LOAD_ERROR);
     log_str("loader: kernel at phys "); log_hex(kimg.phys_base);
     log_str(" virt "); log_hex(kimg.virt_base);
     log_str(" entry "); log_hex(kimg.entry); log_str("\n");
@@ -308,7 +350,8 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st) {
     UINT64 stack_phys = (UINT64)arena_alloc(STACK_PAGES * PAGE_SIZE, 4096);
     UINT64 stack_top_virt = HHDM_BASE + stack_phys + STACK_PAGES * PAGE_SIZE;
 
-    UINT64 rawmap_phys = alloc_pages(EfiLoaderData, MAP_BUF_PAGES);
+    UINTN map_pages = MAP_BUF_PAGES;
+    UINT64 rawmap_phys = alloc_pages(EfiLoaderData, map_pages);
     EFI_MEMORY_DESCRIPTOR *rawmap = (EFI_MEMORY_DESCRIPTOR *)rawmap_phys;
 
     bi->magic       = BOOTINFO_MAGIC;
@@ -330,12 +373,19 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st) {
     /* --- exit boot services: nothing may touch boot services between GetMemoryMap and the exit --- */
     UINTN mapSize = 0, descSize = 0;
     int exited = 0;
-    for (int attempt = 0; attempt < 5 && !exited; attempt++) {
+    for (int attempt = 0; attempt < 16 && !exited; attempt++) {
         UINTN mapKey = 0;
         UINT32 descVer = 0;
-        mapSize = MAP_BUF_PAGES * PAGE_SIZE;
+        mapSize = map_pages * PAGE_SIZE;
         EFI_STATUS s = g_bs->GetMemoryMap(&mapSize, rawmap, &mapKey, &descSize, &descVer);
+        if (s == EFI_BUFFER_TOO_SMALL) {            /* a firmware with a huge map: a bigger buffer (the allocation changes the map, so ask again) */
+            map_pages = (mapSize >> 12) + 16;
+            rawmap_phys = alloc_pages(EfiLoaderData, map_pages);
+            rawmap = (EFI_MEMORY_DESCRIPTOR *)rawmap_phys;
+            continue;
+        }
         if (EFI_ERROR(s)) { log_str("loader: GetMemoryMap failed\n"); loader_halt(); }
+        /* A stale map key (something the firmware did while shutting down changed the map) is the normal reason for a failure: ask again. */
         if (!EFI_ERROR(g_bs->ExitBootServices(image, mapKey))) exited = 1;
     }
     if (!exited) { log_str("loader: ExitBootServices failed\n"); loader_halt(); }

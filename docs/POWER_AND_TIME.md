@@ -27,7 +27,17 @@ machine). Everyone else gets *Operation not permitted* and a machine that keeps 
 The kernel takes its few interrupts (timer, keyboard, mouse, serial) from the legacy 8259 PIC and polls every other
 device. Real firmware does not always leave the local APIC in "virtual wire" mode, which is what lets the PIC reach the
 boot processor, so `lapic_virtual_wire()` sets LINT0 to ExtINT (unmasked) at boot; it does nothing when the APIC is
-globally disabled and understands both xAPIC and x2APIC mode.
+globally disabled and understands both xAPIC and x2APIC mode. It also cleans up what the firmware left in the APIC (a raised
+task priority, vectors still in service, armed local sources, unmasked I/O APIC inputs) and sends the other processors an INIT
+so that they stop running firmware code in memory the kernel is about to reuse.
+
+### The system tick and the TSC
+
+The tick is the 8254 PIT at 1 kHz through the PIC. The TSC (microsecond delays) is calibrated against the PIT's channel 2, with the
+ACPI power-management timer and the CPU's brand string ("@ 3.40GHz") as fallbacks and cross-checks; every wait in that code is bounded
+because there is no way to see where a PC stopped. If no tick arrives within 200 ms after interrupts are enabled (no 8254, or interrupt
+routing the 8259 does not expect), the local APIC timer takes over as the 1 kHz tick (`timer_verify`; reproduce with QEMU
+`-machine q35,pit=off`). The boot log says which references were used (`TSC references: ...`).
 
 ### DMA below 4 GiB
 

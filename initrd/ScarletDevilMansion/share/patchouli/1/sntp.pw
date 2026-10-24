@@ -1,0 +1,35 @@
+.page sntp 1 ask an NTP server for the time, and set the clock
+
+# SYNOPSIS
+*sntp* [*-s*] [*-w*] [*-p* _PORT_] [*-t* _SECONDS_] _SERVER_
+*ntpdate* [*-qw*] [*-p* _PORT_] [*-t* _SECONDS_] _SERVER_
+
+# DESCRIPTION
+`sntp` sends one simple NTP request (RFC 4330) to _SERVER_ and prints the stratum of the server, how far the local clock is from it (the offset, in seconds, positive when we are behind) and the round-trip delay. The offset is computed from the four timestamps of the exchange, so it does not include the time the packets spent travelling. The request is retried three times.
+
+With `-s` the system clock is stepped by that offset (root only). The system clock keeps UTC; the time zone (`tz=` on the kernel command line, or `/etc/timezone`) only decides how the time is shown, so nothing about the zone needs to be given here. With `-w` the battery-backed clock chip is written as well, as `hwclock -w` would: in UTC, or in local time when the machine was started with `rtc=local` (a PC that also runs Windows does that).
+
+`ntpdate` is the same program with `-s` implied: it asks and sets. Give it `-q` to only ask. A server that says it is not synchronised (stratum 0 or the alarm flag) is refused.
+
+# OPTIONS
+@ *-s*
+    Step the system clock to the server's time.
+@ *-w*
+    Also write the clock chip (implies `-s`).
+@ *-q*
+    Only query, even for `ntpdate`.
+@ *-p* _PORT_
+    The server's UDP port (default 123).
+@ *-t* _SECONDS_
+    Wait this long for each answer (default 5).
+
+# EXAMPLES
+    sntp 10.0.2.2
+    sntp -s ntp.example.test
+    ntpdate -w 10.0.2.2
+
+# EXIT STATUS
+0 on success, 1 when no valid answer came, the server is unsynchronised or the clock could not be set, 2 for a usage error.
+
+# SEE ALSO
+date(1), hwclock(8), clock(7), network(7)

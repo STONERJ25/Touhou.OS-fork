@@ -6,7 +6,9 @@
 2. The loader (`boot/`, PE/COFF, MS ABI) reads `kernel.elf`, `initrd.img` and `cmdline.txt`, selects a GOP mode
    (default 1024x768; `video=WxH`, `video=native` (keep the firmware's mode) or `video=max` on the command line), copies the ELF's PT_LOAD segments into one
    physically contiguous block, exits boot services, converts the UEFI memory map to `BootMemRegion[]`, builds boot page
-   tables and jumps to the kernel with a `BootInfo*` (see `shared/bootinfo.h`).
+   tables and jumps to the kernel with a `BootInfo*` (see `shared/bootinfo.h`). Boot services and loader memory are passed on as
+   `BOOTMEM_BOOT_RECLAIMABLE`: the kernel adds it to its allocator only after every PCI DMA master has been silenced. `cmdline.txt` is
+   normalised to plain ASCII words by the loader (a missing file means `video=native blk.ro`).
 3. The kernel (`kernel/`, ELF64, SysV ABI, `-mcmodel=kernel`, linked at `0xFFFFFFFF80000000`) takes over.
 
 ## Where things are documented
@@ -20,7 +22,7 @@
 | SATA and NVMe | [BLOCKDEVICES.md](BLOCKDEVICES.md) |
 | USB (xHCI, hubs, HID) | [USB.md](USB.md) |
 | Editor, pager, manual pages, shrine applets | [TOOLS.md](TOOLS.md) |
-| Booting a real PC from a stick | [REAL_HARDWARE.md](REAL_HARDWARE.md) |
+| Booting a real PC from a stick | [REAL_HARDWARE.md](REAL_HARDWARE.md), [HARDWARE_AUDIT.md](HARDWARE_AUDIT.md) |
 | Theming rules | [THEMING.md](THEMING.md) |
 | What is left, unmerged branches | [NEXT.md](NEXT.md), [ROADMAP.md](ROADMAP.md) |
 
@@ -55,6 +57,9 @@ Everything a PCI driver needs already exists; look at `kernel/include/pci.h`, `b
 - **Entry points:** `kmain()` calls the weak functions `virtio_blk_init`, `ahci_init`, `nvme_init`, `storage_mount_boot_volumes`
   and `usb_init` (defaults in `kernel/drivers/driver_stubs.c`). A driver just defines the strong function in its own file,
   so adding a driver never edits `main.c`. New `.c` files anywhere under `kernel/` are picked up by `tools/build.py`.
+  Devices that appear later than that (USB sticks: the bus is enumerated by the `usbd` thread seconds after `kmain` got here) announce
+  their disks with `storage_disk_added()`, and `kmain` calls `usb_wait_settled(8000)` right before the first session starts so that a stick's
+  HUMANVILLAGE volume is mounted before login (bounded; returns at once without USB).
 - **No interrupts, poll instead.** Interrupt routing (IOAPIC, `_PRT`, MSI) is the most fragile part of real PCs and
   QEMU hides most of it, so drivers poll from a kernel thread (`task_create_detached` + `task_sleep_ms(1)`), or spin with
   a timeout for short synchronous operations. At 1 kHz this is invisible in CPU usage and behaves the same everywhere.

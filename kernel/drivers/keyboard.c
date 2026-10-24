@@ -285,13 +285,26 @@ void input_mouse(int dx, int dy, int wheel, u8 buttons) {
 
 /* ---------------------------------------------------------------- controller */
 
+/* A real i8042 answers within a millisecond or two. These waits are bounded in TIME (up to 25 ms), not in port reads: on a PC
+ * that does have the controller but has no mouse plugged in, every mouse command times out, and a count of 100000 slow I/O
+ * reads each adds up to seconds of black screen at boot. */
+#define KBD_WAIT_US 25000
+
 static int wait_write(void) {
-    for (int i = 0; i < 100000; i++) if (!(inb(KBD_STATUS) & 2)) return 0;
+    for (int i = 0; i < 20; i++) if (!(inb(KBD_STATUS) & 2)) return 0;
+    for (u32 t = 0; t < KBD_WAIT_US; t += 50) {
+        if (!(inb(KBD_STATUS) & 2)) return 0;
+        udelay(50);
+    }
     return -1;
 }
 
 static int wait_read(void) {
-    for (int i = 0; i < 100000; i++) if (inb(KBD_STATUS) & 1) return 0;
+    for (int i = 0; i < 20; i++) if (inb(KBD_STATUS) & 1) return 0;
+    for (u32 t = 0; t < KBD_WAIT_US; t += 50) {
+        if (inb(KBD_STATUS) & 1) return 0;
+        udelay(50);
+    }
     return -1;
 }
 
@@ -323,13 +336,23 @@ void keyboard_init(void) {
         klog("Satori", "no PS/2 controller found; keyboard and mouse must come from USB");
         return;
     }
+    /* A status register that does not look like a controller, or a controller that never answers the first command, means there is
+     * nothing to talk to (a PC that dropped the legacy ports, or firmware that emulates them through USB and is not in the mood).
+     * Anything else would cost 25 ms per unanswered command, and there are dozens of them below. */
+    if (wait_write() < 0) {
+        klog("Satori", "the PS/2 controller is stuck busy (status %#x); keyboard and mouse must come from USB", inb(KBD_STATUS));
+        return;
+    }
     ctl_cmd(0xAD);                              /* disable both ports while configuring */
     ctl_cmd(0xA7);
     for (int i = 0; i < 64 && (inb(KBD_STATUS) & 1); i++) inb(KBD_DATA);  /* flush */
 
     ctl_cmd(0x20);
     int cfg = ctl_read();
-    if (cfg < 0) cfg = 0;
+    if (cfg < 0) {
+        klog("Satori", "the PS/2 controller does not answer (status %#x); keyboard and mouse must come from USB", inb(KBD_STATUS));
+        return;
+    }
     cfg |= 0x01 | 0x02 | 0x40;                  /* IRQ1, IRQ12, scancode translation to set 1 */
     cfg &= ~(0x10 | 0x20);                      /* clocks enabled */
     ctl_cmd(0x60);
@@ -339,24 +362,33 @@ void keyboard_init(void) {
     ctl_cmd(0xA8);
 
     ctl_data(0xF4);                             /* keyboard: enable scanning */
-    ctl_read();
+    bool have_kbd = ctl_read() == 0xFA;
 
-    /* Mouse: defaults, then the "magic" sample-rate sequence that switches an IntelliMouse into wheel mode. */
-    mouse_cmd(0xF6);
-    mouse_cmd(0xF3); mouse_cmd(200);
-    mouse_cmd(0xF3); mouse_cmd(100);
-    mouse_cmd(0xF3); mouse_cmd(80);
-    if (mouse_cmd(0xF2) == 0xFA) g_mouse_wheel = ctl_read() == 3;
-    mouse_cmd(0xF3); mouse_cmd(100);
-    mouse_cmd(0xF4);                            /* enable streaming */
+    /* Mouse: defaults, then the "magic" sample-rate sequence that switches an IntelliMouse into wheel mode. The first command is the
+     * probe: no acknowledgement means nothing is plugged in and the rest would only time out one by one. */
+    bool have_mouse = mouse_cmd(0xF6) == 0xFA;
+    if (have_mouse) {
+        mouse_cmd(0xF3); mouse_cmd(200);
+        mouse_cmd(0xF3); mouse_cmd(100);
+        mouse_cmd(0xF3); mouse_cmd(80);
+        if (mouse_cmd(0xF2) == 0xFA) g_mouse_wheel = ctl_read() == 3;
+        mouse_cmd(0xF3); mouse_cmd(100);
+        mouse_cmd(0xF4);                        /* enable streaming */
+    }
 
     g_mouse.x = g_screen_w / 2;
     g_mouse.y = g_screen_h / 2;
 
-    irq_register(1, i8042_irq, NULL);
-    irq_register(12, i8042_irq, NULL);
-    irq_unmask(1);
-    irq_unmask(12);
-    klog("Satori", "keyboard online: reading your mind (and your keystrokes)");
-    klog("Koishi", "mouse online%s: movement goes unnoticed", g_mouse_wheel ? " with wheel" : "");
+    if (!have_kbd && !have_mouse) {
+        ctl_cmd(0xAD);                          /* nothing is attached: leave both ports off so that they cannot interrupt */
+        ctl_cmd(0xA7);
+        klog("Satori", "a PS/2 controller is there but neither a keyboard nor a mouse answered; USB it is");
+        return;
+    }
+    if (have_kbd) { irq_register(1, i8042_irq, NULL); irq_unmask(1); }
+    if (have_mouse) { irq_register(12, i8042_irq, NULL); irq_unmask(12); }
+    if (have_kbd) klog("Satori", "keyboard online: reading your mind (and your keystrokes)");
+    else klog("Satori", "the PS/2 controller has no keyboard on it");
+    if (have_mouse) klog("Koishi", "mouse online%s: movement goes unnoticed", g_mouse_wheel ? " with wheel" : "");
+    else klog("Koishi", "the PS/2 controller has no mouse on it");
 }

@@ -25,6 +25,7 @@ void virtio_blk_init(void);
 void ahci_init(void);
 void nvme_init(void);
 void usb_init(void);
+bool usb_wait_settled(u32 max_ms);
 void storage_mount_boot_volumes(void);
 
 u64 g_hhdm;
@@ -95,6 +96,9 @@ NORETURN void kmain(BootInfo *bi) {
     print_banner();
     klog("Gensokyo", "kernel %s \"%s\" starting", KERNEL_VERSION, KERNEL_CODENAME);
     klog("Gensokyo", "cpu: %s (%s)", g_cpu.brand, g_cpu.vendor);
+    char cpudesc[160];
+    cpu_describe(cpudesc, sizeof cpudesc);
+    klog("Gensokyo", "cpu: %s", cpudesc);
     klog("Gensokyo", "image %p .. %p, cmdline '%s'", __kernel_start, __kernel_end, cmdline_string());
 
     char crash[24];
@@ -102,10 +106,12 @@ NORETURN void kmain(BootInfo *bi) {
 
     boot_mmap_save(bi);
     pmm_init();
+    boot_mmap_report();
     vmm_init();
     fb_remap();                         /* the loader's direct-map alias of the framebuffer is gone now */
-    klog("Kappa", "framebuffer %ux%u at %#lx, write-combining", g_boot.fb.width, g_boot.fb.height,
-         (unsigned long)g_boot.fb.base);
+    klog("Kappa", "framebuffer %ux%u at %#lx, pitch %u bytes, %s; the firmware's MTRR for it: %s", g_boot.fb.width, g_boot.fb.height,
+         (unsigned long)g_boot.fb.base, g_boot.fb.pitch, g_fb.ready ? fb_cache_name() : "none (no graphics output was found)",
+         g_fb.ready ? cpu_mtrr_type_name(g_boot.fb.base, (u64)g_boot.fb.pitch * g_boot.fb.height) : "-");
     klog("Boundary", "paging online: %lu MiB RAM, %lu MiB free", (unsigned long)(pmm_total_pages() >> 8),
          (unsigned long)(pmm_free_pages_count() >> 8));
     acpi_init();
@@ -114,10 +120,12 @@ NORETURN void kmain(BootInfo *bi) {
     pic_init();
     lapic_virtual_wire();
     timer_init();
+    fb_report(timer_tsc_mhz());         /* how fast the first full-screen fill was: tells a write-combining mapping from an uncached one */
     tty_console_init();
     input_init();
     sti();
     klog("Sakuya", "interrupts enabled, scheduler running");
+    timer_verify();                     /* no tick from the PIT? the local APIC timer takes over (a PC gives no other hint why it froze) */
     rtc_init();
     random_init();
 
@@ -132,10 +140,12 @@ NORETURN void kmain(BootInfo *bi) {
     /* Buses and device drivers. Each *_init is a weak no-op until a driver supplies it (see drivers/driver_stubs.c). */
     pci_init();
     pmm_reclaim_boot_memory();          /* only now: pci_init has switched off any DMA the firmware left running into that memory */
+    u64 t_storage = uptime_ms();
     virtio_blk_init();
     ahci_init();
     nvme_init();
     storage_mount_boot_volumes();
+    klog("Marisa", "storage probing took %lu ms", (unsigned long)(uptime_ms() - t_storage));      /* a spun-down disk can make this long: it is the usual reason for a slow boot */
     usb_init();
     run_initcalls();                    /* device nodes, sockets, ptys: everything registered with INITCALL() */
 
@@ -144,8 +154,9 @@ NORETURN void kmain(BootInfo *bi) {
         pmm_add_region(g_boot.initrd_phys, ALIGN_UP(g_boot.initrd_size, PAGE_SIZE));    /* contents now live in tmpfs */
     }
 
+    usb_wait_settled(8000);             /* a USB stick's HUMANVILLAGE volume is mounted before the first session starts (bounded; returns at once without USB) */
     process_init();
-    klog("Gensokyo", "boot complete");
+    klog("Gensokyo", "boot complete after %lu ms", (unsigned long)uptime_ms());
     printk("\n\x1b[1;35m Welcome to Gensokyo. \x1b[0m\n");
 
     char initpath[64] = "/sbin/init";

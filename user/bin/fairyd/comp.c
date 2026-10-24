@@ -183,6 +183,43 @@ static void draw_cursor(Rect clip) {
 
 /* ---------------------------------------------------------------- init and damage */
 
+/* Pending damage is a short list of rectangles, not one bounding box: a pointer in one corner and a clock tick in the opposite one
+ * must not cost a full-screen compose and a full-screen write to the framebuffer. S.dirty stays the bounding box of the list (the
+ * main loop only asks whether it is empty). fairyd.damage=bbox on the kernel command line goes back to the single rectangle,
+ * for comparing. */
+#define MAX_DAMAGE 12
+static Rect g_dmg[MAX_DAMAGE];
+static int g_ndmg;
+static bool g_dmg_bbox_only;
+
+/* The framebuffer is display memory mapped write-combining (or worse, uncached): the copy to it must be wide stores, sequential,
+ * and never read back. fairyd.copy=rep uses the plain byte-string copy instead, for comparing. */
+static bool g_copy_nt = true;
+
+static struct {
+    uint64_t frames, rects, pixels, compose_cy, flush_cy, worst_cy;
+    uint64_t tsc0, ms0, last_report_ms;
+} g_st;
+
+static inline uint64_t rdtsc_u(void) {
+    uint32_t lo, hi;
+    __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+static void read_knobs(void) {
+    FILE *f = fopen("/proc/cmdline", "r");
+    if (!f) return;
+    char line[400];
+    if (fgets(line, sizeof line, f)) {
+        for (char *p = strtok(line, " \t\r\n"); p; p = strtok(NULL, " \t\r\n")) {
+            if (!strcmp(p, "fairyd.copy=rep")) g_copy_nt = false;
+            else if (!strcmp(p, "fairyd.damage=bbox")) g_dmg_bbox_only = true;
+        }
+    }
+    fclose(f);
+}
+
 void comp_init(int w, int h, uint32_t *fb, int pitch, bool swap_rb) {
     S.screen_w = w;
     S.screen_h = h;
@@ -195,15 +232,48 @@ void comp_init(int w, int h, uint32_t *fb, int pitch, bool swap_rb) {
     S.cursor_y = h / 2;
     S.cursor_shape = FC_ARROW;
     build_cursors();
+    read_knobs();
     Rect all = { 0, 0, w, h };
     S.dirty = all;
+    g_dmg[0] = all;
+    g_ndmg = 1;
+    g_st.tsc0 = rdtsc_u();
+    g_st.ms0 = k_now_ms();
+    fprintf(stderr, "fairyd: framebuffer copy: %s, damage: %s\n", g_copy_nt ? "non-temporal 16-byte stores" : "rep movsb",
+            g_dmg_bbox_only ? "one bounding box" : "rectangle list");
 }
+
+static long rect_area(Rect r) { return (long)r.w * r.h; }
 
 void comp_damage(Rect r) {
     Rect screen = { 0, 0, S.screen_w, S.screen_h };
     r = rect_intersect(r, screen);
     if (rect_empty(r)) return;
     S.dirty = rect_union(S.dirty, r);
+    if (g_dmg_bbox_only) { g_dmg[0] = S.dirty; g_ndmg = 1; return; }
+    for (;;) {
+        /* Merge r with any rectangle it overlaps or touches when that wastes little; a rectangle inside r simply disappears. */
+        int best = -1;
+        long best_waste = 0;
+        for (int i = 0; i < g_ndmg; i++) {
+            Rect u = rect_union(g_dmg[i], r);
+            Rect x = rect_intersect(g_dmg[i], r);
+            long waste = rect_area(u) - (rect_area(g_dmg[i]) + rect_area(r) - rect_area(x));
+            long allowed = (rect_area(g_dmg[i]) + rect_area(r)) / 4;
+            if (allowed < 4096) allowed = 4096;
+            if (waste <= allowed && (best < 0 || waste < best_waste)) { best = i; best_waste = waste; }
+        }
+        if (best < 0 && g_ndmg == MAX_DAMAGE) {             /* the list is full: fold r into whatever it grows the least */
+            for (int i = 0; i < g_ndmg; i++) {
+                Rect u = rect_union(g_dmg[i], r);
+                long waste = rect_area(u) - rect_area(g_dmg[i]) - rect_area(r);
+                if (best < 0 || waste < best_waste) { best = i; best_waste = waste; }
+            }
+        }
+        if (best < 0) { g_dmg[g_ndmg++] = r; return; }
+        r = rect_union(g_dmg[best], r);
+        g_dmg[best] = g_dmg[--g_ndmg];                      /* r replaces it; look again, the bigger r may now reach other rectangles */
+    }
 }
 
 void comp_damage_win(const Win *w) {
@@ -345,24 +415,97 @@ static void compose(Rect r) {
     draw_cursor(r);
 }
 
+/* Copies `n` pixels to the framebuffer with 16-byte non-temporal stores (movntdq): on write-combining memory each group of four
+ * fills a quarter of a cache line and the line goes out as one burst; on uncached memory it is still a quarter of the bus
+ * transactions of the dword stores a byte-string copy ends up doing there. Sequential and never reading the destination. */
+static void copy_to_fb(uint32_t *dst, const uint32_t *src, size_t n) {
+    while (n && ((uintptr_t)dst & 15)) { *dst++ = *src++; n--; }
+    while (n >= 16) {
+        __asm__ volatile (
+            "movdqu    (%1), %%xmm0\n\t"
+            "movdqu  16(%1), %%xmm1\n\t"
+            "movdqu  32(%1), %%xmm2\n\t"
+            "movdqu  48(%1), %%xmm3\n\t"
+            "movntdq %%xmm0,   (%0)\n\t"
+            "movntdq %%xmm1, 16(%0)\n\t"
+            "movntdq %%xmm2, 32(%0)\n\t"
+            "movntdq %%xmm3, 48(%0)\n\t"
+            : : "r"(dst), "r"(src) : "xmm0", "xmm1", "xmm2", "xmm3", "memory");
+        dst += 16; src += 16; n -= 16;
+    }
+    while (n >= 4) {
+        __asm__ volatile ("movdqu (%1), %%xmm0\n\tmovntdq %%xmm0, (%0)" : : "r"(dst), "r"(src) : "xmm0", "memory");
+        dst += 4; src += 4; n -= 4;
+    }
+    while (n) { *dst++ = *src++; n--; }
+}
+
 static void flush_rect(Rect r) {
+    static uint32_t *swapped;                                       /* one row with red and blue exchanged, for RGBX displays */
+    static int swapped_len;
+    if (S.swap_rb && swapped_len < r.w) {
+        uint32_t *bigger = realloc(swapped, (size_t)r.w * 4);
+        if (!bigger) return;
+        swapped = bigger;
+        swapped_len = r.w;
+    }
     for (int y = r.y; y < r.y + r.h; y++) {
         const uint32_t *src = S.back + (size_t)y * S.screen_w + r.x;
         uint32_t *dst = (uint32_t *)((uint8_t *)S.fb + (size_t)y * S.fb_pitch) + r.x;
-        if (!S.swap_rb) memcpy(dst, src, (size_t)r.w * 4);
-        else for (int x = 0; x < r.w; x++) {
-            uint32_t p = src[x];
-            dst[x] = (p & 0xFF00) | ((p >> 16) & 0xFF) | ((p & 0xFF) << 16);
+        if (S.swap_rb) {
+            for (int x = 0; x < r.w; x++) {
+                uint32_t p = src[x];
+                swapped[x] = (p & 0xFF00) | ((p >> 16) & 0xFF) | ((p & 0xFF) << 16);
+            }
+            src = swapped;
         }
+        if (g_copy_nt) copy_to_fb(dst, src, (size_t)r.w);
+        else memcpy(dst, src, (size_t)r.w * 4);
     }
 }
 
+/* /tmp/fairyd.stat: what a frame costs, rewritten every two seconds. On a PC whose desktop feels slow this says whether the time goes
+ * into painting (compose) or into the framebuffer writes (flush), and how fast those writes really are. */
+static void report_stats(void) {
+    uint64_t ms = k_now_ms() - g_st.ms0;
+    if (ms < 500 || !g_st.frames) return;
+    uint64_t cy_per_us = (rdtsc_u() - g_st.tsc0) / (ms * 1000);
+    if (!cy_per_us) return;
+    uint64_t compose_us = g_st.compose_cy / cy_per_us, flush_us = g_st.flush_cy / cy_per_us, worst_us = g_st.worst_cy / cy_per_us;
+    uint64_t mbps = flush_us ? g_st.pixels * 4 / flush_us : 0;                 /* bytes per microsecond is MB/s */
+    FILE *f = fopen("/tmp/fairyd.stat", "w");
+    if (!f) return;
+    fprintf(f, "screen %dx%d, copy: %s, damage: %s\n", S.screen_w, S.screen_h, g_copy_nt ? "nt" : "rep", g_dmg_bbox_only ? "bbox" : "list");
+    fprintf(f, "frames %llu, rectangles %llu, %llu kpixels (%llu per frame)\n", (unsigned long long)g_st.frames, (unsigned long long)g_st.rects,
+            (unsigned long long)(g_st.pixels / 1000), (unsigned long long)(g_st.pixels / 1000 / g_st.frames));
+    fprintf(f, "compose %llu us per frame, flush %llu us per frame (~%llu MB/s), worst frame %llu us\n", (unsigned long long)(compose_us / g_st.frames),
+            (unsigned long long)(flush_us / g_st.frames), (unsigned long long)mbps, (unsigned long long)worst_us);
+    fclose(f);
+}
+
 void comp_flush(void) {
-    if (rect_empty(S.dirty)) return;
-    Rect r = S.dirty;
+    if (g_ndmg == 0) return;
+    Rect list[MAX_DAMAGE];
+    int n = g_ndmg;
+    memcpy(list, g_dmg, (size_t)n * sizeof(Rect));
+    g_ndmg = 0;
     S.dirty = (Rect){ 0, 0, 0, 0 };
-    compose(r);
-    flush_rect(r);
+    uint64_t t0 = rdtsc_u();
+    for (int i = 0; i < n; i++) compose(list[i]);
+    uint64_t t1 = rdtsc_u();
+    for (int i = 0; i < n; i++) flush_rect(list[i]);
+    __asm__ volatile ("sfence" ::: "memory");                       /* push out the last write-combining buffers now, not when something evicts them */
+    uint64_t t2 = rdtsc_u();
+    g_st.frames++;
+    g_st.rects += (uint64_t)n;
+    for (int i = 0; i < n; i++) g_st.pixels += (uint64_t)rect_area(list[i]);
+    g_st.compose_cy += t1 - t0;
+    g_st.flush_cy += t2 - t1;
+    if (t2 - t0 > g_st.worst_cy) g_st.worst_cy = t2 - t0;
+    if (S.now_ms - g_st.last_report_ms >= 2000) {
+        g_st.last_report_ms = S.now_ms;
+        report_stats();
+    }
 }
 
 static void snapshot_ppm(const char *path) {

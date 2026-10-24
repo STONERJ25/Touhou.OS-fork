@@ -95,6 +95,16 @@ Ctrl+F12 (screenshot: `~/Pictures/Screenshot-<date>-<time>.png` and `/tmp/screen
 * **Thumbnails**: `k_image_thumbnail(path, size, &canvas)` (cached) for file browsers; `k_image_thumbnail_cached()` for painting without reading.
 * **Gensokyo Gallery** (`user/bin/gallery/`, start menu entry in `hakurei-shell/launch.c`): the viewer; `gallery FILE` opens a picture and the folder it is in.
 
+### How a frame reaches the screen
+
+The compositor paints into a RAM back buffer and copies only what changed to `/dev/fb0`. The framebuffer is display memory (on a PC
+mapped write-combining), so it is only ever written, never read, and always with wide stores. Pending damage is a list of up to 12
+rectangles (overlapping or touching ones are merged when that wastes little), so a pointer in one corner plus a clock tick in the
+other is two small repaints and not one full-screen one. The copy uses 16-byte non-temporal stores and ends the frame with an
+`sfence`. `/tmp/fairyd.stat` (rewritten every two seconds) shows what frames cost: compose and flush microseconds per frame, the
+worst frame, the flush speed in MB/s. `fairyd.copy=rep` and `fairyd.damage=bbox` on the kernel command line select the old copy and
+the old single bounding box, for comparing (see [HARDWARE_AUDIT.md](HARDWARE_AUDIT.md)).
+
 ## Testing and looking at your work
 
 `python tests/gui_session.py script.txt prefix` boots the OS in QEMU, types shell lines, drives mouse and keyboard, and saves

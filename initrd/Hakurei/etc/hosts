@@ -1,0 +1,3 @@
+# /etc/hosts -- names that are known without asking a name server (see hosts(5))
+127.0.0.1   localhost localhost.localdomain
+127.0.0.1   gensokyo

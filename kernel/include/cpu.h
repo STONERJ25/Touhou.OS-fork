@@ -28,6 +28,7 @@ static inline u64 read_cr4(void) { u64 v; __asm__ volatile ("mov %%cr4, %0" : "=
 static inline void write_cr0(u64 v) { __asm__ volatile ("mov %0, %%cr0" : : "r"(v) : "memory"); }
 static inline void write_cr3(u64 v) { __asm__ volatile ("mov %0, %%cr3" : : "r"(v) : "memory"); }
 static inline void write_cr4(u64 v) { __asm__ volatile ("mov %0, %%cr4" : : "r"(v) : "memory"); }
+static inline void write_cr8(u64 v) { __asm__ volatile ("mov %0, %%cr8" : : "r"(v) : "memory"); }   /* the local APIC's task priority (TPR) */
 static inline void invlpg(const void *addr) { __asm__ volatile ("invlpg (%0)" : : "r"(addr) : "memory"); }
 
 static inline u64 read_rflags(void) { u64 v; __asm__ volatile ("pushfq; popq %0" : "=r"(v)); return v; }

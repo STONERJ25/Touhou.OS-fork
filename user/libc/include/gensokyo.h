@@ -15,4 +15,5 @@ void gap_log(const char *msg);
 long gap_time_ms(void);
 int  gap_settime(long ms, long rtc_epoch);   /* root only: set the wall clock; rtc_epoch != 0 also rewrites the clock chip */
 int  gap_getrandom(void *buf, unsigned long n);
+int  gap_netctl(unsigned long cmd, void *arg);   /* interfaces, routes, ARP, DHCP: NETCTL_* and struct gnet_* in netabi.h */
 #endif
