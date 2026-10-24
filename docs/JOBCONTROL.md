@@ -64,6 +64,13 @@ A terminal belongs to a **session** and has a **foreground process group**. The 
 * the console: when a process without a controlling terminal calls `tcsetpgrp` on it, that process's session; the group
   is whatever `tcsetpgrp` says. (`init` and gapsh already do this.)
 
+`tcsetpgrp` (`TIOCSPGRP`) is only for the terminal's own session: `ENOTTY` when the terminal is not the caller's controlling terminal
+(or, for the console, when the caller has one), `EPERM` when the group has no member in the caller's session, `EINVAL` for a negative
+group. Without that anybody holding a pty open could aim its Ctrl-C at somebody else's group. `setpgid` joins only groups of the
+caller's session, is `EPERM` for a session leader or a process of another session, and `EINVAL` for ids that are not pids.
+`kill(-pgid)` and `kill(-1)` signal only the processes the caller may signal (`EPERM` if none, `ESRCH` for an empty group), and
+init (pid 1) drops every signal it has no handler for, from anybody (docs/HARDENING.md).
+
 The rules apply to processes of the terminal's session that are **not** in the foreground group, and only while the
 terminal has a foreground group that still has members (otherwise nobody is a background process):
 
@@ -214,7 +221,7 @@ The manual pages are checked by `python tests/run_all.py manual` (`nice(1)`, `re
 * A thread blocked in a *pipe* or *socket* read of a stopped process still takes the data when it arrives (and then parks
   instead of returning to user code). Only terminals are guarded against this, because they are shared with the shell.
 * The foreground group of the console is whatever the last `tcsetpgrp` said; there is no `TIOCSCTTY`, no `tcgetsid`, and
-  `setpgid` does not check sessions or `exec` state.
+  `setpgid` does not look at whether the child has called `exec` yet (it does check sessions, see "Terminals").
 * Stopping is generated at `kill` time; a signal that is already pending when the process is stopped by another signal is
   delivered after the continue.
 * `tcsetpgrp` continues members of the new foreground group that were stopped by `SIGTTIN` or `SIGTTOU` (POSIX leaves them

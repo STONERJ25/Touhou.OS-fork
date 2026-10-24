@@ -12,8 +12,9 @@
  * What counts as a failure: a kernel panic or hang (the supervisor notices a worker that cannot be killed), a warning in the
  * kernel log, objects that do not come back (/proc/kstats before and after), a kernel that writes outside the buffer it was given
  * (canaries around output buffers) or returns something that is not a valid result. The workers themselves may die of anything.
- * The program lives in /usr/lib/kernel-tests, which is in nobody's PATH; the kernel command line "sysfuzz=seed:1,time:60" makes
- * init run it as root and power off with its verdict. */
+ * The program lives in /usr/lib/kernel-tests, which is in nobody's PATH. The kernel command line "kerneltest=sysfuzz
+ * ktargs=seed:1,time:60" makes init run it as root (as `sysfuzz --config seed:1,time:60`; the keys are seed, time, workers, calls,
+ * root, trace, only, stuck, verbose) and power off with its verdict as the exit status. tools/fuzz.py boots one such run per seed. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -354,7 +355,9 @@ static u64 gen_pid(W *w) {
     default: p = w->npids ? w->pids[below(r, (u64)w->npids)] : SC0(SYS_getpid); break;
     }
     /* never the supervisor, init, or "everybody": a real kill(-1) or kill(1) would end the machine's day, and it is the kernel's
-     * job to refuse those for us (the fuzzer tries them once, from a throw-away user, in the supervisor's self test) */
+     * job to refuse those for us. That refusal is therefore not exercised by the random calls (the hole that let an ordinary user
+     * take init down through a pty's foreground group was found before this filter existed); a small test of its own is still to
+     * be written, see "How to resume" in docs/HARDENING.md. */
     long ap = p < 0 ? -p : p;
     if (ap == g_cfg.supervisor_pid || ap == 1 || p == -1) p = SC0(SYS_getpid);
     if (g_cfg.root && p != SC0(SYS_getpid) && p != -SC0(SYS_getpid) && p != 0) {

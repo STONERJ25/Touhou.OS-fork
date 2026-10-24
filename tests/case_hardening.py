@@ -48,3 +48,38 @@ def hardening_exec():
             if want not in got or (status is not None and st != status):
                 failures.append(f"$ {cmd}\n  want {want!r} rc={status}, got rc={st}:\n{got.strip()[-400:]}")
         assert not failures, f"{len(failures)} check(s) failed:\n" + "\n".join(failures[:6])
+
+
+# ------------------------------------------------------------------------------------------------ the system call fuzzer
+
+import os
+
+
+def run_sysfuzz(name, config, extra="", mem="512M"):
+    """Boots with `kerneltest=sysfuzz`: init runs the fuzzer as root and powers off with its verdict. Returns (guest exit status, serial text)."""
+    secs = int(re.search(r"time:(\d+)", config).group(1))
+    cmdline = f"text kerneltest=sysfuzz ktargs={config}" + (" " + extra if extra else "")
+    with Qemu(cmdline=cmdline, mem=mem, name=name) as vm:
+        try:
+            vm.expect(r"SYSFUZZ (PASS|FAIL)|INCIDENT: KERNEL PANIC", timeout=secs + 150)
+        except RuntimeError:
+            pass                                    # the guest powered off before the last line reached the log: the exit status still tells
+        rc = vm.wait_exit(30)
+        return rc, vm.text()
+
+
+def check_sysfuzz(rc, text):
+    assert "INCIDENT: KERNEL PANIC" not in text, "the kernel panicked:\n" + text[-3000:]
+    assert "[WARNING]" not in text, "the kernel warned:\n" + text[text.find("[WARNING]") - 200:][:3000]
+    assert rc == 0, f"sysfuzz ended with status {rc}:\n" + text[-3000:]
+
+
+# Not in the default suite: a run takes minutes and the fuzzer is meant to be run with new seeds now and then (docs/HARDENING.md,
+# "How to resume"). Set TOUHOU_HARDENING_FUZZ=1 to include it.
+if os.environ.get("TOUHOU_HARDENING_FUZZ"):
+    @test
+    def hardening_sysfuzz():
+        """The system call fuzzer, three seeds as an ordinary user (one with heap poisoning): no panic, no hang, no warning, nothing leaked."""
+        for seed, extra in ((1, ""), (2, "heapdebug"), (3, "")):
+            rc, text = run_sysfuzz(f"t-sysfuzz-{seed}", f"seed:{seed},time:40,workers:2", extra)
+            check_sysfuzz(rc, text)
