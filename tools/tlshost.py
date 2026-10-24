@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""Builds libtls (user/lib/tls/src) into a Windows DLL so that the build machine can test it directly with Python.
+"""Builds libtls (user/lib/tls/src) into a Windows DLL (a shared object on Linux) so that the build machine can test it directly with Python.
 
 The same sources go into the operating system's libtls.a; here they are compiled freestanding for x86_64-pc-windows-msvc
-together with tools/tlshost/hostlib.c (mem*, str*, malloc) and loaded with ctypes. tests/case_tls.py checks every primitive
+(x86_64-unknown-linux-gnu with -fPIC elsewhere) together with tools/tlshost/hostlib.c (mem*, str*, malloc) and loaded with ctypes. tests/case_tls.py checks every primitive
 against Python's `cryptography` and `hashlib`, runs the protocol against Python's `ssl` module, and checks the certificate
 code against the Mozilla roots of `certifi` -- all without booting QEMU.
 
-  python tools/tlshost.py            build the DLL (build/tlshost/tlshost.dll) and list what it exports
+  python tools/tlshost.py            build the DLL (build/tlshost/tlshost.dll, or tlshost.so) and list what it exports
 """
 import ctypes
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -19,13 +20,24 @@ ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "user" / "lib" / "tls" / "src"
 OUTDIR = ROOT / "build" / "tlshost"
 LLVM = Path(r"C:\Program Files\LLVM\bin")
+WINDOWS = os.name == "nt"
 
-CFLAGS = ["-target", "x86_64-pc-windows-msvc", "-ffreestanding", "-fno-stack-protector", "-mno-stack-arg-probe", "-fno-builtin-memcpy",
+TARGET = ["-target", "x86_64-pc-windows-msvc", "-mno-stack-arg-probe"] if WINDOWS else ["-target", "x86_64-unknown-linux-gnu", "-fPIC"]
+CFLAGS = [*TARGET, "-ffreestanding", "-fno-stack-protector", "-fno-builtin-memcpy",
           "-O2", "-g0", "-std=gnu17", "-Wall", "-Wextra", "-Wno-unused-parameter", "-Wno-sign-compare", "-Wno-missing-field-initializers",
           "-DTLS_HOST=1", "-I", str(ROOT / "user" / "libc" / "include"), "-I", str(ROOT / "shared"), "-I", str(SRC), "-I", str(SRC.parent / "include")]
 
 
 def tool(name):
+    # the same order as tools/build.py: TOUHOU_LLVM_DIR, then the PATH, then the Windows install folder
+    env = os.environ.get("TOUHOU_LLVM_DIR")
+    for d in ([Path(env)] if env else []):
+        for ext in ("", ".exe"):
+            if (d / (name + ext)).is_file():
+                return str(d / (name + ext))
+    found = shutil.which(name)
+    if found:
+        return found
     p = LLVM / (name + ".exe")
     if p.exists():
         return str(p)
@@ -53,7 +65,7 @@ def build(force=False):
     OUTDIR.mkdir(parents=True, exist_ok=True)
     objs = []
     newest = max(p.stat().st_mtime for p in list(SRC.glob("*")) + list(SRC.parent.glob("include/*")) + [Path(__file__)] + sources())
-    dll = OUTDIR / "tlshost.dll"
+    dll = OUTDIR / ("tlshost.dll" if WINDOWS else "tlshost.so")
     for src in sources():
         obj = OUTDIR / (src.stem + ".o")
         objs.append(obj)
@@ -70,8 +82,11 @@ def build(force=False):
             parts = line.split()
             if len(parts) == 3 and parts[1] in "TtDdBbRr":
                 defined.add(parts[2])
-        exports = [f"/export:{n}" for n in exported_names() if n in defined]
-        cmd = [tool("lld-link"), "/dll", "/noentry", "/nodefaultlib", "/machine:x64", f"/out:{dll}", *exports, *map(str, objs)]
+        if WINDOWS:
+            exports = [f"/export:{n}" for n in exported_names() if n in defined]
+            cmd = [tool("lld-link"), "/dll", "/noentry", "/nodefaultlib", "/machine:x64", f"/out:{dll}", *exports, *map(str, objs)]
+        else:   # every global symbol is exported; -Bsymbolic keeps hostlib.c's mem*/malloc for libtls whatever the process has loaded
+            cmd = [tool("ld.lld"), "-shared", "-Bsymbolic", "-o", str(dll), *map(str, objs)]
         r = subprocess.run(cmd, capture_output=True, text=True)
         if r.returncode != 0:
             sys.exit(f"tlshost: link failed:\n{r.stdout}{r.stderr}")

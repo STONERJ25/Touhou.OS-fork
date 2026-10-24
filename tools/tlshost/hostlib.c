@@ -1,6 +1,6 @@
 /*
- * The little C library libtls needs when it is compiled into a Windows DLL for tests on the build machine (tools/tlshost.py):
- * mem* and str* functions, malloc, and a clock. Freestanding: no C runtime is linked.
+ * The little C library libtls needs when it is compiled into a Windows DLL (or Linux shared object) for tests on the build machine
+ * (tools/tlshost.py): mem* and str* functions, malloc, and a clock. Freestanding: no C runtime is linked.
  */
 #include <stddef.h>
 #include <stdint.h>
