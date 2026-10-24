@@ -311,7 +311,7 @@ def hwaudit_fairyd_frame_stats():
 @test
 def hwaudit_stage_marks():
     """Boot progress squares (shared/stagemark.h): with stagehold=6 the loader and the kernel have drawn six white squares in the top-left corner and the machine stops there."""
-    with Qemu(cmdline="stagehold=6", name="t-hw-stage") as vm:
+    with Qemu(cmdline="stagehold=6 exitmarks", name="t-hw-stage") as vm:      # exitmarks: the loader draws squares 2 and 3 too (off by default, see boot/main.c)
         vm.expect(r"loader: entering kernel", timeout=90)
         time.sleep(3)
         shot = vm.screen_ppm()
@@ -325,14 +325,14 @@ def hwaudit_stage_marks():
 def hwaudit_loader_ladder():
     """The loader's ladder of workarounds (strategy=N): rung 0 restarts the machine by itself after the exit call came back, the others boot to the shell, the stdmem rungs hand the kernel and the initrd over as such."""
     with Qemu(cmdline="text strategy=0", name="t-hw-rung0") as vm:
-        vm.expect(r"loader: rung 0 of 4", timeout=90)
+        vm.expect(r"loader: rung 0 of 9", timeout=90)
         assert vm.wait_exit(180) is not None, "rung 0 should restart the machine by itself"
         assert "[Gensokyo] kernel" not in vm.text(), "the kernel must not start on rung 0"
     for rung in (1, 2, 4):
         with Qemu(cmdline=f"text strategy={rung}", name=f"t-hw-rung{rung}") as vm:
             vm.expect(PROMPT, timeout=120)
             text = vm.text()
-            assert f"loader: rung {rung} of 4" in text, text[-800:]
+            assert f"loader: rung {rung} of 9" in text, text[-800:]
             if rung >= 2:
                 assert "stdmem" in text and "reclaimed" in text, text[-800:]
 

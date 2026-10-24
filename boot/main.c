@@ -136,6 +136,9 @@ static int g_cliexit;               /* "cliexit": interrupts off right before th
 static int g_quietexit;             /* "quietexit": no console text between the files and the exit call */
 static int g_nomarks;               /* "nomarks": no squares from the loader at all */
 static int g_stdmem;                /* "stdmem": kernel and initrd are ordinary loader data, retyped in the map we hand over (no OS-defined memory types) */
+static int g_noexit;                /* "noexit": do not call ExitBootServices at all: take the memory map, then jump into the kernel with the firmware still resident */
+static int g_stall3;                /* "stall3": three seconds of waiting before the exit call (a firmware still busy enumerating devices) */
+static int g_usbdisc;               /* "usbdisc": disconnect the firmware's drivers from the USB host controllers before the exit call */
 
 /* The number after "key" (key includes the '='); 1 when the key is there. */
 static int find_number(const char *cmdline, const char *key, int *out) {
@@ -164,11 +167,17 @@ static void append_words(char *cmdline, UINTN cap, const char *words) {
 static void parse_stagehold(const char *cmdline) {
     static const char key[] = "stagehold=";
     static const char beep[] = "stagebeep";
+    g_noexit = has_word(cmdline, "noexit");
+    g_stall3 = has_word(cmdline, "stall3");
+    g_usbdisc = has_word(cmdline, "usbdisc");
     g_cliexit = has_word(cmdline, "cliexit");
     g_quietexit = has_word(cmdline, "quietexit");
     g_nomarks = has_word(cmdline, "nomarks");
-    g_stdmem = has_word(cmdline, "stdmem");
-    g_noexitmarks = has_word(cmdline, "noexitmarks");
+    /* Proven on the target PC (a Dell OptiPlex, 2026-10-23): with the OS-defined memory types 0x80000001/2 in the map, the firmware's exit call
+     * never returns. The kernel and the initrd are therefore ordinary loader data, retyped in the map we hand over, and the loader writes nothing
+     * to the screen once the exit call has returned. "customtypes" and "exitmarks" bring the old behaviour back (for experiments). */
+    g_stdmem = !has_word(cmdline, "customtypes");
+    g_noexitmarks = !has_word(cmdline, "exitmarks");
     g_exitreset = has_word(cmdline, "exitreset");
     for (const char *p = cmdline; *p; p++) {
         int b = 0;
@@ -216,6 +225,11 @@ static const Rung g_rungs[] = {
     { "... and ordinary memory types for the kernel and the initrd",                     "noexitmarks stdmem stagebeep" },
     { "... and interrupts off, no console text before the exit call",                    "noexitmarks stdmem cliexit quietexit stagebeep" },
     { "... and no squares from the loader at all",                                       "noexitmarks stdmem cliexit quietexit nomarks stagebeep" },
+    { "three seconds of patience before the exit call",                                  "noexitmarks stall3 stagebeep" },
+    { "the firmware's USB drivers let go of the host controllers first",                 "noexitmarks usbdisc stagebeep" },
+    { "everything at once",                                                              "noexitmarks stdmem cliexit quietexit nomarks stall3 usbdisc stagebeep" },
+    { "NO exit call: jump into the kernel with the firmware still resident",            "noexit stagebeep" },
+    { "... without interrupts and without loader squares",                              "noexit cliexit nomarks stagebeep" },
 };
 #define NRUNGS ((int)(sizeof g_rungs / sizeof g_rungs[0]))
 
@@ -248,7 +262,9 @@ static void pick_rung(char *cmdline, UINTN cap) {
     if (!find_number(cmdline, "strategy=", &rung)) {
         if (!has_word(cmdline, "ladder")) return;
         UINT32 c = start_count();
-        rung = c ? (int)((c - 1) % (UINT32)NRUNGS) : 0;
+        int first = 0;
+        find_number(cmdline, "ladderstart=", &first);              /* an image that continues where the last ladder ended */
+        rung = c ? (int)((UINT32)first + (c - 1)) % NRUNGS : first % NRUNGS;
         append_words(cmdline, cap, "strategy=");                  /* the digit follows below */
         UINTN n = 0;
         while (cmdline[n]) n++;
@@ -257,6 +273,32 @@ static void pick_rung(char *cmdline, UINTN cap) {
     if (rung < 0 || rung >= NRUNGS) return;
     log_str("loader: rung "); log_dec((UINT64)rung); log_str(" of "); log_dec((UINT64)(NRUNGS - 1)); log_str(": "); log_str(g_rungs[rung].what); log_str("\n");
     append_words(cmdline, cap, g_rungs[rung].words);
+}
+
+/* "usbdisc": every PCI device of class 0C03 (a USB host controller) loses the firmware's drivers (and with them the USB bus and the devices
+ * below it: keyboard, mouse and the stick this loader came from, which has been read completely by now). A firmware callback that waits
+ * for a USB device at the exit call then has nothing to wait for. */
+typedef EFI_STATUS (EFIAPI *LocateHandleBufferFn)(UINT32 type, EFI_GUID *protocol, void *key, UINTN *count, EFI_HANDLE **buffer);
+typedef EFI_STATUS (EFIAPI *DisconnectControllerFn)(EFI_HANDLE controller, EFI_HANDLE driver, EFI_HANDLE child);
+typedef EFI_STATUS (EFIAPI *PciConfigReadFn)(void *pci_io, UINT32 width, UINT32 offset, UINTN count, void *buffer);
+static EFI_GUID pciIoGuid = { 0x4cf5b200, 0x68b8, 0x4ca5, { 0x9e, 0xec, 0xb2, 0x3e, 0x3f, 0x50, 0x02, 0x9a } };
+
+static void disconnect_usb_hosts(void) {
+    UINTN n = 0;
+    EFI_HANDLE *handles = 0;
+    if (EFI_ERROR(((LocateHandleBufferFn)g_bs->LocateHandleBuffer)(2 /* ByProtocol */, &pciIoGuid, 0, &n, &handles))) return;
+    for (UINTN i = 0; i < n; i++) {
+        void *pci_io = 0;
+        if (EFI_ERROR(g_bs->HandleProtocol(handles[i], &pciIoGuid, &pci_io)) || !pci_io) continue;
+        PciConfigReadFn read_cfg = (PciConfigReadFn)((void **)pci_io)[6];      /* PollMem, PollIo, Mem.Read, Mem.Write, Io.Read, Io.Write, Pci.Read */
+        UINT8 cls[3] = { 0, 0, 0 };                                             /* programming interface, subclass, class (config bytes 9 to 11) */
+        if (EFI_ERROR(read_cfg(pci_io, 0 /* bytes */, 9, 3, cls))) continue;
+        if (cls[2] == 0x0C && cls[1] == 0x03) {
+            EFI_STATUS s = ((DisconnectControllerFn)g_bs->DisconnectController)(handles[i], 0, 0);
+            log_str("loader: USB host controller released, status "); log_hex((UINT64)s); log_str("\n");
+        }
+    }
+    g_bs->FreePool(handles);
 }
 
 /* Retype [base, base+len) in the sorted region list, splitting regions at its edges; returns the new count (the array has slack). */
@@ -550,6 +592,8 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st) {
     bi->arena_size  = ARENA_PAGES * PAGE_SIZE;
     memcpy(bi->cmdline, cmdline, BOOTINFO_CMDLINE_MAX);
 
+    if (g_usbdisc) { disconnect_usb_hosts(); exit_mark(&fb, 7, 0); }
+    if (g_stall3) { g_bs->Stall(3000000); exit_mark(&fb, 7, 1); }
     if (!g_quietexit) log_str("loader: leaving boot services\n");
 
     /* --- exit boot services: nothing may touch boot services between GetMemoryMap and the exit --- */
@@ -571,6 +615,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st) {
         if (EFI_ERROR(s)) { exit_status(&fb, 2, s); log_str("loader: GetMemoryMap failed\n"); loader_halt(); }
         /* A stale map key (something the firmware did while shutting down changed the map) is the normal reason for a failure: ask again. */
         exit_mark(&fb, 3, attempt);                 /* about to call ExitBootServices */
+        if (g_noexit) { exited = 1; break; }        /* the map is taken, the firmware stays as it is */
         if (g_cliexit) __asm__ volatile ("cli");
         EFI_STATUS es = g_bs->ExitBootServices(image, mapKey);
         if (g_exitreset) pc_reset();                /* never returns: the machine restarts, which shows that the call came back */
