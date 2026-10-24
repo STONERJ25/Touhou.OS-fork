@@ -122,10 +122,15 @@ int   run_node(Node *n);
 int   run_string(const char *src, const char *name);
 int   run_file(const char *path, int argc, char **argv);
 void  exec_init(void);
-void  jobs_report(void);
+extern int g_interrupted;                  /* ^C or ^Z hit the foreground job: the rest of the line is dropped */
 void  jobs_reap(void);
-int   job_wait_fg(int idx);
-int   jobs_command(int argc, char **argv, const char *which);   /* jobs / fg / bg */
+int   jobs_stopped(void);
+void  jobs_hangup_stopped(void);
+int   job_kill(const char *spec, int sig);
+int   jobs_command(int argc, char **argv, const char *which);   /* jobs / fg / bg / disown / wait */
+int   run_program(char *path, char **argv);
+extern int g_line_no;
+int   exit_blocked_by_jobs(void);
 int   is_builtin(const char *name);
 int   run_builtin(int argc, char **argv);
 char *find_in_path(const char *name);

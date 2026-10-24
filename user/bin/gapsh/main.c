@@ -65,7 +65,12 @@ static void interactive_loop(void) {
         char *prompt = build_prompt();
         char *line = edit_readline(prompt);
         free(prompt);
-        if (!line) break;                                  /* Ctrl-D */
+        g_line_no++;
+        g_interrupted = 0;
+        if (!line) {                                       /* Ctrl-D */
+            if (exit_blocked_by_jobs()) continue;
+            break;
+        }
         char *src = line;
         Node *prog = NULL;
         int failed = 0;
@@ -175,6 +180,7 @@ int main(int argc, char **argv, char **envp) {
                 }
             }
             interactive_loop();
+            jobs_hangup_stopped();
             history_save();
             status = g_status;
         } else {
