@@ -479,9 +479,9 @@ static u8 *slurp(const char *path, size_t *n) {
     return buf;
 }
 
-/* cmdline.txt of the new system: BASE without any blk.rw= word, then blk.rw=<the new disk's GUID>, so blk.ro keeps every other SATA and
- * NVMe disk read-only while the installed disk's own HUMANVILLAGE volume can be written. */
-static int make_cmdline(const char *base, const char *disk_guid, char *out, size_t cap) {
+/* cmdline.txt of the new system: BASE without any blk.rw= word, then blk.rw=<the new HUMANVILLAGE partition's GUID>, so blk.ro keeps
+ * every other SATA and NVMe disk, and the installed ESP, read-only while the installed homes can be written. */
+static int make_cmdline(const char *base, const char *hv_guid, char *out, size_t cap) {
     out[0] = 0;
     char word[256];
     const char *p = base;
@@ -502,7 +502,7 @@ static int make_cmdline(const char *base, const char *disk_guid, char *out, size
     }
     if (out[0]) strlcat(out, " ", cap);
     strlcat(out, "blk.rw=", cap);
-    if (strlcat(out, disk_guid, cap) >= cap) return -1;
+    if (strlcat(out, hv_guid, cap) >= cap) return -1;
     return strlen(out) < 240 ? 0 : -1;                      /* the loader hands the kernel at most 255 characters */
 }
 
@@ -718,9 +718,10 @@ APPLET(install) {
     random_guid(disk_guid);
     random_guid(esp_guid);
     random_guid(hv_guid);
-    char dg[40], newcmd[300];
+    char dg[40], hg[40], newcmd[300];
     guid_text(disk_guid, dg, sizeof dg);
-    if (make_cmdline(base, dg, newcmd, sizeof newcmd)) return refuse("the command line is too long for the loader: '%s'", base);
+    guid_text(hv_guid, hg, sizeof hg);
+    if (make_cmdline(base, hg, newcmd, sizeof newcmd)) return refuse("the command line is too long for the loader: '%s'", base);
     strlcat(newcmd, "\n", sizeof newcmd);
     files[3].data = (u8 *)strdup(newcmd);
     files[3].size = strlen(newcmd);
@@ -863,7 +864,7 @@ APPLET(install) {
     }
     if (bad) return 1;
     printf("install: read back and checked. TouhouOS is installed on %s.\n", target);
-    printf("install: %s TOUHOUOS-ESP (boot files), %s HUMANVILLAGE (homes, writable: cmdline.txt says blk.rw=%s).\n", p1, p2, dg);
+    printf("install: %s TOUHOUOS-ESP (boot files, read-only under blk.ro), %s HUMANVILLAGE (homes, writable: cmdline.txt says blk.rw=%s).\n", p1, p2, hg);
     printf("install: the new partitions show up here after a restart. Take the stick out, restart, and pick the disk in the firmware's\n"
            "install: boot menu (F12 on the Dell) if it does not start by itself.\n");
     char msg[160];

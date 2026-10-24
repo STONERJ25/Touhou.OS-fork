@@ -22,6 +22,7 @@ struct BlockDev {
     u64  sectors;                   /* capacity in logical sectors */
     bool readonly;
     bool ro_policy;                 /* read-only because of blk.ro (not because the medium is write-protected): BLKWRUNLOCK can lift it */
+    bool rw_grant;                  /* a partition named by blk.rw=: writable although its disk is read-only by blk.ro (blk_unlock.c) */
     volatile bool removed;          /* hot-unplugged (blk_unregister): every request fails with -ENODEV; the struct itself is never freed */
     int  (*read)(BlockDev *d, u64 lba, u32 count, void *buf);            /* 0 or -errno */
     int  (*write)(BlockDev *d, u64 lba, u32 count, const void *buf);
@@ -68,11 +69,11 @@ bool storage_automount_busy(void);
 int  storage_tz_offset_minutes(const char *tz);         /* POSIX TZ string -> minutes east of UTC (standard time only); 0 if unusable */
 
 /* The installer's half of the block layer (kernel/drivers/blk_unlock.c, shared/blkabi.h): the per-disk write unlock held by one open
- * file, blk.rw=GUID (a disk exempt from blk.ro), /proc/bootdisk. */
+ * file, blk.rw=GUID (a partition exempt from blk.ro), /proc/bootdisk. */
 int  blk_unlock_ioctl(BlockDev *d, File *f, unsigned long req, void *arg);
 bool blk_unlock_allows(BlockDev *d, File *f);
 void blk_unlock_closed(BlockDev *d, File *f);
-void blk_rw_check(BlockDev *d, const u8 disk_guid[16]);
+void blk_rw_check(BlockDev *part, const u8 part_guid[16]);
 
 /* GPT type GUID helpers (on-disk byte order). */
 extern const u8 GPT_GUID_EFI_SYSTEM[16], GPT_GUID_MS_BASIC_DATA[16], GPT_GUID_LINUX_FS[16];

@@ -3,9 +3,10 @@
  *
  *  - the per-disk write unlock (BLKWRUNLOCK, shared/blkabi.h): root lifts `blk.ro` for one whole disk, for writes through one open file
  *    only, until that file is closed. Partition nodes, other opens, mounted filesystems and every other disk keep getting EROFS.
- *  - `blk.rw=GUID[,GUID]` on the command line: the disks whose GPT disk GUID is listed stay writable although `blk.ro` is set. The
- *    installer writes it into the cmdline.txt of the system it installs, so the installed disk's HUMANVILLAGE volume is writable while a
- *    Windows disk next to it stays read-only.
+ *  - `blk.rw=GUID[,GUID]` on the command line: the GPT partitions whose own (unique) partition GUID is listed stay writable although
+ *    `blk.ro` is set. Only those partitions: the rest of their disk, the whole-disk node and every other disk stay read-only. The installer
+ *    writes the GUID of the installed HUMANVILLAGE partition into the cmdline.txt of the system it installs, so the homes are writable
+ *    while the installed ESP (loader, kernel, initrd, cmdline.txt) and a Windows disk next to it stay read-only.
  *  - /proc/bootdisk: the partition the loader was read from (BootInfo.boot_part) and the block devices that match it.
  */
 #include "blk.h"
@@ -136,20 +137,22 @@ static void guid_text(const u8 g[16], char *out, size_t cap) {
              g[8], g[9], g[10], g[11], g[12], g[13], g[14], g[15]);
 }
 
-void blk_rw_check(BlockDev *d, const u8 disk_guid[16]) {
-    if (!d->readonly || !d->ro_policy || d->parent) return;
+void blk_rw_check(BlockDev *part, const u8 part_guid[16]) {
+    BlockDev *disk = part->parent;
+    if (!disk || !part->readonly || !disk->readonly || !disk->ro_policy) return;  /* only blk.ro is lifted, never a write-protected medium */
     char list[160];
     if (!cmdline_value("blk.rw", list, sizeof list)) return;
     for (char *p = list; *p;) {
         char *end = p;
         while (*end && *end != ',') end++;
         u8 g[16];
-        if (parse_guid(p, (size_t)(end - p), g) && !memcmp(g, disk_guid, 16)) {
+        if (parse_guid(p, (size_t)(end - p), g) && !memcmp(g, part_guid, 16)) {
             char txt[40];
             guid_text(g, txt, sizeof txt);
-            d->readonly = false;
-            klog("Marisa", "blk: %s carries GPT disk GUID %s, named by blk.rw=: writable although blk.ro is set (the disk TouhouOS was "
-                 "installed on); every other SATA and NVMe disk stays read-only", d->name, txt);
+            part->readonly = false;
+            part->rw_grant = true;
+            klog("Marisa", "blk: %s carries partition GUID %s, named by blk.rw=: writable although blk.ro is set (the homes of the disk "
+                 "TouhouOS was installed on); the rest of %s and every other SATA and NVMe disk stay read-only", part->name, txt, disk->name);
             return;
         }
         p = *end ? end + 1 : end;

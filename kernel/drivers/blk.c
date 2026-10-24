@@ -51,6 +51,11 @@ static int write_checked(BlockDev *d, u64 lba, u32 count, const void *buf, bool 
 
 int blk_write(BlockDev *d, u64 lba, u32 count, const void *buf) { return write_checked(d, lba, count, buf, false); }
 
+/* A partition named by blk.rw= (rw_grant) gets past its disk's blk.ro; blk_write() has already checked the partition's own bounds. */
+static int part_write(BlockDev *d, u64 lba, u32 count, const void *buf) {
+    return write_checked(d->parent, d->part_start + lba, count, buf, d->rw_grant);
+}
+
 int blk_flush(BlockDev *d) {
     if (d->removed) return -ENODEV;
     return d->flush ? d->flush(d) : 0;
@@ -58,7 +63,6 @@ int blk_flush(BlockDev *d) {
 
 /* Partitions are thin wrappers that offset into their parent. */
 static int part_read(BlockDev *d, u64 lba, u32 count, void *buf) { return blk_read(d->parent, d->part_start + lba, count, buf); }
-static int part_write(BlockDev *d, u64 lba, u32 count, const void *buf) { return blk_write(d->parent, d->part_start + lba, count, buf); }
 static int part_flush(BlockDev *d) { return blk_flush(d->parent); }
 
 /* ---------------------------------------------------------------- /dev nodes */
@@ -179,7 +183,6 @@ static bool scan_gpt(BlockDev *d) {
     if (blk_read(d, 1, 1, buf) == 0 && !memcmp(buf, "EFI PART", 8)) {
         GptHeader h;
         memcpy(&h, buf, sizeof h);
-        blk_rw_check(d, h.guid);                            /* blk.rw=GUID: before the partitions copy the read-only flag */
         if (h.entry_size >= sizeof(GptEntry) && h.entry_size <= 1024 && h.nentries > 0 && h.nentries <= 256) {
             size_t bytes = (size_t)h.nentries * h.entry_size;
             u32 sectors = (u32)((bytes + d->sector_size - 1) / d->sector_size);
@@ -196,7 +199,8 @@ static bool scan_gpt(BlockDev *d) {
                     size_t n = 0;
                     for (; n < 36 && e.name[n] && n < sizeof label - 1; n++) label[n] = e.name[n] < 128 ? (char)e.name[n] : '?';
                     label[n] = 0;
-                    add_partition(d, (int)i + 1, e.first, e.last - e.first + 1, e.type, 0, label);
+                    BlockDev *p = add_partition(d, (int)i + 1, e.first, e.last - e.first + 1, e.type, 0, label);
+                    if (p) blk_rw_check(p, e.guid);         /* blk.rw=GUID: this one partition stays writable under blk.ro */
                 }
             }
             kfree(ents);

@@ -84,7 +84,7 @@ On the Dell that is the stick's ESP (`sda1` or `sdb1`, USB mass storage); in QEM
 `--from DIR` takes the files from a directory instead (for a system whose firmware gave no partition, or to install other builds).
 
 `cmdline.txt` of the new system: `--cmdline WORDS` if given, else the boot partition's own `cmdline.txt` (the loader's default
-`video=native blk.ro` when there is none), without any old `blk.rw=` word, plus `blk.rw=<the new disk's GPT GUID>` (see below).
+`video=native blk.ro` when there is none), without any old `blk.rw=` word, plus `blk.rw=<the new HUMANVILLAGE partition's GPT GUID>` (see below).
 
 ## Safety design
 
@@ -144,19 +144,24 @@ kernel already reference-counts and closes for us (so it cannot outlive the inst
 and no syscall number is needed (syscall.h stays as it is). `BlockDev` got one field, `ro_policy` (read-only because of `blk.ro`, set by the
 AHCI and NVMe drivers), so the unlock can tell the policy from a write-protected medium.
 
-### `blk.rw=GUID`: the installed disk stays writable under `blk.ro`
+### `blk.rw=GUID`: the installed homes stay writable under `blk.ro`, nothing else
 
 An installed system still wants `blk.ro` (a Windows disk next to it must stay untouched), but its own HUMANVILLAGE volume, on a SATA or NVMe
-disk, has to be writable or the homes would be read-only. `install` therefore ends the new `cmdline.txt` with `blk.rw=<GPT disk GUID>`. When
-the kernel scans a disk that `blk.ro` made read-only and its GPT header carries a GUID named in `blk.rw=` (a comma-separated list), the disk
-and its partitions are registered writable, with a log line:
+disk, has to be writable or the homes would be read-only. `install` therefore ends the new `cmdline.txt` with `blk.rw=<GUID>`, where the GUID
+is the **unique partition GUID of the new HUMANVILLAGE partition** (GPT entry 2), not the disk's. When the kernel scans a disk that `blk.ro`
+made read-only and one of its GPT entries carries a GUID named in `blk.rw=` (a comma-separated list), that one partition is registered
+writable, with a log line:
 
 ```
-[Marisa] blk: sda carries GPT disk GUID 5809aa93-..., named by blk.rw=: writable although blk.ro is set (the disk TouhouOS was installed on); every other SATA and NVMe disk stays read-only
+[Marisa] blk: nvme0n1p2 carries partition GUID 5809aa93-..., named by blk.rw=: writable although blk.ro is set (the homes of the disk TouhouOS was installed on); the rest of nvme0n1 and every other SATA and NVMe disk stay read-only
 ```
 
-The GUID is random (version 4), so it names exactly the disk `install` wrote. Without `blk.ro` the word does nothing. Removing it from
-`cmdline.txt` (on any computer: the ESP is plain FAT32) makes the installed disk read-only like the others.
+Only that partition: the installed ESP (loader, kernel, initrd, `cmdline.txt`), the whole-disk node and every other disk stay read-only, so
+not even root can damage the boot files of the running system by accident. Writes to the granted partition pass the disk's `blk.ro` only
+inside the partition's own bounds (`part_write` in `kernel/drivers/blk.c`). A medium that is itself write-protected is never made writable,
+and MBR partitions (no GUID) cannot be named. The GUID is random (version 4), so it names exactly the partition `install` wrote; a byte copy
+of the disk carries the same GUID and would match too. Without `blk.ro` the word does nothing. Removing it from `cmdline.txt` (on any
+computer: the ESP is plain FAT32) makes the installed homes read-only like everything else.
 
 ## The installed system
 
@@ -169,7 +174,7 @@ reimu's desktop. Booting from the stick again while the installed disk is presen
 `python tests/run_all.py install_` (`tests/case_install.py`, about two minutes on a 4-core Linux host without KVM). Every test boots from the
 `fat:` ESP (sda), with `blk.ro` and a root shell; host-side checks after the VM has exited: `tools/mkdisk.py --check` on the installed image
 (0 errors, 0 warnings), the partition table against the one `mkdisk.build_image()` makes for an image of the same size, the ESP's files
-byte-identical to `build/esp`, the HUMANVILLAGE volume clean, `cmdline.txt` equal to the given words plus `blk.rw=` with the GUID in the GPT header,
+byte-identical to `build/esp`, the HUMANVILLAGE volume clean, `cmdline.txt` equal to the given words plus `blk.rw=` with the HUMANVILLAGE partition's GUID from GPT entry 2,
 decoy disks byte-identical. Then the installed image is booted **alone** (`Qemu(boot_image=..., boot_bus=...)`: no stick, no `fat:` drive)
 to reimu's desktop (the panel's start button in the screenshot), and its log must show the loader on GPT partition 1, the installed command
 line, HUMANVILLAGE mounted read-write and (SATA, NVMe) the `blk.rw=` line.
@@ -182,9 +187,10 @@ line, HUMANVILLAGE mounted read-write and (SATA, NVMe) the `blk.rw=` line.
 | `install_nvme_4k` | NVMe namespace with 4096-byte blocks: 258 MiB ESP, checker clean, layout equal to mkdisk's 4Kn layout |
 | `install_from_stick_over_old_install` | the Dell's situation: started from a `tools/mkimage.py` stick image on USB, so the files come from the stick's FAT32 ESP; an older install on NVMe (same layout, other GUIDs, so `/proc/bootdisk` lists its partition 1 as a candidate too) is told apart by its signature and reinstalled with `--force`; a byte copy of the stick on SATA (same GUIDs) is refused like the stick itself; the copy stays unchanged |
 | `install_unlock_rules` | `user/bin/unlocktest.c` against the kernel directly: starts read-only by policy, wrong name EINVAL, read-only file EBADF, a non-root child holding the open file gets EPERM (and the Eiki line), unlock, state bits, a second open and a partition stay read-only, partition node EINVAL, a write through the unlocked file (also from a forked child) lands and reads back, BLKWRLOCK and close release it, a read-only virtio medium gives EROFS, a mounted partition gives EBUSY; on the host the one written block is the only change to the image |
+| `install_esp_stays_read_only` | installs on NVMe with `text user=root blk.ro`, boots the installed disk alone next to a SATA decoy: the `blk.rw=` line names `nvme0n1p2`, HUMANVILLAGE is mounted read-write and a file written there reads back, while `dd` to the installed ESP (`nvme0n1p1`), the whole-disk node and the decoy and its partition all fail with EROFS; `/proc/partitions` shows disk and ESP read-only, HUMANVILLAGE writable; on the host the ESP's bytes and the decoy are unchanged |
 | `install_refusals` | the listing (boot disk, partitions, empty); refused with nothing written: partitions without `--force`, `--yes-i-typed` with another or differently-cased name, non-root (`su reimu`), the boot disk with `--force`, a partition name, a missing disk, a disk that is too small, a mounted partition with `--force`, three wrong answers typed at the prompt (another disk, empty, extra words); `--dry-run` shows the plan and the boot partition's command line plus `blk.rw=`; no unlock happened; every image byte-identical |
 
-Results on this branch (Ubuntu 24.04, QEMU 8.2, TCG, `TOUHOU_TIMEOUT_SCALE=2`): all seven pass; the regression groups named in the report of
+Results on this branch (Ubuntu 24.04, QEMU 8.2, TCG, `TOUHOU_TIMEOUT_SCALE=2`): all eight pass; the regression groups named in the report of
 the branch pass as well (see the pull request).
 
 ## Known gaps
@@ -199,7 +205,8 @@ the branch pass as well (see the pull request).
 * A HUMANVILLAGE volume left dirty (power cut) mounts read-only until a file system check; on an installed disk that means the in-kernel
   check of the `parked/usb-dirty-fsck` branch (not merged here) or the stick.
 * No in-place upgrade: `install` replaces the whole disk, homes included. Updating `kernel.elf`/`initrd.img` on an installed ESP is task 5
-  (the update client); by hand it is `mount -t fat32 /dev/sda1 /mnt` (the installed disk is writable through `blk.rw=`) and `cp`.
+  (the update client). The installed ESP is read-only under `blk.ro` (only HUMANVILLAGE is named by `blk.rw=`), so by hand it is done from
+  the stick, or from a boot without `blk.ro`.
 * Two disks written from one image (same GUIDs) cannot be told apart: the first one the kernel lists (SATA before USB) counts as the boot
   disk and its ESP is where the files are copied from; both are refused as targets. The files are the same as long as the copies are.
 * The kernel does not re-read the partition table after `install`; the new partitions appear after a restart.
@@ -226,7 +233,7 @@ the branch pass as well (see the pull request).
 
 ## State when paused
 
-Done and tested in QEMU: the tool, the unlock, `blk.rw=`, `/proc/bootdisk`, the seven tests, the manual page. Not done: anything on real
+Done and tested in QEMU: the tool, the unlock, `blk.rw=` (one partition), `/proc/bootdisk`, the eight tests, the manual page. Not done: anything on real
 hardware (the owner's Dell needs AHCI mode first and a decision about its internal disk), the mount-policy preference for a writable
 HUMANVILLAGE volume (Known gaps), an upgrade-in-place mode.
 
@@ -236,4 +243,6 @@ HUMANVILLAGE volume (Known gaps), an upgrade-in-place mode.
    one line each in `ahci.c`/`nvme.c`), new files otherwise. Rerun `install_`, `blk_`, `image_`, `storage`, `usbstor`, `manual`.
 2. On the Dell: back up, decide what happens to Windows, switch SATA to AHCI, boot the stick, `sudo install` (the listing), `sudo install --dry-run DISK`,
    then the real thing; photograph `/proc/bootdisk` and the listing if anything looks wrong. Then remove the stick and start from the disk.
-3. Task 5 (updates) can build on this: the installed ESP is writable through `blk.rw=`, and `/proc/bootdisk` tells the updater which ESP is the live one.
+3. Task 5 (updates): `/proc/bootdisk` tells the updater which ESP is the live one. The installed ESP stays read-only under `blk.ro` on purpose,
+   so the updater needs a root-only way to mount it read-write for the moment of the update, scoped like the write unlock (one partition,
+   released at unmount, never persisted); that mechanism does not exist yet.

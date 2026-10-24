@@ -14,7 +14,7 @@ import uuid
 from pathlib import Path
 
 from harness import test, Qemu, BUILD, scaled
-from case_blockdev import Guest, sata_disk, nvme_ctrl, drive, must, device_by_model
+from case_blockdev import Guest, PROMPT, sata_disk, nvme_ctrl, drive, must, device_by_model
 from guitools import START_BUTTON, SHRINE_RED, near
 import mkdisk
 
@@ -61,8 +61,20 @@ def sha_file(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def check_installed(img):
-    """Host-side checks of an installed disk; returns the GPT disk GUID (text)."""
+def hv_partition_guid(img, ss):
+    """The unique GUID of GPT entry 2 (HUMANVILLAGE), as text."""
+    with open(img, "rb") as f:
+        f.seek(ss)
+        hdr = f.read(92)
+        entries_lba = int.from_bytes(hdr[72:80], "little")
+        entry_size = int.from_bytes(hdr[84:88], "little")
+        f.seek(entries_lba * ss + entry_size)
+        entry = f.read(entry_size)
+    return str(uuid.UUID(bytes_le=entry[16:32]))
+
+
+def check_installed(img, cmdline=INSTALLED_CMDLINE):
+    """Host-side checks of an installed disk; returns the HUMANVILLAGE partition's GUID (text), the one blk.rw= names."""
     out = subprocess.run([sys.executable, str(ROOT / "tools" / "mkdisk.py"), "--check", str(img)], capture_output=True, text=True)
     assert out.returncode == 0 and "0 error(s), 0 warning(s)" in out.stdout, f"mkdisk --check {img.name}:\n{out.stdout}{out.stderr}"
     ss, parts = mkdisk.partitions(str(img))
@@ -81,7 +93,7 @@ def check_installed(img):
         assert esp.bits == 32 and esp.label == "TOUHOUOS-ES", (esp.bits, esp.label)
         for name in ("EFI/BOOT/BOOTX64.EFI", "kernel.elf", "initrd.img"):
             assert esp.read_file("/" + name) == (BUILD / "esp" / name).read_bytes(), f"{name} on the installed ESP differs from build/esp"
-        cmdline = esp.read_file("/cmdline.txt").decode()
+        written = esp.read_file("/cmdline.txt").decode()
     finally:
         esp.close()
     hv = mkdisk.open_volume(str(img), 2)
@@ -89,12 +101,27 @@ def check_installed(img):
         assert hv.bits == 32 and hv.label == "HUMANVILLAG" and not hv.dirty, (hv.bits, hv.label)
     finally:
         hv.close()
-    with open(img, "rb") as f:
-        f.seek(ss)
-        hdr = f.read(92)
-    guid = str(uuid.UUID(bytes_le=hdr[56:72]))
-    assert cmdline.strip() == f"{INSTALLED_CMDLINE} blk.rw={guid}", f"cmdline.txt {cmdline!r}, disk GUID {guid}"
+    guid = hv_partition_guid(img, ss)
+    assert written.strip() == f"{cmdline} blk.rw={guid}", f"cmdline.txt {written!r}, HUMANVILLAGE partition GUID {guid}"
     return guid
+
+
+class InstalledGuest(Guest):
+    """The installed image booted alone (no fat: ESP); its own cmdline.txt decides the boot, so it must hold `text user=root`."""
+
+    def __init__(self, img, bus, name, extra=()):
+        super().__init__(name, extra)
+        self.img, self.bus = img, bus
+
+    def __enter__(self):
+        self.vm = Qemu(cmdline="", name=self.name, extra=self.extra, mem=self.mem, boot_image=self.img, boot_bus=self.bus)
+        self.vm.start()
+        try:
+            self.vm.expect(PROMPT, timeout=240)
+        except Exception:
+            self.vm.stop()
+            raise
+        return self
 
 
 def boot_installed(img, bus, name, extra=(), want_rw=True):
@@ -344,3 +371,41 @@ def install_refusals():
         assert "unlocked for writing" not in log, "no refusal may get as far as the unlock:\n" + log[-1500:]
     for p, h in before.items():
         assert sha_file(p) == h, f"{p.name} was modified by a refused install"
+
+
+@test
+def install_esp_stays_read_only():
+    """The installed system under blk.ro: blk.rw= names the HUMANVILLAGE partition only, so the homes are writable while the installed
+    ESP (loader, kernel, initrd, cmdline.txt), the whole-disk node and another SATA disk all stay read-only."""
+    target = blank("rw-target", 256)
+    decoy = other_os("rw-decoy", 128, seed=11)
+    decoy_sha = sha_file(decoy)
+    cmd = "text user=root blk.ro"
+    with Guest("t-install-rw", nvme_ctrl("nt", "INSTRW01", [(target, 1)]), cmdline="blk.ro") as g:
+        out = g.ok(f"install --yes-i-typed=nvme0n1 --cmdline '{cmd}' nvme0n1", timeout=600)
+        assert "TouhouOS is installed on nvme0n1" in out, out
+    hv = check_installed(target, cmdline=cmd)
+    ss, parts = mkdisk.partitions(str(target))
+    esp = parts[0]
+
+    def esp_sha():
+        with open(target, "rb") as f:
+            f.seek(esp["offset"])
+            return hashlib.sha256(f.read(esp["length"])).hexdigest()
+
+    before = esp_sha()
+    with InstalledGuest(target, "nvme", "t-install-rw-boot", extra=sata_disk("dc", decoy, "ide.3", model="INST-DECOY")) as g:
+        log = g.log()
+        must(log, rf"blk: nvme0n1p2 carries partition GUID {re.escape(hv)}, named by blk\.rw=: writable although blk\.ro is set")
+        m = must(log, r"\[Keine\] fat32: (\S+) mounted on /HumanVillage[^\n]*")
+        assert m.group(1).endswith("nvme0n1p2") and "read-only" not in m.group(0), m.group(0)
+        p = g.partitions()
+        assert (p["nvme0n1"]["ro"], p["nvme0n1p1"]["ro"], p["nvme0n1p2"]["ro"]) == (1, 1, 0), p
+        g.ok("echo kept > /HumanVillage/reimu/rw.txt && sync && cat /HumanVillage/reimu/rw.txt")
+        dc = device_by_model(p, "INST-DECOY")
+        for dev in ("nvme0n1p1", "nvme0n1", dc, f"{dc}2"):
+            out, _ = g.run(f"dd if=/dev/zero of=/dev/{dev} bs=512 count=1 seek=40 conv=notrunc")
+            must(out, r"Read-only file system", f"(/dev/{dev} must stay read-only on the installed system)")
+        g.ok("sync")
+    assert esp_sha() == before, "the installed ESP was modified by the installed system"
+    assert sha_file(decoy) == decoy_sha, "the decoy was modified by the installed system"
