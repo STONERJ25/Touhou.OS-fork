@@ -276,6 +276,15 @@ bool pgrp_orphaned(int pgid) {
     return orphan;
 }
 
+bool pgrp_in_session(int pgid, int sid) {
+    bool found = false;
+    u64 f = irq_save();
+    for (Process *q = g_procs; q && !found; q = q->all_next)
+        if (q->pgid == pgid && q->sid == sid && q->state != PROC_ZOMBIE) found = true;
+    irq_restore(f);
+    return found;
+}
+
 static bool pgrp_has_stopped(int pgid) {
     bool found = false;
     u64 f = irq_save();

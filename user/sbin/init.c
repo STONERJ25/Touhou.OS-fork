@@ -8,6 +8,7 @@
  *                        autologin=NAME  skip the question and open NAME's session (default reimu; "none" = ask)
  *                        user=root       legacy spelling of autologin=root
  *                        utest           run the user-space test suite and power off
+ *                        kerneltest=NAME ktargs=k:v,...   run /usr/lib/kernel-tests/NAME (sysfuzz, memhog, ...) as root, power off with its status
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -206,6 +207,26 @@ int main(void) {
         if (pid == 0) { execl("/bin/utest", "utest", (char *)NULL); _exit(127); }
         int status = 0;
         waitpid(pid, &status, 0);
+        gap_reboot(0x100 | (WIFEXITED(status) ? WEXITSTATUS(status) : 99));
+    }
+
+    /* kerneltest=NAME ktargs=k:v,k:v  runs /usr/lib/kernel-tests/NAME --config ARGS as root and powers off with its exit status
+     * (the fuzzers and stress programs of docs/HARDENING.md; the command line cannot carry spaces, hence the comma list) */
+    char ktname[40], ktargs[200];
+    if (cmdline_get("kerneltest=", ktname, sizeof ktname)) {
+        if (!cmdline_get("ktargs=", ktargs, sizeof ktargs)) ktargs[0] = 0;
+        char path[96];
+        snprintf(path, sizeof path, "/usr/lib/kernel-tests/%s", ktname);
+        printf("[Hakurei] running %s %s\n", path, ktargs);
+        pid_t pid = fork();
+        if (pid == 0) {
+            if (ktargs[0]) execl(path, ktname, "--config", ktargs, (char *)NULL);
+            else execl(path, ktname, (char *)NULL);
+            _exit(127);
+        }
+        int status = 0;
+        pid_t r;
+        while ((r = wait(&status)) != pid && r >= 0) { }       /* orphans of the test are adopted by init: collect them as they come */
         gap_reboot(0x100 | (WIFEXITED(status) ? WEXITSTATUS(status) : 99));
     }
 

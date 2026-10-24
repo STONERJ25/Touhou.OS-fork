@@ -69,11 +69,11 @@ static void handle_exception(TrapFrame *tf) {
         describe_page_fault(tf, cr2, why, sizeof why);
         panic_frame(tf, "BOUNDARY VIOLATION: %s", why);
     }
-    if (from_user && g_user_fault_hook && g_user_fault_hook(tf, 0)) return;
-    if (v == 2) {
+    if (v == 2) {                                                       /* before the user-fault hook: an NMI that arrives in user mode is not that process's doing */
         klog("Eiki", "NMI received (rip=%#lx)", tf->rip);
         return;
     }
+    if (from_user && g_user_fault_hook && g_user_fault_hook(tf, 0)) return;
     panic_frame(tf, "EXCEPTION %lu: %s%s", v, exc_name[v], from_user ? " in user mode" : " in kernel mode");
 }
 

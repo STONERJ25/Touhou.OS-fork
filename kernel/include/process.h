@@ -137,6 +137,7 @@ bool user_range_ok(const void *p, size_t n);
 int  copy_from_user(void *dst, const void *src, size_t n);
 int  copy_to_user(void *dst, const void *src, size_t n);
 int  strncpy_from_user(char *dst, const char *src, size_t max);        /* length, or -EFAULT / -ENAMETOOLONG */
+long deadline_from_timespec(const void *uts, u64 *deadline);          /* user struct gtimespec (relative) -> uptime_ms() deadline, ~0 = never; -EFAULT, -EINVAL */
 long strnlen_user(const char *s, size_t max);                           /* length (NUL not counted) if the NUL is within the first max bytes, else -ENAMETOOLONG; -EFAULT */
 int  clear_user(void *dst, size_t n);
 
@@ -166,7 +167,10 @@ int  tty_job_check(struct Tty *t, int kind);                            /* kerne
 void signal_send(Process *p, int sig);                                  /* process-directed: any thread that does not block it */
 void signal_send_thread(Task *t, int sig);                              /* thread-directed (tgkill, raise) */
 void signal_force(Process *p, int sig);                                 /* synchronous faults: cannot be ignored or blocked */
-void signal_pgrp(int pgid, int sig);
+void signal_pgrp(int pgid, int sig);                                    /* no permission checks: for the kernel's own use (the terminal's ^C) */
+bool signal_permitted(const Process *from, const Process *to);
+int  signal_group_from(const Process *from, int pgid, int sig, bool everyone);   /* kill(-pgid) / kill(-1) for a user */
+bool pgrp_in_session(int pgid, int sid);                                /* some live process of the group belongs to the session */
 void signal_deliver(TrapFrame *tf);                                     /* on the way back to user mode */
 bool signal_pending_now(Process *p);                                    /* the calling thread has a deliverable signal (or must die) */
 bool signal_cancel_pending(Task *t);                                    /* pthread_cancel is waiting for this thread to reach a cancellation point */
