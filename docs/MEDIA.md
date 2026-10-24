@@ -168,3 +168,37 @@ cache between frames (one `k_image_thumbnail` per idle iteration), because decod
 * `zip` cannot update an archive, no zip64; `tar` has no multi-volume, sparse or device support.
 * The Gallery decodes in the event loop (the Loading frame hides most of it); there are no threads in the viewer. It keeps one picture in memory (plus a rotated or pre-scaled copy).
 * The wallpaper picture is decoded again on every change of the setting; it is not cached between runs.
+
+## State when paused
+
+Paused on 2026-10-23 in the evening, at the request of the user. The branch `worktree-agent-a651f6420dbc8cc2c` is committed, builds, and has `main` merged in
+(the merge was clean when it was done; `git merge-tree --write-tree HEAD main` says whether it still is).
+
+* **Done**: everything on this page: libz and the archive tools, the libimg decoders (PNG, JPEG baseline and progressive, GIF with animation, BMP, PNM, TGA) and
+  encoders (PNG, BMP, PPM), scaling and rotation, the Gallery, the wallpaper (`wallpaper`, Gallery, Control Panel), PNG screenshots, `k_image_thumbnail`, `imginfo`,
+  `convert`, `screenshot`, the manual pages, `SYS_utimes` and its FAT hook, and the Explorer opening pictures in the Gallery.
+* **Half done**: nothing; no uncommitted edits.
+* **Not started** (ideas, most useful first): thumbnails inside the Explorer's icon view (the API is there; decoding a big photograph blocks a window for 0.5 s or more, so
+  it wants a budget per frame or a helper process, and the icon cells are only 32 pixels); a JPEG encoder (so `convert` and screenshots can write `.jpg`) and a GIF writer;
+  the Sketchbook reading and writing PNG through libimg; DCT-domain downscaling in the JPEG decoder (1/2, 1/4, 1/8: faster thumbnails and wallpapers of big photographs);
+  `zip` adding to an existing archive; a decoded-wallpaper cache; animated PNG.
+* **Tests**: the whole suite on the merged tree (at the commit "docs/MEDIA.md: measured decode times", with the Explorer change in) ended with `201 tests, 0 failed`.
+  The later commits (the 64-scan cap, `stat()` before `open()`, manual pages, test changes) were tested with the groups they touch (`media_*` several times, `manual`,
+  `explorer_open_apps`) on a scratch build, and a second whole run on the final head was stopped at test 57 (all passed) when the pause came. On the host: the sanitizer fuzz
+  (6000 mutations seed 7, 4000 seed 11, 12000 seed 99) and the corpus check found nothing; libz's `ztest.py` 0 failures. `audio_mix_two_clients`, `notebook_eol_switch` and
+  `sketchbook_guard_save` (other people's tests) failed once each in a run on a busy host and passed when run again; none touches this code.
+
+## How to resume
+
+1. `git merge main`, `python tools/build.py`. New kappabox applets need a manual page or `manual` fails; tests that wait for a shell prompt need `text` on their command line;
+   the guest clock is slow when the host is busy, so wait for results, never for a time.
+2. `python tests/run_all.py media,explorer_open_apps,manual` (about five minutes). Add `storage` when the FAT driver or `utimes` changes. The whole suite is about an hour.
+   Two test runs in one checkout share `build/esp`: to run a second group in parallel, copy the sources (everything but `build/` and `.git`) to another folder and build there.
+3. Host checks (WSL with gcc and Pillow; `ASAN_OPTIONS=detect_leaks=0`): `ONLY=corpus python3 tests/host/imgtest.py`, `ONLY=fuzz FUZZ_N=6000 FUZZ_SEED=7 python3 tests/host/imgtest.py`,
+   `python3 tests/host/ztest.py`. Set `IMGTEST_DIR` to something else for a second run at the same time.
+4. Where things are: decoders and encoders `user/lib/img/src/*.c` (API in `include/img.h`), libz `user/lib/z`, wallpaper and thumbnails `user/lib/kappa/src/{wallcfg,media}.c`,
+   screenshots `user/bin/fairyd/comp.c`, the viewer `user/bin/gallery/main.c`, the tools `user/bin/kappabox/{media,gzip,tar,zip}.c`, the Control Panel group
+   `user/bin/kappa-panel/panes.c`, test pictures `tests/imgdata.py` and `tests/jpegenc.py`, guest tests `tests/case_media.py`.
+5. Lessons that cost time: GUI tests must not assume window positions (windows cascade; find the picture area by its colour) and should repeat a click whose effect does not
+   show (`click_until`: a PS/2 mouse packet can be lost); a file that is written as `NAME.part` and renamed must be waited for under its final name; Pillow's PNG `tRNS` handling for
+   low-bit gray and 16-bit colour differs from the specification, so the PNG expectations come from `tests/imgdata.py`, not from Pillow.
