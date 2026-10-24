@@ -6,14 +6,18 @@ with the same commands and the same results. Nothing changed for Windows: with n
 ## Packages (Ubuntu 24.04)
 
 ```sh
-sudo apt-get install clang lld llvm nasm qemu-system-x86 ovmf python3 python3-pil python3-numpy python3-cryptography
+sudo apt-get install clang-20 lld-20 llvm-20 nasm qemu-system-x86 ovmf python3 python3-pil python3-numpy python3-cryptography
+export TOUHOU_LLVM_DIR=/usr/lib/llvm-20/bin
 ```
+
+Use clang 20, not Ubuntu's default `clang` (18): the Windows machine builds with LLVM 22, and the awk that clang 18 makes uses more stack
+per call level, so `awk_checks` (recursion 5000 deep) runs into awk's own 6 MiB stack guard. Everything else passes with either.
 
 | Package | What it gives the build |
 |---------|-------------------------|
-| `clang` | the C compiler for loader, kernel and userland (cross-targets `x86_64-unknown-windows` and `x86_64-unknown-none-elf`; no other cross toolchain needed) |
-| `lld` | `lld-link` (the loader, PE/COFF) and `ld.lld` (kernel and programs, ELF64) |
-| `llvm` | `llvm-ar`, `llvm-objcopy`, `llvm-nm` |
+| `clang-20` | the C compiler for loader, kernel and userland (cross-targets `x86_64-unknown-windows` and `x86_64-unknown-none-elf`; no other cross toolchain needed) |
+| `lld-20` | `lld-link` (the loader, PE/COFF) and `ld.lld` (kernel and programs, ELF64) |
+| `llvm-20` | `llvm-ar`, `llvm-objcopy`, `llvm-nm` |
 | `nasm` | the kernel's assembly files |
 | `qemu-system-x86` | `qemu-system-x86_64` (version 8.2 on Ubuntu 24.04; the Windows machine runs a newer one) |
 | `ovmf` | the UEFI firmware, `/usr/share/OVMF/OVMF_CODE_4M.fd` and `OVMF_VARS_4M.fd` |
@@ -62,17 +66,37 @@ wait for something: the "opening took too long" limits in `tests/case_notebook.p
 ## Continuous integration
 
 `.github/workflows/smoke.yml` runs on pushes to `main` and `cloud/**`, on pull requests against `main`, and by hand (`workflow_dispatch`): it installs the packages above on
-`ubuntu-24.04`, builds, and runs the smoke set with `TOUHOU_TIMEOUT_SCALE=3`. Serial and QEMU logs and screenshots of a failed run are kept for a week as the `smoke-logs` artifact.
+`ubuntu-24.04`, builds with clang 20, and runs the smoke set with `TOUHOU_TIMEOUT_SCALE=3` (about two minutes in all). Serial and QEMU logs and screenshots of a failed run are kept for a week as the `smoke-logs` artifact.
 The whole suite is not run there (about 25 minutes in seven parallel groups on a fast desktop).
+
+## Results of the whole suite on Linux
+
+Ubuntu 24.04, 4 cores, no KVM, QEMU 8.2.2, OVMF 2024.02, the seven groups in three worktrees side by side, `TOUHOU_TIMEOUT_SCALE=2`, 262 tests:
+
+| Build | Passed | Failed in the full run | Alone |
+|-------|--------|------------------------|-------|
+| clang 20 | 259 | `notebook_eol_switch`, `notebook_unsaved_close` (mouse-driven, load) | pass |
+| | | `usbstor_4k_blocks` | fails: QEMU 8.2, see below |
+| clang 18 | 258 | `notebook_gui_fuzz` (load), `explorer_progress_cancel` (an `ex:` log line landed inside the `ls -l` it parses) | pass |
+| | | `awk_checks` | fails: clang 18, see above |
+| | | `usbstor_4k_blocks` | fails: QEMU 8.2 |
+
+`usbstor_4k_blocks` needs a QEMU newer than 8.2: there, `usb-storage` accepts `logical_block_size=4096` but does not hand it to the SCSI disk
+inside it (`hw/usb/dev-storage-classic.c` passes only a few fields to `scsi_bus_legacy_add_drive()`; current QEMU passes the whole block
+configuration), so the guest sees 512-byte sectors and finds no partition table. The test is right and stays as it is; it passes on the Windows
+machine's QEMU 11. A newer QEMU on Linux (built from source, or a later distribution) should make it pass; not tried here.
 
 ## State when paused
 
-Done and verified on Ubuntu 24.04 (4 cores, no KVM, QEMU 8.2.2, OVMF 2024.02): `python3 tools/build.py`, `python3 tools/mkimage.py --zip`, and the smoke set
-`selftest,utest,shell,desktop_boots,image_,hwaudit_stage_marks` (8 tests) pass with scale 1 and with scale 3. The Windows paths are untouched except that the `PATH` is now looked at before the
-install folders (the order the brief asked for); a different `clang` or `qemu-system-x86_64` earlier on a Windows `PATH` would now win. Not verified: the scripts on Windows itself (no Windows
-machine here), and the whole suite on Linux.
+Done and verified on Ubuntu 24.04 (see the table above): `python3 tools/build.py` with clang 18 and 20, `python3 tools/mkimage.py --zip`, the smoke set
+`selftest,utest,shell,desktop_boots,image_,hwaudit_stage_marks` with scale 1 and 3, the whole suite, and the GitHub Actions run. The Windows paths are untouched
+except that the `PATH` is now looked at before the install folders (the order the brief asked for): a different `clang` or `qemu-system-x86_64` earlier on a
+Windows `PATH` would now win over `C:\Program Files\...`. Not verified: the scripts on Windows itself (no Windows machine here).
 
 ## How to resume
 
-- Run the whole suite on Linux in the seven groups and fix what differs from Windows (likely candidates: tests that depend on the QEMU version, since Ubuntu ships 8.2 and the Windows machine 11).
-- If CI time matters: GitHub's Linux runners can use KVM (`/dev/kvm` after a udev rule); the harness would need an opt-in `-accel kvm`, which also changes guest timing, so keep TCG the default.
+- `usbstor_4k_blocks` on Linux: try a QEMU 9 or newer (source build) and note the first version that passes.
+- If CI time matters: GitHub's Linux runners can use KVM (`/dev/kvm` after a udev rule); the harness would need an opt-in `-accel kvm`, which also changes guest
+  timing, so keep TCG the default.
+- `explorer_progress_cancel` can fail under load when the Explorer's serial log interleaves with the shell output `file_size()` parses; a sturdier parse
+  (look for the line that names the file) would remove that flake.
