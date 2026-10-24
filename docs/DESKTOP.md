@@ -90,7 +90,7 @@ Ctrl+F12 (screenshot: `~/Pictures/Screenshot-<date>-<time>.png` and `/tmp/screen
 
 * **Wallpaper**: `~/.config/hakurei/wallpaper` names a picture and a mode (cover, fit, center, tile, stretch). `k_wallpaper_render()` draws it (or the
   built-in night scene when nothing is set or the picture cannot be read) and `k_wallpaper_stamp()` changes when the setting or the picture file changes:
-  `hakurei-shell` re-renders when it does, `hakurei-lock` and `hakurei-greeter` call the same render function. `wallpaper IMAGE` and the Gallery's W key set it.
+  `hakurei-shell` re-renders when it does, `hakurei-lock` and `hakurei-greeter` call the same render function. `wallpaper IMAGE`, the Gallery's W key and the Control Panel (Appearance, Wallpaper) set it.
 * **Screenshots**: `k_screenshot_path()` makes the `~/Pictures/Screenshot-...png` name; `fairy_screenshot(display, path)` asks the window server for the picture.
 * **Thumbnails**: `k_image_thumbnail(path, size, &canvas)` (cached) for file browsers; `k_image_thumbnail_cached()` for painting without reading.
 * **Gensokyo Gallery** (`user/bin/gallery/`, start menu entry in `hakurei-shell/launch.c`): the viewer; `gallery FILE` opens a picture and the folder it is in.
