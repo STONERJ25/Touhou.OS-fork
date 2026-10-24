@@ -141,6 +141,7 @@ struct gstat {
 /* ---- mounts and filesystem statistics (SYS_mount / SYS_statfs) ---- */
 #define MNT_RDONLY  0x00000001          /* mount flags: read-only */
 #define MNT_OPTS    0x80000000          /* mount(): r8 points to a comma-separated option string ("uid=1000,fmask=0133") */
+#define FATIOC_USERS_RELOAD 0x4D01      /* ioctl on a directory of a FAT "userdirs" mount: root re-reads /etc/passwd for the home owners */
 
 /* statfs(path, &st): space and identity of the filesystem that holds `path`. Block counts are in units of f_bsize. */
 struct gstatfs {

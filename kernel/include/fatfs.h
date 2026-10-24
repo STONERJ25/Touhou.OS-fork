@@ -105,7 +105,8 @@ struct FatDir {
 
 typedef struct FatUser { char name[24]; u32 uid, gid; } FatUser;
 
-#define FAT_MAX_USERS 8
+#define FAT_MAX_USERS 32
+#define FAT_SYSTEM_OWNER (FAT_MAX_USERS + 1)   /* owner index of the top-level ".system" directory: root's, 0700/0600 (docs/PERSISTENT_ETC.md) */
 #define FAT_MAX_VOLS  8
 
 struct FatVol {
@@ -141,7 +142,7 @@ struct FatVol {
     /* options */
     u32 uid, gid, fmask, dmask;
     bool userdirs;
-    FatUser users[FAT_MAX_USERS];
+    FatUser users[FAT_MAX_USERS + 1];      /* the last slot is the ".system" pseudo-user (root) */
     int nusers;
     /* cache */
     FatPage **htab;
@@ -196,6 +197,7 @@ int  fatn_utf8_to_utf16(const char *s, size_t len, u16 *out, int cap);
 int  fatn_utf16_to_utf8(const u16 *in, int n, char *out, int cap);
 u32  fatn_hash(const char *utf8);
 bool fatn_equal(const char *a, const char *b);
+u8   fat_top_owner(const FatVol *v, const char *name, bool is_dir);   /* owner index of a new top-level entry (0 = the mount's uid/gid) */
 u8   fatn_checksum(const u8 sfn[11]);
 bool fatn_valid16(const u16 *name, int n);
 int  fatn_make_sfn(const u16 *name, int n, u8 sfn[11], u8 *ntres, bool *need_lfn,

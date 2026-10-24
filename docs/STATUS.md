@@ -42,7 +42,7 @@ machine: [HARDWARE_AUDIT.md](HARDWARE_AUDIT.md).
 ## Known issues / next
 
 - Only one CPU is used (the other cores are idle); everything is polled.
-- Only a mounted HUMANVILLAGE volume persists (it holds the homes): `/etc` always lives in RAM and is rebuilt at boot (so passwords and new accounts are lost), and so are the homes when no such volume is found.
+- Only a mounted HUMANVILLAGE volume persists: it holds the homes and Keine's records, the `/etc` files that are kept across restarts (passwords, accounts, host name, time zone, `network.conf`, `update.conf`; [PERSISTENT_ETC](PERSISTENT_ETC.md)). Without such a volume `/etc` and the homes live in RAM and are rebuilt at boot.
 - USB mass storage is in (bulk-only sticks, [USB](USB.md)): the stick the OS booted from carries `/HumanVillage`, and the kernel log is kept on it
   (`TOUHOU.LOG`, [REAL_HARDWARE](REAL_HARDWARE.md)). Not covered: UAS, and a stick flagged dirty stays read-only until a file system check (the check at mount is on
   `parked/usb-dirty-fsck`). On the Dell the boot stick worked as `/HumanVillage` with `TOUHOU.LOG` ([HARDWARE_AUDIT](HARDWARE_AUDIT.md)).

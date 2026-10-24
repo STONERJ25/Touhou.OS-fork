@@ -129,7 +129,7 @@ Old helper worktrees that are merged and can be deleted: `agent-a8e93238212e069d
 - A kernel panic while the desktop is running **is** drawn on the main branch (the audit's `fbcon_force_on` in the panic path; the hardening agent's note about a frozen frame came from a base older than that fix). `hwaudit_panic_on_desktop` kills init as root with the desktop up and checks the screen.
 - Rare, seen once in about ten full runs: `accounts_passwords` failed with the typed password echoed at the first `New password:` prompt of `passwd` (the second prompt did not echo). `getpass` disables echo before it prints its prompt, so the likely culprit is another writer of the terminal settings (the shell restoring cooked mode after it forked, or `TCSAFLUSH` applying late); it passes alone and in six reruns under load. Worth a look at gapsh's terminal handling around `fork`.
 - The fuzz seed 105 with `heapdebug` (`python tools/fuzz.py --secs 30 --extra heapdebug 105`) probably hangs the guest; look at it first.
-- `/etc` is rebuilt in RAM at every boot, so passwords, new accounts and a planned `/etc/network.conf` do not persist; only `/HumanVillage` does.
+- `/etc` survives a restart when a HUMANVILLAGE volume is mounted (`cloud/persistent-etc`, task 11): passwd, shadow, group, hostname, timezone, `network.conf` and `update.conf` are kept in `/HumanVillage/.system/etc` and restored by init, see [PERSISTENT_ETC](PERSISTENT_ETC.md); after merging run `etc_,accounts_persist,accounts,login,storage,usbstor,manual`.
 - The `bc_language` test once caught the kernel log line about a SIGPIPE-killed `echo` (a race in the test, not in bc).
 - Security: libtls has no side-channel guarantees, no revocation or OCSP, and the CA bundle is frozen at build time (see `docs/TLS.md`).
 

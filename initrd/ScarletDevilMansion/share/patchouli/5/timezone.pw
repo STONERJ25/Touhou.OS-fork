@@ -15,7 +15,7 @@ NAME is three or more letters (or anything in angle brackets); OFFSET is hours, 
     CET-1CEST,M3.5.0,M10.5.0/3
     AEST-10AEDT,M10.1.0,M4.1.0/3
 
-A zone that cannot be understood means UTC. `localtime`, `mktime`, `strftime` (`%Z`, `%z`), date(1), `ls -l` and the clocks on the panel and the lock screen all follow it. To choose a zone for good, put it in `initrd/Hakurei/etc/timezone` before building the image, or in `cmdline.txt` as `tz=...`.
+A zone that cannot be understood means UTC. `localtime`, `mktime`, `strftime` (`%Z`, `%z`), date(1), `ls -l` and the clocks on the panel and the lock screen all follow it. To choose a zone for good, run `sudo timezone ZONE` (timezone(1)): with a HUMANVILLAGE volume the file is kept there across restarts (etckeep(8)). The default comes from `initrd/Hakurei/etc/timezone` when the image is built, and `tz=...` in `cmdline.txt` wins over both.
 
 # SEE ALSO
-date(1), hwclock(8), clock(7), init(8)
+timezone(1), date(1), hwclock(8), clock(7), init(8), etckeep(8)

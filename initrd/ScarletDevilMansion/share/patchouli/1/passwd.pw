@@ -6,10 +6,10 @@
 # DESCRIPTION
 `passwd` changes the password of the caller (or, for root, of _USER_). Unless the account has no password yet it first asks for the current one. The new password is asked for twice without echo; leaving it empty removes the password, which means the account can be entered without one. The password is stored in shadow(5) as a salted SHA-256 hash, never as typed. `passwd` is installed setuid root.
 
-Nothing is stored permanently yet: `/Hakurei/etc` lives in memory and is rebuilt from the boot image at every start, so a changed password lasts until the next restart.
+When a HUMANVILLAGE volume is mounted, the new shadow(5) is also kept on it and comes back after a restart (see etckeep(8)); the file is replaced in one step, so a power cut leaves the old or the new password. Without a volume, or when the volume is read-only, a changed password lasts until the next restart, and `passwd` says so in the second case.
 
 # EXIT STATUS
 0 on success; 1 if the check failed, the two entries differ, or the file cannot be written.
 
 # SEE ALSO
-su(1), login(1), shadow(5), accounts(7)
+su(1), login(1), shadow(5), etckeep(8), accounts(7)

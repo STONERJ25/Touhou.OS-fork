@@ -37,7 +37,7 @@ The login screen lists the residents who have a seat. A wrong password makes the
     Change a password.
 
 # FOR THE CURIOUS
-Passwords are salted SHA-256 hashes: good enough to keep the residents out of each other's accounts, not a defence against someone holding a copy of shadow(5). Nothing is persistent yet: `/Hakurei/etc` lives in memory and is rebuilt from the boot image at each start. Directories with the sticky bit (`/BambooForest` and `/Netherworld`) let everyone create entries but only the owner (or root) remove them.
+Passwords are salted SHA-256 hashes: good enough to keep the residents out of each other's accounts, not a defence against someone holding a copy of shadow(5). `/Hakurei/etc` lives in memory and is rebuilt from the boot image at each start; with a HUMANVILLAGE volume the account files (and the host name, the time zone and the network and update settings) are kept on it in `/HumanVillage/.system/etc`, a folder only root can open, and come back at every start (etckeep(8)). Directories with the sticky bit (`/BambooForest` and `/Netherworld`) let everyone create entries but only the owner (or root) remove them.
 
 # SEE ALSO
-login(1), su(1), sudo(1), passwd(1), hakurei-lock(1), init(8), adduser(8), pwcheck(8), passwd(5), group(5), shadow(5), sudoers(5)
+login(1), su(1), sudo(1), passwd(1), hakurei-lock(1), init(8), adduser(8), pwcheck(8), passwd(5), group(5), shadow(5), sudoers(5), etckeep(8)

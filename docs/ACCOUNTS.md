@@ -19,9 +19,11 @@ Group `shrine` (gid 100) is the *seat* group: members may use the display and in
 desktop) and may restart or power off the machine. Everyone except Sumireko is a member.
 
 The default accounts have **empty passwords** so the system boots straight into a usable desktop; set real ones with
-`passwd` (see below). Accounts are not persistent yet: `/etc` lives in the in-memory root filesystem and is rebuilt from the
-initrd on every boot, so password changes last until the next restart. (The home folders do persist when a HUMANVILLAGE volume is
-mounted, see [STORAGE.md](STORAGE.md).)
+`passwd` (see below). `/etc` lives in the in-memory root filesystem and is rebuilt from the initrd on every boot; when a
+HUMANVILLAGE volume is mounted, `passwd`, `shadow` and `group` (with the host name, the time zone and the network and update
+settings) are also kept on it in `/HumanVillage/.system/etc` and put back by `init` before anyone logs in, so passwords and
+accounts survive a restart. Without a volume they last until the next restart, as the homes do. See "Kept across restarts" below
+and [PERSISTENT_ETC.md](PERSISTENT_ETC.md).
 
 ## The files
 
@@ -32,6 +34,27 @@ mounted, see [STORAGE.md](STORAGE.md).)
   This is a single salted SHA-256: enough to keep the residents out of each other's accounts, not a defence against
   an attacker with a copy of the file and time. It does not pretend to be more.
 * `/etc/sudoers` -- one rule per line: `name`, `name NOPASSWD`, `%group`, `%group NOPASSWD`, `ALL`; `#` starts a comment.
+
+## Kept across restarts
+
+`passwd`, `adduser` and `deluser` write through `etc_commit()` (libgap, `<etcstore.h>`): the new text is checked, `/etc/NAME` is
+replaced atomically (a sibling `NAME.new`, born with its final mode, renamed over it) and, with a HUMANVILLAGE volume, the same
+text goes to `/HumanVillage/.system/etc/NAME` (written, synced, renamed, synced), so a power cut leaves the old or the new file.
+`su` and `eiki` write nothing; the Control Panel's *Change password...* runs `passwd`. When the volume cannot keep a change (it is
+mounted read-only after an unclean shutdown) the tool says that the change lasts only until the next restart.
+
+At boot `init` checks every kept file before it replaces the initrd default; a damaged one is skipped with one line in the log
+(`[Keine] /HumanVillage/.system/etc/passwd is damaged (line 2: ...): Keine falls back to the initrd default`). Each file falls
+back on its own, so a damaged `shadow` brings back the default (empty) passwords of the residents.
+
+The kept `shadow` stays root's although FAT stores no permissions: the FAT driver presents a top-level `.system` directory as
+root's with modes 0700/0600 on every mount, so `ls /HumanVillage/.system` and `cat /HumanVillage/.system/etc/shadow` are refused
+for residents (`tests/case_etc.py`, `etc_shadow_permissions`); the block devices are 0600 root. A stick taken to another computer is
+readable there, `shadow` included. New homes on the volume belong to their resident at once: `adduser`, `deluser` and `init`
+hand the volume the residents of `/etc/passwd` (`FATIOC_USERS_RELOAD`).
+
+`etckeep` lists what is kept, `etckeep check` explains a damaged file, `sudo etckeep save FILE` keeps a hand edit and
+`sudo etckeep forget FILE` brings the default back at the next boot.
 
 ## Credentials in the kernel
 
@@ -104,5 +127,7 @@ reward that with a free shell: it opens the text `login` prompt, and the login s
 ## Tests
 
 `tests/case_accounts.py` (setuid bits, shadow permissions, sudo/su/passwd flows, adduser/deluser, the sticky bit),
+`tests/case_etc.py` (passwords, accounts, time zone and host name across two boots of one disk image; damaged records; the
+kept shadow's permissions; `nohumanvillage`; a USB stick),
 `tests/case_login.py` (the greeter with a wrong and a right password, switching resident with Tab, text login,
 autologin) and `tests/case_power.py` (ACPI poweroff and reset, and the seat check).
