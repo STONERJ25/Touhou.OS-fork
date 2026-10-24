@@ -156,6 +156,21 @@ def net_nonet_switch():
         assert "eth0" not in out and "1 received" in out, out
 
 
+@test
+def net_e1000e_transmit_variants():
+    """The PCH-style card's transmit variants: e1000.txvar=N starts at variant N (queue switched off first, MAC reset, no errata bits) and DHCP still works; e1000.txstall=2 swallows the doorbell like a hung card, the watchdog tries variant 1 and then 2, and the lease arrives."""
+    for var in (1, 2, 3):
+        with Guest(f"t-net-txvar{var}", net="e1000e", cmdline=f"e1000.pch e1000.txvar={var}") as g:
+            text = g.vm.text()
+            assert f"transmit variant {var}:" in text, text[-1500:]
+            out, rc = g.run("ifconfig eth0; ping -c 1 10.0.2.2")
+            assert "10.0.2.15" in out and "1 received" in out, out
+    with Guest("t-net-txstall", net="e1000e", cmdline="e1000.pch e1000.txstall=2") as g:
+        text = g.vm.text()
+        assert "transmit variant 1:" in text and "transmit variant 2:" in text and "transmit works with variant 2" in text, text[-2500:]
+        assert "the transmit queue stopped moving" in text and "GPTC" in text, "the register dump should be in the log: " + text[-2500:]
+
+
 # ------------------------------------------------------------------------------------------------------------ the cards
 
 def nic_case(model, label, driver, cmdline=""):
