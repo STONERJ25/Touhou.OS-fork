@@ -1,0 +1,16 @@
+.page firstlook 1 collect what is worth sending after a first boot on a new PC
+
+# SYNOPSIS
+*firstlook* [_FILE_]
+
+# DESCRIPTION
+`firstlook` writes everything useful for diagnosing a PC into one text file: the kernel and its command line, the memory, the disks (`lsblk`, `/proc/partitions`, `/proc/ahci`, `/proc/nvme`), what `install` thinks of each disk, the PCI and USB devices, the network cards and routes, and the whole kernel log. It only reads; nothing is written except the file itself.
+
+The disks are root's, so it is run through `sudo`, and `reimu` may not use `sudo`, `marisa` may:
+
+    su marisa -c "sudo firstlook"
+
+The file is _FILE_, or `/HumanVillage/first-look.txt` (the top of the USB stick's HUMANVILLAGE volume, where another computer can read it after `poweroff`), or `/tmp/first-look.txt` when there is no such volume.
+
+# SEE ALSO
+install(1), lsblk(1), dmesg(1), lspci(1), lsusb(1), ifconfig(1)
