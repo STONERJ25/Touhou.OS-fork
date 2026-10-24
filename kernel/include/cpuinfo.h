@@ -11,6 +11,7 @@ typedef struct {
     u32  feat7_ebx, feat7_ecx;      /* CPUID.7.0 */
     u32  max_leaf;                  /* highest basic CPUID leaf */
     bool pat_wc;                    /* IA32_PAT was reprogrammed so that entry 1 (PTE_PWT alone) is write-combining */
+    bool wc_by_mtrr;                /* the framebuffer is write-combining through an MTRR range (PTE_PCD alone, UC-) instead of through the PAT */
     u32  brand_mhz;                 /* "@ 3.40GHz" from the brand string (0 = none); the TSC runs at this rate on Intel parts */
 } CpuInfo;
 

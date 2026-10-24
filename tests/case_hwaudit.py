@@ -125,7 +125,68 @@ def hwaudit_framebuffer_cache_knob():
         vm.expect(PROMPT, timeout=120)
 
 
+@test
+def hwaudit_mtrr_selftest():
+    """The write-combining MTRR fallback in the kernel self test: the decision function over made-up firmware layouts (a UC range over the
+    framebuffer, no free register, an overlapping WB range, ...), the SDM update sequence on the registers QEMU emulates, and the whole
+    attempt with scripted speeds (kept, undone for lack of gain, forced, a loss), with the framebuffer's page flags checked each time."""
+    with Qemu(cmdline="selftest", name="t-hw-mtrr-self") as vm:
+        vm.expect(r"SELFTEST (PASS|FAIL)", timeout=90)
+        text = vm.text()
+        assert "[selftest] mtrr: ok" in text, text[-1500:]
+        assert "the hardware part is skipped" not in text, text[-1500:]
+        assert "SELFTEST PASS" in text, text[-1500:]
+
+
+@test
+def hwaudit_mtrr_forced_attempt():
+    """fb.mtrr=on: the log shows the firmware's MTRR layout, the display BAR that holds the framebuffer (found by sizing it) and what came of
+    the attempt: a write-combining range with both speeds, or the reason none was added (OVMF puts a UC range over its aperture)."""
+    with Qemu(cmdline="text fb.mtrr=on", name="t-hw-mtrr-on") as vm:
+        vm.expect(r"mtrr: (on|OFF), default (\w+), (\d+) of (\d+) variable ranges in use", timeout=90)
+        m = vm.expect(r"framebuffer (0x[0-9a-f]+) lies in a prefetchable BAR of (0x[0-9a-f]+) \+ (0x[0-9a-f]+) bytes", timeout=30)
+        fb, base, size = (int(m.group(i), 16) for i in (1, 2, 3))
+        assert size & (size - 1) == 0 and base % size == 0, f"a BAR is a naturally aligned power of two: {base:#x} + {size:#x}"
+        assert base <= fb < base + size, f"the framebuffer {fb:#x} is not inside the BAR {base:#x} + {size:#x}"
+        m = vm.expect(r"framebuffer: (?:write-combining MTRR #\d+ over (0x[0-9a-f]+) \+ \d+ [MG]iB .*fb speed before (\d+) MB/s after (\d+) MB/s, "
+                      r"(?:kept|no gain)|no MTRR added \(.*\); fb speed \d+ MB/s stays)", timeout=60)
+        assert m.group(1) is None or int(m.group(1), 16) == base, f"the MTRR covers {m.group(1)}, the BAR starts at {base:#x}"
+        vm.expect(PROMPT, timeout=120)
+        vm.send("echo mtrr-$((6*7))\n")
+        vm.expect(r"mtrr-42", timeout=30)
+    # A CPU that does not have MTRRs at all: nothing to read, nothing to write, the framebuffer stays as the page tables map it.
+    with Qemu(cmdline="text fb.mtrr=on", name="t-hw-mtrr-none", extra=["-cpu", "qemu64,-mtrr"]) as vm:
+        vm.expect(r"the firmware's MTRR for it: no MTRRs", timeout=90)
+        vm.expect(r"framebuffer: no MTRR added \(this CPU has no MTRRs\)", timeout=60)
+        vm.expect(PROMPT, timeout=120)
+
+
+@test
+def hwaudit_mtrr_knob_off_and_auto():
+    """fb.mtrr=off leaves the MTRRs alone and says so; with the default (auto) a fast screen leaves them alone as well."""
+    with Qemu(cmdline="text fb.mtrr=off", name="t-hw-mtrr-off") as vm:
+        vm.expect(r"fb\.mtrr=off: no write-combining MTRR is tried \(the framebuffer is write-combining \(PAT\)\)", timeout=90)
+        vm.expect(PROMPT, timeout=120)
+    with Qemu(cmdline="text", name="t-hw-mtrr-auto") as vm:
+        # A host under heavy load can make the emulated screen look slow for a moment; then the attempt is made and logged instead.
+        vm.expect(r"fb\.mtrr=auto: the screen takes \d+ MB/s, fast enough|framebuffer: (no MTRR added|write-combining MTRR)", timeout=90)
+        vm.expect(PROMPT, timeout=120)
+
+
 # ---------------------------------------------------------------------------------------------- buses and memory
+
+@test
+def hwaudit_pci_selftest():
+    """PCI in the kernel self test: BAR sizes from read-backs whose upper bits read zero (a 64-bit BAR of a device with a 48-bit address width used
+    to come out as exabytes), and a function put into D3hot the way firmware leaves unused ones (an e1000e, which has a power management
+    capability) is woken, waits the 10 ms of the specification and keeps its BARs and command register."""
+    with Qemu(cmdline="selftest", name="t-hw-pci-self", net="e1000e") as vm:
+        vm.expect(r"SELFTEST (PASS|FAIL)", timeout=90)
+        text = vm.text()
+        assert "[selftest] pci: ok" in text, text[-1500:]
+        assert re.search(r"\[selftest\] pci: 00:[0-9a-f]{2}\.0 8086:[0-9a-f]{4} woke from D3hot in \d+ ms", text), text[-1500:]
+        assert "SELFTEST PASS" in text, text[-1500:]
+
 
 @test
 def hwaudit_no_ps2_controller():

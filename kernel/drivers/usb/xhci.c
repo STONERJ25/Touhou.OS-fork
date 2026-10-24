@@ -1271,12 +1271,8 @@ UsbHc *xhci_create(PciDev *pci, int busnum) {
         for (const char *q = fault + 4; *q >= '0' && *q <= '9'; q++) n = n * 10 + (u32)(*q - '0');
         if (fault[1] == 't') g_fault_ctl = n; else g_fault_cmd = n;
     }
-    /* Make sure the function is in D0 and decodes memory; the BIOS may have left it asleep. */
-    u8 pm = pci_find_cap(pci, PCI_CAP_PM);
-    if (pm) {
-        u16 pmcsr = pci_read16(pci, (u16)(pm + 4));
-        if (pmcsr & 3) { pci_write16(pci, (u16)(pm + 4), (u16)(pmcsr & ~3u)); udelay(10000); }
-    }
+    /* Make sure the function is in D0 and decodes memory; the BIOS may have left it asleep (pci_enable wakes it: pci_set_d0, which
+     * also puts the BARs back if the wake-up was a soft reset). */
     pci_enable(pci, PCI_CMD_MEM | PCI_CMD_MASTER);
     pci->driver = "xhci";
     return &x->hc;

@@ -2,6 +2,7 @@
 #include "kernel.h"
 #include "cpu.h"
 #include "mm.h"
+#include "irq.h"
 #include "vfs.h"
 
 #define CFG_ADDR 0xCF8
@@ -50,6 +51,12 @@ void pci_write8(const PciDev *d, u16 off, u8 v) {
 
 /* ---------------------------------------------------------------- enumeration */
 
+/* The size of a BAR from what it reads back after all ones were written: the lowest address bit the device lets us set (the bits
+ * below it read as zero). Not "~mask + 1": that is wrong whenever the bits ABOVE the device's address width read as zero too, which
+ * 64-bit BARs of devices with fewer than 64 address bits (many) and 32-bit BARs of small devices do; the result was a size of
+ * exabytes and an ioremap that never came back. This is what Linux's pci_size() does. */
+static u64 bar_size(u64 readback_masked) { return readback_masked & (~readback_masked + 1); }
+
 static void probe_bars(PciDev *d, int nbars) {
     u16 cmd = pci_read16(d, 4);
     pci_write16(d, 4, cmd & (u16) ~(PCI_CMD_IO | PCI_CMD_MEM));         /* never size a BAR that is decoding */
@@ -60,7 +67,7 @@ static void probe_bars(PciDev *d, int nbars) {
             pci_write32(d, reg, 0xFFFFFFFFu);
             u32 m = pci_read32(d, reg);
             pci_write32(d, reg, orig);
-            u32 size = (~(m & ~3u) + 1) & 0xFFFF;
+            u32 size = (u32)bar_size(m & ~3u & 0xFFFFu);                 /* port numbers are 16 bits */
             if (size) { d->bar[i].io = true; d->bar[i].base = orig & ~3u; d->bar[i].size = size; }
             continue;
         }
@@ -74,9 +81,8 @@ static void probe_bars(PciDev *d, int nbars) {
             u32 mlo = pci_read32(d, reg), mhi = pci_read32(d, reg_hi);
             pci_write32(d, reg, orig);
             pci_write32(d, reg_hi, orig_hi);
-            u64 mask = ((u64)mhi << 32) | (mlo & ~0xFu);
-            u64 size = ~mask + 1;
-            if (mask && size) {
+            u64 size = bar_size(((u64)mhi << 32) | (mlo & ~0xFu));
+            if (size) {
                 d->bar[i].mem64 = true;
                 d->bar[i].prefetch = pf;
                 d->bar[i].base = ((u64)orig_hi << 32) | (orig & ~0xFu);
@@ -88,10 +94,48 @@ static void probe_bars(PciDev *d, int nbars) {
         pci_write32(d, reg, 0xFFFFFFFFu);
         u32 m = pci_read32(d, reg);
         pci_write32(d, reg, orig);
-        u32 size = ~(m & ~0xFu) + 1;
-        if ((m & ~0xFu) && size) { d->bar[i].prefetch = pf; d->bar[i].base = orig & ~0xFu; d->bar[i].size = size; }
+        u64 size = bar_size(m & ~0xFu);
+        if (size) { d->bar[i].prefetch = pf; d->bar[i].base = orig & ~0xFu; d->bar[i].size = size; }
     }
     pci_write16(d, 4, cmd);
+}
+
+/*
+ * The memory BAR of a display adapter that holds [addr, addr + len): the window a write-combining MTRR for the framebuffer
+ * would cover, found when it is needed and not at scan time (see scan_function: display BARs are never sized there). Sizing
+ * a BAR that decodes is what Linux does for the boot display ("mmio_always_on"): all ones go in and the old value comes
+ * back within microseconds, with interrupts off and nothing drawing, so the scanout is not touched (it reads the display
+ * memory through the GPU's own path, not through this BAR).
+ */
+bool pci_display_bar(paddr_t addr, u64 len, paddr_t *base_out, u64 *size_out, bool *prefetch_out) {
+    for (PciDev *d = g_head; d; d = d->next) {
+        if (d->class_code != 0x03 || (d->header_type & 0x7F) != 0) continue;
+        if (!(pci_read16(d, 4) & PCI_CMD_MEM)) continue;                 /* not decoding memory: not the screen */
+        for (int i = 0; i < 6; i++) {
+            u16 reg = (u16)(0x10 + 4 * i);
+            u32 lo = pci_read32(d, reg);
+            if (lo & 1) continue;                                        /* I/O space */
+            bool wide = ((lo >> 1) & 3) == 2 && i < 5;
+            u32 hi = wide ? pci_read32(d, (u16)(reg + 4)) : 0;
+            u64 base = ((u64)hi << 32) | (lo & ~0xFu);
+            if (wide) i++;
+            if (!base || base > addr) continue;
+            u64 f = irq_save();
+            pci_write32(d, reg, 0xFFFFFFFFu);
+            if (wide) pci_write32(d, (u16)(reg + 4), 0xFFFFFFFFu);
+            u32 slo = pci_read32(d, reg), shi = wide ? pci_read32(d, (u16)(reg + 4)) : 0;
+            pci_write32(d, reg, lo);
+            if (wide) pci_write32(d, (u16)(reg + 4), hi);
+            irq_restore(f);
+            u64 size = bar_size(((u64)shi << 32) | (slo & ~0xFu));
+            if (size < PAGE_SIZE || addr - base >= size || len > size - (addr - base)) continue;
+            *base_out = base;
+            *size_out = size;
+            *prefetch_out = (lo & 8) != 0;
+            return true;
+        }
+    }
+    return false;
 }
 
 static void scan_bus(int bus, int depth);
@@ -163,7 +207,43 @@ PciDev *pci_find_id(u16 vendor, u16 device, PciDev *after) {
     return NULL;
 }
 
+/*
+ * Brings a function that the firmware (or a previous OS) left in a low-power state back to D0, the only state in which its
+ * registers work. PCI Power Management spec 1.2: the Power State field of PMCSR (capability offset +4, bits 1:0), and after
+ * D3hot -> D0 the function needs 10 ms before it may be accessed (D2: 200 microseconds, D1: none; 1 ms covers both). Unless
+ * the NoSoftReset bit (bit 3) says otherwise that transition is a soft reset, and a reset function has lost its BARs and
+ * command register, so those are written back the way they were (Linux does the same: pci_restore_bars). PME_Status (bit
+ * 15) is write-1-to-clear and is written as 0 so that a pending wake-up event is not discarded by accident.
+ * Returns the state the function was in (0 = it already was in D0, or has no power management capability).
+ */
+int pci_set_d0(PciDev *d) {
+    u8 pm = pci_find_cap(d, PCI_CAP_PM);
+    if (!pm) return 0;
+    u16 pmcsr = pci_read16(d, (u16)(pm + 4));
+    int was = pmcsr & 3;
+    if (!was || pmcsr == 0xFFFF) return 0;                              /* in D0 already, or not answering at all */
+    u32 bars[6];
+    for (int i = 0; i < 6; i++) bars[i] = pci_read32(d, (u16)(0x10 + 4 * i));
+    u16 cmd = pci_read16(d, 4);
+    pci_write16(d, (u16)(pm + 4), (u16)(pmcsr & ~(0x8003u)));
+    udelay(was == 3 ? 10000 : 1000);
+    u16 after = pci_read16(d, (u16)(pm + 4));
+    if (after & 3) {
+        klog("Marisa", "pci %02x:%02x.%x %04x:%04x stays in power state D%u after being told to wake up", d->bus, d->dev, d->fn, d->vendor,
+             d->device, after & 3);
+        return was;
+    }
+    if (!(pmcsr & 8)) {                                                 /* soft reset: put back what the reset took away */
+        for (int i = 0; i < 6; i++)
+            if (pci_read32(d, (u16)(0x10 + 4 * i)) != bars[i]) pci_write32(d, (u16)(0x10 + 4 * i), bars[i]);
+        if (pci_read16(d, 4) != cmd) pci_write16(d, 4, cmd);
+    }
+    klog("Marisa", "pci %02x:%02x.%x %04x:%04x was asleep (power state D%d): moved to D0", d->bus, d->dev, d->fn, d->vendor, d->device, was);
+    return was;
+}
+
 void pci_enable(PciDev *d, u16 bits) {
+    pci_set_d0(d);                              /* every driver comes through here: a function left in D3 by the firmware must be awake first */
     u16 cmd = pci_read16(d, 4);
     cmd = (u16)((cmd | bits | PCI_CMD_INTX_OFF));
     pci_write16(d, 4, cmd);
@@ -217,6 +297,50 @@ void dma_free(void *virt, size_t size) {
     unsigned order = 0;
     while (((size_t)1 << order) < pages) order++;
     pmm_free(virt_to_phys(virt), order);
+}
+
+/* ---------------------------------------------------------------- self test */
+
+#define PCHECK(cond) do { if (!(cond)) { fails++; printk("  FAIL pci.c:%d: %s\n", __LINE__, #cond); } } while (0)
+
+/* "selftest": BAR sizing from read-backs a real device can produce, and the wake-up from D3hot on a real (emulated) function. */
+int pci_selftest(void) {
+    int fails = 0;
+    klog("selftest", "pci: BAR sizes from read-backs, D3hot -> D0");
+    PCHECK(bar_size(0xFFFFFFFFFFFF0000UL) == 0x10000);          /* 64-bit BAR whose upper dword is fully writable */
+    PCHECK(bar_size(0x0000FFFFFFFF0000UL) == 0x10000);          /* the upper bits read zero beyond a 48-bit address width: "~mask + 1" gave 0xFFFF000000010000 */
+    PCHECK(bar_size(0x000000FFF0000000UL) == 0x10000000);       /* 256 MiB aperture of a device with 40 address bits */
+    PCHECK(bar_size(0xFFFFC000UL) == 0x4000);                   /* 32-bit BAR, 16 KiB */
+    PCHECK(bar_size(0x0FFFC000UL) == 0x4000);                   /* a small device that only implements 28 address bits */
+    PCHECK(bar_size(0) == 0);                                   /* not implemented */
+
+    /* The first function on bus 0 with a power management capability: put it to sleep the way firmware does, wake it, compare. */
+    for (int dev = 0; dev < 32; dev++) {
+        PciDev t;
+        memset(&t, 0, sizeof t);
+        t.bus = 0; t.dev = (u8)dev; t.fn = 0;
+        u32 id = pci_read32(&t, 0);
+        if ((id & 0xFFFF) == 0xFFFF) continue;
+        t.vendor = (u16)id; t.device = (u16)(id >> 16);
+        u8 pm = pci_find_cap(&t, PCI_CAP_PM);
+        if (!pm) continue;
+        u32 bar0 = pci_read32(&t, 0x10);
+        u16 cmd = pci_read16(&t, 4);
+        pci_write16(&t, (u16)(pm + 4), (u16)((pci_read16(&t, (u16)(pm + 4)) & ~0x8003u) | 3));       /* D3hot */
+        if ((pci_read16(&t, (u16)(pm + 4)) & 3) != 3) { klog("selftest", "pci: 00:%02x.0 does not accept D3hot, skipped", dev); continue; }
+        u64 t0 = uptime_ms();
+        int was = pci_set_d0(&t);
+        u64 took = uptime_ms() - t0;
+        PCHECK(was == 3);
+        PCHECK((pci_read16(&t, (u16)(pm + 4)) & 3) == 0);
+        PCHECK(pci_read32(&t, 0x10) == bar0 && pci_read16(&t, 4) == cmd);
+        PCHECK(took >= 7);                                      /* the 10 ms the specification demands after D3hot (the millisecond clock ticks, so a little slack) */
+        PCHECK(pci_set_d0(&t) == 0);                            /* already awake: nothing to do */
+        klog("selftest", "pci: 00:%02x.0 %04x:%04x woke from D3hot in %lu ms", dev, t.vendor, t.device, (unsigned long)took);
+        break;
+    }
+    klog("selftest", "pci: %s", fails ? "FAIL" : "ok");
+    return fails;
 }
 
 /* ---------------------------------------------------------------- /proc/pci and init */
