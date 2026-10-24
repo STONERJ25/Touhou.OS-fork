@@ -230,6 +230,7 @@ These exist so the tests can reach paths that QEMU never takes by itself. They a
 | `nvme.maxxfer=N` `nvme.window=N` `nvme.depth=N` | bytes per command / commands in flight / I/O queue entries (tiny values force queue wrap-around) |
 | `nvme.bounce` `nvme.nosync` | always bounce / no flush after writes |
 | `blk.ro` | register every SATA disk and NVMe namespace read-only (**use this for the first boot on real hardware**; USB sticks are not affected) |
+| `blk.rw=GUID[,GUID]` | under `blk.ro`, keep the disks whose GPT disk GUID is listed writable (written by `install` for the disk it installed on); root can also lift `blk.ro` for one disk through one open file with the `BLKWRUNLOCK` ioctl, see [INSTALL.md](INSTALL.md) |
 | `blk.dmalimit_mb=N` | test only: treat caller memory above N MiB as unreachable for DMA (stands in for 4 GiB; forces the bounce path for buffers up there) |
 | `nvme.iotimeout=ms` `nvme.dropcmd=N` | completion timeout / never ring the doorbell for the N-th read/write batch |
 

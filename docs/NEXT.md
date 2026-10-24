@@ -37,6 +37,8 @@ The next two goals, in this order:
    failed starts). The ESP is never mounted by the policy today: the updater mounts it explicitly (root, read-write, briefly). The forge (`server.tailfbc785.ts.net`) is Tailscale-only,
    so the OS cannot fetch from it directly: the update server is a plain LAN HTTP(S) server on the owner's PC.
 
+Goal 1 has a first implementation on branch `cloud/installer` (task 4 of [CLOUD_AGENT_BRIEF.md](CLOUD_AGENT_BRIEF.md)): `install DISK`, a per-disk write unlock (`BLKWRUNLOCK`), `blk.rw=`, `/proc/bootdisk`, tested in QEMU only; see [INSTALL.md](INSTALL.md).
+
 Before both: merge the parked branches (below) and run the whole suite on the result, in particular the network/HTTPS branch, the dirty-volume `fsck` branch (an installed disk and a
 stick that is switched off with the button need it) and the audio branch.
 

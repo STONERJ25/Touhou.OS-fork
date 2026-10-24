@@ -1,0 +1,50 @@
+.page install 1 put TouhouOS on a disk of this computer
+
+# SYNOPSIS
+*install*
+*install* [*--force*] [*--yes-i-typed*=_DISK_] [*--from* _DIR_] [*--cmdline* _WORDS_] [*--dry-run*] _DISK_
+
+# DESCRIPTION
+`install` moves the shrine for good: it writes TouhouOS onto the disk _DISK_ (`sdb`, `nvme0n1`, `vda`, with or without `/dev/`), so the computer starts it without the USB stick. *Everything on that disk is lost.* Only root may do it (`sudo install sdb`).
+
+Without arguments it lists the disks it can see and what it thinks of each: the disk the system was started from, a disk in use, a disk that holds partitions or a file system (`--force` needed), an empty disk.
+
+The disk gets the same layout as the stick image: a GPT partition table, partition 1 a 64 MiB FAT32 EFI System Partition named TOUHOUOS-ESP holding `EFI/BOOT/BOOTX64.EFI`, `kernel.elf`, `initrd.img` and `cmdline.txt`, partition 2 a FAT32 volume named HUMANVILLAGE that takes the rest of the disk (FAT32 counts 2^32 sectors: at most 2 TiB on a disk with 512-byte sectors) and keeps the home directories. On a disk with 4096-byte sectors the boot partition is 258 MiB, the smallest FAT32 volume such a disk can hold.
+
+The files are the ones the running system was started from: `install` finds the boot partition (see `/proc/bootdisk`), mounts it read-only for a moment and copies them. `cmdline.txt` is the boot partition's own, plus the word `blk.rw=` with the new disk's GUID: `blk.ro` then keeps every other SATA and NVMe disk read-only while the installed disk can keep its homes.
+
+# SAFETY
+Before anything is written, `install` refuses: a caller who is not root; a name that is not a whole disk; the disk the system was started from; a disk with a mounted partition; a disk too small for the two volumes; and, unless `--force` is given, a disk that holds any partition, a partition table or a file system it recognises (FAT, NTFS, exFAT, ext, XFS, btrfs, LVM, LUKS, swap, ISO 9660, Intel RAID metadata). Then it shows the plan and asks you to type the disk's name; anything else stops it.
+
+The kernel's `blk.ro` stays on. For the writes `install` asks the kernel to lift it for that one disk, through its own open file only; the disk's partitions, every other program and every other disk still get "Read-only file system". The unlock ends when `install` hands it back or exits, and it is never written down anywhere, so a restart forgets it. The kernel log shows both moments (`blk: sdb unlocked for writing ...`, `blk: sdb is read-only again`).
+
+After writing, `install` reads the files and the partition table back and compares them. The new partitions appear after the next start.
+
+# OPTIONS
+@ *--force*
+    Overwrite a disk that holds partitions or a file system. Still refused for the boot disk, a mounted disk, or when the firmware did not say which disk the system started from.
+@ *--yes-i-typed*=_DISK_
+    For scripts: the confirmation, given in advance. It must be exactly the name of the disk being installed on.
+@ *--from* _DIR_
+    Take the files from _DIR_ (holding `EFI/BOOT/BOOTX64.EFI`, `kernel.elf`, `initrd.img`, `cmdline.txt`) instead of the boot partition.
+@ *--cmdline* _WORDS_
+    The command line of the installed system instead of the boot partition's `cmdline.txt` (`blk.rw=` is added either way).
+@ *--dry-run*, *-n*
+    Check everything and show the plan, write nothing.
+@ *--hold*=_FILE_
+    For tests: after the unlock, wait until _FILE_ exists before writing.
+
+# EXAMPLES
+    install
+    sudo install --dry-run sdb
+    sudo install sdb
+    sudo install --force --cmdline "video=native blk.ro" nvme0n1
+
+# NOTES
+On a PC whose SATA controller is set to RAID (Intel RST) in the firmware the internal disks are invisible to TouhouOS; switch "SATA Operation" to AHCI first. A Windows installed in RAID mode may then stop starting unless it was prepared for the switch. After installing, take the stick out and choose the disk in the firmware's boot menu if it does not start by itself.
+
+# EXIT STATUS
+0 when the system was installed (or the plan shown), 1 when it was refused or failed, 2 for a usage error.
+
+# SEE ALSO
+lsblk(1), dd(1), mount(8), proc(5)
