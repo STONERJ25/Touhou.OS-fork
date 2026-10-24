@@ -140,8 +140,22 @@ static bool job_signal(Process *p, int sig, Task *only) {
     return true;
 }
 
+/* init does what the shrine's first process has to do: it is the only one that can end it, with exit(). A signal it has installed no
+ * handler for would only kill it (and with it the machine, see process_finalize), so such a signal is dropped, whoever sent it: the
+ * kernel's own faults go through signal_force and are not affected. This is what Linux does for the first process of a namespace. */
+static inline bool init_shrugs_off(const Process *p, int sig) {
+    return p == g_init_proc && p->sigact[sig].handler == SIG_DFL;
+}
+
+/* May `from` send a signal to `to`? Root, or the same user (real or effective ids). */
+bool signal_permitted(const Process *from, const Process *to) {
+    return from == to || from->cred.uid == 0 || from->cred.uid == to->cred.uid || from->cred.uid == to->ruid || from->ruid == to->ruid ||
+           from->ruid == to->cred.uid;
+}
+
 void signal_send(Process *p, int sig) {
     if (sig <= 0 || sig >= NSIG || p->state == PROC_ZOMBIE) return;
+    if (init_shrugs_off(p, sig)) return;
     if (job_signal(p, sig, NULL)) return;
     if (sig != SIGKILL && ignored(p, sig)) return;
     u64 f = irq_save();
@@ -160,6 +174,7 @@ void signal_send(Process *p, int sig) {
 void signal_send_thread(Task *t, int sig) {
     Process *p = t->proc;
     if (!p || sig <= 0 || sig >= NSIG || p->state == PROC_ZOMBIE) return;
+    if (init_shrugs_off(p, sig)) return;
     if (job_signal(p, sig, t)) return;                  /* stop and continue are about the whole process, whoever was aimed at */
     if (sig != SIGKILL && ignored(p, sig)) return;
     u64 f = irq_save();
@@ -191,6 +206,31 @@ static void pgrp_cb(Process *p, void *ctx) {
 void signal_pgrp(int pgid, int sig) {
     struct PgrpArg a = { pgid, sig };
     process_for_each(pgrp_cb, &a);
+}
+
+/* kill(-pgid) and kill(-1) for an ordinary caller: only the processes it may signal are signalled (all of a group, or everybody except
+ * init and the caller itself). Returns how many there were: -ESRCH for none at all, -EPERM when there were some and none was allowed. */
+struct FromArg {
+    const Process *from;
+    int pgid, sig, seen, sent;
+    bool everyone;
+};
+
+static void from_cb(Process *p, void *ctx) {
+    struct FromArg *a = ctx;
+    if (p->state != PROC_RUNNING || p == g_init_proc) return;
+    if (a->everyone ? p == a->from : p->pgid != a->pgid) return;
+    a->seen++;
+    if (!signal_permitted(a->from, p)) return;
+    a->sent++;
+    if (a->sig) signal_send(p, a->sig);
+}
+
+int signal_group_from(const Process *from, int pgid, int sig, bool everyone) {
+    struct FromArg a = { from, pgid, sig, 0, 0, everyone };
+    process_for_each(from_cb, &a);
+    if (!a.seen) return -ESRCH;
+    return a.sent ? a.sent : -EPERM;
 }
 
 /* tcsetpgrp made `pgid` the foreground group of a terminal. Members that stopped because they wanted that terminal (SIGTTIN, SIGTTOU)
@@ -228,6 +268,7 @@ void signal_deliver(TrapFrame *tf) {
             return;
         }
         struct gsigaction *act = &p->sigact[sig];
+        if (act->handler > SIG_IGN && act->handler >= USER_TOP) process_exit(SIGSEGV);       /* cannot happen (sigaction refuses it); no handler address is worth an iretq fault */
 
         if (act->handler == SIG_IGN || (act->handler == SIG_DFL && default_ignored(sig))) continue;
         if (act->handler == SIG_DFL && signal_is_stop(sig)) {      /* a stop signal that was blocked when it arrived */
@@ -267,6 +308,11 @@ void signal_deliver(TrapFrame *tf) {
 long sys_sigreturn_impl(TrapFrame *tf) {
     SigFrame fr;
     if (copy_from_user(&fr, (void *)(tf->rsp - 8), sizeof fr)) process_exit(SIGSEGV);
+    if (fr.saved.rip >= USER_TOP || fr.saved.rsp >= USER_TOP) {       /* an iretq to a non-canonical or kernel address faults in ring 0 */
+        klog("Eiki", "'%s' (pid %d) returned from a signal into the Boundary (rip %#lx, rsp %#lx)", current->proc->name, current->proc->pid,
+             (unsigned long)fr.saved.rip, (unsigned long)fr.saved.rsp);
+        process_exit(SIGSEGV);
+    }
     *tf = fr.saved;
     tf->cs = USER_CS;                   /* never trust the saved selectors: stay in ring 3 */
     tf->ss = USER_DS;

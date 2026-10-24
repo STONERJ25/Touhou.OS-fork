@@ -3,6 +3,8 @@
 #include "kernel.h"
 #include "mm.h"
 #include "cpu.h"
+#include "arch.h"
+#include "initcall.h"
 
 const Cred g_root_cred = { 0, 0 };
 
@@ -21,9 +23,23 @@ static bool fs_owns_ids(const VNode *v) {
     return v->mount && v->mount->type && (v->mount->type->flags & FS_FIXED_OWNER);
 }
 
+static u64 g_nvnodes, g_nfiles;                         /* live objects: /proc/kstats shows them, the leak checks compare them */
+static VNode *g_vnode_ledger;                           /* every live vnode, newest first: /proc/vnodes */
+u64 vfs_vnode_count(void) { return g_nvnodes; }
+u64 vfs_file_count(void) { return g_nfiles; }
+
 VNode *vnode_alloc(const VNodeOps *ops, Mount *m, u32 mode) {
     VNode *v = kzalloc(sizeof *v);
     if (!v) return NULL;
+    __atomic_fetch_add(&g_nvnodes, 1, __ATOMIC_RELAXED);
+    u64 stk[5];
+    backtrace_capture(stk, 5);
+    for (int i = 0; i < 4; i++) v->alloc_ip[i] = stk[i + 1];            /* [0] is vnode_alloc itself */
+    u64 lf = irq_save();
+    v->dbg_next = g_vnode_ledger;
+    if (g_vnode_ledger) g_vnode_ledger->dbg_prev = v;
+    g_vnode_ledger = v;
+    irq_restore(lf);
     v->ops = ops;
     v->mount = m;
     v->mode = mode;
@@ -47,8 +63,33 @@ void vnode_put(VNode *v) {
     if (r > 0) return;
     if (r < 0) panic("vnode_put: refcount underflow (ino %lu)", (unsigned long)v->ino);
     if (v->ops && v->ops->release) v->ops->release(v);
+    __atomic_fetch_sub(&g_nvnodes, 1, __ATOMIC_RELAXED);
+    u64 lf = irq_save();
+    if (v->dbg_prev) v->dbg_prev->dbg_next = v->dbg_next; else g_vnode_ledger = v->dbg_next;
+    if (v->dbg_next) v->dbg_next->dbg_prev = v->dbg_prev;
+    irq_restore(lf);
     kfree(v);
 }
+
+/* /proc/vnodes: one line per live vnode with the call chain that made it (symbols from the kernel's own table). */
+static size_t gen_vnodes(char *b, size_t cap) {
+    size_t n = 0;
+    u64 lf = irq_save();
+    for (VNode *v = g_vnode_ledger; v && n + 200 < cap; v = v->dbg_next) {
+        n += (size_t)snprintf(b + n, cap - n, "%p ino=%lu mode=%o refs=%d nlink=%u size=%lu <-", (void *)v, (unsigned long)v->ino, v->mode, v->refs, v->nlink,
+                              (unsigned long)v->size);
+        for (int i = 0; i < 4 && v->alloc_ip[i]; i++) {
+            u64 off = 0;
+            const char *s = ksym_lookup(v->alloc_ip[i], &off);
+            n += (size_t)snprintf(b + n, cap - n, " %s+%#lx", s ? s : "?", (unsigned long)off);
+        }
+        b[n++] = '\n';
+    }
+    irq_restore(lf);
+    return n;
+}
+static void vnodes_init(void) { procfs_register("vnodes", gen_vnodes); }
+INITCALL(vnodes_init);
 
 void vnode_stat(VNode *v, struct gstat *st) {
     memset(st, 0, sizeof *st);
@@ -322,6 +363,7 @@ int vfs_lookup_parent(const char *path, VNode *cwd, const Cred *c, VNode **dir, 
 File *file_new(VNode *v, int flags, const FileOps *fops, void *priv) {
     File *f = kzalloc(sizeof *f);
     if (!f) return NULL;
+    __atomic_fetch_add(&g_nfiles, 1, __ATOMIC_RELAXED);
     f->vn = v;
     f->flags = flags;
     f->refs = 1;
@@ -346,6 +388,7 @@ void file_put(File *f) {
     else if (f->vn && f->vn->ops && f->vn->ops->closed) f->vn->ops->closed(f->vn, f);
     if (f->vn) vnode_put(f->vn);
     kfree(f->path);
+    __atomic_fetch_sub(&g_nfiles, 1, __ATOMIC_RELAXED);
     kfree(f);
 }
 
@@ -433,6 +476,7 @@ s64 vfs_lseek(File *f, s64 off, int whence) {
     case SEEK_END: base = (s64)v->size; break;
     default: return -EINVAL;
     }
+    if (off > 0 && base > INT64_MAX - off) return -EINVAL;              /* base + off would not fit */
     if (base + off < 0) return -EINVAL;
     f->off = (u64)(base + off);
     return (s64)f->off;
@@ -460,6 +504,7 @@ int vfs_readdir(File *f, struct gdirent *out) {
     VNode *v = f->vn;
     if (!S_ISDIR(v->mode)) return -ENOTDIR;
     DirEntry de;
+    de.next = 0;
     u64 idx = f->off;
     if (idx == 0) {
         strcpy(de.name, ".");
@@ -475,13 +520,14 @@ int vfs_readdir(File *f, struct gdirent *out) {
         if (!v->ops->readdir) return 0;
         int rc = v->ops->readdir(v, idx - 2, &de);
         if (rc <= 0) return rc;
+        idx = de.next ? de.next + 1 : idx;                   /* f->off ends up at idx + 1: the filesystem's own cookie, or the next index */
     }
     memset(out, 0, sizeof *out);
     out->d_ino = de.ino;
     out->d_type = de.type;
     out->d_namlen = (u32)strlen(de.name);
     strlcpy(out->d_name, de.name, sizeof out->d_name);
-    f->off++;
+    f->off = idx + 1;
     return 1;
 }
 
@@ -695,6 +741,7 @@ int vfs_read_file(const char *path, void **data, size_t *size) {
     File *f;
     int rc = vfs_open(path, O_RDONLY, 0, NULL, NULL, &f);
     if (rc) return rc;
+    if (f->vn->size > (64UL << 20)) { file_put(f); return -EFBIG; }     /* the kernel reads whole files into memory: configuration, not disk images */
     size_t cap = f->vn->size ? f->vn->size : 4096, len = 0;
     u8 *buf = kmalloc(cap + 1);
     if (!buf) { file_put(f); return -ENOMEM; }

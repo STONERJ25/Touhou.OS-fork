@@ -15,6 +15,9 @@ typedef struct Pipe {
 
 void (*g_signal_self_hook)(int sig);
 
+static int g_npipes;                    /* pipes alive (statistics) */
+int pipes_alive(void) { return g_npipes; }
+
 static u32 pipe_count(Pipe *p) { return p->head - p->tail; }
 
 static ssize_t pipe_read(File *f, void *buf, size_t n) {
@@ -78,6 +81,7 @@ static void pipe_close(File *f) {
     bool dead = p->readers == 0 && p->writers == 0;
     wq_wake_all(&p->rd_wq);
     wq_wake_all(&p->wr_wq);
+    if (dead) g_npipes--;
     irq_restore(fl);
     if (dead) kfree(p);
 }
@@ -105,10 +109,18 @@ int vfs_pipe(File **rd, File **wr) {
     wq_init(&p->rd_wq);
     wq_init(&p->wr_wq);
     p->readers = p->writers = 1;
-    vnode_get(v);
+    vnode_get(v);                                           /* one reference per file */
     File *r = file_new(v, O_RDONLY, &pipe_fops, p);
-    File *w = file_new(v, O_WRONLY, &pipe_fops, p);
-    if (!r || !w) { /* leak-free enough for an out-of-memory path */ return -ENOMEM; }
+    File *w = r ? file_new(v, O_WRONLY, &pipe_fops, p) : NULL;
+    if (!r || !w) {                                         /* out of memory: give back what was made (the files' close would count readers) */
+        if (r) { r->fops = NULL; file_put(r); } else vnode_put(v);
+        vnode_put(v);
+        kfree(p);
+        return -ENOMEM;
+    }
+    u64 fl = irq_save();
+    g_npipes++;
+    irq_restore(fl);
     *rd = r;
     *wr = w;
     return 0;

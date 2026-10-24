@@ -395,7 +395,8 @@ def generate_applet_table(srcs):
 
 
 def build_user(nproc):
-    """Builds every program under user/bin (-> /bin) and user/sbin (-> /sbin). Returns [(install_dir, path)]."""
+    """Builds every program under user/bin (-> /bin), user/sbin (-> /sbin) and user/test (-> /usr/lib/kernel-tests, which is not
+    in anybody's PATH: the kernel's fuzzers and stress programs live there). Returns [(install_dir, path)]."""
     crt0, lib = build_libc(nproc)
     userlibs = build_userlibs(nproc)
     lib_inc = []
@@ -405,7 +406,7 @@ def build_user(nproc):
     outputs = []
     all_jobs = []
     progs = []
-    for kind in ("bin", "sbin"):
+    for kind in ("bin", "sbin", "test"):
         d = ROOT / "user" / kind
         if not d.exists():
             continue
@@ -455,7 +456,8 @@ def build_initrd(user_bins):
         if not sdst.exists() or sdst.stat().st_mtime < b.stat().st_mtime:
             sdst.parent.mkdir(parents=True, exist_ok=True)
             run([OBJCOPY, "--strip-all", str(b), str(sdst)], f"strip {b.name}")
-        items.append((f"{kind}/{b.name}", sdst))
+        arc = f"ScarletDevilMansion/lib/kernel-tests/{b.name}" if kind == "test" else f"{kind}/{b.name}"
+        items.append((arc, sdst))
     root = ROOT / "initrd"
     if root.exists():
         for p in sorted(root.rglob("*")):
@@ -475,7 +477,7 @@ def build_initrd(user_bins):
             ti.uid = ti.gid = 0
             ti.uname = ti.gname = ""
             ti.mtime = int(p.stat().st_mtime)
-            ti.mode = SPECIAL_MODES.get(arc, 0o755 if arc.startswith(("bin/", "sbin/")) else 0o644)
+            ti.mode = SPECIAL_MODES.get(arc, 0o755 if arc.startswith(("bin/", "sbin/", "ScarletDevilMansion/lib/kernel-tests/")) else 0o644)
             with open(p, "rb") as f:
                 tf.addfile(ti, f)
         for arc, target in links:

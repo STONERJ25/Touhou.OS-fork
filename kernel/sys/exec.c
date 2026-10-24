@@ -59,57 +59,71 @@ static int load_elf(File *f, AddrSpace *as, u64 *entry_out) {
     return 0;
 }
 
+/* Measures one vector: entries and bytes (NULs included). The callers (execve, the kernel itself) keep within the limits already; this
+ * checks again so that no size computed below can overflow, whoever calls. */
+static int measure_vector(char *const v[], int *count, size_t *bytes) {
+    *count = 0;
+    for (; v && v[*count]; (*count)++) {
+        size_t l = strlen(v[*count]) + 1;
+        if (*count >= EXEC_MAX_ARGS || l > EXEC_MAX_STRING || *bytes > EXEC_MAX_TOTAL - l) return -E2BIG;
+        *bytes += l;
+    }
+    return 0;
+}
+
+/* Lays the arguments out at the top of a fresh user stack, strings first (environment above the arguments), then the table
+ * argc, argv[], NULL, envp[], NULL, auxv below them. The pages the arguments need are populated before anything is written;
+ * the rest of the 8 MiB stack mapping is faulted in on demand. Nothing is staged in kernel memory: strings and pointers go
+ * straight to their places, so even 32768 arguments need no big temporary allocation. */
 static int build_stack(AddrSpace *as, char *const argv[], char *const envp[], u64 *sp_out, int *argc_out,
                        u64 *argv_out, u64 *envp_out) {
-    int rc = uvm_map(as, USER_STACK_TOP - USER_STACK_MAX, USER_STACK_MAX, PROT_READ | PROT_WRITE, VMA_STACK);
-    if (!rc) rc = uvm_populate(as, USER_STACK_TOP - USER_STACK_INIT, USER_STACK_INIT);
+    int argc, envc;
+    size_t bytes = 0;
+    int rc = measure_vector(argv, &argc, &bytes);
+    if (!rc) rc = measure_vector(envp, &envc, &bytes);
+    if (rc) return rc;
+    size_t words = 1 + (size_t)argc + 1 + (size_t)envc + 1 + 4;         /* argc, argv, NULL, envp, NULL, two auxv pairs */
+    size_t table = words * 8;
+    if (table > EXEC_MAX_TOTAL || bytes > EXEC_MAX_TOTAL - table) return -E2BIG;
+
+    u64 strings_low = USER_STACK_TOP - bytes;
+    u64 sp = ((strings_low & ~0xFUL) - table) & ~0xFUL;
+    u64 used = USER_STACK_TOP - sp;
+    u64 populate = MAX((u64)USER_STACK_INIT, ALIGN_UP(used, PAGE_SIZE) + PAGE_SIZE);    /* what the arguments need, plus a page for the program */
+    if (populate > USER_STACK_MAX / 2) return -E2BIG;
+    rc = uvm_map(as, USER_STACK_TOP - USER_STACK_MAX, USER_STACK_MAX, PROT_READ | PROT_WRITE, VMA_STACK);
+    if (!rc) rc = uvm_populate(as, USER_STACK_TOP - populate, populate);
     if (rc) return rc;
 
-    int argc = 0, envc = 0;
-    size_t bytes = 0;
-    while (argv && argv[argc]) bytes += strlen(argv[argc++]) + 1;
-    while (envp && envp[envc]) bytes += strlen(envp[envc++]) + 1;
-    if (bytes > USER_STACK_INIT / 2) return -E2BIG;
-
-    u64 *ptrs = kmalloc((size_t)(argc + envc + 2) * sizeof(u64));
-    if (!ptrs) return -ENOMEM;
-    u64 sp = USER_STACK_TOP;
-    for (int i = envc - 1; i >= 0; i--) {
+    u64 argv_slots = sp + 8;
+    u64 envp_slots = argv_slots + (u64)(argc + 1) * 8;
+    u64 p = USER_STACK_TOP;
+    for (int i = envc - 1; i >= 0 && !rc; i--) {
         size_t len = strlen(envp[i]) + 1;
-        sp -= len;
-        uvm_write(as, sp, envp[i], len);
-        ptrs[argc + 1 + i] = sp;
+        p -= len;
+        rc = uvm_write(as, p, envp[i], len);
+        if (!rc) rc = uvm_write(as, envp_slots + (u64)i * 8, &p, sizeof p);
     }
-    for (int i = argc - 1; i >= 0; i--) {
+    for (int i = argc - 1; i >= 0 && !rc; i--) {
         size_t len = strlen(argv[i]) + 1;
-        sp -= len;
-        uvm_write(as, sp, argv[i], len);
-        ptrs[i] = sp;
+        p -= len;
+        rc = uvm_write(as, p, argv[i], len);
+        if (!rc) rc = uvm_write(as, argv_slots + (u64)i * 8, &p, sizeof p);
     }
-    sp &= ~0xFUL;
+    if (rc) return rc;
 
-    size_t words = 1 + (size_t)argc + 1 + (size_t)envc + 1 + 4;
-    sp = (sp - words * 8) & ~0xFUL;
-    u64 *img = kzalloc(words * 8);
-    if (!img) { kfree(ptrs); return -ENOMEM; }
-    size_t w = 0;
-    img[w++] = (u64)argc;
-    for (int i = 0; i < argc; i++) img[w++] = ptrs[i];
-    img[w++] = 0;
-    for (int i = 0; i < envc; i++) img[w++] = ptrs[argc + 1 + i];
-    img[w++] = 0;
-    img[w++] = AT_PAGESZ;
-    img[w++] = PAGE_SIZE;
-    img[w++] = AT_NULL;
-    img[w++] = 0;
-    rc = uvm_write(as, sp, img, words * 8);
-    kfree(img);
-    kfree(ptrs);
+    u64 argc64 = (u64)argc, zero = 0;
+    rc = uvm_write(as, sp, &argc64, sizeof argc64);
+    if (!rc) rc = uvm_write(as, argv_slots + (u64)argc * 8, &zero, sizeof zero);
+    u64 tail = envp_slots + (u64)envc * 8;
+    const u64 closing[5] = { 0, AT_PAGESZ, PAGE_SIZE, AT_NULL, 0 };   /* the NULL ending envp, then the auxiliary vector */
+    if (!rc) rc = uvm_write(as, tail, closing, sizeof closing);
+    if (rc) return rc;
     *sp_out = sp;
     *argc_out = argc;
-    *argv_out = sp + 8;
-    *envp_out = sp + 8 + (u64)(argc + 1) * 8;
-    return rc;
+    *argv_out = argv_slots;
+    *envp_out = envp_slots;
+    return 0;
 }
 
 static const char *base_name(const char *path) {
@@ -117,9 +131,9 @@ static const char *base_name(const char *path) {
     return s ? s + 1 : path;
 }
 
-static int exec_depth;
+#define EXEC_SCRIPT_DEPTH 3                     /* #! chains followed before giving up with ELOOP */
 
-int process_exec(Process *p, const char *path, char *const argv[], char *const envp[], TrapFrame *tf) {
+static int exec_file(Process *p, const char *path, char *const argv[], char *const envp[], TrapFrame *tf, int depth) {
     File *f;
     int rc = vfs_open(path, O_RDONLY, 0, &p->cred, p->cwd, &f);
     if (rc) return rc;
@@ -131,7 +145,7 @@ int process_exec(Process *p, const char *path, char *const argv[], char *const e
     ssize_t n = (f->off = 0, vfs_read(f, head, sizeof head - 1));
     if (n >= 4 && head[0] == '#' && head[1] == '!') {
         /* Script: re-run with the interpreter. */
-        if (exec_depth >= 3) { file_put(f); return -ELOOP; }
+        if (depth >= EXEC_SCRIPT_DEPTH) { file_put(f); return -ELOOP; }
         file_put(f);
         char *line = head + 2;
         char *nl = strchr(line, '\n');
@@ -140,7 +154,9 @@ int process_exec(Process *p, const char *path, char *const argv[], char *const e
         char *arg = strchr(line, ' ');
         if (arg) { *arg++ = 0; while (*arg == ' ') arg++; if (!*arg) arg = NULL; }
         int argc = 0;
-        while (argv && argv[argc]) argc++;
+        while (argv && argv[argc]) {
+            if (++argc > EXEC_MAX_ARGS) return -E2BIG;
+        }
         char **nargv = kmalloc((size_t)(argc + 4) * sizeof(char *));
         if (!nargv) return -ENOMEM;
         int k = 0;
@@ -149,9 +165,7 @@ int process_exec(Process *p, const char *path, char *const argv[], char *const e
         nargv[k++] = (char *)path;
         for (int i = 1; i < argc; i++) nargv[k++] = argv[i];
         nargv[k] = NULL;
-        exec_depth++;
-        rc = process_exec(p, line, nargv, envp, tf);
-        exec_depth--;
+        rc = exec_file(p, line, nargv, envp, tf, depth + 1);
         kfree(nargv);
         return rc;
     }
@@ -169,7 +183,7 @@ int process_exec(Process *p, const char *path, char *const argv[], char *const e
 
     /* The other threads of the process die first, and we wait until each has left the kernel: a thread asleep in read() holds
      * references and buffers that its syscall frees on the way out, and none may still touch the old address space. */
-    if (!thread_kill_others(p)) { uvm_destroy(&nas); thread_leave(); }
+    if (!thread_kill_others(p)) { uvm_destroy(&nas); return EXEC_THREAD_LEAVES; }
 
     /* Point of no return: swap address spaces. */
     if (fmode & S_ISUID) p->cred.uid = fuid;                          /* the effective id becomes the file's owner; the real one stays */
@@ -192,9 +206,10 @@ int process_exec(Process *p, const char *path, char *const argv[], char *const e
     strlcpy(p->name, base_name(argv && argv[0] ? argv[0] : path), sizeof p->name);
     path_normalize(p->cwd_path, path, p->exe, sizeof p->exe);              /* /proc/<pid>/exe */
     p->cmdline[0] = 0;
-    for (int i = 0; argv && argv[i]; i++) {
-        if (i) strlcat(p->cmdline, " ", sizeof p->cmdline);
-        strlcat(p->cmdline, argv[i], sizeof p->cmdline);
+    size_t cl = 0;
+    for (int i = 0; argv && argv[i] && cl < sizeof p->cmdline - 1; i++) {      /* /proc shows the first 127 bytes; stop reading once they are there */
+        if (i) cl = strlcat(p->cmdline, " ", sizeof p->cmdline);
+        cl = strlcat(p->cmdline, argv[i], sizeof p->cmdline);
     }
     strlcpy(current->name, p->name, sizeof current->name);
 
@@ -208,4 +223,8 @@ int process_exec(Process *p, const char *path, char *const argv[], char *const e
     tf->rsi = argv_u;
     tf->rdx = envp_u;
     return 0;
+}
+
+int process_exec(Process *p, const char *path, char *const argv[], char *const envp[], TrapFrame *tf) {
+    return exec_file(p, path, argv, envp, tf, 0);
 }

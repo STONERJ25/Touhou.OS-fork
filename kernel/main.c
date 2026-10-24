@@ -51,8 +51,23 @@ static void print_banner(void) {
     printk("\x1b[6;1H");
 }
 
+/* crash=desktop: a panic while the window server owns the screen (init can no longer be killed by a signal, so the test that
+ * checks the panic is drawn over the desktop needs another way). Waits for the window server to take the screen, then gives
+ * the desktop time to paint its first frames. */
+static void crash_on_desktop(void *arg) {
+    (void)arg;
+    while (fbcon_enabled()) task_sleep_ms(100);
+    klog("Eiki", "crash=desktop: the window server has the screen; the verdict falls in 20 seconds");
+    task_sleep_ms(20000);
+    panic("requested panic while the window server owns the screen (crash=desktop)");
+}
+
 static void crash_test(const char *kind) {
     klog("Eiki", "deliberate crash requested: %s", kind);
+    if (!strcmp(kind, "desktop")) {
+        task_create_detached("crash-desktop", crash_on_desktop, NULL);
+        return;
+    }
     if (!strcmp(kind, "div0")) {
         volatile int num = 100, den = 0;        /* both volatile: "1 / x" would be folded without trapping */
         volatile int q = num / den;
@@ -105,6 +120,7 @@ NORETURN void kmain(BootInfo *bi) {
     cmdline_init(bi->cmdline);
     char hold[8];
     if (cmdline_value("stagehold", hold, sizeof hold)) for (const char *q = hold; *q >= '0' && *q <= '9'; q++) g_stagehold = g_stagehold * 10 + (*q - '0');
+    heap_init_debug();                  /* "heapdebug": before the first allocation, so every object is poisoned or none */
     stage(4);
 
     cpu_init();

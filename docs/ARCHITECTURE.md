@@ -21,6 +21,7 @@
 | FAT32, mount policy, disk images, `df` | [STORAGE.md](STORAGE.md) |
 | SATA and NVMe | [BLOCKDEVICES.md](BLOCKDEVICES.md) |
 | USB (xHCI, hubs, HID) | [USB.md](USB.md) |
+| Kernel hardening: the system call fuzzer, exec limits, warnings and statistics, what was found | [HARDENING.md](HARDENING.md) |
 | Editor, pager, manual pages, shrine applets | [TOOLS.md](TOOLS.md) |
 | Booting a real PC from a stick | [REAL_HARDWARE.md](REAL_HARDWARE.md), [HARDWARE_AUDIT.md](HARDWARE_AUDIT.md) |
 | Theming rules | [THEMING.md](THEMING.md) |

@@ -68,44 +68,77 @@ static long sys_umask(TrapFrame *tf) {
     return old;
 }
 
+/* A copy of a user's argv or envp: each string allocated at its real length, the pointer array NULL-terminated. */
+typedef struct ExecVec {
+    char **v;
+    int n, cap;
+} ExecVec;
+
+static void execvec_free(ExecVec *e) {
+    for (int i = 0; i < e->n; i++) kfree(e->v[i]);
+    kfree(e->v);
+    e->v = NULL;
+    e->n = e->cap = 0;
+}
+
+/* Copies the NULL-terminated vector of strings at uvec (0 = empty). `strings` and `nptrs` run across both vectors: together with
+ * the pointers and a fixed overhead they must stay within EXEC_MAX_TOTAL, one string within EXEC_MAX_STRING, one vector within
+ * EXEC_MAX_ARGS entries (-E2BIG). All sizes are bounded before they are added, so nothing here can overflow. */
+static long execvec_copy(ExecVec *e, u64 uvec, size_t *strings, size_t *nptrs) {
+    e->v = NULL;
+    e->n = e->cap = 0;
+    for (;;) {
+        if (e->n + 1 >= e->cap) {                       /* room for this entry and the closing NULL */
+            int ncap = e->cap ? e->cap * 2 : 32;
+            if (ncap > EXEC_MAX_ARGS + 1) ncap = EXEC_MAX_ARGS + 1;
+            char **nv = krealloc(e->v, (size_t)ncap * sizeof(char *));
+            if (!nv) return -ENOMEM;
+            e->v = nv;
+            e->cap = ncap;
+        }
+        e->v[e->n] = NULL;
+        if (!uvec) return 0;
+        u64 sp;
+        if (copy_from_user(&sp, (const u64 *)uvec + e->n, sizeof sp)) return -EFAULT;
+        if (!sp) return 0;
+        if (e->n >= EXEC_MAX_ARGS) return -E2BIG;
+        size_t used = exec_footprint(*strings, *nptrs + 1);          /* this entry's pointer counted, its string not yet */
+        if (used >= EXEC_MAX_TOTAL) return -E2BIG;
+        size_t room = MIN((size_t)EXEC_MAX_STRING, EXEC_MAX_TOTAL - used);     /* bytes the string may take, NUL included */
+        long len = strnlen_user((const char *)sp, room);
+        if (len == -ENAMETOOLONG) return -E2BIG;
+        if (len < 0) return len;
+        char *s = kmalloc((size_t)len + 1);
+        if (!s) return -ENOMEM;
+        if (copy_from_user(s, (const void *)sp, (size_t)len)) { kfree(s); return -EFAULT; }
+        s[len] = 0;                                     /* the string may have changed since it was measured: stop where we decided */
+        e->v[e->n++] = s;
+        e->v[e->n] = NULL;
+        *strings += (size_t)len + 1;
+        *nptrs += 1;
+    }
+}
+
 static long sys_execve(TrapFrame *tf) {
     char *path = kmalloc(PATH_MAX);
     if (!path) return -ENOMEM;
     long rc = get_path(A0(tf), path);
-    char **kargv = NULL, **kenvp = NULL;
-    int argc = 0, envc = 0;
-    size_t total = 0;
+    ExecVec argv = { 0 }, envp = { 0 };
+    size_t strings = 0, nptrs = 0;
 
-    for (int pass = 0; !rc && pass < 2; pass++) {
-        const u64 *uvec = (const u64 *)(pass ? A2(tf) : A1(tf));
-        int cnt = 0;
-        char **vec = kzalloc(sizeof(char *) * 257);
-        if (!vec) { rc = -ENOMEM; break; }
-        for (; uvec; cnt++) {
-            u64 sp;
-            if (cnt >= 256) { rc = -E2BIG; break; }
-            if (copy_from_user(&sp, uvec + cnt, sizeof sp)) { rc = -EFAULT; break; }
-            if (!sp) break;
-            vec[cnt] = kmalloc(1024);
-            if (!vec[cnt]) { rc = -ENOMEM; break; }
-            int n = strncpy_from_user(vec[cnt], (const char *)sp, 1024);
-            if (n < 0) { rc = n == -ENAMETOOLONG ? -E2BIG : n; cnt++; break; }
-            total += (size_t)n + 1;
-            if (total > 128 * 1024) { rc = -E2BIG; cnt++; break; }
-        }
-        if (pass) { kenvp = vec; envc = cnt; } else { kargv = vec; argc = cnt; }
-    }
+    if (!rc) rc = execvec_copy(&argv, A1(tf), &strings, &nptrs);
+    if (!rc) rc = execvec_copy(&envp, A2(tf), &strings, &nptrs);
+    if (!rc && exec_footprint(strings, nptrs) > EXEC_MAX_TOTAL) rc = -E2BIG;
 
     if (!rc) {
         TrapFrame ntf;
-        rc = process_exec(me(), path, kargv, kenvp, &ntf);
+        rc = process_exec(me(), path, argv.v, envp.v, &ntf);
         if (rc == 0) *tf = ntf;
     }
-    for (int i = 0; kargv && i < 257 && (i < argc || kargv[i]); i++) kfree(kargv[i]);
-    for (int i = 0; kenvp && i < 257 && (i < envc || kenvp[i]); i++) kfree(kenvp[i]);
-    kfree(kargv);
-    kfree(kenvp);
+    execvec_free(&argv);
+    execvec_free(&envp);
     kfree(path);
+    if (rc == EXEC_THREAD_LEAVES) thread_leave();                /* another thread is ending the process; nothing we hold is left */
     return rc == 0 ? 0 : rc;
 }
 
@@ -119,25 +152,35 @@ static long sys_waitpid(TrapFrame *tf) {
 static long sys_kill(TrapFrame *tf) {
     long pid = (long)A0(tf);
     int sig = (int)A1(tf);
-    if (sig < 0 || sig >= NSIG || sig == SIGCANCEL) return -EINVAL;      /* SIGCANCEL is thread-directed only (tgkill) */
+    if (A1(tf) >= NSIG || sig < 0 || sig >= NSIG || sig == SIGCANCEL) return -EINVAL;      /* SIGCANCEL is thread-directed only (tgkill) */
     Process *self = me();
     if (pid > 0) {
+        if (pid > 0x7fffffffL) return -ESRCH;                           /* not a pid: do not let it wrap around to one (kill(2^32 + 1) was init) */
         Process *t = process_by_pid((int)pid);
         if (!t || t->state == PROC_ZOMBIE) return -ESRCH;
-        if (self->cred.uid != 0 && self->cred.uid != t->cred.uid) return -EPERM;
+        if (!signal_permitted(self, t)) return -EPERM;
         if (sig) signal_send(t, sig);
         return 0;
     }
+    if (pid == -1) {                                                    /* everybody the caller may signal (init and the caller excepted) */
+        int r = signal_group_from(self, 0, sig, true);
+        return r < 0 ? r : 0;
+    }
+    if (pid < -0x7fffffffL) return -ESRCH;
     int pg = pid == 0 ? self->pgid : (int)-pid;
-    if (sig) signal_pgrp(pg, sig);
-    return 0;
+    int r = signal_group_from(self, pg, sig, false);
+    return r < 0 ? r : 0;
 }
 
 static long sys_setpgid(TrapFrame *tf) {
+    if ((s64)A0(tf) < 0 || A0(tf) > 0x7fffffffUL || (s64)A1(tf) < 0 || A1(tf) > 0x7fffffffUL) return -EINVAL;
     int pid = (int)A0(tf), pg = (int)A1(tf);
     Process *t = pid ? process_by_pid(pid) : me();
-    if (!t) return -ESRCH;
+    if (!t || t->state == PROC_ZOMBIE) return -ESRCH;
     if (t != me() && t->ppid != me()->pid) return -EPERM;
+    if (t->sid == t->pid) return -EPERM;                                /* a session leader keeps its group */
+    if (t->sid != me()->sid) return -EPERM;
+    if (pg && pg != t->pid && !pgrp_in_session(pg, t->sid)) return -EPERM;     /* only a group of the same session may be joined */
     int old_pgid = t->pgid;
     t->pgid = pg ? pg : t->pid;
     if (old_pgid != t->pgid) pgrp_check_orphaned(old_pgid);        /* leaving may have orphaned the old group (job control) */
@@ -145,6 +188,7 @@ static long sys_setpgid(TrapFrame *tf) {
 }
 
 static long sys_getpgid(TrapFrame *tf) {
+    if (A0(tf) > 0x7fffffffUL) return -ESRCH;
     Process *t = A0(tf) ? process_by_pid((int)A0(tf)) : me();
     return t ? t->pgid : -ESRCH;
 }
@@ -158,10 +202,8 @@ static long sys_setsid(TrapFrame *tf) {
     return me()->sid;
 }
 
-static long sys_tcsetpgrp(TrapFrame *tf) {
-    tty_console()->fg_pgid = (int)A0(tf);   /* legacy: libgap now uses ioctl(TIOCSPGRP) on the descriptor */
-    pgrp_terminal_granted(tty_console()->fg_pgid);
-    return 0;
+static long sys_tcsetpgrp(TrapFrame *tf) {                              /* legacy: libgap uses ioctl(TIOCSPGRP) on the descriptor, which has the checks */
+    return -ENOSYS;
 }
 
 static long sys_yield(TrapFrame *tf) { (void)tf; task_yield(); return 0; }
@@ -181,11 +223,9 @@ static long sys_pause(TrapFrame *tf) {
 }
 
 static long sys_nanosleep(TrapFrame *tf) {
-    struct gtimespec ts;
-    if (copy_from_user(&ts, (void *)A0(tf), sizeof ts)) return -EFAULT;
-    if (ts.tv_sec < 0 || ts.tv_nsec < 0 || ts.tv_nsec >= 1000000000) return -EINVAL;
-    u64 ms = (u64)ts.tv_sec * 1000 + (u64)ts.tv_nsec / 1000000 + ((ts.tv_nsec % 1000000) ? 1 : 0);
-    u64 end = uptime_ms() + ms;
+    u64 end;
+    long rc = deadline_from_timespec((void *)A0(tf), &end);
+    if (rc) return rc;
     u64 f = irq_save();
     while (uptime_ms() < end) {
         if (signal_pending_now(me())) { irq_restore(f); return -EINTR; }
@@ -565,7 +605,8 @@ static long sys_poll(TrapFrame *tf) {
     struct gpollfd pfd[64];
     if (copy_from_user(pfd, (void *)A0(tf), nfds * sizeof(struct gpollfd))) return -EFAULT;
     long timeout = (long)A2(tf);
-    u64 deadline = timeout < 0 ? ~0ULL : uptime_ms() + (u64)timeout;
+    u64 nowms = uptime_ms();
+    u64 deadline = timeout < 0 || (u64)timeout >= ~0ULL - nowms ? ~0ULL : nowms + (u64)timeout;
     for (;;) {
         int ready = 0;
         for (u64 i = 0; i < nfds; i++) {
@@ -797,6 +838,7 @@ static long sys_sigaction(TrapFrame *tf) {
     if (A1(tf)) {
         struct gsigaction a;
         if (copy_from_user(&a, (void *)A1(tf), sizeof a)) return -EFAULT;
+        if ((a.handler > SIG_IGN && a.handler >= USER_TOP) || a.restorer >= USER_TOP) return -EINVAL;     /* returning to such an address would fault in the kernel */
         p->sigact[sig] = a;
         if (a.handler == SIG_IGN) p->sig_pending &= ~(1U << sig);
     }

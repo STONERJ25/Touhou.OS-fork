@@ -38,6 +38,9 @@ static inline bool cred_in_group(const Cred *c, u32 gid) {
 typedef struct DirEntry {
     u64 ino;
     u32 type;               /* DT_* */
+    u64 next;               /* cookie that continues after this entry; 0 = the caller's cookie + 1. A filesystem whose entries can disappear
+                               between two calls hands out cookies that stay valid (tmpfs: the entry's sequence number), so that
+                               removing the files just listed does not make the listing skip the ones behind them. */
     char name[GNAME_MAX + 1];
 } DirEntry;
 
@@ -54,6 +57,8 @@ struct VNode {
     Mount *mount;
     void *priv;
     VNode *mounted;         /* root of the filesystem mounted on this directory, if any */
+    VNode *dbg_next, *dbg_prev;     /* the ledger of live vnodes (/proc/vnodes): where each one was made, for finding leaks */
+    u64 alloc_ip[4];
 };
 
 struct VNodeOps {
@@ -75,7 +80,7 @@ struct VNodeOps {
     int     (*unlink)(VNode *dir, const char *name);                 /* files and symlinks */
     int     (*rmdir)(VNode *dir, const char *name);
     int     (*rename)(VNode *olddir, const char *oldname, VNode *newdir, const char *newname);
-    int     (*readdir)(VNode *dir, u64 cookie, DirEntry *out);       /* 1 = entry filled, 0 = end; cookie = entry index */
+    int     (*readdir)(VNode *dir, u64 cookie, DirEntry *out);       /* 1 = entry filled, 0 = end; cookie 0 = the first entry, then out->next */
     ssize_t (*readlink)(VNode *v, char *buf, size_t n);
     int     (*chmod)(VNode *v, u32 mode);
     int     (*chown)(VNode *v, u32 uid, u32 gid);
@@ -126,6 +131,8 @@ struct File {
 };
 
 /* ---- vnodes and open files ---- */
+u64    vfs_vnode_count(void);                                           /* live objects, for /proc/kstats */
+u64    vfs_file_count(void);
 VNode *vnode_alloc(const VNodeOps *ops, Mount *m, u32 mode);       /* refs = 1, nlink = 1 */
 void   vnode_get(VNode *v);
 void   vnode_put(VNode *v);

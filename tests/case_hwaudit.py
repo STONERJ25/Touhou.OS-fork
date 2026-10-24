@@ -339,27 +339,22 @@ def hwaudit_loader_ladder():
 
 @test
 def hwaudit_panic_on_desktop():
-    """A kernel panic while the desktop owns the screen is drawn: killing init as root stops the compositor's picture and shows the incident text (red) on the console."""
-    with Qemu(cmdline="autologin=root", name="t-hw-panic-desktop", mem="768M") as vm:
+    """A kernel panic while the desktop owns the screen is drawn: a panic 20 s after the window server took the screen (crash=desktop) stops the compositor's picture and shows the incident text (red) on the console."""
+    # This test used to type "kill -9 1" as root; since the hardening merge init drops every signal it has no handler for
+    # (docs/HARDENING.md), so the kernel panics on its own after the window server took the screen.
+    with Qemu(cmdline="autologin=root crash=desktop", name="t-hw-panic-desktop", mem="768M") as vm:
         vm.expect(r"opening the desktop for", timeout=120)
         deadline = time.time() + scaled(40)
         while time.time() < deadline:                                       # the panel's start button is shrine red once the desktop is up
             shot = vm.screen_ppm()
             if all(abs(a - b) <= 60 for a, b in zip(vm.pixel(118, 756, shot), (0xB5, 0x12, 0x2B))):
                 break
+            assert "KERNEL PANIC" not in vm.text(), "the panic came before the desktop was drawn:\n" + vm.text()[-600:]
             time.sleep(0.5)
         else:
             raise AssertionError("the desktop never came up:\n" + vm.text()[-600:])
-        for _ in range(3):                                                  # the terminal may need a second try on a busy host
-            vm.key("t", ctrl=True, alt=True)
-            time.sleep(4)
-            vm.type("kill -9 1\n")
-            try:
-                vm.expect(r"KERNEL PANIC", timeout=25)
-                break
-            except Exception:                                               # noqa: BLE001
-                continue
-        vm.expect(r"the shrine has no maiden", timeout=30)
+        vm.expect(r"KERNEL PANIC", timeout=120)
+        vm.expect(r"window server owns the screen \(crash=desktop\)", timeout=30)
         time.sleep(1.5)
         shot = vm.screen_ppm()
         w, h = 1024, 768

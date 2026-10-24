@@ -96,8 +96,19 @@ Process *process_by_pid(int pid);
 int      process_spawn_init(const char *path, char *const argv[]);      /* kernel: start PID 1 */
 NORETURN void process_exit(int status);                                  /* status is a wait() word */
 int      process_fork(TrapFrame *tf);                                    /* child pid or -errno */
+/* Returns 0 (tf holds the new user state), -errno, or EXEC_THREAD_LEAVES: another thread is tearing the process down (exit_group
+ * or its own execve) and the caller must free what it holds and then call thread_leave(). */
+#define EXEC_THREAD_LEAVES 1
 int      process_exec(Process *p, const char *path, char *const argv[], char *const envp[], TrapFrame *tf);
 long     process_wait(int pid, int *status, int options);
+
+/* execve limits (docs/HARDENING.md): entries per vector, bytes per string (the NUL included), and the whole argument block, which
+ * counts the strings and a pointer for each of them, as on Linux. Anything above fails with E2BIG. */
+#define EXEC_MAX_ARGS   32768
+#define EXEC_MAX_STRING (128 * 1024)
+#define EXEC_MAX_TOTAL  (512 * 1024)
+#define EXEC_FIXED      64                                                  /* argc, the two terminating NULLs, the auxiliary vector */
+static inline size_t exec_footprint(size_t string_bytes, size_t nptrs) { return string_bytes + nptrs * sizeof(char *) + EXEC_FIXED; }
 void     process_for_each(void (*fn)(Process *p, void *ctx), void *ctx);
 int      process_count(void);
 
@@ -126,6 +137,8 @@ bool user_range_ok(const void *p, size_t n);
 int  copy_from_user(void *dst, const void *src, size_t n);
 int  copy_to_user(void *dst, const void *src, size_t n);
 int  strncpy_from_user(char *dst, const char *src, size_t max);        /* length, or -EFAULT / -ENAMETOOLONG */
+long deadline_from_timespec(const void *uts, u64 *deadline);          /* user struct gtimespec (relative) -> uptime_ms() deadline, ~0 = never; -EFAULT, -EINVAL */
+long strnlen_user(const char *s, size_t max);                           /* length (NUL not counted) if the NUL is within the first max bytes, else -ENAMETOOLONG; -EFAULT */
 int  clear_user(void *dst, size_t n);
 
 /* threads (kernel/sys/thread.c) */
@@ -154,7 +167,10 @@ int  tty_job_check(struct Tty *t, int kind);                            /* kerne
 void signal_send(Process *p, int sig);                                  /* process-directed: any thread that does not block it */
 void signal_send_thread(Task *t, int sig);                              /* thread-directed (tgkill, raise) */
 void signal_force(Process *p, int sig);                                 /* synchronous faults: cannot be ignored or blocked */
-void signal_pgrp(int pgid, int sig);
+void signal_pgrp(int pgid, int sig);                                    /* no permission checks: for the kernel's own use (the terminal's ^C) */
+bool signal_permitted(const Process *from, const Process *to);
+int  signal_group_from(const Process *from, int pgid, int sig, bool everyone);   /* kill(-pgid) / kill(-1) for a user */
+bool pgrp_in_session(int pgid, int sid);                                /* some live process of the group belongs to the session */
 void signal_deliver(TrapFrame *tf);                                     /* on the way back to user mode */
 bool signal_pending_now(Process *p);                                    /* the calling thread has a deliverable signal (or must die) */
 bool signal_cancel_pending(Task *t);                                    /* pthread_cancel is waiting for this thread to reach a cancellation point */

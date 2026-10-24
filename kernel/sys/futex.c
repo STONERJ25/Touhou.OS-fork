@@ -47,6 +47,7 @@ static int futex_key(u64 uaddr, bool populate, u64 *key) {
         pa = vmm_translate(p->as.pml4, uaddr, NULL);
         if (!pa) return -EFAULT;
     }
+    if (!pmm_page_managed(pa)) return -EFAULT;           /* a mapped device (the framebuffer, a BAR) is not in the direct map: the kernel could not read it */
     *key = pa;
     return 1;
 }
@@ -125,11 +126,8 @@ static long futex_wait(u64 uaddr, u32 val, u64 utimeout) {
     if (rc < 0) return rc;
     u64 deadline = ~0ULL;
     if (utimeout) {
-        struct gtimespec ts;
-        if (copy_from_user(&ts, (void *)utimeout, sizeof ts)) return -EFAULT;
-        if (ts.tv_sec < 0 || ts.tv_nsec < 0 || ts.tv_nsec >= 1000000000) return -EINVAL;
-        u64 ms = (u64)ts.tv_sec * 1000 + (u64)ts.tv_nsec / 1000000 + ((ts.tv_nsec % 1000000) ? 1 : 0);
-        deadline = uptime_ms() + ms;
+        long rc2 = deadline_from_timespec((void *)utimeout, &deadline);
+        if (rc2) return rc2;
     }
     return futex_wait_key(key, val, deadline);
 }
