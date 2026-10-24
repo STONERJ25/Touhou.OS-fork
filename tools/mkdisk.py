@@ -400,8 +400,9 @@ class FatBuilder:
         self.nfats = nfats
         self.total = win.length // bps
         cb = max(cluster_bytes or default_cluster_bytes(win.length), bps)
-        if bits == 16:
-            while self.total * bps // cb > 65524 and cb < 65536:
+        if bits in (12, 16):
+            limit = 4084 if bits == 12 else 65524
+            while self.total * bps // cb > limit and cb < 65536:
                 cb *= 2
             self.reserved = reserved or 1
             self.root_entries = root_entries
@@ -419,8 +420,8 @@ class FatBuilder:
         if bits == 32 and itemsize != 4:
             raise MkdiskError("unsupported platform: unsigned int is not 32 bits")
         self.fat = array("I" if bits == 32 else "H", [0]) * (self.nclusters + 2)
-        self.eoc = 0x0FFFFFFF if bits == 32 else 0xFFFF
-        self.fat[0] = (0x0FFFFF00 if bits == 32 else 0xFF00) | 0xF8
+        self.eoc = 0x0FFFFFFF if bits == 32 else 0xFFFF if bits == 16 else 0xFFF
+        self.fat[0] = (0x0FFFFF00 if bits == 32 else 0xFF00 if bits == 16 else 0xF00) | 0xF8
         self.fat[1] = self.eoc
         self.next_free = 2
         self.root = DirNode("", None, ts)
@@ -428,11 +429,11 @@ class FatBuilder:
 
     def _geometry(self):
         bps, total, spc, nfats = self.bps, self.total, self.spc, self.nfats
-        per_sector = bps // (4 if self.bits == 32 else 2)
         fatsz = 1
         while True:
             clusters = (total - self.reserved - nfats * fatsz - self.root_sectors) // spc
-            if clusters + 2 <= fatsz * per_sector:
+            need = ((clusters + 2) * 3 + 1) // 2 if self.bits == 12 else (clusters + 2) * (4 if self.bits == 32 else 2)
+            if need <= fatsz * bps:
                 break
             fatsz += 1
         self.fatsz = fatsz
@@ -445,6 +446,8 @@ class FatBuilder:
             raise MkdiskError("too many clusters for FAT32; use a larger cluster size")
         if self.bits == 16 and not (4085 <= self.nclusters <= 65524):
             raise MkdiskError(f"FAT16 needs 4085..65524 clusters, this volume would have {self.nclusters}")
+        if self.bits == 12 and not (1 <= self.nclusters <= 4084):
+            raise MkdiskError(f"FAT12 needs 1..4084 clusters, this volume would have {self.nclusters}")
 
     def _alloc(self, n):
         if self.next_free + n > self.nclusters + 2:
@@ -518,9 +521,9 @@ class FatBuilder:
             taken.add(sfn)
             d.prepared.append((name, kind, payload, sfn, ntres, lfn))
             nslots += 1 + (lfn_slot_count(name) if lfn else 0)
-        if is_root and self.bits == 16:
+        if is_root and self.bits != 32:
             if nslots > self.root_entries:
-                raise MkdiskError(f"FAT16 root directory is full ({nslots} > {self.root_entries} entries)")
+                raise MkdiskError(f"FAT{self.bits} root directory is full ({nslots} > {self.root_entries} entries)")
         else:
             clusters = max(1, (nslots * 32 + self.cluster_bytes - 1) // self.cluster_bytes)
             d.first_cluster = self._alloc(clusters)
@@ -573,7 +576,7 @@ class FatBuilder:
 
     def _write_dir(self, d, is_root):
         data = self._serialize(d, is_root)
-        if is_root and self.bits == 16:
+        if is_root and self.bits != 32:
             self.win.write((self.reserved + self.nfats * self.fatsz) * self.bps, bytes(data.ljust(self.root_entries * 32, b"\0")))
         else:
             self.win.write(self.cluster_offset(d.first_cluster), bytes(data))
@@ -592,18 +595,18 @@ class FatBuilder:
 
     def _boot_sector(self):
         b = bytearray(self.bps)
-        total16 = self.total if self.total < 65536 and self.bits == 16 else 0
+        total16 = self.total if self.total < 65536 and self.bits != 32 else 0
         total32 = self.total if total16 == 0 else 0
         b[0:3] = b"\xeb\x58\x90" if self.bits == 32 else b"\xeb\x3c\x90"
         b[3:11] = b"TOUHOUOS"
         struct.pack_into("<HBHBHHBHHHII", b, 11, self.bps, self.spc, self.reserved, self.nfats, self.root_entries, total16,
-                         0xF8, self.fatsz if self.bits == 16 else 0, 63, 255, self.hidden & 0xFFFFFFFF, total32)
+                         0xF8, self.fatsz if self.bits != 32 else 0, 63, 255, self.hidden & 0xFFFFFFFF, total32)
         label = self.label.ljust(11).encode("ascii", "replace")
         if self.bits == 32:
             struct.pack_into("<IHHIHH", b, 36, self.fatsz, 0, 0, self.root_cluster, 1, 6)
             struct.pack_into("<BBBI11s8s", b, 64, 0x80, 0, 0x29, self.volume_id, label, b"FAT32   ")
         else:
-            struct.pack_into("<BBBI11s8s", b, 36, 0x80, 0, 0x29, self.volume_id, label, b"FAT16   ")
+            struct.pack_into("<BBBI11s8s", b, 36, 0x80, 0, 0x29, self.volume_id, label, b"FAT12   " if self.bits == 12 else b"FAT16   ")
         b[510:512] = b"\x55\xaa"
         return bytes(b)
 
@@ -624,7 +627,19 @@ class FatBuilder:
             w.write(1 * bps, fsinfo)
             w.write(6 * bps, boot)
             w.write(7 * bps, fsinfo)
-        fat_bytes = self.fat.tobytes().ljust(self.fatsz * bps, b"\0")
+        if self.bits == 12:
+            raw = bytearray(((len(self.fat) * 3) + 1) // 2 + 1)
+            for c, v in enumerate(self.fat):
+                o = c + c // 2
+                if c & 1:
+                    raw[o] = (raw[o] & 0x0F) | ((v & 0xF) << 4)
+                    raw[o + 1] = v >> 4
+                else:
+                    raw[o] = v & 0xFF
+                    raw[o + 1] = (raw[o + 1] & 0xF0) | (v >> 8)
+            fat_bytes = bytes(raw).ljust(self.fatsz * bps, b"\0")[:self.fatsz * bps]
+        else:
+            fat_bytes = self.fat.tobytes().ljust(self.fatsz * bps, b"\0")
         for i in range(self.nfats):
             w.write((self.reserved + i * self.fatsz) * bps, fat_bytes)
 
@@ -633,13 +648,21 @@ class FatBuilder:
 # FAT reader / checker
 
 class Report:
+    """errors are everything the checker objects to. Some of those can be left behind by a power cut on a volume that was being
+    written to (lost clusters, a chain longer than the file size says, bytes after the end-of-directory marker, FAT copies and the
+    FSInfo count lagging behind): those are also listed in `benign`, and `serious` is what remains. The C checker (shared/fatck.c) calls
+    the two classes FS_ERR and FS_LEAK; tests/case_fsck.py holds the two implementations against each other."""
+
     def __init__(self, name=""):
         self.name = name
         self.errors, self.warnings, self.notes = [], [], []
+        self.benign = []
         self.stats = {}
 
-    def err(self, msg):
+    def err(self, msg, benign=False):
         self.errors.append(msg)
+        if benign:
+            self.benign.append(msg)
 
     def warn(self, msg):
         self.warnings.append(msg)
@@ -651,8 +674,14 @@ class Report:
     def ok(self):
         return not self.errors
 
+    @property
+    def serious(self):
+        """errors that are not mere leftovers"""
+        return [e for e in self.errors if e not in self.benign]
+
     def extend(self, other, prefix=""):
         self.errors += [prefix + e for e in other.errors]
+        self.benign += [prefix + e for e in other.benign]
         self.warnings += [prefix + e for e in other.warnings]
         self.notes += [prefix + e for e in other.notes]
 
@@ -699,10 +728,11 @@ class FatReader:
         self.nclusters = (self.total - self.data_start) // self.spc
         self.bits = 12 if self.nclusters < 4085 else 16 if self.nclusters < 65525 else 32
         self.structural32 = fatsz16 == 0 and self.root_entries == 0 and self.fatsz32 != 0
-        if self.bits == 12:
-            raise MkdiskError("FAT12 volumes are not supported")
+        self.active, self.mirrored = 0, True
         if self.bits == 32:
             self.ext_flags, self.fs_version, self.root_cluster, self.fsinfo_sector, self.backup_sector = struct.unpack_from("<HHIHH", b, 40)
+            if self.ext_flags & 0x80:                       # mirroring off: one FAT is the live one
+                self.active, self.mirrored = self.ext_flags & 0xF, False
             self.label_bpb = b[71:82].decode("cp437", "replace").rstrip()
             self.volume_id = struct.unpack_from("<I", b, 67)[0]
             self.flag_byte = b[65]
@@ -712,6 +742,8 @@ class FatReader:
             self.label_bpb = b[43:54].decode("cp437", "replace").rstrip()
             self.volume_id = struct.unpack_from("<I", b, 39)[0]
             self.flag_byte = b[37]
+        if self.active >= self.nfats:
+            raise MkdiskError(f"active FAT {self.active} does not exist")
         self.label = self.label_bpb
         self._fats = None
         self._file = None
@@ -729,22 +761,26 @@ class FatReader:
             self._fats = [self.win.read((self.reserved + i * self.fatsz) * self.bps, self.fatsz * self.bps) for i in range(self.nfats)]
         return self._fats
 
-    def fat_get(self, c, copy=0):
-        fat = self.fats()[copy]
+    def fat_get(self, c, copy=None):
+        fat = self.fats()[self.active if copy is None else copy]
         if self.bits == 32:
             return struct.unpack_from("<I", fat, c * 4)[0] & 0x0FFFFFFF
+        if self.bits == 12:
+            v = fat[c + c // 2] | (fat[c + c // 2 + 1] << 8)
+            return (v >> 4) if c & 1 else (v & 0xFFF)
         return struct.unpack_from("<H", fat, c * 2)[0]
 
     @property
     def eoc_min(self):
-        return 0x0FFFFFF8 if self.bits == 32 else 0xFFF8
+        return 0x0FFFFFF8 if self.bits == 32 else 0xFFF8 if self.bits == 16 else 0xFF8
 
     @property
     def bad(self):
-        return 0x0FFFFFF7 if self.bits == 32 else 0xFFF7
+        return 0x0FFFFFF7 if self.bits == 32 else 0xFFF7 if self.bits == 16 else 0xFF7
 
     def _reserved_value(self, v):
-        return v == 1 or (self.bits == 32 and 0x0FFFFFF0 <= v < 0x0FFFFFF7) or (self.bits == 16 and 0xFFF0 <= v < 0xFFF7)
+        return (v == 1 or (self.bits == 32 and 0x0FFFFFF0 <= v < 0x0FFFFFF7) or (self.bits == 16 and 0xFFF0 <= v < 0xFFF7)
+                or (self.bits == 12 and 0xFF0 <= v < 0xFF7))
 
     def read_clusters(self, clusters):
         return b"".join(self.win.read(self.cluster_off(c), self.cluster_bytes) for c in clusters)
@@ -769,7 +805,9 @@ class FatReader:
 
     # -- state flags
     def clean_flags(self):
-        """-> (clean_shutdown, no_hard_errors, boot_flag_dirty)"""
+        """-> (clean_shutdown, no_hard_errors, boot_flag_dirty); FAT12 has no flag bits in the FAT, only the boot sector's byte"""
+        if self.bits == 12:
+            return True, not (self.flag_byte & 2), bool(self.flag_byte & 1)
         f1 = self.fat_get(1)
         if self.bits == 32:
             return bool(f1 & 0x08000000), bool(f1 & 0x04000000), bool(self.flag_byte & 1)
@@ -791,7 +829,7 @@ class FatReader:
 
     # -- directories
     def root_bytes(self):
-        if self.bits == 16:
+        if self.bits != 32:
             return self.win.read((self.reserved + self.nfats * self.fatsz) * self.bps, self.root_entries * 32)
         return self.read_clusters(self.chain(self.root_cluster))
 
@@ -812,7 +850,7 @@ class FatReader:
             first = e[0]
             if ended:
                 if any(e) and rep and not garbage_reported:
-                    rep.err(f"{path}: non-zero slot {idx} after the end-of-directory marker")
+                    rep.err(f"{path}: non-zero slot {idx} after the end-of-directory marker", benign=True)
                     garbage_reported = True
                 continue
             if first == 0x00:
@@ -932,7 +970,7 @@ class FatReader:
         for what, v, raw in (("creation", ent.ctime, struct.unpack_from("<H", e, 16)[0]),
                              ("modification", ent.mtime, struct.unpack_from("<H", e, 24)[0])):
             if v is None and raw != 0:
-                rep.err(f"{label}: invalid {what} date")
+                rep.warn(f"{label}: invalid {what} date")
 
     def _check_dots(self, ents, path, rep, parent_first, self_first):
         if len(ents) < 2 or ents[0].sfn != b".          " or ents[1].sfn != b"..         ":
@@ -1030,20 +1068,20 @@ class FatReader:
                         if rep:
                             rep.warn(f"{what}: empty file owns {len(chain)} cluster(s)")
                     elif len(chain) != need and rep:
-                        rep.err(f"{what}: size {e.size} needs {need} cluster(s) but the chain has {len(chain)}")
+                        rep.err(f"{what}: size {e.size} needs {need} cluster(s) but the chain has {len(chain)}", benign=len(chain) > need)
         return tree, owner
 
     def check(self):
         rep = Report(self.name)
         if self.bits == 32 and not self.structural32:
-            rep.warn("cluster count says FAT32 but the BPB layout is FAT16-style")
-        if self.bits == 16 and self.structural32:
-            rep.warn("cluster count says FAT16 but the BPB layout is FAT32-style")
+            rep.err("cluster count says FAT32 but the BPB layout is FAT16-style")
+        if self.bits != 32 and self.structural32:
+            rep.err(f"cluster count says FAT{self.bits} but the BPB layout is FAT32-style")
         if self.total * self.bps > self.win.length:
             rep.err(f"volume claims {self.total * self.bps} bytes but the partition holds only {self.win.length}")
         if self.bits == 32:
             if self.fs_version != 0:
-                rep.warn(f"FAT32 version {self.fs_version:#x}")
+                rep.err(f"FAT32 version {self.fs_version:#x}: only 0.0 exists, and no driver here will mount anything else")
             if self.root_cluster < 2 or self.root_cluster >= self.nclusters + 2:
                 rep.err(f"root cluster {self.root_cluster} out of range")
                 return rep
@@ -1052,22 +1090,24 @@ class FatReader:
         elif self.root_entries == 0:
             rep.err("FAT16 volume without root directory entries")
             return rep
-        esize = 4 if self.bits == 32 else 2
-        if self.fatsz * self.bps < (self.nclusters + 2) * esize:
+        used = ((self.nclusters + 2) * 3 + 1) // 2 if self.bits == 12 else (self.nclusters + 2) * (4 if self.bits == 32 else 2)
+        if self.fatsz * self.bps < used:
             rep.err("FAT too small for the cluster count")
             return rep
+        clean, no_err, boot_dirty = self.clean_flags()
+        dirty = (not clean) or boot_dirty
         fats = self.fats()
-        used = (self.nclusters + 2) * esize
-        for i in range(1, self.nfats):
-            if fats[i][:used] != fats[0][:used]:
-                for c in range(self.nclusters + 2):
-                    if self.fat_get(c, 0) != self.fat_get(c, i):
-                        rep.err(f"FAT copy {i + 1} differs from copy 1 (first difference at cluster {c}: "
-                                f"{self.fat_get(c, 0):#x} vs {self.fat_get(c, i):#x})")
+        for i in range(self.nfats if self.mirrored else 0):
+            if i == self.active:
+                continue
+            if fats[i][:used] != fats[self.active][:used]:           # entries 0 and 1 only hold the media byte and the flags
+                for c in range(2, self.nclusters + 2):
+                    if self.fat_get(c, self.active) != self.fat_get(c, i):
+                        rep.err(f"FAT copy {i + 1} differs from copy {self.active + 1} (first difference at cluster {c}: "
+                                f"{self.fat_get(c, self.active):#x} vs {self.fat_get(c, i):#x})", benign=dirty)
                         break
         if (self.fat_get(0) & 0xFF) != self.media:
             rep.warn(f"FAT[0] media byte {self.fat_get(0) & 0xFF:#x} differs from the BPB media {self.media:#x}")
-        clean, no_err, boot_dirty = self.clean_flags()
         rep.stats["clean"] = clean and not boot_dirty
         if not clean:
             rep.warn("volume is marked dirty (FAT[1] clean-shutdown bit is clear)")
@@ -1088,8 +1128,8 @@ class FatReader:
             elif c not in owner:
                 lost.append(c)
         if lost:
-            rep.err(f"{len(lost)} lost cluster(s) (allocated in the FAT but part of no file), first: {lost[:8]}")
-        rep.stats.update(free=free, bad=bad, used=self.nclusters - free - bad, clusters=self.nclusters)
+            rep.err(f"{len(lost)} lost cluster(s) (allocated in the FAT but part of no file), first: {lost[:8]}", benign=True)
+        rep.stats.update(free=free, bad=bad, used=self.nclusters - free - bad, clusters=self.nclusters, lost=len(lost))
         if self.bits == 32:
             info = self.fsinfo()
             if info is None:
@@ -1098,7 +1138,7 @@ class FatReader:
                 rep.err("FSInfo signatures are wrong")
             else:
                 if info["free"] != 0xFFFFFFFF and info["free"] != free:
-                    rep.err(f"FSInfo free count {info['free']} but the FAT has {free} free clusters")
+                    rep.err(f"FSInfo free count {info['free']} but the FAT has {free} free clusters", benign=dirty)
                 if info["next"] != 0xFFFFFFFF and not (2 <= info["next"] < self.nclusters + 2):
                     rep.err(f"FSInfo next-free hint {info['next']} is out of range")
             if self.backup_sector not in (0, 0xFFFF) and self.backup_sector < self.reserved:
@@ -1167,7 +1207,7 @@ class FatReader:
         parent = path.rstrip("/").rsplit("/", 1)[0] or "/"
         idx = e.slot * 32
         if parent == "/":
-            if self.bits == 16:
+            if self.bits != 32:
                 return (self.reserved + self.nfats * self.fatsz) * self.bps + idx
             chain = self.chain(self.root_cluster)
         else:
@@ -1180,6 +1220,11 @@ class FatReader:
             base = (self.reserved + i * self.fatsz) * self.bps
             if self.bits == 32:
                 self.win.write(base + cluster * 4, struct.pack("<I", value))
+            elif self.bits == 12:
+                o = base + cluster + cluster // 2
+                w = struct.unpack("<H", self.win.read(o, 2))[0]
+                w = ((w & 0x000F) | ((value & 0xFFF) << 4)) if cluster & 1 else ((w & 0xF000) | (value & 0xFFF))
+                self.win.write(o, struct.pack("<H", w))
             else:
                 self.win.write(base + cluster * 2, struct.pack("<H", value))
         self._fats = None
@@ -1240,7 +1285,7 @@ def set_dirty(path, index=None, dirty=True):
     r = open_volume(path, index, writable=True)
     try:
         w = r.win
-        for i in range(r.nfats):
+        for i in range(r.nfats if r.bits != 12 else 0):                 # FAT12 keeps no flag in the table
             base = (r.reserved + i * r.fatsz) * r.bps
             if r.bits == 32:
                 v = struct.unpack("<I", w.read(base + 4, 4))[0]
@@ -1382,9 +1427,10 @@ def build_image(path, size, parts, sector_size=512, table="gpt", seed=1, ts=DEFA
             win = Window(f, first * ss, (last - first + 1) * ss, writable=True)
             builder = None
             kind = p.get("kind", "fat32")
-            if kind in ("fat32", "fat16"):
-                builder = FatBuilder(win, ss, 32 if kind == "fat32" else 16, label=p.get("label", p["name"]),
-                                     cluster_bytes=p.get("cluster"), ts=ts, hidden=first, volume_id=rng.getrandbits(32))
+            if kind in ("fat32", "fat16", "fat12"):
+                builder = FatBuilder(win, ss, {"fat32": 32, "fat16": 16, "fat12": 12}[kind], label=p.get("label", p["name"]),
+                                     cluster_bytes=p.get("cluster"), ts=ts, hidden=first, volume_id=rng.getrandbits(32),
+                                     root_entries=p.get("root_entries", 512))
                 if p.get("populate"):
                     builder.add_tree(p["populate"])
                 for fp, data in (p.get("files") or {}).items():
@@ -1393,7 +1439,8 @@ def build_image(path, size, parts, sector_size=512, table="gpt", seed=1, ts=DEFA
             ptype = p.get("type") or (GPT_TYPE_ESP if p.get("esp") else GPT_TYPE_BASIC)
             gpt_entries.append(dict(type=ptype, unique=_guid(rng), first=first, last=last, name=p["name"]))
             mbr_entries.append(dict(mbr_type=p.get("mbr_type") or (0xEF if p.get("esp") else 0x0C if kind == "fat32" else
-                                                                   0x0E if kind == "fat16" else 0x83), first=first, last=last))
+                                                                   0x0E if kind == "fat16" else 0x01 if kind == "fat12" else 0x83),
+                                    first=first, last=last))
             results.append((p, builder))
         if table == "gpt":
             gpt_write(disk, ss, total, gpt_entries, _guid(rng))

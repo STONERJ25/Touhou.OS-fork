@@ -15,7 +15,8 @@ docs/REAL_HARDWARE.md walks through the whole thing for a PC.
 Once booted, TouhouOS reads the stick through its USB mass storage driver: the HUMANVILLAGE partition is /HumanVillage, so the homes
 and everything saved there survive a reboot, and the kernel log is kept on it as TOUHOU.LOG (TOUHOU.PRV is the boot before): when a
 first boot fails on a PC without a serial port, plug the stick into another computer and read those files. Shut the machine down
-(poweroff) before pulling the stick; a stick that was pulled while it was being written is mounted read-only at the next boot.
+(poweroff) before pulling the stick; a stick that was pulled while it was being written is gone through (read-only) at the next boot, and mounted
+read-write when nothing is out of place, read-only when something is (docs/STORAGE.md, "Dirty volumes").
 
 The default kernel command line is "video=native blk.ro": the screen mode the firmware already chose (a monitor's own
 resolution, normally) and every SATA/NVMe disk read-only, so a first boot on a real machine cannot change a byte of its
@@ -40,7 +41,8 @@ README = """This is the HUMANVILLAGE volume of a TouhouOS stick: the homes of th
 
 TouhouOS mounts only the volume with this label and never touches any other disk.
 Eject the stick safely before unplugging it, otherwise the volume is marked dirty and the next boot
-mounts it read-only (see docs/STORAGE.md).
+goes through it before mounting it: read-write if nothing is out of place, read-only if something is
+(see docs/STORAGE.md).
 
 TOUHOU.LOG appears here after the first boot: the kernel log of that boot (TOUHOU.PRV is the one
 before). If the machine does not start properly, read these two files on another computer.

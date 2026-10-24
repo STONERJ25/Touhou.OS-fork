@@ -43,8 +43,9 @@ machine: [HARDWARE_AUDIT.md](HARDWARE_AUDIT.md).
 - Only one CPU is used (the other cores are idle); everything is polled.
 - Nothing is persistent unless a HUMANVILLAGE volume is mounted: `/etc` and the homes live in RAM and are rebuilt at boot.
 - USB mass storage is in (bulk-only sticks, [USB](USB.md)): the stick the OS booted from carries `/HumanVillage`, and the kernel log is kept on it
-  (`TOUHOU.LOG`, [REAL_HARDWARE](REAL_HARDWARE.md)). Not covered: UAS, a stick flagged dirty stays read-only until a file system check, and nothing of it
-  has run on real silicon. No image decoders yet.
+  (`TOUHOU.LOG`, [REAL_HARDWARE](REAL_HARDWARE.md)). A stick flagged dirty is gone through before it is mounted (read-write when nothing is out of place; read-only with
+  the reason in `/proc/fatcheck` otherwise; `hvforce` / `hvcheck=off`, [STORAGE](STORAGE.md)). Not covered: UAS; `fsck` (written, host-tested, **never run in the guest yet**: see
+  "State when paused" in STORAGE.md); a safer FAT write order; the dirty-volume check has not run on real silicon.
 - The target PC (a Dell OptiPlex, Core i5-7500) booted this OS to the desktop on 2026-10-23: the screen (write-combining, about 9 GB/s), USB keyboard and mouse behind a hub, the USB stick as `/HumanVillage`, `TOUHOU.LOG` and a clean shutdown all work; its first log and what it showed are in [HARDWARE_AUDIT](HARDWARE_AUDIT.md). Not yet seen on it: a network link (the I219 reported no carrier), sound, the internal disks (SATA is in RAID mode there). A slow screen would correct itself (a write-combining MTRR fallback), and the audit has the first-boot checklist.
 - Job control: the kernel side exists (stopped state, Ctrl-Z, `waitpid` with WUNTRACED, orphaned groups; [JOBCONTROL](JOBCONTROL.md)), but gapsh does not use it yet (`jobs`, `fg`, `bg` are being written), so for now Ctrl-Z freezes the foreground job and the shell prompt along with it.
 - The local agent log (`docs/AI_SUMMARY.md`, gitignored) has the newest development notes.
