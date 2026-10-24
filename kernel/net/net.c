@@ -11,6 +11,7 @@
 #include "initcall.h"
 #include "vfs.h"
 #include "process.h"
+#include "cmdline.h"
 
 /* ------------------------------------------------------------------ tunables (all settable through /proc/net/tune) */
 
@@ -158,6 +159,15 @@ bool net_is_local(u32 ip) { return (ip >> 24) == 127 || netdev_for_addr(ip) != N
 bool net_have_hardware(void) {
     for (NetDev *d = g_devs; d; d = d->next) if (!(d->flags & NDF_LOOPBACK)) return true;
     return false;
+}
+
+/* "nonet" on the kernel command line: the card drivers do not touch any hardware (the escape hatch for a first boot on a real PC whose
+ * network chip misbehaves); the loopback still works. Says so once, whichever driver asks first. */
+bool net_cards_disabled(void) {
+    static bool said;
+    if (!cmdline_flag("nonet")) return false;
+    if (!said) { said = true; klog("Yukari", "nonet: the network cards are left alone; only the loopback runs"); }
+    return true;
 }
 
 NetDev *netdev_register(const char *prefix, NetDev *d) {

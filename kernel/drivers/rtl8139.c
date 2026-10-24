@@ -158,6 +158,7 @@ fail:
 }
 
 static void rtl8139_init(void) {
+    if (net_cards_disabled()) return;
     for (PciDev *p = pci_find_id(RTL_VENDOR, RTL_8139, NULL); p; p = pci_find_id(RTL_VENDOR, RTL_8139, p))
         if (!p->driver) r_probe(p);
 }

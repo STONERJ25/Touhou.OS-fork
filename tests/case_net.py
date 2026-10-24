@@ -28,16 +28,17 @@ LEASE = r"\[Yukari\] eth0: lease 10\.0\.2\.15/255\.255\.255\.0 from 10\.0\.2\.2,
 class Guest:
     """A booted text-console guest with a network card; run() types a command and returns (output, exit status)."""
 
-    def __init__(self, name, net=None, root=False, hostfwd=(), cmdline=""):
+    def __init__(self, name, net=None, root=False, hostfwd=(), cmdline="", wait_lease=True):
         self.prompt = ROOT_PROMPT if root else USER_PROMPT
         cl = ("text " + cmdline + (" user=root" if root else "")).strip()
         self.vm = Qemu(cmdline=cl, name=name, net=net, hostfwd=hostfwd)
         self.net = net
+        self.wait_lease = wait_lease
 
     def __enter__(self):
         self.vm.start()
         # the shell prompt and (with a NIC) the DHCP lease line arrive in either order: wait for both, then move past them
-        patterns = [self.prompt] + ([LEASE] if self.net else [])
+        patterns = [self.prompt] + ([LEASE] if self.net and self.wait_lease else [])
         deadline = time.time() + 240
         while True:
             text = self.vm.text()
@@ -142,6 +143,17 @@ def net_names_local():
         assert "hello-through-nc" in out, out
         out, rc = g.run("nc -u -l -w 3 -p 9101 < /dev/null > /tmp/ncu.out & sleep 1; echo udp-through-nc | nc -u -w 2 127.0.0.1 9101; wait; cat /tmp/ncu.out", timeout=180)
         assert "udp-through-nc" in out, out
+
+
+@test
+def net_nonet_switch():
+    """nonet on the command line: a card that QEMU provides is left alone (one log line, no eth0, no DHCP) and the loopback still works"""
+    with Guest("t-net-nonet", net="e1000", cmdline="nonet", wait_lease=False) as g:
+        text = g.vm.text()
+        assert "nonet: the network cards are left alone" in text, text[-1500:]
+        assert "eth0" not in text, "a card was claimed although nonet was given:\n" + text[-1500:]
+        out, rc = g.run("cat /proc/net/dev; ping -c 1 127.0.0.1")
+        assert "eth0" not in out and "1 received" in out, out
 
 
 # ------------------------------------------------------------------------------------------------------------ the cards

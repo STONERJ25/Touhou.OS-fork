@@ -247,6 +247,7 @@ fail:
 
 static void r8169_init(void) {
     static const u16 ids[] = { 0x8168, 0x8169, 0x8167, 0x8161 };       // RTL8111/8168/8411, RTL8169, RTL8110, RTL8111 variant
+    if (net_cards_disabled()) return;
     for (unsigned i = 0; i < ARRAY_SIZE(ids); i++)
         for (PciDev *p = pci_find_id(RTL_VENDOR, ids[i], NULL); p; p = pci_find_id(RTL_VENDOR, ids[i], p))
             if (!p->driver && p->class_code == 2) r_probe(p);

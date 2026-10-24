@@ -421,6 +421,7 @@ fail:
 }
 
 static void e1000_init(void) {
+    if (net_cards_disabled()) return;
     for (PciDev *p = pci_find_id(INTEL, 0xFFFF, NULL); p; p = pci_find_id(INTEL, 0xFFFF, p)) {
         if (p->driver || p->class_code != 2) continue;
         for (unsigned i = 0; i < ARRAY_SIZE(g_ids); i++)

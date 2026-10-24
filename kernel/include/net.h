@@ -81,6 +81,7 @@ typedef struct NetDev {
     void *dhcp;                         /* dhcp.c state */
 } NetDev;
 
+bool    net_cards_disabled(void);                            /* "nonet" on the command line: card drivers must leave their hardware alone */
 NetDev *netdev_register(const char *prefix, NetDev *d);      /* names it eth0, eth1, ...; the caller allocates d (kzalloc) */
 NetDev *netdev_find(const char *name);
 NetDev *netdev_by_index(int i);

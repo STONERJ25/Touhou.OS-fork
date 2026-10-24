@@ -313,6 +313,7 @@ fail:
 }
 
 static void virtio_net_init(void) {
+    if (net_cards_disabled()) return;
     for (PciDev *p = pci_find_id(VIRTIO_VENDOR, 0xFFFF, NULL); p; p = pci_find_id(VIRTIO_VENDOR, 0xFFFF, p)) {
         if (p->driver) continue;
         if (p->device == VIRTIO_NET_LEGACY || p->device == VIRTIO_NET_MODERN) vnet_probe(p);

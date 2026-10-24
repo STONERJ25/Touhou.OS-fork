@@ -74,9 +74,7 @@ Old helper worktrees that are merged and can be deleted: `agent-a8e93238212e069d
 - `sed` and `grep` call `regexec` on `line + pos` with `REG_NOTBOL`, so `\<`, `\b`, `\B` lose the previous character (`echo aa | sed 's/\<a/X/g'` prints
   `XX`); they should use `REG_STARTEND`. gapsh: `"$@"` with no arguments expands to one empty word; the `printf` builtin needs `\0NNN`.
 - Kernel: user-mode SIGSEGV handlers never seem to run; `alarm()` is a stub; `exec` refuses more than 256 arguments or 32 KiB of strings (fixed on the hardening branch).
-- **A kernel panic while the desktop is running is not drawn**: `fbdev.c` switches the console off while the window server owns `/dev/fb0` and `panic()`
-  does not switch it back, so on the Dell (no serial) the screen would just freeze on the last desktop frame. The fix is small (recipe in
-  `docs/HARDENING.md`, "How to resume" item 5); do it before the first real boot.
+- A kernel panic while the desktop is running **is** drawn on the main branch (the audit's `fbcon_force_on` in the panic path; the hardening agent's note about a frozen frame came from a base older than that fix). `hwaudit_panic_on_desktop` kills init as root with the desktop up and checks the screen.
 - The fuzz seed 105 with `heapdebug` (`python tools/fuzz.py --secs 30 --extra heapdebug 105`) probably hangs the guest; look at it first.
 - `/etc` is rebuilt in RAM at every boot, so passwords, new accounts and a planned `/etc/network.conf` do not persist; only `/HumanVillage` does.
 - The `bc_language` test once caught the kernel log line about a SIGPIPE-killed `echo` (a race in the test, not in bc).

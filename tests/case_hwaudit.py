@@ -306,3 +306,36 @@ def hwaudit_fairyd_frame_stats():
     assert "copy: rep, damage: bbox" in out2, out2
     m2 = re.search(r"frames (\d+), rectangles (\d+)", out2)
     assert m2 and m2.group(1) == m2.group(2), "with one bounding box every frame is exactly one rectangle: " + out2
+
+
+@test
+def hwaudit_panic_on_desktop():
+    """A kernel panic while the desktop owns the screen is drawn: killing init as root stops the compositor's picture and shows the incident text (red) on the console."""
+    with Qemu(cmdline="autologin=root", name="t-hw-panic-desktop", mem="768M") as vm:
+        vm.expect(r"opening the desktop for", timeout=120)
+        deadline = time.time() + 40
+        while time.time() < deadline:                                       # the panel's start button is shrine red once the desktop is up
+            shot = vm.screen_ppm()
+            if all(abs(a - b) <= 60 for a, b in zip(vm.pixel(118, 756, shot), (0xB5, 0x12, 0x2B))):
+                break
+            time.sleep(0.5)
+        else:
+            raise AssertionError("the desktop never came up:\n" + vm.text()[-600:])
+        for _ in range(3):                                                  # the terminal may need a second try on a busy host
+            vm.key("t", ctrl=True, alt=True)
+            time.sleep(4)
+            vm.type("kill -9 1\n")
+            try:
+                vm.expect(r"KERNEL PANIC", timeout=25)
+                break
+            except Exception:                                               # noqa: BLE001
+                continue
+        vm.expect(r"the shrine has no maiden", timeout=30)
+        time.sleep(1.5)
+        shot = vm.screen_ppm()
+        w, h = 1024, 768
+        red = sum(1 for x in range(0, 400, 2) for y in range(0, h, 2)
+                  if all(abs(a - b) <= 30 for a, b in zip(vm.pixel(x, y, shot), (239, 41, 41))))
+        assert red > 60, f"no red incident text on the screen ({red} pixels); the panic is invisible while the desktop runs"
+        start = vm.pixel(118, 756, shot)
+        assert not all(abs(a - b) <= 60 for a, b in zip(start, (0xB5, 0x12, 0x2B))), f"the desktop is still on screen: {start}"
