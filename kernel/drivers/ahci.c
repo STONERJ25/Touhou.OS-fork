@@ -791,7 +791,7 @@ static void port_bringup(AhciHba *h, AhciPort *p) {
     bd->read = ahci_blk_read;
     bd->write = ahci_blk_write;
     bd->flush = ahci_blk_flush;
-    bd->readonly = blk_ro_requested();
+    bd->readonly = bd->ro_policy = blk_ro_requested();
     bd->priv = p;
     p->bd = bd;
     blk_register_sd(bd);                                    /* sda, sdb, ...: the pool USB sticks draw from as well */

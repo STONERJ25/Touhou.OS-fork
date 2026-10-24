@@ -40,13 +40,16 @@ int blk_read(BlockDev *d, u64 lba, u32 count, void *buf) {
     return d->read ? d->read(d, lba, count, buf) : -ENODEV;
 }
 
-int blk_write(BlockDev *d, u64 lba, u32 count, const void *buf) {
+/* unlocked: the caller is a /dev node whose open file holds the BLKWRUNLOCK of this very (whole) disk, see blk_unlock.c */
+static int write_checked(BlockDev *d, u64 lba, u32 count, const void *buf, bool unlocked) {
     if (!count) return 0;
     if (d->removed) return -ENODEV;
-    if (d->readonly) return -EROFS;
+    if (d->readonly && !(unlocked && d->ro_policy && !d->parent)) return -EROFS;
     if (lba >= d->sectors || lba + count > d->sectors) return -EINVAL;
     return d->write ? d->write(d, lba, count, buf) : -ENODEV;
 }
+
+int blk_write(BlockDev *d, u64 lba, u32 count, const void *buf) { return write_checked(d, lba, count, buf, false); }
 
 int blk_flush(BlockDev *d) {
     if (d->removed) return -ENODEV;
@@ -62,11 +65,11 @@ static int part_flush(BlockDev *d) { return blk_flush(d->parent); }
 
 #define IO_CHUNK (64 * 1024)
 
-static ssize_t blkdev_io(BlockDev *d, void *buf, size_t n, u64 off, bool write) {
+static ssize_t blkdev_io(BlockDev *d, void *buf, size_t n, u64 off, bool write, bool unlocked) {
     u64 cap = d->sectors * d->sector_size;
     if (off >= cap) return write ? -ENOSPC : 0;
     if (off + n > cap) n = (size_t)(cap - off);
-    if (write && d->readonly) return -EROFS;
+    if (write && d->readonly && !unlocked) return -EROFS;
     u32 ss = d->sector_size;
     u8 *bounce = kmalloc(IO_CHUNK + ss);
     if (!bounce) return -ENOMEM;
@@ -86,7 +89,7 @@ static ssize_t blkdev_io(BlockDev *d, void *buf, size_t n, u64 off, bool write) 
             if (partial) rc = blk_read(d, lba, count, bounce);              /* read-modify-write at the edges */
             if (!rc) {
                 memcpy(bounce + head, (const u8 *)buf + done, take);
-                rc = blk_write(d, lba, count, bounce);
+                rc = write_checked(d, lba, count, bounce, unlocked);
             }
         }
         if (!rc) done += take;
@@ -95,25 +98,28 @@ static ssize_t blkdev_io(BlockDev *d, void *buf, size_t n, u64 off, bool write) 
     return done ? (ssize_t)done : rc;
 }
 
-static ssize_t blk_node_read(VNode *v, File *f, void *buf, size_t n, u64 off) { (void)f; return blkdev_io(v->priv, buf, n, off, false); }
-static ssize_t blk_node_write(VNode *v, File *f, const void *buf, size_t n, u64 off) { (void)f; return blkdev_io(v->priv, (void *)buf, n, off, true); }
+static ssize_t blk_node_read(VNode *v, File *f, void *buf, size_t n, u64 off) { (void)f; return blkdev_io(v->priv, buf, n, off, false, false); }
+static ssize_t blk_node_write(VNode *v, File *f, const void *buf, size_t n, u64 off) {
+    BlockDev *d = v->priv;
+    return blkdev_io(d, (void *)buf, n, off, true, d->readonly && blk_unlock_allows(d, f));
+}
+static void blk_node_closed(VNode *v, File *f) { blk_unlock_closed(v->priv, f); }
 
 #define BLKGETSIZE64 0x80081272
 #define BLKSSZGET    0x1268
 #define BLKFLSBUF    0x1261
 
 static int blk_node_ioctl(VNode *v, File *f, unsigned long req, void *arg) {
-    (void)f;
     BlockDev *d = v->priv;
     switch (req) {
     case BLKGETSIZE64: *(u64 *)arg = d->sectors * d->sector_size; return 0;
     case BLKSSZGET: *(int *)arg = (int)d->sector_size; return 0;
     case BLKFLSBUF: return blk_flush(d);
-    default: return -ENOTTY;
+    default: return blk_unlock_ioctl(d, f, req, arg);
     }
 }
 
-static const VNodeOps blk_node_ops = { .read = blk_node_read, .write = blk_node_write, .ioctl = blk_node_ioctl };
+static const VNodeOps blk_node_ops = { .read = blk_node_read, .write = blk_node_write, .ioctl = blk_node_ioctl, .closed = blk_node_closed };
 
 static void make_node(BlockDev *d) {
     char path[32];
@@ -173,6 +179,7 @@ static bool scan_gpt(BlockDev *d) {
     if (blk_read(d, 1, 1, buf) == 0 && !memcmp(buf, "EFI PART", 8)) {
         GptHeader h;
         memcpy(&h, buf, sizeof h);
+        blk_rw_check(d, h.guid);                            /* blk.rw=GUID: before the partitions copy the read-only flag */
         if (h.entry_size >= sizeof(GptEntry) && h.entry_size <= 1024 && h.nentries > 0 && h.nentries <= 256) {
             size_t bytes = (size_t)h.nentries * h.entry_size;
             u32 sectors = (u32)((bytes + d->sector_size - 1) / d->sector_size);
