@@ -21,22 +21,41 @@ were tested on their own branches. **There has been no full run on the exact fin
 
 Nothing has ever run on the real PC (Dell, i5-7500). [HARDWARE_AUDIT.md](HARDWARE_AUDIT.md) (in `main`) has the first-boot checklist.
 
-## The first-boot candidate for the Dell (2026-10-23, evening)
+## Goals for the next session (the owner, 2026-10-23 night)
 
-Built from `main` at `b73b7d4` (the audit round 2 branch is merged: the PCI BAR sizing fix, the MTRR write-combining fallback, PCI D0 wake-up;
-`nonet` and `noaudio` switches; panics are drawn while the desktop runs, tested by `hwaudit_panic_on_desktop`). Verified: all 260 tests in seven
-parallel groups, 258 passed on the first run and the two that failed under load (`accounts_passwords`, `power_off`) pass alone. Rehearsed on copies
-of the two images: booted as a USB stick through OVMF, desktop up, `/HumanVillage` mounted on the stick, clean `poweroff`, `fsck` of the image clean,
-`TOUHOU.LOG` ends with the "clean run" line.
+The OS has now booted on the real Dell and the fixed image works (desktop, USB keyboard and mouse behind a hub, the stick as `/HumanVillage`, sound: `beep` comes out of the speakers).
+The next two goals, in this order:
 
-| File (in `build/`) | Command line | sha256 of the `.img` |
-|--------------------|--------------|----------------------|
-| `touhou-os.img.zip` | `video=native blk.ro tz=EST5EDT,M3.2.0,M11.1.0` | `327c7ecf1f92cbe05659dd2358d10cb6885e1be5645656b62f8c124a2c21f944` |
-| `touhou-os-safe.img.zip` | `text video=1024x768 blk.ro noaudio nonet usbstorage=off bootlog=off tz=EST5EDT,M3.2.0,M11.1.0` | `b4060d93ce604c288bff657117a00c55cc4e1fc86eb2e030391219bf812e189e` |
+1. **Install to permanent storage** (so no stick is needed): an `install` tool that partitions a chosen disk (GPT: a 64 MiB ESP with `EFI/BOOT/BOOTX64.EFI`, `kernel.elf`,
+   `initrd.img`, `cmdline.txt`, plus a `HUMANVILLAGE` partition), refuses disks with existing partitions unless forced, asks the owner to type the device name, and needs a
+   deliberate way past `blk.ro` (a root-only, per-disk write unlock, not the global command-line switch). Questions for the owner first: what is on the Dell's internal disk (Windows? Linux?)
+   and may it be wiped, is it SATA or NVMe, and the BIOS "SATA operation" is **RAID On** (Intel RST), which hides every internal disk: it has to be switched to AHCI, which stops an existing
+   Windows from booting unless it was prepared. An installed disk boots through the firmware's fallback path (`EFI/BOOT/BOOTX64.EFI`), no NVRAM entry is needed.
+2. **Updates over the network** (so the owner stops reflashing): needs the Ethernet link tested first (no cable was plugged in during the first boot; the I219 driver found the chip and reported no
+   carrier), then the unmerged network/HTTPS branch. Design sketch: `tools/serve-update.py` on the development PC serves a signed manifest (sha256 of `kernel.elf`, `initrd.img`,
+   `BOOTX64.EFI`, `cmdline.txt`, a version number) and the files; an `update URL` command on the OS fetches them (HTTPS with libtls and a pinned certificate, or HTTP plus an ECDSA-signed manifest
+   whose public key is baked into the image), checks the signature and hashes, writes them to the ESP as `*.new`, then renames into place; the loader keeps the previous kernel as
+   `kernel.old` and falls back to it when the new one did not reach "boot complete" (the NVRAM start counter of the ladder, `start_count()` in `boot/main.c`, is the mechanism for counting
+   failed starts). The ESP is never mounted by the policy today: the updater mounts it explicitly (root, read-write, briefly). The forge (`server.tailfbc785.ts.net`) is Tailscale-only,
+   so the OS cannot fetch from it directly: the update server is a plain LAN HTTP(S) server on the owner's PC.
 
-The safe image is the fallback if the normal one does not reach a desktop: a text console at 1024x768 with sound, network and USB sticks left alone
-(so no `TOUHOU.LOG` either). Known in these images: Ctrl-Z in a terminal freezes the job and the shell, the `exec` argument limit is still 256, and a stick
-that was not shut down cleanly mounts read-only next time (the fix is on a branch). Steps for the owner: [REAL_HARDWARE.md](REAL_HARDWARE.md).
+Before both: merge the parked branches (below) and run the whole suite on the result, in particular the network/HTTPS branch, the dirty-volume `fsck` branch (an installed disk and a
+stick that is switched off with the button need it) and the audio branch.
+
+## The first real boot (2026-10-23) and the images
+
+The first image hung on `loader: leaving boot services`: **the Dell's firmware never returned from `ExitBootServices`** because the loader had allocated the kernel image and the initrd with
+OS-defined UEFI memory types (`0x80000001`/`0x80000002`). The fix (now the default in `boot/main.c`): both are ordinary `EfiLoaderData` and the loader retypes those two ranges in the map it
+hands to the kernel; it also writes nothing to the screen once the exit call has returned (`noexitmarks`, not proven necessary). It was found in one evening with no serial port: boot-stage squares
+drawn into the framebuffer (`shared/stagemark.h`), a restart probe, and a "ladder" of workarounds tried one per boot and counted in an NVRAM variable (`ladder`, `strategy=N`; the rungs and all
+debug words are in [HARDWARE_AUDIT.md](HARDWARE_AUDIT.md)). The log of the first boot that got through is [logs/dell-optiplex-first-boot-2026-10-23.log](logs/dell-optiplex-first-boot-2026-10-23.log).
+
+Images in `build/` (git-ignored; rebuild with `python tools/mkimage.py --zip`): `touhou-os.img.zip` is the fixed normal image (`video=native blk.ro tz=EST5EDT,M3.2.0,M11.1.0`, sha256 of the
+`.img` `7f5da4e498c5c13a984b55b35097c4a6e024a2c7225712e92fc6816237e3aac3`), confirmed working on the Dell by the owner; `touhou-os-safe.img.zip` is the text-mode fallback (`text video=1024x768 blk.ro
+noaudio nonet usbstorage=off bootlog=off ...`, sha256 `4f61c3e2f6caef65807baab6b28c304bddbf0affdb2957fde5e1330378ce0720`), not needed so far. The `touhou-os-ladder*.img` and `touhou-os-diag*.img`
+files are diagnostic builds and can be deleted. Known in these images: Ctrl-Z in a terminal freezes the job and the shell, the `exec` argument limit is still 256 (fixed on the hardening branch), and a
+stick that was not shut down cleanly mounts read-only next time (fixed on the dirty-volume branch). The owner's keyboard and mouse sit behind a USB switch/hub that appears when they flip it, so
+USB hot-plug of a hub after boot matters.
 
 ## Branches that are not merged
 
