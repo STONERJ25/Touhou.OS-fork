@@ -6,6 +6,8 @@
 # DESCRIPTION
 `init` is process 1. When the kernel has mounted the filesystem and unpacked the initrd it starts `/sbin/init`, which opens the shrine for the day: it works out who is at the door, starts that resident's session, and when the session ends sees who comes next. It also adopts and collects every orphaned process.
 
+Before anything else `init` reads Keine's records: the files of `/Hakurei/etc` that a HUMANVILLAGE volume keeps in `/HumanVillage/.system/etc` (passwords, accounts, the host name, the time zone, the network and update settings). Each one is checked and put over the default from the boot image; a damaged one is left out with a line in the kernel log. A USB stick whose volume is mounted only after the first session started is read before the next session. With `nohumanvillage` on the command line the records are left alone. See etckeep(8).
+
 # THE DOOR
 By default the door is open for `reimu`: her desktop starts at once (or her login shell, on a machine without a display or with `text` on the command line). Logging out of a desktop always returns to the door, so switching user is *Shut down... -> Log out*. When a resident leaves, every process they left behind is sent home.
 

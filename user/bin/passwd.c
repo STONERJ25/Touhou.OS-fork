@@ -1,4 +1,4 @@
-/* passwd: change an account password in /etc/shadow. Installed setuid root. */
+/* passwd: change an account password in /etc/shadow (kept on the HUMANVILLAGE volume too, see etcstore.h). Installed setuid root. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -6,6 +6,8 @@
 #include <pwd.h>
 #include <shadow.h>
 #include <crypto.h>
+#include <errno.h>
+#include <etcstore.h>
 
 int main(int argc, char **argv) {
     if (geteuid() != 0) { fprintf(stderr, "passwd: this program must be installed setuid root\n"); return 1; }
@@ -35,7 +37,9 @@ int main(int argc, char **argv) {
         gap_make_salt(salt, sizeof salt);
         gap_hash_password(first, salt, hash, sizeof hash);
     }
-    if (gap_shadow_set(user, hash) < 0) { perror("passwd: cannot write /etc/shadow"); return 1; }
+    int rc = gap_shadow_set(user, hash);
+    if (rc < 0) { fprintf(stderr, "passwd: cannot write /etc/shadow: %s\n", etc_note()[0] ? etc_note() : strerror(errno)); return 1; }
     printf("passwd: password updated for %s\n", user);
+    if (rc > 0) fprintf(stderr, "passwd: the new password lasts only until the next restart: %s\n", etc_note());
     return 0;
 }

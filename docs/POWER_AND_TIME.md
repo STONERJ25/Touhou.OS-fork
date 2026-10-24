@@ -57,8 +57,10 @@ AEST-10AEDT,M10.1.0,M4.1.0/3    (southern hemisphere: the summer wraps around th
 ```
 
 `localtime`, `mktime`, `strftime(%Z %z)`, `date`, `ls -l`, the panel clock and the lock/login screens all follow it.
-Set it permanently by putting a zone in `initrd/Hakurei/etc/timezone` (it is baked into the initrd at build time) or per
-boot with `tz=...` on the kernel command line, which `init` exports to every session.
+Set it with `sudo timezone ZONE`: that writes `/etc/timezone` and, with a HUMANVILLAGE volume, keeps it there so it is still set
+after a restart ([PERSISTENT_ETC.md](PERSISTENT_ETC.md)); `timezone` alone shows the zone in effect. The default is baked into
+the initrd from `initrd/Hakurei/etc/timezone`, and `tz=...` on the kernel command line wins over both (`init` exports it to
+every session).
 
 ### The clock chip
 

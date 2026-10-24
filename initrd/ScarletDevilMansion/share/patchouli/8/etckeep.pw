@@ -1,0 +1,42 @@
+.page etckeep 8 Keine's records: the /etc files kept across restarts
+
+# SYNOPSIS
+*etckeep* [*status*]
+*etckeep check* [_FILE_...]
+*etckeep save* _FILE_...
+*etckeep forget* _FILE_...
+
+# DESCRIPTION
+`/Hakurei/etc` lives in memory and is rebuilt from the boot image at every start. When a HUMANVILLAGE volume is mounted on `/HumanVillage`, seven of its files are also kept on that volume, in `/HumanVillage/.system/etc`, and init(8) puts them back over the defaults before anyone logs in: `passwd`, `shadow`, `group`, `hostname`, `timezone`, `network.conf` and `update.conf`. Keine keeps the Human Village's history, so these are her records.
+
+The tools that change those files (passwd(1), adduser(8), deluser(8), hostname(1), timezone(1)) keep them by themselves. `etckeep` is for looking at the records and for edits made by hand.
+
+Every kept file is checked before it is used. A file that does not pass (a line cut short, a field missing, a name listed twice) is left out at boot, with one line in the kernel log, and the default from the boot image is used instead.
+
+The folder `/HumanVillage/.system` belongs to root (mode 0700, files 0600) on every FAT volume, so nobody else can read the kept `shadow` file. Someone holding the stick in another computer can, though.
+
+# COMMANDS
+@ *status* (or nothing)
+    Lists the seven files and whether each is kept, whether the kept copy is the same as `/etc`, and whether it is damaged. Only root can look inside `/HumanVillage/.system`; others are told so.
+@ *check* [_FILE_...]
+    Runs the boot's checks over `/etc/FILE` and the kept copy and prints `fine` or what is wrong with them, for the named files or all seven.
+@ *save* _FILE_...
+    Root only. Keeps the current `/etc/FILE` on the volume, after the same check. Use it after editing a kept file with vi(1).
+@ *forget* _FILE_...
+    Root only. Removes the kept copy: the default from the boot image comes back at the next start.
+
+# EXIT STATUS
+0 on success; 1 if a file is damaged, cannot be written, or the caller is not root; 2 for a usage error or a file that is not one of the seven.
+
+# EXAMPLES
+    etckeep
+    sudo vi /etc/network.conf
+    sudo etckeep save network.conf
+    sudo etckeep forget hostname
+
+# FILES
+@ /HumanVillage/.system/etc
+    The kept copies. A copy is written as `NAME.new`, synced, then renamed over `NAME`, so a power cut leaves the old or the new one.
+
+# SEE ALSO
+init(8), passwd(1), timezone(1), hostname(1), adduser(8), network.conf(5), update.conf(5), shadow(5), accounts(7)

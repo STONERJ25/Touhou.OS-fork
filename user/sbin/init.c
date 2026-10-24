@@ -8,6 +8,9 @@
  *                        autologin=NAME  skip the question and open NAME's session (default reimu; "none" = ask)
  *                        user=root       legacy spelling of autologin=root
  *                        utest           run the user-space test suite and power off
+ *
+ * Before anything else init puts the /etc files kept on the HUMANVILLAGE volume over the initrd defaults (Keine's records,
+ * docs/PERSISTENT_ETC.md); a stick that is only mounted later is looked at again before the next session starts.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,6 +26,7 @@
 #include <pwd.h>
 #include <grp.h>
 #include <gensokyo.h>
+#include <etcstore.h>
 
 #define TAG "\x1b[1;31m[Hakurei]\x1b[0m"
 
@@ -87,7 +91,8 @@ static void base_environment(const char *user, const char *home, const char *she
     setenv("LOGNAME", user, 1);
     setenv("SHELL", shell, 1);
     setenv("PATH", "/bin:/sbin:/usr/bin", 1);
-    setenv("HOSTNAME", "gensokyo", 1);
+    char host[64];
+    setenv("HOSTNAME", gethostname(host, sizeof host) == 0 ? host : "gensokyo", 1);
     setenv("TERM", "xterm", 1);
 }
 
@@ -157,6 +162,27 @@ static bool read_greeted(int fd, char *name, size_t n) {
     return name[0] != 0;
 }
 
+/* Keine's records (docs/PERSISTENT_ETC.md): passwd, shadow, group, hostname, timezone, network.conf and update.conf kept in
+ * /HumanVillage/.system/etc replace the initrd defaults in /etc. Lines go to the kernel log (and so into TOUHOU.LOG on the volume)
+ * under Keine's name, who keeps the Human Village's history. */
+static EtcSnapshot g_etc_snap;
+static bool g_etc_done;
+
+static void keine_says(const char *line) {
+    gap_setname("Keine");
+    gap_log(line);
+    gap_setname("init");
+}
+
+static void restore_etc(bool late) {
+    if (g_etc_done || cmdline_has("nohumanvillage")) return;           /* nohumanvillage: the defaults, exactly as before */
+    int n = etc_restore(late ? &g_etc_snap : NULL, keine_says);
+    if (n < 0) return;                                                    /* no volume (yet): a stick may still come */
+    g_etc_done = true;
+    etc_reload_homes();                                                   /* homes on the volume belong to the residents of the kept passwd */
+    if (late && n > 0) tzset();
+}
+
 /* Time zone: tz=... on the command line wins over /etc/timezone (which libc reads by itself). If the clock chip keeps local
  * time (rtc=local: a PC that also runs Windows does that) the kernel read it as UTC, so correct the system clock. */
 static void setup_clock(void) {
@@ -209,6 +235,8 @@ int main(void) {
         gap_reboot(0x100 | (WIFEXITED(status) ? WEXITSTATUS(status) : 99));
     }
 
+    etc_snapshot(&g_etc_snap);                                            /* what the initrd put into /etc */
+    restore_etc(false);                                                   /* before the clock: /etc/timezone may come from the volume */
     setup_clock();
     printf(TAG " the shrine opens for the day (init, pid %d)\n", getpid());
 
@@ -238,6 +266,7 @@ int main(void) {
 
     for (;;) {
         if (child == 0) {
+            restore_etc(true);                                            /* a USB stick that was mounted after boot */
             if (ask) {
                 if (in_desktop && have_greeter && greeter_failures < 3 && !text_door_once) {
                     printf(TAG " opening the login screen\n");
