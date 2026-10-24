@@ -1022,6 +1022,11 @@ static void read_knobs(void) {
 }
 
 void ahci_init(void) {
+    char sw[8];
+    if (cmdline_value("ahci", sw, sizeof sw) && (!strcmp(sw, "off") || !strcmp(sw, "0") || !strcmp(sw, "no"))) {
+        klog("Kappa", "ahci: disabled on the kernel command line (ahci=off); the SATA controllers are left alone");
+        return;
+    }
     read_knobs();
     if (cmdline_flag("ahci.selftest")) ahci_identify_selftest();
     for (PciDev *d = pci_find_class(0x01, 0x06, 0x01, NULL); d; d = pci_find_class(0x01, 0x06, 0x01, d))
