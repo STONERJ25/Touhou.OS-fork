@@ -3,8 +3,11 @@
 At 2560x1440 the window server picks scale 2 by itself: the logical screen is 1280x720, every logical pixel is a 2x2 block of
 screen pixels. The tests look at the panel, the start button and its label (the 8x16 font must come out exactly twice as wide and
 high: 63x14 lit pixels at 1x, 126x28 at 2x, four times as many lit pixels), open the start menu and a terminal with real mouse
-clicks in screen pixels, and click a cell of Minesweeper, which draws its own pixels and is enlarged by the server. ui.scale=N on
-the command line forces a scale; a scale that would leave less than 640x480 is lowered.
+clicks in screen pixels, click a cell of Minesweeper, which draws its own pixels and is enlarged by the server, and press keypad
+buttons of the Calculator with the mouse at 1920x1080, where only ui.scale=2 gives scale 2. ui.scale=N on the command line forces
+a scale; a scale that would leave less than 640x480 is lowered.
+
+That scale 1 is unchanged pixel for pixel is checked by tests/pixel_identity.py (two builds, bit-exact screenshots), not here.
 
 Positions: the panel and the start menu sit at the bottom of the logical screen, so on a screen of logical height H the start
 button label starts at logical y H - 24 and the start button's centre is at logical (118, H - 12), the panel's gold top line at H - 36.
@@ -181,6 +184,56 @@ def hidpi_forced_scale2_and_enlarged_client():
         time.sleep(1)
         x, y = cell(2, 6)
         assert not near(vm.pixel(x - 14, y - 14), GRASS, 25), "the opened cell should not be grass any more"
+
+
+CALC_LCD = (0x14, 0x1B, 0x42)      # the Calculator's display (COL_LCD)
+
+
+@test
+def hidpi_forced_scale2_1920_button_click():
+    """ui.scale=2 at 1920x1080, where the automatic choice is 1: a 960x540 desktop drawn twice as large. The Calculator (a Kappa
+    program drawing at full resolution) is driven with mouse clicks on its keypad buttons given in screen pixels: 7 + 2 = must
+    give 9."""
+    with Qemu(cmdline="text ui.scale=2", name="t-hidpi-1920", mem="768M", video="1920x1080") as vm:
+        g, s, why = start_desktop(vm, 2, 540)
+        assert (s, why) == (2, "ui.scale"), (s, why)
+        a = arr(vm)
+        assert a.shape[:2] == (1080, 1920), f"the firmware did not give 1920x1080: {a.shape}"
+        check_label(a, 2, 540)
+        gold = [y for y in range(940, 1080) if near(tuple(a[y, 900]), (0xD9, 0xA4, 0x41), 30)]
+        assert gold == [(540 - 36) * 2, (540 - 36) * 2 + 1], f"the panel's gold top line should be two screen pixels at y 1008, found {gold}"
+        g.sh("calculator --trace > /tmp/calc.log 2>&1 &")
+        lcd = None
+        deadline = time.time() + scaled(60)
+        while time.time() < deadline and not lcd:
+            if "calc: ready" in g.sh("cat /tmp/calc.log"):
+                time.sleep(2)
+                a = arr(vm)
+                mask = (a[:1000] == np.array(CALC_LCD)).all(axis=2)
+                xs = np.nonzero(mask.sum(axis=0) > 100)[0]           # columns and rows that cross the display (the night sky has a
+                ys = np.nonzero(mask.sum(axis=1) > 300)[0]           # few pixels of the same colour)
+                if len(xs) > 300 and len(ys) > 100:
+                    lcd = (int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max()))
+            time.sleep(1)
+        assert lcd, "the Calculator did not appear"
+        vm.screenshot(BUILD / "t-hidpi-1920-calculator.png")
+        # the display is 396 x 86 logical pixels at content (8, 28) of a 680 x 420 window; the keypad starts at content y 122 with
+        # keys of 76 x 45 every 80 x 49 logical pixels
+        ox, oy = lcd[0] // 2 - 8, lcd[1] // 2 - 28
+        assert abs((lcd[2] - lcd[0] + 1) - 396 * 2) <= 8, f"the display should be about {396 * 2} screen pixels wide: {lcd}"
+        key = lambda col, row: ((ox + 8 + col * 80 + 38) * 2, (oy + 122 + row * 49 + 22) * 2)
+        title = a[(oy - 12) * 2, (ox + 200) * 2]
+        assert near(tuple(title), (0xC1, 0x1A, 0x38), 70), f"no active title bar above the Calculator: {tuple(title)}"
+        for col, row in ((0, 2), (3, 5), (1, 4), (4, 5)):          # 7 + 2 =
+            g.click(*key(col, row))
+            time.sleep(0.4)
+        out = ""
+        deadline = time.time() + scaled(30)
+        while time.time() < deadline and "calc: 7+2 = 9" not in out:
+            out = g.sh("cat /tmp/calc.log")
+            time.sleep(1)
+        vm.screenshot(BUILD / "t-hidpi-1920-calculator-result.png")
+        assert "calc: 7+2 = 9" in out, "the clicks should press 7, +, 2 and =:\n" + out[-600:]
 
 
 @test
