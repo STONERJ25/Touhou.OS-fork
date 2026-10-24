@@ -8,7 +8,9 @@ no code with the kernel. Allowed afterwards is only what a power cut may leave b
 lost clusters, a chain longer than its file's size, a FAT copy 2 that lags behind copy 1, a stale FSInfo free count and
 the dirty flags. Anything else - a cross-link, a chain that runs into a free cluster, a size the chain cannot hold, a broken
 directory, a long name without its short entry - fails the run, and so does a file that shows a byte it never wrote (every
-byte of file k<id> is either 0 or churn_byte(id, offset), see user/bin/fstest.c).
+byte of file k<id> is either 0 or churn_byte(id, offset), see user/bin/fstest.c). The kernel's own consistency check
+(shared/fatck.c, run on the host through tools/fatck_host.py) must find no damage either: then the next boot would mount
+the volume read-write.
 
   TOUHOU_CRASH_RUNS=50 python tests/run_all.py storage_crash      the full run (the default is 3 runs)
   TOUHOU_CRASH_SEED=N                                              the seed of the first run (default: from the clock)
@@ -25,6 +27,7 @@ import time
 import numpy as np
 
 from harness import test, scaled
+import fatck_host
 import mkdisk
 from case_storage import Image, MIB, H, boot, hv_part, serious_errors
 
@@ -102,7 +105,8 @@ def crash_selftest_images():
 
 @test
 def storage_crash_checker_selftest():
-    """The crash test's judge: power-cut leftovers pass, cross-links, broken chains and stale bytes are caught (no VM)."""
+    """The crash test's judges (mkdisk's checker, the kernel's ledger check): power-cut leftovers pass, cross-links, broken chains and
+    stale bytes are caught (no VM)."""
     files = {f"{CHURN_DIR}/k2 first.txt": bytes(churn_bytes(2, 9000)), f"{CHURN_DIR}/K3.DAT": bytes(churn_bytes(3, 5000))}
     names = list(files)
     for what, damage, expect in crash_selftest_images():
@@ -112,6 +116,7 @@ def storage_crash_checker_selftest():
                 damage(v, names)
             finally:
                 v.close()
+            mkdisk.set_dirty(img.path, 1, True)                       # as a power cut leaves it
             rep = mkdisk.check_image(img.path)
             v = mkdisk.open_volume(img.path, 1)
             try:
@@ -119,6 +124,9 @@ def storage_crash_checker_selftest():
             finally:
                 v.close()
             assert bool(found) == expect, f"{what}: expected {'a' if expect else 'no'} finding, got {found}\n" + rep.text(True)
+            if what != "another file's bytes":                      # a matter of contents, which no FAT checker can see
+                ledger = fatck_host.scan_volume(img.path, 1)
+                assert ledger.ok != expect, f"{what}: the kernel's ledger check says {'ok' if ledger.ok else 'damaged'}\n" + ledger.text()
 
 
 def crash_run(seed):
@@ -150,6 +158,12 @@ def crash_run(seed):
                 files = sum(1 for ents in v._tree_cache().values() for e in ents if not e.is_dir)
             finally:
                 v.close()
+        # The kernel's own ledger check (shared/fatck.c, the code that decides at the next boot whether the volume may be written)
+        # must find no damage either: then the next boot mounts it read-write (fsck=left), lost clusters and all.
+        ledger = fatck_host.scan_volume(img.path, 1)
+        if not ledger.ok:
+            problems += ["the kernel's ledger check would keep the volume read-only: "
+                         + ("; ".join(ledger.errors[:4]) or "the scan did not finish")]
         if fails:
             problems += ["the workload saw a failing call: " + "; ".join(fails[:4])]
         if problems:
@@ -157,7 +171,7 @@ def crash_run(seed):
                 tag += f", image kept as {img.path}"
             return f"{tag}:\n  " + "\n  ".join(problems[:12]) + "\n" + rep.text(True)[-2500:]
         leftovers = [e for e in rep.errors]
-        print(f"     crash run {tag}: {files} files, ok" + (f"; leftovers: {'; '.join(leftovers)[:300]}" if leftovers else ""),
+        print(f"     crash run {tag}: {files} files, ok, ledger check: {len(ledger.leaks)} leftover(s)" + (f"; leftovers: {'; '.join(leftovers)[:300]}" if leftovers else ""),
               flush=True)
         return None
 

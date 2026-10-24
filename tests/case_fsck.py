@@ -5,7 +5,7 @@
   fsck_kernel_* the kernel's read-only check of a volume that was not shut down cleanly: read-write when nothing is out of place,
                 read-only with the precise reason when something is; hvforce / hvcheck=off
   fsck_cmd_*    /bin/fsck on unmounted volumes (FAT12/16/32): -n, -a, -y, refusals
-  fsck_power_*  hard power cuts at random moments of a write-heavy workload leave nothing worse than lost clusters
+  (the power cuts at random moments of a write-heavy workload are tests/case_storagecrash.py: storage_crash_*)
 
 Run just these with:  python tests/run_all.py fsck
 """
