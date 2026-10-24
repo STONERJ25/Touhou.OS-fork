@@ -18,17 +18,39 @@
  * the recovery is given up on: its disks are unregistered and every later request fails with -ENODEV. Nothing in here ever writes
  * on its own initiative: WRITE(10/16) and SYNCHRONIZE CACHE exist only on the path of BlockDev.write / BlockDev.flush.
  *
+ * What real sticks do that QEMU's does not (Linux's usb-storage "unusual devices" are the catalogue), and what is done about it without
+ * having to know the stick in advance: a stick that hangs or garbles a transfer is reset (reset recovery) and asked for less, 64 KiB per
+ * command, then 32, 16, 4 (the "ladder", one rung per persistent failure, a hang goes down at once); the residue field of a good status is
+ * not believed over the number of bytes that really moved (many sticks lie in it); a stick that does not answer GET MAX LUN is taken to
+ * have one unit; MODE SENSE that stalls, fails or hangs means "writable" (a write to a protected stick answers DATA PROTECT and
+ * switches the disk to read-only then); a block size of 0 means 512; READ CAPACITY(10) saying "more than 2 TiB" on a stick that
+ * cannot do READ CAPACITY(16) means 2^32 blocks; SYNCHRONIZE CACHE trouble switches the syncing off. Sticks are spoken to 1 s after
+ * SET_CONFIGURATION (Linux's delay_use). A table of quirks keyed by vendor:product exists for what cannot be guessed (g_quirk_table is
+ * empty; `usbstorage.quirk=` adds entries without rebuilding, see below). Everything that goes wrong is logged with the numbers
+ * (opcode, sense key/asc/ascq, sizes) so that a photograph of the screen says what happened; `usb=debug` adds every single command.
+ *
  * Kernel command line (all optional, for tests and for the cautious):
  *   usbstorage=off          do not bind mass storage devices at all
  *   usbstorage.nosync       no SYNCHRONIZE CACHE after write requests
  *   usbstorage.rw16         use READ CAPACITY(16) and READ/WRITE(16) even for small devices
  *   usbstorage.selftest    run the validators against hand-made hostile device answers and log the verdict
  *   usbstorage.timeout=MS   every bulk wait (command, data, status) at most MS milliseconds (tests only; a timeout kills the device)
+ *   usbstorage.quirk=V:P:f,f/V:P:f  quirk flags for a stick (vendor:product in hex, several entries separated by /). Flags: nosync (no
+ *                           SYNCHRONIZE CACHE), nowp (no MODE SENSE), fixcap (READ CAPACITY gave the block count: one block less is
+ *                           used), chunk32k / chunk16k / chunk4k (at most that much per command from the start), slowstart (3 s, not
+ *                           1, before the first command). The log line of the stick names its vendor:product.
  *   usbstorage.fault=...    faults for the tests, several separated by commas:
  *   csw:N                   treat the N-th status wrapper as corrupted (reset recovery)
  *   stall:N                 send the N-th command wrapper with a damaged signature: the stick stalls the pipe (clear halt + reset recovery)
  *   drop:N                  the N-th command gets no answer at all (waits out the status timeout, then the stick counts as hung)
  *   syncdrop:N              the same for the N-th SYNCHRONIZE CACHE (the volume must survive a stick that hangs on that command)
+ *   maxlen:BYTES            every command that moves more than BYTES gets no answer (a stick that hangs on big transfers)
+ *   modehang:1              MODE SENSE gets no answer (a stick that hangs on the write-protect probe)
+ *   lunhang:1               GET MAX LUN gets no answer (the control request times out)
+ *   residue:N               the status of the N-th command says that nothing moved (residue = the whole request) although it was fine
+ *   badresidue:N            the status of the N-th command carries a residue larger than the request
+ *   cap10max:1              READ CAPACITY(10) answers "last block 0xFFFFFFFF" (more than 2 TiB, or a lie)
+ *   rc16illegal:1           READ CAPACITY(16) is refused with ILLEGAL REQUEST (a bridge that cannot do it)
  *   notready:MS             every unit is taken to be "not ready" for its first MS milliseconds (a stick that takes its time)
  *   maxlun:N                GET MAX LUN is taken to have answered N (QEMU's sticks always say 0, so several LUNs need this)
  */
@@ -47,13 +69,105 @@
 #define MSC_MAX_BYTES    (1ull << 50)           /* a device that claims more than a pebibyte is lying */
 #define READY_TIMEOUT_MS 20000                  /* how long a unit may stay "not ready" before it is given up on */
 #define NOMEDIA_POLL_MS  2000
-#define FIRST_COMMAND_DELAY_MS 400              /* between SET_CONFIGURATION and the first INQUIRY */
+#define FIRST_COMMAND_DELAY_MS 1000             /* between SET_CONFIGURATION and the first INQUIRY: many cheap sticks lock up when spoken to sooner (Linux waits 1 s as well) */
 
 #define T_CTRL           3000                   /* control requests (GET MAX LUN, reset recovery) */
 
 static u32 g_t_cbw = 3000, g_t_quick = 5000, g_t_csw = 5000, g_t_read = 15000, g_t_write = 30000, g_t_sync = 30000;
 static bool g_cfg_loaded, g_off, g_nosync, g_rw16;
 static u32 g_fault_csw, g_fault_stall, g_fault_drop, g_fault_syncdrop, g_fault_notready, g_fault_maxlun, g_csw_count, g_cbw_count, g_stall_count, g_sync_count;
+static u32 g_fault_maxlen, g_fault_modehang, g_fault_lunhang, g_fault_residue, g_fault_badresidue, g_fault_cap10max, g_fault_rc16illegal, g_status_count;
+static char g_quirk_opt[128];                   /* usbstorage.quirk= */
+
+/* ---------------------------------------------------------------- quirks */
+
+/* What is known about individual sticks that cannot be found out by asking (and are not worth a failure first). Keyed by vendor:product,
+ * flags as in the header comment. Empty on purpose: nothing is known to be needed; Linux's unusual_devs.h is where candidates come from.
+ * The command line adds entries without a rebuild (usbstorage.quirk=), which is how an owner whose stick misbehaves can try a remedy. */
+enum {
+    Q_NO_SYNC    = 1u << 0,                     /* nosync    never SYNCHRONIZE CACHE */
+    Q_NO_WP      = 1u << 1,                     /* nowp      never MODE SENSE: taken to be writable */
+    Q_FIX_CAP    = 1u << 2,                     /* fixcap    READ CAPACITY(10) returns the block count, not the last block (Linux: US_FL_FIX_CAPACITY) */
+    Q_CHUNK_32K  = 1u << 3,                     /* chunk32k  at most 32 KiB per command from the start (Linux: US_FL_MAX_SECTORS_64) */
+    Q_CHUNK_16K  = 1u << 4,                     /* chunk16k */
+    Q_CHUNK_4K   = 1u << 5,                     /* chunk4k */
+    Q_SLOW_START = 1u << 6,                     /* slowstart 3 s, not 1, before the first command */
+};
+
+static const struct { const char *name; u32 flag; } g_quirk_names[] = {
+    { "nosync", Q_NO_SYNC }, { "nowp", Q_NO_WP }, { "fixcap", Q_FIX_CAP }, { "chunk32k", Q_CHUNK_32K }, { "chunk16k", Q_CHUNK_16K },
+    { "chunk4k", Q_CHUNK_4K }, { "slowstart", Q_SLOW_START },
+};
+
+static const struct { u16 vid, pid; u32 flags; } g_quirk_table[] = {
+    { 0, 0, 0 },                                /* (end of the table; no stick is known to need anything) */
+};
+
+static bool hex_field(const char **p, u16 *out) {
+    u32 v = 0;
+    int n = 0;
+    for (; n < 5; n++, (*p)++) {
+        char c = **p;
+        u32 d = (c >= '0' && c <= '9') ? (u32)(c - '0') : (c >= 'a' && c <= 'f') ? (u32)(c - 'a' + 10) : (c >= 'A' && c <= 'F') ? (u32)(c - 'A' + 10) : 99;
+        if (d == 99) break;
+        v = v * 16 + d;
+    }
+    if (n < 1 || n > 4) return false;
+    *out = (u16)v;
+    return true;
+}
+
+/* One "VVVV:PPPP:flag,flag" entry from usbstorage.quirk=. Returns the end of the entry (at '/' or the terminator), or NULL if it is
+ * not well formed. Unknown flag names set *unknown (they are ignored). */
+static const char *quirk_entry(const char *s, u16 *vid, u16 *pid, u32 *flags, bool *unknown) {
+    *flags = 0;
+    if (!hex_field(&s, vid) || *s++ != ':' || !hex_field(&s, pid)) return NULL;
+    if (*s == ':') {
+        s++;
+        while (*s && *s != '/') {
+            const char *e = s;
+            while (*e && *e != ',' && *e != '/') e++;
+            bool known = false;
+            for (unsigned i = 0; i < ARRAY_SIZE(g_quirk_names); i++)
+                if (strlen(g_quirk_names[i].name) == (size_t)(e - s) && !strncmp(s, g_quirk_names[i].name, (size_t)(e - s))) { *flags |= g_quirk_names[i].flag; known = true; }
+            if (!known && e > s) *unknown = true;
+            s = *e == ',' ? e + 1 : e;
+        }
+    }
+    return s;
+}
+
+/* The flags for a stick: the built-in table plus whatever the command line said about this vendor:product. */
+static u32 quirks_for(const char *opt, u16 vid, u16 pid, bool *unknown) {
+    u32 f = 0;
+    for (unsigned i = 0; g_quirk_table[i].vid || g_quirk_table[i].pid; i++)
+        if (g_quirk_table[i].vid == vid && g_quirk_table[i].pid == pid) f |= g_quirk_table[i].flags;
+    for (const char *p = opt; p && *p;) {
+        u16 v, d;
+        u32 ef;
+        const char *end = quirk_entry(p, &v, &d, &ef, unknown);
+        if (!end) { *unknown = true; while (*p && *p != '/') p++; }
+        else { if (v == vid && d == pid) f |= ef; p = end; }
+        if (*p == '/') p++;
+    }
+    return f;
+}
+
+static void quirk_text(u32 flags, char *out, size_t cap) {
+    out[0] = 0;
+    for (unsigned i = 0; i < ARRAY_SIZE(g_quirk_names); i++)
+        if (flags & g_quirk_names[i].flag) { if (out[0]) strlcat(out, ",", cap); strlcat(out, g_quirk_names[i].name, cap); }
+    if (!out[0]) strlcpy(out, "none", cap);
+}
+
+/* The ladder of command sizes. */
+static const u32 g_ladder[] = { MSC_CHUNK, 32768, 16384, 4096 };
+
+static u32 ladder_below(u32 bytes) {
+    for (unsigned i = 0; i < ARRAY_SIZE(g_ladder); i++)
+        if (g_ladder[i] < bytes) return g_ladder[i];
+    return 0;                                   /* 4 KiB is the bottom */
+}
 
 /* ---------------------------------------------------------------- state */
 
@@ -78,8 +192,9 @@ typedef struct MscLun {
     char model[44];                             /* "VENDOR PRODUCT" */
     char why[72];                               /* why it is FAILED / NOMEDIA */
     BlockDev *bd;                               /* registered disk, NULL while offline (the struct itself stays valid) */
-    u32  reads, writes, syncs, errors;
+    u32  reads, writes, syncs, errors, residues;    /* residues: good statuses whose residue field was not believed */
     u64  bytes_read, bytes_written;
+    const char *cap_how, *wp_how;               /* for the log line of the unit: how its size and write protection were found out */
 } MscLun;
 
 struct Msc {
@@ -91,6 +206,10 @@ struct Msc {
     volatile bool dead;                         /* still plugged in but given up on (timeout, failed recovery) */
     u32  tag;
     u32  resets;
+    u32  chunk;                                 /* bytes per data command right now: MSC_CHUNK, lower after the ladder stepped down */
+    u32  quirks;                                /* Q_* */
+    u8   noted;                                 /* msc_note lines printed for this stick */
+    u8   nudges;                                /* resets spent on bring-up commands that got no answer (msc_run_boot) */
     u16  vid, pid;
     char path[24];
     bool ever_online;                           /* a BlockDev points into this struct: it must never be freed */
@@ -171,15 +290,20 @@ static const char *cap_check(u64 last_lba, u32 bsz, u64 *sectors) {
     return NULL;
 }
 
-/* CSW: signature, tag, status, residue. NULL = fine, else what is wrong (the caller then does reset recovery). */
+/* CSW: signature, tag, status. NULL = fine, else what is wrong (the caller then does reset recovery). The residue field is not judged
+ * here: a lot of sticks put nonsense in it (more than was asked for, or "nothing moved" after a transfer that went through), which is
+ * why Linux has a whole family of quirks for it. What counts is how many bytes moved (msc_io_one) and the status byte; a residue that is
+ * larger than the request is clamped (residue_clamped), the way Linux clamps it. */
 static const char *csw_check(const u8 *csw, u32 tag, u32 request_len) {
+    (void)request_len;
     if (get_le32(csw) != 0x53425355u) return "bad status signature";
     if (get_le32(csw + 4) != tag) return "status tag does not match the command";
     if (csw[12] > 2) return "invalid status byte";
     if (csw[12] == 2) return "phase error";
-    if (get_le32(csw + 8) > request_len) return "residue larger than the request";
     return NULL;
 }
+
+static u32 residue_clamped(u32 residue, u32 request_len) { return residue > request_len ? request_len : residue; }
 
 enum { INQ_OK = 0, INQ_ABSENT = 100, INQ_UNSUPPORTED = 101 };
 
@@ -273,10 +397,13 @@ static int msc_run(Msc *m, u8 lun, ScsiCmd *c) {
     c->csw_status = 0;
 
     int rc;
-    if ((g_fault_drop && ++g_cbw_count == g_fault_drop) || (g_fault_syncdrop && c->cdb[0] == 0x35 && ++g_sync_count == g_fault_syncdrop)) {
+    bool by_count = g_fault_drop && ++g_cbw_count == g_fault_drop;
+    if (by_count || (g_fault_syncdrop && c->cdb[0] == 0x35 && ++g_sync_count == g_fault_syncdrop) ||
+        (g_fault_maxlen && c->len > g_fault_maxlen) || (g_fault_modehang && c->cdb[0] == 0x1A)) {
         /* A stick that has gone deaf (QEMU's would answer a missing wrapper with a STALL, which is a different path): wait out the
          * status timeout like a transfer that never completes would, then behave as usb_bulk() does after one. */
-        klog("Kappa", "usb-storage %s: fault injection: command wrapper %u gets no answer (opcode %02x)", m->path, g_cbw_count, c->cdb[0]);
+        if (by_count) klog("Kappa", "usb-storage %s: fault injection: command wrapper %u gets no answer (opcode %02x)", m->path, g_cbw_count, c->cdb[0]);
+        else klog("Kappa", "usb-storage %s: fault injection: a command (opcode %02x, %u bytes) gets no answer", m->path, c->cdb[0], c->len);
         usb_msleep(dev->hc, g_t_csw);
         dev->broken = true;
         return -ETIMEDOUT;
@@ -320,9 +447,13 @@ static int msc_run(Msc *m, u8 lun, ScsiCmd *c) {
         klog("Kappa", "usb-storage %s: fault injection: status wrapper %u is corrupted", m->path, g_csw_count);
         csw[0] ^= 0xFF;
     }
+    if ((g_fault_residue || g_fault_badresidue) && ++g_status_count) {
+        if (g_status_count == g_fault_residue) { klog("Kappa", "usb-storage %s: fault injection: status %u says nothing moved", m->path, g_status_count); put_le32(csw + 8, c->len); }
+        if (g_status_count == g_fault_badresidue) { klog("Kappa", "usb-storage %s: fault injection: status %u carries a residue beyond the request", m->path, g_status_count); put_le32(csw + 8, c->len + 4097); }
+    }
     const char *bad = csw_check(csw, tag, c->len);
     if (bad) return msc_garbage(m, bad);
-    c->residue = get_le32(csw + 8);
+    c->residue = residue_clamped(get_le32(csw + 8), c->len);
     c->csw_status = csw[12];
     return c->csw_status == 0 ? MSC_OK : MSC_CHECK;
 }
@@ -331,6 +462,28 @@ static int msc_run(Msc *m, u8 lun, ScsiCmd *c) {
 static int msc_run_retry(Msc *m, u8 lun, ScsiCmd *c, int tries) {
     int rc = -EIO;
     for (int i = 0; i < tries && rc == -EIO; i++) rc = msc_run(m, lun, c);
+    return rc;
+}
+
+/* A command of the bring-up (INQUIRY, TEST UNIT READY, READ CAPACITY). One that gets no answer does not condemn the stick at once: it
+ * is reset (bulk-only reset recovery) and asked again, twice per stick at most -- sticks that were spoken to while they were still waking
+ * up are the usual cause, and Linux escalates the same way (abort, device reset, port reset) before it gives up. */
+static int msc_run_boot(Msc *m, u8 lun, ScsiCmd *c) {
+    int rc = msc_run(m, lun, c);
+    if (rc == -ETIMEDOUT && m->dev && !m->gone && !m->dead && m->nudges < 2) {
+        m->nudges++;
+        m->dev->broken = false;                                                 /* usb_bulk marked it; the endpoint was recovered on the controller's side */
+        if (msc_reset_recovery(m) == 0) {
+            klog("Kappa", "usb-storage %s: opcode %02x got no answer; the stick was reset (%u of 2 tries) and is asked again", m->path, c->cdb[0], m->nudges);
+            rc = msc_run(m, lun, c);
+        }
+    }
+    return rc;
+}
+
+static int msc_run_boot_retry(Msc *m, u8 lun, ScsiCmd *c, int tries) {
+    int rc = -EIO;
+    for (int i = 0; i < tries && rc == -EIO; i++) rc = msc_run_boot(m, lun, c);
     return rc;
 }
 
@@ -380,9 +533,10 @@ static int sync_job(void *arg) {
 
 static int msc_blk_rw(BlockDev *d, u64 lba, u32 count, void *buf, bool write) {
     MscLun *l = d->priv;
-    u32 per = MSC_CHUNK / d->sector_size;
     while (count) {
         if (d->removed) return -ENODEV;
+        u32 per = l->msc->chunk / d->sector_size;                               /* the ladder may have stepped down since the last command */
+        if (!per) per = 1;
         u32 n = count < per ? count : per;
         MscIo io = { l, d, lba, n, buf, write };
         int rc = usb_call(io_job, &io);                                         /* one SCSI command, run by the usbd thread */
@@ -430,12 +584,51 @@ static void lun_drop(MscLun *l, LunState to, const char *why) {
     strlcpy(l->why, why ? why : "", sizeof l->why);
 }
 
-/* Runs on the usbd thread. Returns 0 or -errno for the block layer. */
+/* A line for the screen about something that went wrong with a stick: the first few per stick are always printed (a photograph of the screen
+ * is all the owner of a failing stick can send), the rest only with usb=debug so that a dying stick cannot flood the log. */
+static void msc_note(Msc *m, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+static void msc_note(Msc *m, const char *fmt, ...) {
+    char line[160];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(line, sizeof line, fmt, ap);
+    va_end(ap);
+    if (m->noted < 8) {
+        m->noted++;
+        klog("Kappa", "usb-storage %s: %s%s", m->path, line, m->noted == 8 ? " (more of these only with usb=debug)" : "");
+    } else {
+        usb_dbg("usb %s: %s", m->path, line);
+    }
+}
+
+/* Runs on the usbd thread. Returns 0 or -errno for the block layer.
+ *
+ * The ladder: a command that fails in a way that may have to do with its size (a garbled or short transfer, a hang) is repeated; when it
+ * fails a second time, or hangs, the stick is reset if need be and the request is cut into pieces of the next smaller size (64, 32, 16,
+ * 4 KiB), for this request and every later one. Sticks that choke on big transfers exist (Linux limits some of them to 32 KiB by a quirk
+ * entry); this finds out by itself. A medium error or a refusal is not about size and does not go down the ladder. */
 static int msc_io_one(MscLun *l, BlockDev *bd, u64 lba, u32 count, void *buf, bool write) {
     Msc *m = l->msc;
     if (m->gone || m->dead || !m->dev || l->state != LS_ONLINE || l->bd != bd) return -ENODEV;
-    u32 bytes = count * bd->sector_size;
+    u32 ss = bd->sector_size;
+    u32 per = m->chunk / ss;
+    if (!per) per = 1;
+    if (count > per) {                                                          /* the ladder stepped down since the caller cut the request up: cut again */
+        while (count) {
+            u32 n = count < per ? count : per;
+            int rc = msc_io_one(l, bd, lba, n, buf, write);
+            if (rc) return rc;
+            lba += n;
+            count -= n;
+            buf = (u8 *)buf + (size_t)n * ss;
+            per = m->chunk / ss;
+            if (!per) per = 1;
+        }
+        return 0;
+    }
+    u32 bytes = count * ss;
     for (int attempt = 0; attempt < 3; attempt++) {
+        const char *trouble = NULL;                                             /* set when the failure may be about the size of the command */
         u8 cdb[16];
         memset(cdb, 0, sizeof cdb);
         bool big = l->use16 || lba > 0xFFFFFFFFull || lba + count - 1 > 0xFFFFFFFFull || count > 0xFFFF;
@@ -454,56 +647,94 @@ static int msc_io_one(MscLun *l, BlockDev *bd, u64 lba, u32 count, void *buf, bo
         }
         ScsiCmd c = { .cdb = cdb, .cdb_len = cdb_len, .data = buf, .len = bytes, .in = !write, .t_data = write ? g_t_write : g_t_read };
         int rc = msc_run(m, l->lun, &c);
-        if (rc == MSC_OK) {
-            if (c.residue || (!write && c.got != bytes)) {                      /* the status says "good" but the data does not add up */
-                l->errors++;
-                usb_dbg("usb %s: %s of %u blocks at %lu: residue %u, %u of %u bytes moved", m->path, write ? "write" : "read", count,
-                        (unsigned long)lba, c.residue, c.got, bytes);
-                return -EIO;
+        if (rc == MSC_OK && c.got == bytes) {
+            /* Done. What the status says about the residue is not believed over the bytes that really moved: sticks that put "nothing
+             * moved" (or more than the request) into a good status are common (Linux: US_FL_IGNORE_RESIDUE), and failing every read for it
+             * would make such a stick useless. */
+            if (c.residue) {
+                l->residues++;
+                if (l->residues <= 3) usb_dbg("usb %s: %s of %u blocks at %lu: the status says %u bytes did not move, but all %u did -- not believed", m->path,
+                                              write ? "write" : "read", count, (unsigned long)lba, c.residue, bytes);
             }
             if (write) { l->writes++; l->bytes_written += bytes; } else { l->reads++; l->bytes_read += bytes; }
             return 0;
         }
-        if (rc == MSC_CHECK) {
+        if (rc == MSC_OK) {                                                     /* a good status, but fewer bytes than asked for */
+            l->errors++;
+            msc_note(m, "%s of %u blocks at %lu: the stick said it was fine but only %u of %u bytes moved", write ? "write" : "read", count,
+                     (unsigned long)lba, c.got, bytes);
+            trouble = "short transfer";
+        } else if (rc == MSC_CHECK) {
             Sense s;
             int sr = msc_sense(m, l->lun, &s);
             if (sr < 0) {
                 if (fatal_rc(sr)) { msc_died(m, "no answer to REQUEST SENSE"); return -EIO; }
-                l->errors++;
-                continue;                                                       /* recovery ran; try the command again */
+                l->errors++;                                                    /* recovery ran */
+                trouble = "failed command without sense data";
+            } else {
+                usb_dbg("usb %s: %s at %lu failed: sense %x/%02x/%02x", m->path, write ? "write" : "read", (unsigned long)lba, s.key, s.asc, s.ascq);
+                switch (sense_action(&s)) {
+                case SA_RETRY:
+                    if (attempt < 2) { usb_msleep(m->dev->hc, 100); continue; }
+                    l->errors++;
+                    msc_note(m, "%s of %u blocks at %lu keeps failing: sense %x/%02x/%02x", write ? "write" : "read", count, (unsigned long)lba, s.key, s.asc, s.ascq);
+                    return -EIO;
+                case SA_NOMEDIA:
+                    klog("Kappa", "usb-storage %s lun %u: the medium was taken out of %s", m->path, l->lun, bd->name);
+                    lun_drop(l, LS_NOMEDIA, "medium removed");
+                    recount();
+                    return -ENODEV;                                             /* (what the libc can name; Linux would say "no medium found") */
+                case SA_CHANGED:
+                    klog("Kappa", "usb-storage %s lun %u: the medium was changed under %s (unit attention): the disk is dropped and probed again", m->path, l->lun, bd->name);
+                    lun_drop(l, LS_START, "medium changed");
+                    recount();
+                    return -EIO;
+                case SA_PROTECT:
+                    klog("Kappa", "usb-storage %s lun %u: %s is write-protected after all (data protect): switching it to read-only", m->path, l->lun, bd->name);
+                    bd->readonly = true;
+                    l->wp = true;
+                    return -EROFS;
+                default:
+                    l->errors++;
+                    msc_note(m, "%s of %u blocks at %lu failed: sense %x/%02x/%02x", write ? "write" : "read", count, (unsigned long)lba, s.key, s.asc, s.ascq);
+                    return -EIO;                                                /* a medium error is not about the size of the command */
+                }
             }
-            usb_dbg("usb %s: %s at %lu failed: sense %x/%02x/%02x", m->path, write ? "write" : "read", (unsigned long)lba, s.key, s.asc, s.ascq);
-            switch (sense_action(&s)) {
-            case SA_RETRY:
-                if (attempt < 2) { usb_msleep(m->dev->hc, 100); continue; }
-                l->errors++;
-                return -EIO;
-            case SA_NOMEDIA:
-                klog("Kappa", "usb-storage %s lun %u: the medium was taken out of %s", m->path, l->lun, bd->name);
-                lun_drop(l, LS_NOMEDIA, "medium removed");
-                recount();
-                return -ENODEV;                                                 /* (what the libc can name; Linux would say "no medium found") */
-            case SA_CHANGED:
-                klog("Kappa", "usb-storage %s lun %u: the medium was changed under %s (unit attention): the disk is dropped and probed again", m->path, l->lun, bd->name);
-                lun_drop(l, LS_START, "medium changed");
-                recount();
-                return -EIO;
-            case SA_PROTECT:
-                klog("Kappa", "usb-storage %s lun %u: %s is write-protected after all (data protect): switching it to read-only", m->path, l->lun, bd->name);
-                bd->readonly = true;
-                l->wp = true;
-                return -EROFS;
-            default:
-                l->errors++;
-                return -EIO;
+        } else if (rc == -ETIMEDOUT) {
+            /* A stick that hangs on a big transfer is not necessarily gone: usb_bulk marked the device broken and recovered the endpoint on
+             * the controller's side; reset the stick itself and ask it for less. At the bottom of the ladder, or when the reset does not
+             * help, it is given up on as before. */
+            u32 below = ladder_below(bytes);
+            if (below && m->dev) {
+                m->dev->broken = false;
+                if (msc_reset_recovery(m) == 0) {
+                    m->chunk = below;
+                    klog("Kappa", "usb-storage %s: a %u KiB %s hung the stick; it answers again after a reset and is asked for at most %u KiB per command from now on",
+                         m->path, bytes >> 10, write ? "write" : "read", below >> 10);
+                    return msc_io_one(l, bd, lba, count, buf, write);
+                }
             }
-        }
-        if (rc == -ETIMEDOUT) { msc_died(m, write ? "a write timed out" : "a read timed out"); return -EIO; }
-        if (rc == -ENODEV) {                                                    /* unplugged mid-transfer, or the reset recovery failed (it said so) */
+            msc_died(m, write ? "a write timed out" : "a read timed out");
+            return -EIO;
+        } else if (rc == -ENODEV) {                                             /* unplugged mid-transfer, or the reset recovery failed (it said so) */
             msc_died(m, "the stick stopped answering or was pulled out");
             return -ENODEV;
+        } else {
+            l->errors++;                                                        /* -EIO: garbage on the wire, reset recovery ran */
+            trouble = "garbled transfer";
         }
-        l->errors++;                                                            /* -EIO: recovery ran, ask again */
+
+        /* Here only after a failure that may be about the size of the command. The first one is simply asked again (a one-off glitch must not
+         * slow the stick down for good); the second sends the request down the ladder. */
+        if (attempt >= 1) {
+            u32 below = ladder_below(bytes);
+            if (below) {
+                m->chunk = below;                                               /* strictly smaller than bytes <= chunk: the recursion cuts the request up */
+                klog("Kappa", "usb-storage %s: a %u KiB %s failed twice (%s); from now on at most %u KiB per command", m->path, bytes >> 10,
+                     write ? "write" : "read", trouble, below >> 10);
+                return msc_io_one(l, bd, lba, count, buf, write);
+            }
+        }
     }
     return -EIO;
 }
@@ -631,14 +862,28 @@ static int lun_capacity(Msc *m, MscLun *l, u64 *sectors, u32 *bsz) {
     return 0;
 }
 
-/* MODE SENSE(6): the write-protect bit of the mode parameter header. A stick that does not answer is taken to be writable. */
+/* MODE SENSE(6): the write-protect bit of the mode parameter header. A stick that does not answer (stalls it, refuses it, hangs on it) is
+ * taken to be writable, like Linux's "Test WP failed, assume Write Enabled"; if it really is protected the first write says DATA PROTECT
+ * and the disk turns read-only then (msc_io_one). A hang costs a reset of the stick, and the question is not asked again. */
 static bool lun_write_protected(Msc *m, MscLun *l) {
+    if (m->quirks & Q_NO_WP) { l->wp_how = "not asked (quirk nowp)"; return false; }
     u8 cdb[6] = { 0x1A, 0, 0x3F, 0, 4, 0 };
     u8 buf[4] = { 0 };
     ScsiCmd c = { .cdb = cdb, .cdb_len = 6, .data = buf, .len = sizeof buf, .in = true, .t_data = g_t_quick };
     int rc = msc_run_retry(m, l->lun, &c, 2);
-    if (rc == MSC_CHECK) { Sense s; msc_sense(m, l->lun, &s); return false; }
-    if (rc != MSC_OK || c.got < 4) return false;
+    if (rc == MSC_CHECK) { Sense s; msc_sense(m, l->lun, &s); l->wp_how = "MODE SENSE refused, taken to be writable"; return false; }
+    if (rc == -ETIMEDOUT) {
+        if (m->dev) m->dev->broken = false;                                     /* usb_bulk marked it; the endpoint was recovered on the controller's side */
+        if (msc_reset_recovery(m) == 0) {
+            klog("Kappa", "usb-storage %s: MODE SENSE hung the stick; it answered again after a reset and is taken to be writable", m->path);
+            l->wp_how = "MODE SENSE hung, taken to be writable";
+        } else {
+            msc_died(m, "MODE SENSE timed out and the reset recovery failed");
+        }
+        return false;
+    }
+    if (rc != MSC_OK || c.got < 4) { l->wp_how = "MODE SENSE failed, taken to be writable"; return false; }
+    l->wp_how = (buf[2] & 0x80) ? "MODE SENSE says protected" : "MODE SENSE says writable";
     return (buf[2] & 0x80) != 0;
 }
 
