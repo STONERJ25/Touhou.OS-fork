@@ -198,14 +198,17 @@ def job_control_session(vm, prompt):
     vm.send(CTRL_D)
     vm.expect(prompt, timeout=30)
 
+    def jobs_until(pattern):
+        for _ in range(20):
+            out, _ = run("jobs")
+            if re.search(pattern, out):
+                return
+            run("sleep 1")
+        raise AssertionError(f"jobs never showed /{pattern}/:\n{out}")
+
     # a background job that reads the terminal stops (SIGTTIN); fg gives it the terminal
     check("cat > /tmp/jc.in &")
-    for _ in range(20):
-        out, _ = run("jobs")
-        if "Stopped (tty input)" in out:
-            break
-        run("sleep 1")
-    assert re.search(r"\[1\]\+  Stopped \(tty input\) +cat > /tmp/jc.in", out), out
+    jobs_until(r"\[1\]\+  Stopped \(tty input\) +cat > /tmp/jc.in")
     vm.send("fg\n")
     vm.expect(r"\ncat > /tmp/jc.in\n", timeout=30)
     vm.send("typed\n")
@@ -226,6 +229,17 @@ def job_control_session(vm, prompt):
     vm.expect(r"RAWSTOP after icanon=0 echo=0 isig=1\n", timeout=30)
     vm.expect(prompt, timeout=30)
     check("jctest tmodes", r"TMODES icanon=1 echo=1 isig=1")
+
+    # an interactive shell started in the background waits for fg instead of taking the terminal
+    check("gapsh &")
+    jobs_until(r"\[1\]\+  Stopped \(tty input\) +gapsh")
+    vm.send("fg\n")
+    vm.expect(r"\ngapsh\n", timeout=30)
+    vm.expect(prompt, timeout=60)
+    check("echo nested-$$", r"nested-\d+")
+    vm.send("exit\n")
+    vm.expect(prompt, timeout=60)
+    check("jobs; echo count=$(jobs | wc -l)", r"count=0")
 
     # ^C and ^Z drop the rest of the command line, so a loop cannot run away with the terminal
     mark = len(vm.text())

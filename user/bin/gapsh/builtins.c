@@ -538,6 +538,7 @@ static const struct { const char *name; int num; } g_signames[] = {
     { "HUP", SIGHUP }, { "INT", SIGINT }, { "QUIT", SIGQUIT }, { "ILL", SIGILL }, { "ABRT", SIGABRT }, { "KILL", SIGKILL },
     { "USR1", SIGUSR1 }, { "SEGV", SIGSEGV }, { "USR2", SIGUSR2 }, { "PIPE", SIGPIPE }, { "ALRM", SIGALRM },
     { "TERM", SIGTERM }, { "CHLD", SIGCHLD }, { "CONT", SIGCONT }, { "STOP", SIGSTOP }, { "TSTP", SIGTSTP },
+    { "TTIN", SIGTTIN }, { "TTOU", SIGTTOU },
 };
 
 static int sig_from_name(const char *s) {
