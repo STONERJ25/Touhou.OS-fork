@@ -20,6 +20,7 @@ int   memcmp(const void *a, const void *b, size_t n);
 int   guid_equal(const EFI_GUID *a, const EFI_GUID *b);
 __attribute__((noreturn)) void loader_halt(void);
 void  pc_beep(int n);               /* n short beeps on the PC speaker: a second channel when the screen shows nothing (needs "stagebeep") */
+__attribute__((noreturn)) void pc_reset(void);   /* about six seconds from now: restart the machine (the PCH reset register, then a triple fault) */
 
 /* paging.c */
 typedef struct {

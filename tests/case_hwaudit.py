@@ -322,6 +322,22 @@ def hwaudit_stage_marks():
 
 
 @test
+def hwaudit_loader_ladder():
+    """The loader's ladder of workarounds (strategy=N): rung 0 restarts the machine by itself after the exit call came back, the others boot to the shell, the stdmem rungs hand the kernel and the initrd over as such."""
+    with Qemu(cmdline="text strategy=0", name="t-hw-rung0") as vm:
+        vm.expect(r"loader: rung 0 of 4", timeout=90)
+        assert vm.wait_exit(180) is not None, "rung 0 should restart the machine by itself"
+        assert "[Gensokyo] kernel" not in vm.text(), "the kernel must not start on rung 0"
+    for rung in (1, 2, 4):
+        with Qemu(cmdline=f"text strategy={rung}", name=f"t-hw-rung{rung}") as vm:
+            vm.expect(PROMPT, timeout=120)
+            text = vm.text()
+            assert f"loader: rung {rung} of 4" in text, text[-800:]
+            if rung >= 2:
+                assert "stdmem" in text and "reclaimed" in text, text[-800:]
+
+
+@test
 def hwaudit_panic_on_desktop():
     """A kernel panic while the desktop owns the screen is drawn: killing init as root stops the compositor's picture and shows the incident text (red) on the console."""
     with Qemu(cmdline="autologin=root", name="t-hw-panic-desktop", mem="768M") as vm:

@@ -85,6 +85,18 @@ void pc_beep(int n) {
     tsc_wait(600000000ULL);
 }
 
+/* Restart the machine after about six seconds (TSC cycles again, so no timer service is needed): the proof that the CPU still runs after a
+ * step, for a PC whose screen stops updating. The reset control register of the chipset first, a triple fault if that does nothing. */
+__attribute__((noreturn)) void pc_reset(void) {
+    tsc_wait(20000000000ULL);
+    outb(0xCF9, 0x02);
+    outb(0xCF9, 0x06);
+    tsc_wait(3000000000ULL);
+    struct { UINT16 limit; UINT64 base; } __attribute__((packed)) empty_idt = { 0, 0 };
+    __asm__ volatile ("lidt %0\n\tint3" : : "m"(empty_idt));
+    for (;;) __asm__ volatile ("hlt");
+}
+
 /* IA32_EFER.NXE must be set before any page table entry uses the NX bit. */
 void enable_nxe(void) {
     UINT32 lo, hi;

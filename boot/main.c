@@ -119,10 +119,57 @@ static void parse_video(const char *cmdline, UINT32 *w, UINT32 *h) {
  * serial port can show once the loader's text stops, so each stage of the handoff draws one. */
 static int g_stagehold;
 static int g_stagebeep;             /* "stagebeep": also say it on the PC speaker (stage N beeps N times; the kernel adds one long beep) */
+static int g_noexitmarks;           /* "noexitmarks": no framebuffer writes by the loader once the call that leaves the firmware has returned */
+static int g_exitreset;             /* "exitreset": restart the machine about six seconds after that call returned (no screen needed to see it) */
+
+static int has_word(const char *cmdline, const char *word) {
+    for (const char *p = cmdline; *p; p++) {
+        if (p != cmdline && p[-1] != ' ') continue;
+        int k = 0;
+        while (word[k] && p[k] == word[k]) k++;
+        if (!word[k] && (p[k] == 0 || p[k] == ' ')) return 1;
+    }
+    return 0;
+}
+
+static int g_cliexit;               /* "cliexit": interrupts off right before the exit call */
+static int g_quietexit;             /* "quietexit": no console text between the files and the exit call */
+static int g_nomarks;               /* "nomarks": no squares from the loader at all */
+static int g_stdmem;                /* "stdmem": kernel and initrd are ordinary loader data, retyped in the map we hand over (no OS-defined memory types) */
+
+/* The number after "key" (key includes the '='); 1 when the key is there. */
+static int find_number(const char *cmdline, const char *key, int *out) {
+    for (const char *p = cmdline; *p; p++) {
+        if (p != cmdline && p[-1] != ' ') continue;
+        int k = 0;
+        while (key[k] && p[k] == key[k]) k++;
+        if (!key[k]) {
+            int v = 0;
+            for (const char *q = p + k; *q >= '0' && *q <= '9'; q++) v = v * 10 + (*q - '0');
+            *out = v;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void append_words(char *cmdline, UINTN cap, const char *words) {
+    UINTN n = 0;
+    while (cmdline[n]) n++;
+    if (n && n + 1 < cap) cmdline[n++] = ' ';
+    for (; *words && n + 1 < cap; words++) cmdline[n++] = *words;
+    cmdline[n] = 0;
+}
 
 static void parse_stagehold(const char *cmdline) {
     static const char key[] = "stagehold=";
     static const char beep[] = "stagebeep";
+    g_cliexit = has_word(cmdline, "cliexit");
+    g_quietexit = has_word(cmdline, "quietexit");
+    g_nomarks = has_word(cmdline, "nomarks");
+    g_stdmem = has_word(cmdline, "stdmem");
+    g_noexitmarks = has_word(cmdline, "noexitmarks");
+    g_exitreset = has_word(cmdline, "exitreset");
     for (const char *p = cmdline; *p; p++) {
         int b = 0;
         while (beep[b] && p[b] == beep[b]) b++;
@@ -141,7 +188,7 @@ static void parse_stagehold(const char *cmdline) {
 }
 
 static void stage(const BootFramebuffer *fb, int n) {
-    if (fb->base) stage_mark((volatile UINT8 *)fb->base, fb->pitch, fb->width, fb->height, n);
+    if (fb->base && !g_nomarks && !(g_noexitmarks && (n == 2 || n == 3))) stage_mark((volatile UINT8 *)fb->base, fb->pitch, fb->width, fb->height, n);
     if (g_stagebeep && n >= 2) pc_beep(n);
     if (g_stagehold == n) loader_halt();
 }
@@ -149,11 +196,99 @@ static void stage(const BootFramebuffer *fb, int n) {
 /* The marks of the exit from the firmware (rows 1-5 of the grid in shared/stagemark.h). Plain stores to the framebuffer: they do not
  * touch boot services, so they may sit between GetMemoryMap and ExitBootServices. */
 static void exit_mark(const BootFramebuffer *fb, int row, int col) {
-    if (fb->base) mark_square((volatile UINT8 *)fb->base, fb->pitch, fb->width, fb->height, row, col, 0x00FFFFFFu);
+    if (fb->base && !g_nomarks) mark_square((volatile UINT8 *)fb->base, fb->pitch, fb->width, fb->height, row, col, 0x00FFFFFFu);
 }
 
 static void exit_status(const BootFramebuffer *fb, int row, UINT64 status) {
-    if (fb->base) mark_byte((volatile UINT8 *)fb->base, fb->pitch, fb->width, fb->height, row, status);
+    if (fb->base && !g_nomarks) mark_byte((volatile UINT8 *)fb->base, fb->pitch, fb->width, fb->height, row, status);
+}
+
+/*
+ * The ladder (command-line word "ladder"; "strategy=N" picks a rung by hand). The first boot of a PC is an experiment, and a machine
+ * that stops in the firmware's exit call can be tried one hypothesis per flashed stick or, much faster, one per boot: every start of this
+ * loader counts itself in a non-volatile variable named after the build, picks the rung with that number and adds its words to the
+ * command line (so the kernel's log shows them too). The owner just keeps restarting the machine and says which rung reached the desktop.
+ */
+typedef struct { const char *what; const char *words; } Rung;
+static const Rung g_rungs[] = {
+    { "probe: the machine restarts by itself if the exit call comes back",               "exitreset stagebeep" },
+    { "no screen writes by the loader after the exit call",                              "noexitmarks stagebeep" },
+    { "... and ordinary memory types for the kernel and the initrd",                     "noexitmarks stdmem stagebeep" },
+    { "... and interrupts off, no console text before the exit call",                    "noexitmarks stdmem cliexit quietexit stagebeep" },
+    { "... and no squares from the loader at all",                                       "noexitmarks stdmem cliexit quietexit nomarks stagebeep" },
+};
+#define NRUNGS ((int)(sizeof g_rungs / sizeof g_rungs[0]))
+
+typedef EFI_STATUS (EFIAPI *GetVariableFn)(CHAR16 *name, EFI_GUID *vendor, UINT32 *attr, UINTN *size, void *data);
+typedef EFI_STATUS (EFIAPI *SetVariableFn)(CHAR16 *name, EFI_GUID *vendor, UINT32 attr, UINTN size, void *data);
+static EFI_GUID triesGuid = { 0x7e4d6a10, 0x5b3c, 0x4c1f, { 0x9a, 0x21, 0x6f, 0x0d, 0x2b, 0x8c, 0x31, 0x55 } };
+
+/* How many times this build of the loader has started on this machine, this start included (1, 2, 3 ...); 0 if the variable store refuses. */
+static UINT32 start_count(void) {
+    static const char hex[] = "0123456789abcdef";
+    CHAR16 name[24] = { 'T', 'o', 'u', 'h', 'o', 'u', 'T', 'r', 'y' };
+    UINT32 h = 2166136261u;                                       /* the build's date and time make the name: a new image starts at rung 0 */
+    for (const char *p = __DATE__ " " __TIME__; *p; p++) { h ^= (UINT8)*p; h *= 16777619u; }
+    for (int i = 0; i < 8; i++) name[9 + i] = (CHAR16)hex[(h >> (28 - 4 * i)) & 0xF];
+    name[17] = 0;
+    EFI_RUNTIME_SERVICES *rt = g_st->RuntimeServices;
+    UINT32 count = 0, attr = 0;
+    UINTN size = sizeof count;
+    if (EFI_ERROR(((GetVariableFn)rt->GetVariable)(name, &triesGuid, &attr, &size, &count)) || size != sizeof count) count = 0;
+    count++;
+    if (EFI_ERROR(((SetVariableFn)rt->SetVariable)(name, &triesGuid, 7 /* non-volatile, boot and runtime */, sizeof count, &count))) {
+        log_str("loader: cannot count the starts (the variable store refuses): rung 0 every time\n");
+        return 0;
+    }
+    return count;
+}
+
+static void pick_rung(char *cmdline, UINTN cap) {
+    int rung = -1;
+    if (!find_number(cmdline, "strategy=", &rung)) {
+        if (!has_word(cmdline, "ladder")) return;
+        UINT32 c = start_count();
+        rung = c ? (int)((c - 1) % (UINT32)NRUNGS) : 0;
+        append_words(cmdline, cap, "strategy=");                  /* the digit follows below */
+        UINTN n = 0;
+        while (cmdline[n]) n++;
+        if (n + 2 < cap) { cmdline[n] = (char)('0' + rung); cmdline[n + 1] = 0; }
+    }
+    if (rung < 0 || rung >= NRUNGS) return;
+    log_str("loader: rung "); log_dec((UINT64)rung); log_str(" of "); log_dec((UINT64)(NRUNGS - 1)); log_str(": "); log_str(g_rungs[rung].what); log_str("\n");
+    append_words(cmdline, cap, g_rungs[rung].words);
+}
+
+/* Retype [base, base+len) in the sorted region list, splitting regions at its edges; returns the new count (the array has slack). */
+static UINT32 retype_range(BootMemRegion *r, UINT32 n, UINT64 base, UINT64 len, UINT32 type) {
+    UINT64 end = base + len;
+    UINT32 count = n;
+    for (UINT32 i = 0; i < n; i++) {
+        UINT64 rb = r[i].base, re = rb + r[i].length;
+        if (re <= base || rb >= end || r[i].type == type) continue;
+        UINT32 old = r[i].type;
+        UINT64 ob = rb > base ? rb : base, oe = re < end ? re : end;
+        r[i].base = ob; r[i].length = oe - ob; r[i].type = type;
+        if (rb < ob) { r[count].base = rb; r[count].length = ob - rb; r[count].type = old; r[count].reserved = 0; count++; }
+        if (oe < re) { r[count].base = oe; r[count].length = re - oe; r[count].type = old; r[count].reserved = 0; count++; }
+    }
+    return count;
+}
+
+/* Insertion sort by base, then merge neighbours of one type that touch. */
+static UINT32 sort_merge(BootMemRegion *r, UINT32 n) {
+    for (UINT32 i = 1; i < n; i++) {
+        BootMemRegion x = r[i];
+        UINT32 j = i;
+        while (j > 0 && r[j - 1].base > x.base) { r[j] = r[j - 1]; j--; }
+        r[j] = x;
+    }
+    UINT32 m = 0;
+    for (UINT32 i = 0; i < n; i++) {
+        if (m && r[m - 1].type == r[i].type && r[m - 1].base + r[m - 1].length == r[i].base) r[m - 1].length += r[i].length;
+        else r[m++] = r[i];
+    }
+    return m;
 }
 
 /* Which byte order a mode uses: BOOTFB_BGRX, BOOTFB_RGBX, or -1 when it is not a 32-bit linear framebuffer we can draw to.
@@ -309,7 +444,7 @@ static int load_kernel(UINT64 file_phys, UINT64 file_size, KernelImage *k) {
     k->virt_base = lo;
     k->size      = hi - lo;
     k->entry     = eh->e_entry;
-    k->phys_base = alloc_pages(EFI_MEMTYPE_KERNEL, k->size / PAGE_SIZE);
+    k->phys_base = alloc_pages(g_stdmem ? EfiLoaderData : EFI_MEMTYPE_KERNEL, k->size / PAGE_SIZE);
     memset((void *)k->phys_base, 0, k->size);
 
     for (UINT32 i = 0; i < eh->e_phnum; i++) {
@@ -349,19 +484,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st) {
 
     /* --- files --- */
     UINT64 kfile_phys = 0, kfile_size = 0, initrd_phys = 0, initrd_size = 0, cmd_phys = 0, cmd_size = 0;
-    if (EFI_ERROR(read_file(root, "kernel.elf", EfiLoaderData, &kfile_phys, &kfile_size))) {
-        log_str("loader: kernel.elf not found on the boot volume\n");
-        return fail_wait(EFI_NOT_FOUND);
-    }
-    log_str("loader: kernel.elf "); log_dec(kfile_size); log_str(" bytes\n");
-
-    if (!EFI_ERROR(read_file(root, "initrd.img", EFI_MEMTYPE_MODULE, &initrd_phys, &initrd_size))) {
-        log_str("loader: initrd.img "); log_dec(initrd_size); log_str(" bytes\n");
-    } else {
-        initrd_phys = initrd_size = 0;
-        log_str("loader: no initrd.img\n");
-    }
-    char cmdline[BOOTINFO_CMDLINE_MAX] = {0};
+    char cmdline[BOOTINFO_CMDLINE_MAX] = {0};          /* first: the words decide how the rest is loaded */
     if (!EFI_ERROR(read_file(root, "cmdline.txt", EfiLoaderData, &cmd_phys, &cmd_size)))
         normalize_cmdline((const UINT8 *)cmd_phys, cmd_size, cmdline, BOOTINFO_CMDLINE_MAX);
     else {
@@ -370,14 +493,28 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st) {
         memcpy(cmdline, defaults, sizeof defaults);
         log_str("loader: no cmdline.txt on the boot volume: using the safe default\n");
     }
+    pick_rung(cmdline, BOOTINFO_CMDLINE_MAX);
+    parse_stagehold(cmdline);
     log_str("loader: cmdline '"); log_str(cmdline); log_str("'\n");
+
+    if (EFI_ERROR(read_file(root, "kernel.elf", EfiLoaderData, &kfile_phys, &kfile_size))) {
+        log_str("loader: kernel.elf not found on the boot volume\n");
+        return fail_wait(EFI_NOT_FOUND);
+    }
+    log_str("loader: kernel.elf "); log_dec(kfile_size); log_str(" bytes\n");
+
+    if (!EFI_ERROR(read_file(root, "initrd.img", g_stdmem ? EfiLoaderData : EFI_MEMTYPE_MODULE, &initrd_phys, &initrd_size))) {
+        log_str("loader: initrd.img "); log_dec(initrd_size); log_str(" bytes\n");
+    } else {
+        initrd_phys = initrd_size = 0;
+        log_str("loader: no initrd.img\n");
+    }
     root->Close(root);                  /* nothing of the boot volume stays open when the firmware shuts its drivers down */
 
     /* --- framebuffer --- */
     BootFramebuffer fb = {0};
     UINT32 want_w = 1024, want_h = 768;
     parse_video(cmdline, &want_w, &want_h);
-    parse_stagehold(cmdline);
     setup_gop(&fb, want_w, want_h);
     stage(&fb, 1);
 
@@ -413,7 +550,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st) {
     bi->arena_size  = ARENA_PAGES * PAGE_SIZE;
     memcpy(bi->cmdline, cmdline, BOOTINFO_CMDLINE_MAX);
 
-    log_str("loader: leaving boot services\n");
+    if (!g_quietexit) log_str("loader: leaving boot services\n");
 
     /* --- exit boot services: nothing may touch boot services between GetMemoryMap and the exit --- */
     UINTN mapSize = 0, descSize = 0;
@@ -434,10 +571,12 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st) {
         if (EFI_ERROR(s)) { exit_status(&fb, 2, s); log_str("loader: GetMemoryMap failed\n"); loader_halt(); }
         /* A stale map key (something the firmware did while shutting down changed the map) is the normal reason for a failure: ask again. */
         exit_mark(&fb, 3, attempt);                 /* about to call ExitBootServices */
+        if (g_cliexit) __asm__ volatile ("cli");
         EFI_STATUS es = g_bs->ExitBootServices(image, mapKey);
-        exit_mark(&fb, 6, 0);                       /* the call came back */
+        if (g_exitreset) pc_reset();                /* never returns: the machine restarts, which shows that the call came back */
+        if (!g_noexitmarks) exit_mark(&fb, 6, 0);   /* the call came back */
         if (g_stagebeep) pc_beep(1);
-        exit_status(&fb, 4, es);
+        if (!g_noexitmarks) exit_status(&fb, 4, es);
         if (!EFI_ERROR(es)) exited = 1;
     }
     if (!exited) { exit_mark(&fb, 5, 0); log_str("loader: ExitBootServices failed\n"); loader_halt(); }
@@ -446,7 +585,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st) {
 
     /* --- convert the memory map: classify, sort, merge --- */
     UINT64 ndesc = mapSize / descSize;
-    BootMemRegion *regions = arena_alloc(ndesc * sizeof(BootMemRegion), 8);
+    BootMemRegion *regions = arena_alloc((ndesc + 8) * sizeof(BootMemRegion), 8);      /* slack for the splits of the stdmem retyping */
     UINT32 n = 0;
     for (UINT64 i = 0; i < ndesc; i++) {
         const EFI_MEMORY_DESCRIPTOR *d = (const EFI_MEMORY_DESCRIPTOR *)((const UINT8 *)rawmap + i * descSize);
@@ -464,6 +603,11 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st) {
         } else {
             regions[m++] = regions[i];
         }
+    }
+    if (g_stdmem) {                 /* the kernel and the initrd were allocated as plain loader data: say what they really are */
+        m = retype_range(regions, m, kimg.phys_base, kimg.size, BOOTMEM_KERNEL);
+        if (initrd_size) m = retype_range(regions, m, initrd_phys, (initrd_size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1), BOOTMEM_MODULE);
+        m = sort_merge(regions, m);
     }
     UINT64 max_ram_end = 0, usable = 0;
     for (UINT32 i = 0; i < m; i++) {
