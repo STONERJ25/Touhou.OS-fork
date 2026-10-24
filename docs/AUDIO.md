@@ -1,32 +1,35 @@
 # Sound
 
-The sound system belongs to the Kappa/Nitori hardware crowd (kernel log tag `Nitori`). Reimu's Jukebox is the music player.
+The sound system belongs to the Kappa/Nitori hardware crowd (kernel log tag `Nitori`). Reimu's Jukebox is the music player,
+staged in the Prismriver Concert Hall.
 
 ```
- programs: beep play volume jukebox desktop sounds   user/bin/kappabox/audio.c, user/bin/jukebox/
-        |  libaudio  (device, WAV, generators, chiptune synth, system sounds)    user/lib/audio/
+ Jukebox  beep  play  volume  panel speaker  desktop sounds     user/bin/jukebox/, user/bin/kappabox/audio.c, hakurei-shell
+        |  libaudio  (device, WAV, generators, songs and the synthesizer, module player, system sounds)    user/lib/audio/
         v  /dev/audio (write PCM, ioctls) and /proc/audio
- audio core  kernel/drivers/audio/audio.c      streams, software mixer, volume, limiter, mixer thread
+ audio core  kernel/drivers/audio/audio.c     streams, software mixer, volume, limiter, mixer thread
         |  AudioBackend: a looping 48 kHz 16-bit stereo DMA ring + "where is the hardware now?"
         v
- hda.c  Intel High Definition Audio (QEMU intel-hda, the Dell's 8086:a171 + Realtek codec)      ac97.c  AC'97 (QEMU AC97)
+ hda.c + hda_graph.c  Intel High Definition Audio (QEMU intel-hda; the Dell's 8086:a171 + Realtek codec)      ac97.c  AC'97
 ```
 
 ## Status (read this first)
 
 | Piece | State |
 |---|---|
-| Audio core: `/dev/audio`, mixer, per-stream and master volume, mute, soft limiter, `/proc/audio`, underruns are silence | done, tested in QEMU |
-| Intel HDA driver (CORB/RIRB polled, codec graph parse, path selection, unmute, EAPD, stream, jack auto-mute) | done, tested in QEMU with `hda-output` only; **never run on real hardware** |
-| AC'97 driver (polled, circular descriptor list) | done, tested in QEMU (`AC97`); never run on real hardware |
+| Audio core: `/dev/audio`, mixer, per-stream and master volume, mute, soft limiter, `/proc/audio`, underruns are silence, instant flush | done, tested in QEMU |
+| Intel HDA driver: generic codec graph walk, output planner, auto-mute, immediate-command and position-buffer fallbacks | done, tested in QEMU (`hda-output`, `hda-duplex`, `hda-micro`, and a controller with no codec) and, for the planner, against invented Realtek-style codecs; **never run on real hardware** |
+| AC'97 driver | done, tested in QEMU (`AC97`); never run on real hardware |
 | libaudio: device, WAV reader/writer, tone and noise generators, system sounds | done |
-| libaudio: chiptune synthesizer / sequencer (`chip.h`, `chip.c`: MML notation, 12 instruments, ADSR, vibrato, PolyBLEP) | written and compiles; **never run or tested**, not used by any program yet |
-| the procedural tracks (`chip_songs()`, `songs.c`) | not written yet |
-| `beep`, `play` (`-g MS` keeps the stream open between files), `volume` | done |
-| Reimu's Jukebox (GUI) | not written yet |
-| System sounds hooked into the shell, greeter, lock screen and dialogs | not hooked in yet (`beep -e login` plays them) |
-| Recording (capture) | not planned for the first round |
-| Tests | `tests/case_audio.py` (see the list below) |
+| Song engine: pulse / triangle / saw / noise / 2-operator FM voices, the `.tms` pattern format, parser, sequencer | done, tested (pitch, tempo, bar alignment) |
+| Five original songs (`/ScarletDevilMansion/share/music/*.tms`) | done; **nobody has listened to them**: the checks are measurements, not ears |
+| ProTracker `.mod` player (4 to 32 channels, the usual effects, Amiga panning) | done, tested with generated modules (pitch, panning, seeking and twenty effects, each against a model); **never run on a real tracker tune**. `.s3m`, `.xm`, `.it` and 15-sample modules: **not done** |
+| `beep`, `play` (WAV, raw, songs, modules), `volume` | done |
+| Reimu's Jukebox (playlist, play/pause/stop/seek, volume, level display, `~/Music`) | done, GUI-tested |
+| System sounds (login, dialog, error, shutdown) in the shell, greeter, lock screen, Kappa dialogs, switch `nosounds` / `HAKUREI_SOUNDS` / `/etc/hakurei/sounds` | done, tested |
+| Volume control in the panel | done, tested |
+| Recording (capture) | not done (the task called it optional) |
+| Tests | `tests/case_audio.py` (19 tests), `tests/audiotools.py`, `tests/modtools.py`, `tests/host/hdatest.c`, `tests/guitext.py` (see Tests) |
 
 ## The device
 
@@ -45,11 +48,13 @@ master volume (`volume` does this) costs nothing. Per stream:
 * a volume (0 to 100 per channel) and a mute flag.
 
 `close()` never blocks and never cuts off sound already written: the stream stays until its queue has been played out.
-`AUDIO_FLUSH` throws the queue away; `AUDIO_DRAIN` waits until everything has been heard.
+`AUDIO_FLUSH` throws the queue away (and, when no other program has sound waiting, the 100 ms that are already mixed, so
+pause, seek and stop are heard at once); `AUDIO_DRAIN` waits until everything has been heard.
 
 ioctls are in `shared/audio_abi.h`: `AUDIO_SET_FORMAT`, `AUDIO_GET_FORMAT`, `AUDIO_SET_VOLUME`, `AUDIO_GET_VOLUME`,
-`AUDIO_SET_MASTER`, `AUDIO_GET_MASTER`, `AUDIO_GET_INFO`, `AUDIO_GET_STATUS`, `AUDIO_DRAIN`, `AUDIO_FLUSH`. No new system
-calls are used (the numbers 100-105 stay free).
+`AUDIO_SET_MASTER`, `AUDIO_GET_MASTER`, `AUDIO_GET_INFO`, `AUDIO_GET_STATUS` (bytes queued, frames mixed, how far ahead of the
+speakers the hardware ring is: what the Jukebox uses to know where the music is), `AUDIO_DRAIN`, `AUDIO_FLUSH`. No new
+system calls are used (the numbers 100-105 stay free).
 
 ## The mixer
 
@@ -78,103 +83,321 @@ second, and the only stale sound it could ever repeat is what is still in the ri
 
 ## Intel HDA
 
-`kernel/drivers/audio/hda.c`. Polled; there are no interrupts and no MSI.
+Two files. `kernel/drivers/audio/hda.c` talks to the hardware; `hda_graph.c` / `hda_graph.h` is pure logic that decides
+from the codec's widget graph which pins to drive and how (it has no hardware or kernel calls, which is what lets
+`hdatest` run it against made-up codecs, see Tests). Polled; there are no interrupts and no MSI.
 
-1. PCI class 0x0403. Memory and bus master enabled; on Intel, traffic class 0 and snooped DMA (what Linux does).
-2. Controller reset, wait for the codec bits in `STATESTS`, CORB/RIRB set up (256 entries when the controller allows it).
-   The response flag in `RIRBSTS` is acknowledged after every command (QEMU stops reading commands until it is).
-3. For each codec: the audio function group is powered to D0, then every widget is read: type, capabilities, connection
-   list (short and long form, ranges), pin capabilities, pin default configuration, amplifier capabilities (with the
-   function group's values where the widget does not override them).
-4. Output pins are the ones the BIOS declared as line out, speaker or headphone and that are not "not connected". For each
-   a path pin <- (mixers, selectors) <- DAC is found by depth-first search, preferring a DAC no other pin uses. If the BIOS
-   declared nothing, any output-capable pin with a path is used (with a log line).
-5. Along every path: widgets that have power control go to D0, selectors and multi-input pins are pointed at the path,
-   mixer inputs other than the path's are muted, output amplifiers are unmuted at their 0 dB step, the pin is enabled
-   (`OUT_EN`, plus `HP_EN` on headphone drive capable pins) and its EAPD is switched on.
-6. One output stream, tag 1, 48 kHz 16-bit stereo, over a 256 KiB ring described by 16 buffer descriptors. All DACs used
-   by any enabled path listen to the same stream.
-7. Jack sensing (`GET_PIN_SENSE`, polled four times a second while playing): headphones plugged in silence the speaker
-   and the rear line out; a plugged line out silences the speaker. Pins without presence detect count as plugged.
+**Controller.** PCI class 0x0403; memory space and bus master are enabled (`pci_enable`), and on Intel the traffic class
+select (config 0x44) is cleared and the no-snoop bit (0x78 bit 11) turned off, as Linux does. The link is reset
+(`GCTL.CRST` low, at most 100 ms, 2 ms pause, high, at most 200 ms, 2 ms) and `STATESTS` is polled for up to a second for
+codecs to announce themselves; if none does, the reset is done once more. CORB and RIRB sizes come from the capability
+bits (256, 16 or 2 entries), the base address registers get the upper 32 bits only if `GCAP.OK64` is set (all DMA memory
+is below 4 GiB anyway), the read pointer reset handshake is done, and the response-count flag in `RIRBSTS` is acknowledged
+after every command (QEMU stops reading commands until it is). If the rings do not answer, the first command is retried
+through the immediate command registers (`ICOI/IRII/ICIS`) and those are used from then on. Three commands in a row without
+an answer mark the codec dead: the driver logs one line and gives up, so a missing or unpowered codec (the HDMI codec on a
+machine without a graphics driver, say) costs a fraction of a second and never hangs the boot. The stream position is read
+from LPIB; the DMA position buffer is switched on as well and takes over if LPIB stands still while the buffer moves.
 
-Failure is quiet: if a codec stops answering, if there is no analog output (an HDMI-only codec), or if the controller
-will not reset, the driver logs one `[Nitori]` line and `/dev/audio` does not appear. Nothing is ever played on a pin the
-BIOS marked unused, and the default master volume is moderate.
+**Codec.** For each present codec the audio function group is taken to D0 (polling the actual power state) and every widget
+is read into an `HdaGraph`: type and capabilities, connection list (short and long form, ranges), pin capabilities and
+default configuration, amplifier capabilities and PCM rates/sizes (the function group's values where the widget has no
+override of its own). `hda_plan_outputs()` then chooses:
 
-What has **not** been done: vendor specific coefficient programming (Realtek `COEF` tweaks some laptops need), GPIO
-controlled external amplifiers, digital (S/PDIF, HDMI) outputs, input streams (recording), power saving of idle widgets.
-The path logic follows the specification and Linux's generic parser, but it has only ever run against QEMU's simple
-codec. If the Dell's front or rear jack stays silent, `cat /proc/audio` lists the codec, each pin with its configuration
-word, whether a jack is sensed, the path chosen, and `dmesg | grep Nitori` shows what the driver decided.
+* Output pins: output capable, not marked "no physical connection", and declared by the BIOS as line out, speaker or
+  headphone. Of the line-out pins that share a default association (a 5.1 board's green, black and orange jacks) only
+  the one with the lowest sequence number is driven; the others would repeat the stereo signal. If the BIOS declared no
+  output at all, one pin of the device type "other" is tried, and `/proc/audio` says it is a guess.
+* For each pin a path pin <- mixers/selectors <- converter by depth-first search (at most 10 widgets deep, cycles and
+  dangling connections are skipped; pins are never stepping stones). The converter must be analog (not an S/PDIF/HDMI
+  converter) and able to do 16-bit 48 kHz PCM; one nobody else uses is preferred, and a selector (or a pin with several
+  sources) is never asked to pick two different inputs for two pins. Several pins may end up sharing a converter when the
+  graph leaves no choice; every converter that carries the stream listens to the same stream tag.
+
+`hda.c` then powers every widget on the paths (D0, polled), closes all inputs of every mixer on a path, selects the
+connections (`SET_CONNECT_SEL` on selectors and multi-input pins) and opens exactly the mixer/selector inputs the paths
+need (two pins may share a mixer: one path must not close the input the other uses), unmutes every output amplifier at its
+0 dB step, and switches the pins on (`OUT_EN`, plus `HP_EN` on headphone-drive capable headphone pins, plus EAPD where the
+pin has it). One output stream (tag 1, 48 kHz 16-bit stereo) loops over a 256 KiB ring described by 16 buffer descriptors;
+the converter format is read back after it is set and a mismatch is logged.
+
+**Jacks.** Pins that can sense a jack (presence detect, a jack or jack-and-fixed connection) are polled four times a second
+while sound plays (pins that say "trigger required" are asked to sense first). `hda_plan_automute()`: headphones plugged in
+switch the speaker and the line out off, a plugged line out switches the speaker off, pins that cannot sense count as
+plugged, and if that would leave every pin off they are all switched on (a silent machine because jack sensing is broken is
+worse than sound on an empty jack).
+
+**Failure is quiet and loud enough to diagnose.** A codec that stops answering, has no analog output, or a controller that
+will not reset gives one `[Nitori]` log line and no `/dev/audio`. `cat /proc/audio` prints the controller (streams, DMA width,
+command path, position source), the codec ids, every chosen pin with its configuration word, jack state and path, and every
+other pin with its configuration and capabilities; with `hda.dump` on the kernel command line every widget of the codec is
+logged (`dmesg | grep 'hda:  0x'`). With that and `dmesg | grep Nitori` a silent jack on the real machine can be diagnosed
+without a debugger. Two more command line words exercise the fallbacks on any machine: `hda.imm` (immediate commands instead
+of CORB/RIRB) and `hda.posbuf` (position from the DMA position buffer).
+
+**Not verified, not done.** Everything above ran only against QEMU's three codecs `hda-output`, `hda-duplex` and `hda-micro`
+(one converter and one output pin each);
+the Realtek-style trees in `hdatest` are invented, not recorded from a real machine, so they show that the planner copes
+with those shapes (mixers that add converters and input pins, selectors in front of pins, bidirectional pins, a digital
+converter, jack associations), not that it is right for the Dell's ALC3xxx. Never exercised on anything but QEMU: a
+controller with fewer than 256 ring entries, LPIB vs. position buffer disagreement, a real multi-codec machine, jack sensing
+and the auto-mute switch-over (QEMU's codecs have no jack sense), EAPD, headphone amp enable. Not implemented: vendor
+specific coefficient programming (Realtek `COEF` tweaks some laptops and the headset-mode jacks need), GPIO controlled
+external amplifiers, digital outputs (S/PDIF, HDMI), input streams (recording), powering down idle widgets, more than
+two channels. The Intel PCI quirks above are from memory of Linux's `hda_intel.c`, not tested on a Kaby Lake PCH.
+
+## AC'97
+
+`kernel/drivers/audio/ac97.c`. Class 0x0401 with two I/O windows (mixer and bus master). Leaves cold reset, waits for the
+primary codec, resets the mixer, sets master, headphone, mono and PCM volumes to 0 dB (AC'97 volumes are attenuations: 0 is
+loudest), and loops the PCM-out engine over a 256 KiB ring of 32 descriptors; the poll keeps the last valid index one behind
+the current one so the list is circular, and restarts the engine if it halted.
+
+## libaudio
+
+`#include <audio.h>` (and `<music.h>` for songs and modules, `<chip.h>` / `<modplay.h>` for each kind on its own), linked
+into every program. `audio_open(flags)` returns NULL when the machine
+has no sound (errno says why, `audio_strerror()` says it in words), `audio_set_format`, `audio_write` (blocking, or
+`AUDIO_NONBLOCK` and it returns what fits), `audio_drain`, `audio_flush`, `audio_status`, `audio_get_master` /
+`audio_set_master`; WAV files (`audio_wav_open` / `_read` / `_seek`, `audio_wav_save`); tone and noise generators; the
+system sounds (`audio_event`, `audio_event_wait`, `audio_events_enabled`).
+
+## System sounds
+
+Four short sounds, synthesized on the spot (`user/lib/audio/src/events.c`): `login` (a rising bell: C E G, then a high C),
+`dialog` (one small bell, E6), `error` (two low buzzes, A3 and E3), `shutdown` (the login tune backwards). They play from
+`hakurei-shell` when the desktop opens (and on *Log out*, *Shut down*, *Restart*, where the machine waits for the tune to
+end), from Kappa dialogs (`k_messagebox`, `k_confirm_dialog` with an error icon buzzes, `k_input_dialog`), from the login
+screen (wrong password: error, shutdown buttons: the tune) and the lock screen (wrong password: error, unlocked: the bell).
+
+The switch, first match wins: the environment variable `HAKUREI_SOUNDS` (`on` or `off`), the file `/etc/hakurei/sounds`
+(`on` or `off`), `nosounds` or `sounds=off` on the kernel command line; otherwise they are on. `beep -E NAME` plays one the
+way the desktop does, `beep -e NAME` plays it whatever the switch says. The test harness adds `nosounds` to every kernel
+command line unless a test passes `Qemu(sounds=True)`.
+
+## Songs and the synthesizer
+
+A song is a text file (`.tms`, documented in the manual page `tms(5)`): a header (`title`, `mood`, `author`, `tempo`,
+`loop`), optional instrument definitions, up to six channels (each with a starting instrument, pan and gain), named patterns
+and an order list:
+
+```
+tms 1
+title Shrine Steps at Dawn
+tempo 84
+channel lead  inst=fm-lead pan=-0.15
+channel bass  inst=bass
+pattern A
+  lead: o5 e4 g8 a8 g4 e4 | o5 d4 e8 g8 e2
+  bass: o2 [c4 g4]2 | [a4 >e4 <]2
+order A A
+```
+
+The notes of a channel are written in a small music macro language: `c d e f g a b` with `+`/`-` and a length (`4` quarter,
+`8` eighth, dots), `r` rests, `o4 < >` octaves, `l8` default length, `v12` volume, `q7` gate (staccato to legato), `@name`
+instrument, `&` tie, `[ ... ]3` repeat, `w48` wait. Each pattern restarts every channel from `o4 l8 v12 q7` and its own
+instrument; channels shorter than the pattern are padded with silence, and `play -i` reports it as a note so a song
+is checked for bar alignment before anyone plays it.
+
+The synthesizer (`user/lib/audio/src/chip.c`) gives every channel one monophonic voice: a pulse (50, 25 or 12.5 %, band
+limited with PolyBLEP), triangle, saw or noise generator, or a two-operator FM voice (a modulator at a frequency ratio with
+feedback bends the carrier's phase, and the bending fades by its own decay: bells, electric pianos, plucks, brass) under an
+attack-decay-sustain-release envelope with optional vibrato. There is a ready-made bank of 19 instruments (`lead`, `pulse`,
+`bass`, `hat`, `snare`, `kick`, `pad`, `pluck`, `tri-bell`, `thin`, `saw`, `open-hat`, `fm-bell`, `fm-epiano`, `fm-bass`,
+`fm-pad`, `fm-pluck`, `fm-lead`, `fm-brass`); a song may define more with `inst N kind key=value ...`. Rendering is 32 kHz
+stereo floating point in userland; in the QEMU guest it runs at about ten times real time, so playing and seeking are
+cheap (`chip_seek` repositions the event cursors, nothing is replayed). One tempo per song, no tempo changes.
+
+The songs that ship with the system are in `initrd/ScarletDevilMansion/share/music` (installed as
+`/ScarletDevilMansion/share/music`): all original, written for this project in made-up scales and progressions, none of
+them taken from or modelled on any Touhou melody (the project follows ZUN's fan-work guidelines, see ASSETS.md).
+
+| File | Title | Tempo | Length | Character |
+|---|---|---|---|---|
+| `shrine-steps.tms` | Shrine Steps at Dawn | 84 | 1:32 | C major pentatonic, FM lead, music-box arpeggios, soft beat |
+| `bamboo-lantern.tms` | Bamboo Lantern Walk | 96 | 1:40 | A minor, sixteenth-note arpeggios, FM bells, backbeat |
+| `kappa-workshop.tms` | Kappa Workshop Rush | 132 | 1:20 | F major chiptune: square lead, pulse stabs, octave-bouncing bass |
+| `moonlit-lake.tms` | Moonlit Lake Ripples | 66 | 1:49 | D minor, slow, FM electric piano, no drums |
+| `netherworld-tea.tms` | Netherworld Tea Party | 104 | 1:03 | a waltz (3/4) in E minor and G, FM pluck like a koto |
+
+Write your own with the Notebook, put it in `~/Music` and the Jukebox finds it; `play -i file.tms` checks it first.
+
+## Tracker modules
+
+`user/lib/audio/src/mod.c` (`modplay.h`) plays ProTracker modules, and `music.c` (`music.h`) is the one front that `play` and the
+Jukebox use for both kinds: `music_open()` recognises a song or a module by its name or its first bytes (`tms` at the start, a
+signature at byte 1080), `music_render()` gives 16-bit stereo frames, `music_seek()` and `music_length()` work for both.
+
+* Read: the 31-sample format with the signatures `M.K.`, `M!K!`, `FLT4`, `4CHN`, `6CHN`, `8CHN`, `OCTA`, `CD81`, `xxCH`
+  (10 to 32 channels) and `TDZx`. The whole file is read into memory (at most 12 MiB); a module that is cut short, or whose
+  song length or signature is wrong, is refused with a message, a sample that is cut short is padded with silence.
+* Played: arpeggio, slide up and down, tone portamento (also with volume slide), vibrato (also with volume slide), tremolo,
+  sample offset, volume slide, position jump, set volume, pattern break, set speed and tempo, and from `Exy` fine slides, the
+  vibrato and tremolo waveforms, finetune, pattern loop, retrigger, fine volume slides, note cut, note delay and pattern
+  delay. Samples are mixed in floating point with linear interpolation at the period's rate (the PAL Amiga clock), channels
+  are panned left, right, right, left with 30 % crosstalk, and the sum goes through a soft limiter.
+* Not played: `E0x` filter, `E3x` glissando control, `E8x` panning, `EFx` funk repeat, 15-sample modules, S3M, XM and IT
+  files, and the quirks of individual trackers (each plays a few effects a little differently). The effects follow the usual
+  description of ProTracker's, written from memory; they were not compared with its replay routine sample by sample, and
+  **no real tracker tune has been played through the player**: the tests use modules generated by `tests/modtools.py`.
+* Tested, against a tick by tick model of each effect that is written down again in Python (`audio_mod_effects`): slide
+  up and down, tone portamento (with its speed remembered), vibrato, tremolo, volume slide, speed and tempo, note cut,
+  note delay, retrigger, sample offset, pattern loop, finetune, fine slides, position jump, pattern break, pattern delay,
+  arpeggio, the end of a song that jumps back, channel panning, pitch and seeking (`audio_mod_module`). Not tested: the
+  combined effects `5xy` and `6xy`, the vibrato and tremolo waveforms (`E4x`, `E7x`), fine volume slides (`EAx`, `EBx`), a
+  pattern break to a row other than the first, and modules with more than four channels or with finetuned samples.
+* The length is found by running the song once without mixing. A position jump back to a row that was already played is
+  taken as the end of the song, so a tune that loops for ever is played once and has the length of one pass.
+* Seeking runs the song's rows without mixing any sound, which is cheap; voices that were sounding at the target start at
+  the right place inside their samples.
+
+`tests/modtools.py` builds the test modules from scratch (`ModBuilder`: a 64-byte sine sample, a short burst, a sample that
+starts with silence, patterns of 64 rows by 4 channels) so that every number a test checks can be worked out by hand.
+
+## Reimu's Jukebox
+
+`user/bin/jukebox/` (`jukebox.h` state, `player.c` loading, feeding and analysis, `playlist.c`, `ui.c`, `main.c`); listed in
+the start menu as *Reimu's Jukebox*, window title "Jukebox - <song>". The window is the Prismriver Concert Hall: a stage with
+curtains and spotlights where Lunasa (violin, the low part of the sound), Merlin (trumpet, the middle) and Lyrica (keyboard,
+the high part) bob and glow with the music, and an orchestra pit below that is a 32 band spectrum with peak caps. On the left
+the playlist (the shipped songs, then `~/Music/*.tms`, `*.mod` and `*.wav`, then anything opened with *Open music...*); under the stage
+the title and mood, a seek bar with the time, previous / play-pause / stop / next, and the master volume with a mute
+button. Keys and options are in `jukebox(1)`; `--trace` prints one line per event (the tests read those), `--list` prints the
+playlist and exits.
+
+How it plays: no thread and no helper process. The window's tick (45 ms while playing) asks the kernel how much is queued
+(`AUDIO_GET_STATUS`), renders or reads more until about 450 ms are queued, and writes it with a non-blocking stream. The
+position shown is what has been rendered minus what is still queued and in the hardware ring. Pausing, seeking and stopping
+flush the stream (heard at once) and, on resume, seek the source to the remembered position. The levels come from a 512
+point FFT of the audio around the position being heard. WAV files stream from disk (8/16/24/32-bit, mono or stereo, any
+rate); a song that does not parse stays in the list with a warning icon and the parser's message.
+
+## The panel's volume control
+
+`user/bin/hakurei-shell/volume.c`: a speaker in the tray, drawn only if `/dev/audio` exists. Click for a small popup with a
+slider and a Mute button, scroll over it to change the volume by 5, middle click to mute. It reads the kernel's master
+volume twice a second, so `volume 30` in a terminal shows up there.
+
+## Debugging on a real machine
+
+* `cat /proc/audio`: state (idle, running, stalled), the controller and codec, every pin with its configuration word, jack
+  sense and path, counters (mixed, played, underruns), one line per open stream.
+* `dmesg | grep Nitori`: what the drivers decided. Kernel command line words: `noaudio` (no sound drivers), `audio.idle=MS`,
+  `hda.dump`, `hda.imm`, `hda.posbuf`, `nosounds`.
+* `volume`, `beep`, `beep -w noise -a 10`, `play -i song.tms` (needs no device), `play song.tms`.
+* No sound from a jack that `/proc/audio` lists as `on`: check `volume` (not muted?), try the other jack, look at the `other
+  pin` lines (a pin the BIOS declared unused is never driven) and send the `hda.dump` output.
+* No `/dev/audio` and no `hda ...: looking for a codec` line in `dmesg | grep Nitori`: the driver only looks at PCI class
+  0x0403 (HD Audio). If the BIOS presents the controller as class 0x0401 ("multimedia audio", the Intel DSP mode that some
+  BIOSes offer), it is not looked at; `lspci`-style output of the machine (`cat /proc/pci` if there is one) would show it. Set
+  the BIOS option to plain HD Audio, or extend `hda_init()` to try 0x0401 devices from Intel.
 
 ## Tests
 
-`python tests/run_all.py audio` runs `tests/case_audio.py`. The harness (`tools/qemu.py`) takes
-`Qemu(audio="hda" | "hda-duplex" | "ac97")`, which adds a sound card and an `-audiodev wav` backend writing
+`python tests/run_all.py audio_` runs `tests/case_audio.py` (about ten minutes; `tests/modtools.py` builds the tracker modules
+it plays). The harness (`tools/qemu.py`) takes
+`Qemu(audio="hda" | "hda-duplex" | "hda-micro" | "hda-nocodec" | "ac97", sounds=True|False)`: a sound card and an `-audiodev wav` backend writing
 `build/<name>-audio.wav`; the file is complete once `vm.stop()` has run. The host side parses it with numpy
 (`tests/audiotools.py`: loud segments, dominant frequency, peak, band power). The guest clock can be several times slower
-than wall time, so tests never depend on durations: they find the loud stretches and measure those. System sounds are
-switched off in the harness (`nosounds` is added to the command line) unless a test passes `sounds=True`.
+than wall time, so tests never depend on how long the guest takes: they find the loud stretches of the recording and measure
+those. `tests/guitext.py` finds text on a screenshot by rendering it with the desktop's own 8x16 font.
 
-Covered so far (all on QEMU's `hda-output`; `python tests/run_all.py audio_`):
+A host that is busy with other things can starve the guest for longer than the mixer's 100 ms lead; the hardware then plays
+silence (that is the design: an underrun is silence), and the recording has gaps and jumps that are not faults. The tests
+that look at the waveform ask the guest for the `underruns` counter in `/proc/audio` before they stop it, and a test that
+fails while the counter is not zero is run again, up to three times (`starved_retry` in `tests/case_audio.py`); a real fault
+repeats every time. The GUI tests (`audio_jukebox`, `audio_desktop_sounds`, `audio_panel_volume`) are not wrapped that way.
 
 * `audio_hda_tone` -- a 440 Hz `beep` has the right pitch, level (0.5 at volume 100) and purity; `/proc/audio` names the card.
-* `audio_mix_two_clients` -- two programs at once: both frequencies are present at the right level; two full-scale tones
-  that beat against each other are limited below full scale and never wrap around.
-* `audio_volume_and_mute` -- `volume` reads back, the quadratic curve (50 gives a quarter of the amplitude), mute, relative
-  changes, clamping, usage errors.
+* `audio_mix_two_clients` -- two programs at once: both frequencies are present; two full-scale tones that beat against each
+  other are limited below full scale and never wrap around.
+* `audio_volume_and_mute` -- `volume` reads back, the quadratic curve, mute, relative changes, clamping, usage errors.
 * `audio_format_conversion` -- mono 22050 Hz 8-bit, stereo 44100 Hz 16-bit and mono 11025 Hz 24-bit streams come out at the
   right pitch and level.
 * `audio_underrun_is_silence` -- `play -g 2000 a.wav b.wav` keeps the stream open and starved for two seconds: the gap in the
-  capture is exact silence, the underrun is counted in `/proc/audio`, both tones are intact.
-* `audio_no_device` -- no sound card: no `/dev/audio`, no `/proc/audio`, no `[Nitori]` log line, and `beep`, `play`
-  and `volume` say "no sound device" with status 1; `beep -o file.wav` still works.
+  capture is exact silence, the underrun is counted, both tones are intact.
+* `audio_no_device` -- no sound card: no `/dev/audio`, no `/proc/audio`, no `[Nitori]` line, and `beep`, `play` and `volume`
+  say "no sound device" with status 1; `beep -o file.wav` still works.
+* `audio_hda_no_codec` -- an HDA controller with nothing on its link (`hda-nocodec`): the driver logs "no codec answered",
+  there is no `/dev/audio`, the tools say so, and the machine carries on.
+* `audio_hda_micro_codec` -- QEMU's third codec, `hda-micro` (a speaker pin and a microphone pin): the speaker is chosen, the
+  microphone is listed and left alone, and the tone is right.
+* `audio_hda_graph` -- boots the guest and runs `hdatest` (`tests/host/hdatest.c`, built as the guest program
+  `user/bin/hdatest` because the Windows host has no C library headers): 62 checks of the output planner on twelve codec
+  descriptions, most of them invented Realtek-style trees (desktop and laptop shapes, a shared selector, loops, HDMI-only, a
+  converter without 48 kHz, ...).
+* `audio_hda_fallbacks` -- the duplex codec, immediate commands instead of CORB/RIRB, the position buffer instead of LPIB,
+  `hda.dump`.
+* `audio_songs` -- every shipped song parses, is bar-aligned (no padding notes), has a length of 45 s to 4 min and a sane
+  level, and is listed by `jukebox --list`; broken song files give the right messages.
+* `audio_song_timing_and_pitch` -- four quarter notes at 120 bpm are 0.5 s apart and A4, B4, C5; an FM whole note lasts about
+  2 s and sounds at E5.
+* `audio_mod_effects` -- a second generated module (`tests/modtools.py`) has one section for each effect, with silence
+  between them; it is rendered to a WAV file with `play -w` (so the guest's speed cannot starve the playing), played, and
+  the recording is compared with a model of what each effect does tick by tick: the measured pitches agree with the model to
+  a tenth of a hertz, the tremolo peaks to three decimals, the speed, tempo, cut, delay and retrigger timings to 5 ms.
+* `audio_mod_module` -- a module made by the test (one 64-byte sine sample, 4 channels, two patterns) is described by
+  `play -i` (title, channels, 23 rows of 120 ms), listed by `jukebox --list`, recognised by its signature under another
+  name and refused when it is junk; played, it has 259 Hz on the left, 518 Hz after the octave jump, 259 Hz on the right,
+  then an arpeggio with three equal spectral peaks, and `play -s` lands on the same arpeggio.
+* `audio_jukebox` -- starts the Jukebox on the desktop, sees the song title in the window (font-rendered match), checks that
+  the music reaches the sound card, pauses, skips, seeks with the mouse, sets the volume with the mouse, mutes, quits; then
+  starts it again with a generated `.mod` first in the list, which is heard at the right pitches and followed by the next song.
+* `audio_system_sounds` -- the switch: `nosounds`, `HAKUREI_SOUNDS=on|off`, `beep -E` and `beep -e`; the bell is E6, the error
+  sound is low, the shutdown tune ends on C5.
+* `audio_desktop_sounds` -- the desktop plays the login chime when it opens; the login screen buzzes at a wrong password.
+* `audio_panel_volume` -- click the speaker in the panel, drag the slider, `volume` agrees; Mute and Unmute.
+* `audio_ac97_tone` -- the AC'97 path, with a 22050 Hz 8-bit client as well.
 
-Also `audio_ac97_tone` (the AC'97 path with a 22050 Hz 8-bit client as well).
+## Known limits and what is left
 
-Not covered yet: `hda-duplex`, the Jukebox, the system sounds in the desktop, the real Dell.
+* Nothing has run on real hardware (see "Not verified" under Intel HDA). The first thing to do on the Dell is
+  `cat /proc/audio`, `dmesg | grep Nitori` and `beep`.
+* The songs were never listened to; they are written to be bar-aligned, in key, and at sane levels, which is what is
+  measured. The mix is quiet at the default master volume of 60 (peaks around 0.2 of full scale): turn it up.
+* Only ProTracker `.mod` files are read (see Tracker modules); S3M, XM and IT are not, and the `.mod` player has been
+  heard by no one: no real tracker tune has been played through it. One tempo per `.tms` song. Voices are monophonic
+  (chords are written as arpeggios or on several channels). No recording, no per-application volume in the panel (the
+  Jukebox and the panel move the master volume).
+* `play -g` exists because gapsh's `( a; b ) | cmd` closes the pipe after the first command of the group; not looked into.
+* A guest that the host starves for more than a second can still make the hardware lap the ring and repeat old sound
+  (`underruns` in `/proc/audio` counts the dry spells).
 
 ## State when paused
 
-The work was stopped on request in the middle of the sound project; this is exactly where it is.
+Branch `worktree-agent-a3d380c78d6285728`; its head is a few documentation-only commits on top of `37ba4c7`,
+the working tree is clean, and it builds with `python tools/build.py`. The last
+merge of `main` (up to `3265225`: USB mass storage, network drivers, Explorer, priorities, job control) is in; it merged
+without conflicts in code (one in `docs/REAL_HARDWARE.md`, resolved by keeping both sides). Nothing is pushed.
+`main` has moved on since (`6be638f`, with the media work): merging it now conflicts in one place,
+`user/bin/hakurei-shell/launch.c`, where `main` adds *Gensokyo Gallery* and this branch adds *Reimu's Jukebox* after the
+Sketchbook; keep both lines.
 
-**Done, committed, tested in QEMU** (`python tests/run_all.py audio_,manual`: all 7 audio tests and `manual` pass on the last
-commit, after the second merge of `main`; the rest of the suite was not run):
-the audio core (`/dev/audio`, mixer, limiter, volumes, `/proc/audio`, silence on underrun, stall fallback), the Intel HDA
-driver, the AC'97 driver, libaudio's device/WAV/generator/system-sound code, the `beep`, `play`, `volume` applets with
-manual pages (`beep(1)`, `play(1)`, `volume(1)`, `audio(7)`), the harness support (`Qemu(audio=...)`, `tests/audiotools.py`).
+* **Done**: everything in the Status table above: the audio core, the HDA driver with the codec graph planner and its unit
+  tests, the AC'97 driver, libaudio, `beep` / `play` / `volume`, the chiptune and FM song engine with five original songs, the
+  ProTracker module player, Reimu's Jukebox, the system sounds, the panel's volume control, the manual pages, this document.
+* **Half done**: nothing is left half done in the tree.
+* **Not started**: S3M, XM and IT readers, recording (capture), digital outputs (S/PDIF, HDMI), Realtek `COEF` and GPIO
+  quirks, looking at an HD Audio controller that the BIOS shows as class 0x0401 (Intel DSP mode), a shutdown hook that stops
+  the DMA engine.
+* **Tests**: `python tests/run_all.py manual,audio_`: 20 of 20 pass (19 audio tests and the manual-page test), run on the
+  tree before the last merge of `main`. A full run of the whole suite on the final merged tree was stopped by the pause: 207
+  tests passed, none failed, and 39 were not reached (the last `usb_*`, all `usbstor_*` and the `vi_*` tests, none of which
+  touch sound). The full run before that (192 tests, `main` as of `b5cbb37`) had one failure, `audio_mix_two_clients`: the
+  busy host had starved the guest, the recording had two stretches of silence (an underrun is silence by design) and the
+  test saw them as jumps; the waveform tests now ask the guest for its `underruns` counter and run again when it was not
+  zero (`starved_retry`), and the test passes since. GUI tests (`audio_panel_volume` once) can fail when the host is
+  busy because the mouse pointer lags; the panel test now tries up to three times.
 
-**Half done:** `user/lib/audio/include/chip.h` and `src/chip.c`, the chiptune synthesizer and MML sequencer. It compiles
-without warnings but has never been run: nothing calls it, and `chip_songs()` (declared in `chip.h`) does not exist yet.
-Expect small bugs; test it first on the host (it is plain C with libm: compile `chip.c` with a host compiler together with
-a `main` that renders a song to a WAV, and look at the file with `tests/audiotools.py`).
+## How to resume
 
-**Not started:**
-
-* `user/lib/audio/src/songs.c`: five or so original tracks in MML (instrument table and the notation are in `chip.h`).
-* Reimu's Jukebox (`user/bin/jukebox/`, a Kappa app): track list (the built-in songs and the `.wav` files in `~/Music`), play,
-  pause, stop, next, seek bar, volume slider (the master volume), a spectrum or waveform view, a `.pw` manual page, an entry
-  in `user/bin/hakurei-shell/launch.c` and a GUI test with `tests/guitools.py`. Plan: feed `/dev/audio` from the `kapp_set_tick`
-  callback with a non-blocking stream, about 400 ms ahead, using `AUDIO_GET_STATUS` to see how much is queued; `AUDIO_FLUSH`
-  on pause and seek.
-* Hooking the system sounds in: `audio_event(AUDIO_EV_LOGIN)` in `hakurei-shell` at start, `AUDIO_EV_DIALOG` and
-  `AUDIO_EV_ERROR` in the Kappa dialogs, `AUDIO_EV_SHUTDOWN` before `gap_reboot` (wait about a second so it is heard). The
-  functions, the switch and the sounds exist and work (`beep -e login`); no program calls them. A test with
-  `Qemu(sounds=True)` should check that the chime reaches the capture.
-* Recording, an `hda-duplex` test, mentions in `docs/DESKTOP.md` and `docs/THEMING.md` beyond the lines already added.
-
-**Known problems and risks:**
-
-* Nothing has run on real hardware. Everything about the Dell (jack retasking, Realtek coefficient tweaks, GPIO amplifiers,
-  the HDMI codec on the same controller) is untested. The HDA driver has no immediate-command fallback if CORB/RIRB fails.
-* The mix test (`audio_mix_two_clients`) was flaky until the ring was lengthened to 1.4 s; a guest that the host starves for
-  more than a second can still make the hardware lap the ring and repeat old sound. If it flakes again, lengthen the ring
-  or look at the `underruns` counters in `/proc/audio`.
-* `play -g` exists because gapsh's `( a; b ) | cmd` closes the pipe after the first command of the group; not looked into.
-* The mixer thread polls every 5 ms while sound plays and sleeps otherwise; the hardware engine stops after 3 s of silence
-  (`audio.idle=MS` on the command line). The first sound after that has a short start-up.
-
-**How to resume:** `git log` on this branch, `python tools/build.py`, `python tests/run_all.py audio_` (about two minutes).
-Merge `main` first (`git merge main`; `tools/qemu.py` is the file that conflicts: keep both the `boot_image` and the `audio`
-parameters). Then do the "Not started" list in this order: songs.c, a host-side render of every song, `play --song`, the
-Jukebox, the hooks, the tests, the full `python tests/run_all.py`.
+1. `git status` (clean), `python tools/build.py`.
+2. `python tests/run_all.py manual,audio_` (about five minutes on a quiet host). Then the tests that the pause cut off:
+   `python tests/run_all.py usb,vi_`.
+3. To hear it on the host: `tools/qemu.py run` has no audio option yet. The tests use `Qemu(audio="hda")`, which records
+   into a WAV file; for a live sound output give QEMU an `-audiodev` of the host (for example `dsound` on Windows; not tried
+   here) together with `-device intel-hda,id=hda0 -device hda-output,bus=hda0.0,audiodev=NAME`, then `beep`, `volume`,
+   `play /ScarletDevilMansion/share/music/*.tms` or the Jukebox from the start menu.
+4. The next steps in order of value: run it on the Dell (`cat /proc/audio`, `dmesg | grep Nitori`, `beep`; send the output of
+   `hda.dump` on the kernel command line if there is no sound), then listen to the songs and the module player and fix what
+   the ears find, then the S3M reader, then recording.

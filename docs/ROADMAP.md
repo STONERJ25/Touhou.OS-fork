@@ -35,7 +35,8 @@ are what is left, roughly in the order they matter. "Parked" means finished (or 
 - [x] real-hardware audit, rounds 1 and 2 (framebuffer write-combining and the MTRR fallback, xHCI/AHCI/NVMe/PCI/ACPI against the specs, the loader's memory types); the OS booted to the desktop on the target Dell on 2026-10-23 (docs/HARDWARE_AUDIT.md)
 - [ ] real hardware, rest: a network link and the internal disks on the Dell (SATA is in RAID mode there), USB stick quirks (half done, does not compile: `parked/usb-stick-quirks-wip`)
 - [x] networking: NICs (virtio, e1000/e1000e, rtl8139 tested in QEMU; I217-I219 and rtl8168 written but never run on hardware), ARP/IP/UDP/TCP, DHCP/DNS, tools (docs/NETWORK.md)
-- [ ] networking, next: a link on the real PC (the I219 was found on the Dell, no cable was plugged in; RTL8168 never run); TLS and HTTPS are parked on `parked/network-https`; IPv6, SACK, a Kappa network panel
+- [x] HTTPS: `libtls` (TLS 1.3 and 1.2 client, X.509 chains, Mozilla roots in the initrd), `fetch`/`wget` over `https://` (docs/TLS.md)
+- [ ] networking, next: a link on the real PC (the I219 was found on the Dell, no cable was plugged in; RTL8168 never run); IPv6, SACK; the Kappa network page, the panel indicator, `/etc/network.conf` and `netconfig` (designed, kernel half committed but untested: docs/NETWORK.md "State when paused")
 - [x] audio core: Intel HDA / AC97, mixer, `play`, `beep`, `volume`
 - [ ] audio rest: generic HDA codec path walk, Jukebox, songs, `.mod` player, system sounds, panel volume (parked on `parked/audio-jukebox`)
 - [x] threads (clone, futex, pthreads)
@@ -45,7 +46,7 @@ are what is left, roughly in the order they matter. "Parked" means finished (or 
 - [x] kernel job control (stopped state, Ctrl-Z), nice/renice, hard links on tmpfs, `/proc/<pid>/fd`
 - [ ] vi hardening (parked on `parked/utilities-vi`), gapsh job control with `jobs`/`fg`/`bg` and Ctrl-Z (not started), the remaining small tools (not started)
 - [ ] C compiler `mcc` that runs on the OS and compiles itself (parked on `parked/mcc-compiler`; its newest edits never ran in QEMU)
-- [ ] consistency check of a dirty FAT volume at mount and an `fsck` tool (parked on `parked/usb-dirty-fsck`), FAT write ordering
+- [ ] dirty FAT volumes: the consistency check at mount and a write order that leaves at worst lost clusters after a power cut are in (docs/STORAGE.md); the `fsck` tool is written but has not run in the guest yet
 - [ ] kernel hardening: syscall fuzzer fixes and larger `exec` limits (parked on `parked/kernel-hardening`); SMAP, an OOM killer, a lockup detector
 - [ ] install to an internal disk, so no stick is needed; updates over the network with a fallback kernel
 - [ ] package format and `gapget`, text editor syntax colours for more languages

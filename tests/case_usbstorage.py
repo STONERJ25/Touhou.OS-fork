@@ -209,7 +209,8 @@ def usbstor_write_protected():
 @test
 def usbstor_hotplug_idle():
     """A stick plugged in after boot is mounted by the policy hook; pulled out while idle, its disks vanish, the mount is dropped
-    cleanly, and plugging it in again brings the Human Village back. Dirty after a pull without sync: the next mount is read-only."""
+    cleanly, and plugging it in again brings the Human Village back. Dirty after a pull without sync: the next mount goes through the
+    ledger first (the volume is in order, so it is mounted read-write)."""
     with stick_image("usbs-hot", files={"/reimu/hello.txt": b"hello from the stick\n", "/other/big.bin": bytes(range(256)) * 8192}) as img:
         with boot(None, root=True, name="t-usbs-hot", extra=XHCI + stick(img, attach=False)) as (g, vm):
             assert "sdb" not in g.ok("cat /proc/partitions")
@@ -241,7 +242,7 @@ def usbstor_hotplug_idle():
             wait_log(vm, r"\[Keine\] the Human Village keeps its records on the stick now \(sdb2", timeout=120, since=mark)
             out = say(g, f"cat {HV}/reimu/note.txt; ls -la {HV}/reimu")
             assert out.startswith("before the pull\n"), out + vm.text()[-2500:]
-            # write something and pull the stick without a sync: the volume is flagged dirty, the next mount is read-only
+            # write something and pull the stick without a sync: the volume is flagged dirty, the next mount goes through the ledger first
             g.ok(f"echo unsynced > {HV}/reimu/late.txt")
             mark = len(vm.text())
             vm.qmp("device_del", id="ustor2")
@@ -249,7 +250,8 @@ def usbstor_hotplug_idle():
             g.ok("umount /HumanVillage")
             mark = len(vm.text())
             vm.qmp("device_add", driver="usb-storage", drive="stick1", id="ustor3", bus="xhci.0")
-            wait_log(vm, r"\[Keine\] fat32: sdb2 mounted on /HumanVillage.*read-only: the volume was not cleanly unmounted", timeout=120, since=mark)
+            wait_log(vm, r"\[Keine\] fat32: sdb2 mounted on /HumanVillage.*read-write: the consistency check found", timeout=120, since=mark)
+            assert re.search(r"sdb2 was not closed properly: Keine goes through the whole ledger", vm.text()[mark:]), vm.text()[-2500:]
             no_incident(vm)
             out = g.ok(f"cat {HV}/reimu/note.txt")                                          # the shell is alive and the data readable
             assert out.strip() == "before the pull", out + vm.text()[-2500:]
@@ -799,7 +801,8 @@ def usbstor_bootlog_killed():
 
 @test
 def usbstor_bootlog_never_when_unsafe():
-    """No TOUHOU.LOG on a read-only stick, a dirty volume (mounted read-only by the policy) or with bootlog=off; the images stay as they were."""
+    """No TOUHOU.LOG on a read-only stick, a dirty volume mounted read-only (check off, or damage the check found) or with bootlog=off;
+    the images stay as they were."""
     # read-only stick
     with stick_image("usbs-log-ro") as img:
         h0 = img.sha()
@@ -812,7 +815,7 @@ def usbstor_bootlog_never_when_unsafe():
     with stick_image("usbs-log-dirty") as img:
         mkdisk.set_dirty(img.path, 2, True)
         h0 = img.sha()
-        with boot(None, root=True, name="t-usbs-log-dirty", extra=XHCI + stick(img)) as (g, vm):
+        with boot(None, root=True, cmdline="hvcheck=off", name="t-usbs-log-dirty", extra=XHCI + stick(img)) as (g, vm):
             assert re.search(r"read-only: the volume was not cleanly unmounted", vm.text()), vm.text()[-2500:]
             assert re.search(r"TOUHOU.LOG is not kept: the Human Village is mounted read-only", vm.text())
             g.poweroff()

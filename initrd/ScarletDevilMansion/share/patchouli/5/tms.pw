@@ -1,0 +1,73 @@
+.page tms 5 the song file format of play and the Jukebox
+
+# DESCRIPTION
+A `.tms` file is a song in plain text: a few channels, each played by one voice of an instrument, and patterns that say which notes each channel plays, put in order. `play(1)` and the Jukebox (jukebox(1)) synthesize it on the spot; the songs that ship with the system are in `/ScarletDevilMansion/share/music`, and any `.tms` file in your `Music` folder joins the Jukebox's playlist. Anything you can write in the Notebook will do.
+
+The first word of a line is a directive. A `;` starts a comment that runs to the end of the line. The first line should be `tms 1`.
+
+    tms 1
+    title Shrine Steps at Dawn
+    mood a quiet climb up the stone steps
+    author Your Name
+    tempo 84
+    loop yes
+    inst 20 fm ratio=3 index=2.5 idecay=300 a=0 d=500 s=0 r=100
+    channel lead  inst=fm-lead pan=-0.2 gain=0.9
+    channel bass  inst=bass
+    pattern A
+      lead: o5 e4 g8 a8 g4 e4 | d4 e8 g8 e2
+      bass: o2 [c4 g4]2 | [a4 e4]2
+    order A A
+
+# DIRECTIVES
+@ *title*, *mood*, *author* _text_
+    Shown by the Jukebox and by `play`.
+@ *tempo* _bpm_
+    Quarter notes per minute, 30 to 400. It cannot change inside a song.
+@ *loop* yes|no
+    Whether the Jukebox is allowed to repeat the song on its own (it plays one pass, then goes on to the next song).
+@ *inst* _N_ _kind_ _key_=_value_ ...
+    Defines instrument _N_ (0 to 31); the numbers 0 to 18 are the ready-made bank and may be replaced. _kind_ is `square`, `pulse25`, `pulse12`, `triangle`, `saw`, `noise` or `fm`. Keys: `a` attack, `d` decay and `r` release in milliseconds, `s` sustain level 0 to 1, `vol` loudness 0 to 1, `vib` as `0.1/5.5` (vibrato depth in semitones and rate in Hz), `name`. An `fm` voice is two operators: `ratio` is the frequency of the modulator compared with the note, `index` how far (in radians) it bends the carrier's phase, `fb` its feedback, and `idecay` the milliseconds in which the bending fades away.
+@ *channel* _name_ [*inst*=_N_ | _name_] [*pan*=_P_] [*gain*=_G_]
+    Adds a channel (at most six). `inst` is the instrument it starts every pattern with, `pan` runs from -1 (left) to +1 (right).
+@ *pattern* _name_
+    Starts a pattern. The lines that follow, written as `channel: notes`, say what each channel plays; a line indented under another one continues it. A channel left out is silent for the pattern. Channels that are shorter than the longest one are padded with silence.
+@ *order* _pattern_ ...
+    The patterns in the order they are played. A name may carry a repeat count: `A*4` plays A four times. Without an `order` line every pattern is played once, in the order written.
+
+# THE NOTATION
+Notes are written like a music macro language. White space and `|` are ignored; use `|` to mark bars.
+
+@ c d e f g a b
+    A note. `+` or `#` after it raises it a semitone and `-` lowers it. A number is the length as a fraction of a whole note: `4` quarter, `8` eighth, `16` sixteenth, `12` an eighth triplet; each dot adds half again. Without a number the default length is used.
+@ r
+    A rest, with the same lengths. `w`_N_ waits _N_ ticks (192 ticks make a whole note).
+@ o4, <, >
+    The octave (`o4` holds middle C) and one octave down or up.
+@ l8
+    The default length.
+@ v12
+    The volume, 0 to 15.
+@ q7
+    The gate: how many eighths of its length a note sounds, 1 to 8 (7 is the usual 7/8; a small number is staccato).
+@ @3, @bell
+    Switch instrument, by number or by name (`lead`, `pulse`, `bass`, `hat`, `snare`, `kick`, `pad`, `pluck`, `tri-bell`, `thin`, `saw`, `open-hat`, `fm-bell`, `fm-epiano`, `fm-bass`, `fm-pad`, `fm-pluck`, `fm-lead`, `fm-brass`, or one you defined).
+@ &
+    Tie: the next note's length is added to the note before it.
+@ [ ... ]3
+    Repeat the part in the brackets three times (twice if no number); they nest.
+
+Every pattern starts each channel afresh with `o4 l8 v12 q7` and the channel's own instrument, so a pattern never depends on the one before it. The noise instruments treat the pitch as how fast the noise changes: `o2 c` is a rumble (a kick), `o7 c` a hiss (a hat).
+
+# EXAMPLES
+A bar of 4/4 is eight eighths. This one-bar pattern plays a C major arpeggio on a bell with a kick underneath:
+
+    pattern P
+      bell: o5 c8 e8 g8 >c8 <g8 e8 c4
+      drum: @5 o2 c4 r4 @5 o2 c4 r4
+
+    play -i song.tms        describe a song and measure its level
+    play song.tms           play it
+
+# SEE ALSO
+play(1), jukebox(1), audio(7)

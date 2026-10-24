@@ -1,14 +1,16 @@
-.page fetch 1 download a web page or file over HTTP
+.page fetch 1 download a web page or file over HTTP or HTTPS
 
 # SYNOPSIS
-*fetch* [*-q*] [*-i*] [*-O* _FILE_] [*-T* _SECONDS_] [*-U* _AGENT_] [*-H* _HEADER_] [*-r* _REDIRECTS_] _URL_...
+*fetch* [*-qvik*] [*-O* _FILE_] [*-T* _SECONDS_] [*-U* _AGENT_] [*-H* _HEADER_] [*-r* _REDIRECTS_] [*--cacert* _FILE_] _URL_...
 
 # DESCRIPTION
-`fetch` sends an HTTP/1.1 `GET` request to each _URL_ and writes the body of the answer to standard output (or to the file named with `-O`). Only plain `http://` is spoken: there is no TLS in this system, and a `https://` address is refused with a message rather than quietly downgraded.
+`fetch` sends an HTTP/1.1 `GET` request to each _URL_ and writes the body of the answer to standard output (or to the file named with `-O`). Both `http://` and `https://` addresses work.
 
-Redirects (301, 302, 303, 307, 308) are followed up to eight times, with relative and absolute `Location` headers. Bodies sent with a `Content-Length`, in chunks (`Transfer-Encoding: chunked`) or simply until the server closes the connection are all understood. The request carries `Connection: close`, a `Host` header (with the port when it is not 80) and a short `User-Agent`.
+For `https://` the connection is encrypted with TLS 1.3 or 1.2 (see tls(7)) and the server is checked before anything is sent: its certificate must chain up to one of the authorities in `/etc/ssl/certs/ca-bundle.pem` (Mozilla's list), must be valid today according to this computer's clock, and must be issued for the host name in the URL. If any of that fails, nothing is sent, the reason is printed (who the certificate is for, who issued it, the dates, and the clock when that is the problem) and the exit status is 5. `-k` carries on regardless, with a loud warning that says what is wrong, for the times a self-made certificate is what you want.
 
-Progress messages (`Connecting to ...`, the status line, the length) go to standard error unless `-q` is given. If the server answers with an error status (400 and up) nothing is written, the status is reported and the exit status is 8.
+Redirects (301, 302, 303, 307, 308) are followed up to eight times, with relative and absolute `Location` headers, also from `http` to `https` and back; a redirect from `https` to `http` is reported because the next request is not encrypted. Bodies sent with a `Content-Length`, in chunks (`Transfer-Encoding: chunked`) or simply until the server closes the connection are all understood. Over TLS a connection that is cut off without the closing `close_notify` message is an error when the end of the data is only implied by the close (the download may be incomplete); with a `Content-Length` or a final chunk the data is known to be complete and the missing message is overlooked. The request carries `Connection: close`, a `Host` header (with the port when it is not the standard one) and a short `User-Agent`.
+
+Progress messages (`Connecting to ...`, the TLS handshake, the status line, the length) go to standard error unless `-q` is given. If the server answers with an error status (400 and up) nothing is written, the status is reported and the exit status is 8.
 
 `wget` is the same program with the habits of its namesake: without `-O` it saves the body in a file named after the last part of the URL path (`index.html` when there is none), adding `.1`, `.2` and so on rather than overwriting. `wget -O - URL` prints to standard output.
 
@@ -16,9 +18,15 @@ Progress messages (`Connecting to ...`, the status line, the length) go to stand
 @ *-O* _FILE_
     Write the body to FILE; `-` means standard output. (`-o` is the same.)
 @ *-q*
-    Quiet: no progress messages.
+    Quiet: no progress messages. Warnings about switched-off checks are still printed.
+@ *-v*
+    Verbose: after the TLS handshake show the key exchange group, the protocol, the number of certificates, the subject, issuer and dates of the server's certificate and its SHA-256 fingerprint.
 @ *-i*
     Include the status line and headers of the final response in the output.
+@ *-k*
+    Do not check the server's certificate (the chain, the dates and the host name). The connection is still encrypted, but you cannot tell who is at the other end. A warning is printed every time. (`--insecure` and `--no-check-certificate` are the same.)
+@ *--cacert* _FILE_
+    Trust the certificates in FILE (PEM, one or many; or one DER certificate) instead of `/etc/ssl/certs/ca-bundle.pem`. FILE may hold the authority that signed the server's certificate, or the server's own certificate, which is then trusted as it stands. (`--ca-certificate` is the same.)
 @ *-T* _SECONDS_
     Give up on a silent connection after this long (default 30).
 @ *-U* _AGENT_
@@ -27,14 +35,32 @@ Progress messages (`Connecting to ...`, the status line, the length) go to stand
     One extra request header, such as `Accept-Language: ja`.
 @ *-r* _REDIRECTS_
     How many redirects to follow (default 8).
+@ *--tls12*, *--tls13*
+    Offer only that protocol version.
+@ *--cipher* _NAME_
+    Offer only one family of ciphers: `aes128`, `aes256` or `chacha20`.
+@ *--weak-random*
+    Connect even though the kernel says its random number generator has not collected enough randomness yet (see `/proc/random`, and tls(7) for why that matters).
+@ *--soft-aes*
+    Use the portable AES code even when the processor has AES-NI. For testing.
+
+# ENVIRONMENT
+@ SSL_CERT_FILE
+    A certificate file to use instead of the default bundle (`--cacert` wins).
+
+# FILES
+@ /etc/ssl/certs/ca-bundle.pem
+    The authorities that are trusted by default. Regenerated from Mozilla's list by `tools/mkcabundle.py` when the system is built; it does not update itself.
 
 # EXAMPLES
     fetch http://10.0.2.2:8000/hello.txt
-    fetch -q -O /tmp/page.html http://example.test/
-    wget http://10.0.2.2:8000/archive.tar
+    fetch -q -O /tmp/page.html https://example.com/
+    fetch -v https://en.wikipedia.org/ | head
+    fetch --cacert /tmp/my-ca.pem https://10.0.2.2:8443/
+    wget https://10.0.2.2:8443/archive.tar
 
 # EXIT STATUS
-0 on success, 1 for protocol errors and local failures, 4 when the server could not be reached, 8 when it answered with an error status, 2 for a usage error.
+0 on success, 1 for protocol errors and local failures, 4 when the server could not be reached, 5 when the TLS connection could not be made safely (bad certificate, handshake failure, no randomness yet), 8 when it answered with an error status, 2 for a usage error.
 
 # SEE ALSO
-nc(1), httpd(1), nslookup(1), network(7)
+tls(7), nc(1), httpd(1), nslookup(1), sntp(1), network(7)

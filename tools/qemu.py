@@ -135,7 +135,7 @@ class Qemu:
     def __init__(self, cmdline="", mem="512M", display="none", disk=None, net=False, no_reboot=True,
                  trace_int=False, extra=(), esp=None, name="vm", video=None, headless_serial=True,
                  boot_image=None, boot_bus="usb", audio=None, audio_path=None, sounds=False, hostfwd=(), netdev_opts=""):
-        # audio: None (no sound hardware), "hda" / "hda-output" (Intel HDA + output-only codec), "hda-duplex", "ac97".
+        # audio: None (no sound hardware), "hda" / "hda-output" (Intel HDA + output-only codec), "hda-duplex", "hda-micro", "hda-nocodec", "ac97".
         # The sound card plays into a WAV file (audio_path, default build/<name>-audio.wav) that is complete once stop() ran.
         # sounds: system sounds (login chime...) are switched off with "nosounds" on the command line unless a test wants them.
         self.cmdline, self.mem, self.display = cmdline, mem, display
@@ -229,8 +229,10 @@ class Qemu:
             if self.audio == "ac97":
                 a += ["-device", "AC97,audiodev=snd0"]
             else:
-                codec = "hda-duplex" if self.audio == "hda-duplex" else "hda-output"
-                a += ["-device", "intel-hda,id=hda0", "-device", f"{codec},bus=hda0.0,audiodev=snd0"]
+                a += ["-device", "intel-hda,id=hda0"]
+                if self.audio != "hda-nocodec":                        # "hda-nocodec": the controller alone, nobody answers on the link
+                    codec = self.audio if self.audio in ("hda-duplex", "hda-micro") else "hda-output"
+                    a += ["-device", f"{codec},bus=hda0.0,audiodev=snd0"]
         if self.no_reboot:
             a += ["-no-reboot"]
         if self.display:

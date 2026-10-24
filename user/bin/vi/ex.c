@@ -84,6 +84,7 @@ int run_filter(const char *cmd, const char *input, size_t inlen, char **out, siz
     return 0;
 }
 
+/* :!cmd: the command runs on the plain terminal, then "Press ENTER" (a ':' starts a command, other keys are given back). */
 static void run_interactive(const char *cmd) {
     pt_term_restore(&term);
     pid_t child = fork();
@@ -96,17 +97,11 @@ static void run_interactive(const char *cmd) {
     const char *m = "\r\nPress ENTER or type command to continue";
     ssize_t w = write(term.out_fd, m, strlen(m));
     (void)w;
-    struct termios t = term.saved, r = term.saved;
-    (void)t;
-    r.c_lflag &= ~(tcflag_t)(ICANON | ECHO | ISIG);
-    r.c_iflag &= ~(tcflag_t)(ICRNL | INLCR | IGNCR);
-    r.c_cc[VMIN] = 1;
-    r.c_cc[VTIME] = 0;
-    tcsetattr(term.in_fd, TCSANOW, &r);
-    char ch;
-    w = read(term.in_fd, &ch, 1);
+    pt_term_enter(&term, 0);
+    int k = getkey_plain();
     pt_term_enter(&term, 1);
     force_repaint();
+    if (k != K_ENTER && k != ' ' && k != K_ESC && k != 3 && k != K_EOF) { int kk = k | K_NOMAP; ta_push(&kk, 1); }
 }
 
 /* ------------------------------------------------------------------ addresses */
@@ -153,7 +148,7 @@ static int parse_addr(const char **pp, long base, long *out) {
         Pos from;
         from.l = base - 1;
         if (from.l < 0) from.l = 0;
-        from.c = delim == '/' ? (int)L[from.l].len : 0;
+        from.c = delim == '/' ? (int)LN(from.l).len : 0;
         if (base == 0 && delim == '/') { from.l = 0; from.c = -1; }
         Pos res;
         int r = search_find(pat, delim == '/' ? 1 : -1, from, &res, o.ws, base == 0 && delim == '/');
@@ -191,10 +186,27 @@ static OptDef optdefs[] = {
     { "hlsearch", "hls", &o.hls, 1 }, { "incsearch", "is", &o.is, 1 }, { "wrap", "wrap", &o.wrap, 1 },
     { "expandtab", "et", &o.et, 1 }, { "autoindent", "ai", &o.ai, 1 }, { "readonly", "ro", &o.ro, 1 },
     { "showmode", "smd", &o.showmode, 1 }, { "ruler", "ru", &o.ruler, 1 }, { "cursorline", "cul", &o.cursorline, 1 },
-    { "magic", "magic", &o.magic, 1 },
+    { "magic", "magic", &o.magic, 1 }, { "joinspaces", "js", &o.js, 1 }, { "fixendofline", "fixeol", &o.fixeol, 1 },
     { "tabstop", "ts", &o.ts, 0 }, { "shiftwidth", "sw", &o.sw, 0 }, { "softtabstop", "sts", &o.sts, 0 },
     { "textwidth", "tw", &o.tw, 0 },
 };
+
+/* Options of Vim that this editor has no use for: they are accepted (so a pasted ":set" line works) and ignored. */
+static const char *const ignored_opts[] = {
+    "backspace", "bs", "hidden", "hid", "showcmd", "sc", "scrolloff", "so", "smartindent", "si", "cindent", "cin", "timeout", "to",
+    "ttimeout", "ttimeoutlen", "ttm", "timeoutlen", "tm", "esckeys", "ek", "compatible", "cp", "encoding", "enc", "fileencoding", "fenc",
+    "syntax", "syn", "filetype", "ft", "title", "visualbell", "vb", "errorbells", "eb", "lazyredraw", "lz", "ttyfast", "tf", "history",
+    "hi", "undolevels", "ul", "swapfile", "swf", "backup", "bk", "writebackup", "wb", "wildmenu", "wmnu", "laststatus", "ls", "mouse",
+    "foldenable", "fen", "nrformats", "nf", "matchpairs", "mps", "whichwrap", "ww", "background", "bg", "cursorcolumn", "cuc",
+    "colorcolumn", "cc", "listchars", "lcs", "shell", "sh", "binary", "bin", "modifiable", "ma", "autoread", "ar", "confirm", "cf",
+    "startofline", "sol", "wildmode", "wim", "display", "dy", "formatoptions", "fo", "shortmess", "shm", "cpoptions", "cpo", "smarttab", "sta",
+    "numberwidth", "nuw", "signcolumn", "scl", "termguicolors", "tgc", "updatetime", "ut", "clipboard", "cb", "spell", "endofline", "eol",
+};
+
+static int is_ignored_option(const char *name) {
+    for (size_t i = 0; i < sizeof ignored_opts / sizeof *ignored_opts; i++) if (!strcmp(name, ignored_opts[i])) return 1;
+    return 0;
+}
 
 static void set_option(const char *arg) {
     PtBuf shown = { 0 };
@@ -221,9 +233,17 @@ static void set_option(const char *arg) {
         if (!strncmp(name, "no", 2) && strcmp(name, "number") && strcmp(name, "nu") && !eq) { neg = 1; name += 2; }
         else if (!strncmp(name, "inv", 3)) { inv = 1; name += 3; }
         if (!strcmp(name, "all")) { continue; }
+        if (!strcmp(name, "fileformat") || !strcmp(name, "ff")) {
+            if (eq && !query) {
+                int dos = !strcmp(val, "dos");
+                if (!dos && strcmp(val, "unix")) { err("E474: Invalid argument: %s", arg); pb_free(&shown); return; }
+                if (dos != ff_dos) { ff_dos = dos; undo_force_modified(); }
+            } else pb_addf(&shown, "  fileformat=%s  ", ff_dos ? "dos" : "unix");
+            continue;
+        }
         OptDef *d = NULL;
         for (size_t i = 0; i < sizeof optdefs / sizeof *optdefs; i++) if (!strcmp(name, optdefs[i].name) || !strcmp(name, optdefs[i].abbr)) d = &optdefs[i];
-        if (!d && (!strcmp(name, "nows") )) { }
+        if (!d && is_ignored_option(name)) continue;
         if (!d) { err("E518: Unknown option: %s", word); pb_free(&shown); return; }
         if (reset) { continue; }
         if (d->is_bool) {
@@ -250,24 +270,36 @@ static void set_option(const char *arg) {
 
 /* ------------------------------------------------------------------ substitute */
 
-typedef struct { int sub_lines, sub_count; } SubStats;
+/* Appends text to out, applying \u \l (the next character) and \U \L (until \E) to it. */
+static void add_cased(PtBuf *out, const char *txt, size_t tl, int *oneshot, int *mode_ul) {
+    size_t i = 0;
+    while (i < tl) {
+        uint32_t cp;
+        int n = pt_u8_decode((const unsigned char *)txt + i, tl - i, &cp);
+        uint32_t m = cp;
+        if (*oneshot) { m = *oneshot == 'u' ? cp_upper(cp) : cp_lower(cp); *oneshot = 0; }
+        else if (*mode_ul) m = *mode_ul == 'U' ? cp_upper(cp) : cp_lower(cp);
+        if (m != cp && !pt_is_rawbyte(cp)) { char u[4]; pb_add(out, u, (size_t)pt_u8_encode(m, u)); }
+        else pb_add(out, txt + i, (size_t)n);
+        i += (size_t)n;
+    }
+}
 
-/* Expands the replacement for a match into out. Returns nothing; case-conversion state is handled here. */
+/* Expands the replacement for a match: & \0 the match, \1-\9 groups, \n a NUL, \r a line break, \t a tab, \u \U \l \L \e \E. */
 static void expand_rep(PtBuf *out, const char *rep, const char *line, const regmatch_t *m, int ngroups) {
-    int oneshot = 0, mode_ul = 0;                         /* \u \l one character, \U \L until \E */
+    int oneshot = 0, mode_ul = 0;
     for (const char *r = rep; *r; r++) {
         const char *txt = NULL;
         size_t tl = 0;
         char single[2];
         if (*r == '&') { txt = line + m[0].rm_so; tl = (size_t)(m[0].rm_eo - m[0].rm_so); }
-        else if (*r == '~') { txt = last_sub_rep; tl = strlen(last_sub_rep); }
         else if (*r == '\\' && r[1]) {
             r++;
             if (*r >= '0' && *r <= '9') {
                 int g = *r - '0';
                 if (g <= ngroups && m[g].rm_so >= 0) { txt = line + m[g].rm_so; tl = (size_t)(m[g].rm_eo - m[g].rm_so); }
                 else { txt = ""; tl = 0; }
-            } else if (*r == 'n') { single[0] = 0; txt = single; tl = 1; }                    /* a NUL in vim; we use a newline marker below */
+            } else if (*r == 'n') { single[0] = 0; txt = single; tl = 1; }
             else if (*r == 'r') { single[0] = '\n'; txt = single; tl = 1; }
             else if (*r == 't') { single[0] = '\t'; txt = single; tl = 1; }
             else if (*r == 'u') { oneshot = 'u'; continue; }
@@ -275,19 +307,27 @@ static void expand_rep(PtBuf *out, const char *rep, const char *line, const regm
             else if (*r == 'U') { mode_ul = 'U'; continue; }
             else if (*r == 'L') { mode_ul = 'L'; continue; }
             else if (*r == 'e' || *r == 'E') { mode_ul = 0; continue; }
-            else if (*r == '&') { single[0] = '&'; txt = single; tl = 1; }
             else { single[0] = *r; txt = single; tl = 1; }
         } else if (*r == '\r') { single[0] = '\n'; txt = single; tl = 1; }
-        else { single[0] = *r; txt = single; tl = 1; }
-        for (size_t i = 0; i < tl; i++) {
-            unsigned char ch = (unsigned char)txt[i];
-            if (oneshot) { ch = (unsigned char)(oneshot == 'u' ? toupper(ch) : tolower(ch)); oneshot = 0; }
-            else if (mode_ul) ch = (unsigned char)(mode_ul == 'U' ? toupper(ch) : tolower(ch));
-            pb_addc(out, (char)ch);
+        else {                                           /* a plain character: all its bytes */
+            int n = pt_u8_next(r, strlen(r), 0);
+            txt = r;
+            tl = (size_t)n;
+            r += n - 1;
         }
+        add_cased(out, txt, tl, &oneshot, &mode_ul);
     }
 }
 
+static int pattern_has_newline(const char *pat) {
+    for (const char *p = pat; *p; p++) {
+        if (*p == '\\' && p[1]) { if (p[1] == 'n') return 1; p++; }
+    }
+    return 0;
+}
+
+/* :s on lines l1..l2 (0-based). A pattern with \n can match across line breaks: the lines are searched joined, and the lines a
+ * match used up are replaced together with the first one (Vim keeps going on the joined text while it is within the range). */
 int ex_substitute_range(long l1, long l2, const char *pat, const char *rep, const char *flags) {
     int g = 0, confirm = 0, count_only = 0, icase = -1, noerr = 0;
     for (const char *f = flags; *f; f++) {
@@ -301,28 +341,40 @@ int ex_substitute_range(long l1, long l2, const char *pat, const char *rep, cons
         default: break;
         }
     }
+    int multi = pattern_has_newline(pat), extra = 0;
+    if (multi) for (const char *p = pat; *p; p++) { if (*p == '\\' && p[1]) { if (p[1] == 'n') extra++; p++; } }
     regex_t re;
-    if (re_compile(&re, pat, icase) != 0) { err("E486: Invalid pattern: %s", pat); return 0; }
+    re_multiline = multi;
+    int rc = re_compile(&re, pat, icase);
+    re_multiline = 0;
+    if (rc != 0) { err("E486: Invalid pattern: %s", pat); return 0; }
     int ng = (int)re.re_nsub;
     if (ng > 9) ng = 9;
-    long subs = 0, lines_changed = 0;
-    long last_changed = -1;
+    long subs = 0, lines_changed = 0, last_changed = -1;
     int quit_all = 0, do_all = 0;
     long end = l2;
-    for (long l = l1; l <= end && l < nl && !quit_all; l++) {
-        const char *s = ls(l);
-        size_t len = L[l].len;
+    for (long l = l1; l <= end && l < nl && !quit_all;) {
+        if (intr_check()) { err("Interrupted"); break; }
+        long cl = l;                                     /* the line being scanned (a match may have used up the ones before it) */
+        size_t cpos = 0, ccopied = 0;                    /* scan position and first byte not yet copied, in line cl */
         PtBuf out = { 0 };
-        size_t pos = 0, copied = 0;
         int changed = 0;
-        regmatch_t m[10];
-        while (pos <= len) {
-            if (re_exec_at(&re, s, len, pos, m, 10) != 0) break;
+        for (;;) {
+            PtBuf subj = { 0 };                          /* line cl, and for \n patterns the lines after it */
+            size_t len0 = LN(cl).len;
+            pb_add(&subj, ls(cl), len0);
+            long hi = cl;
+            for (int e = 0; e < extra && hi + 1 < nl; e++) { hi++; pb_addc(&subj, '\n'); pb_add(&subj, ls(hi), LN(hi).len); }
+            if (multi && hi == nl - 1) pb_addc(&subj, '\n');       /* the line break after the last line can be matched too */
+            const char *s = subj.p ? subj.p : "";
+            regmatch_t m[10];
+            if (cpos > len0 || re_exec_at(&re, s, subj.len, cpos, m, 10) != 0) { pb_free(&subj); break; }
             size_t so = (size_t)m[0].rm_so, eo = (size_t)m[0].rm_eo;
+            if (so > len0) { pb_free(&subj); break; }    /* the match starts on a later line: that line's turn */
             int doit = 1;
             if (confirm && !do_all && !count_only) {
                 Pos save = cur;
-                cur.l = l; cur.c = (int)so;
+                cur.l = cl; cur.c = (int)so;
                 char q[300];
                 snprintf(q, sizeof q, "replace with %s (y/n/a/q/l/^E/^Y)?", rep);
                 set_msg("%s", q);
@@ -333,61 +385,73 @@ int ex_substitute_range(long l1, long l2, const char *pat, const char *rep, cons
                 if (k == 'y') doit = 1;
                 else if (k == 'n') doit = 0;
                 else if (k == 'a') do_all = 1;
-                else if (k == 'l') { quit_all = 1; }
+                else if (k == 'l') quit_all = 1;
                 else { quit_all = 1; doit = 0; }
             }
+            long consumed = 0;                           /* line breaks inside the match */
+            for (size_t i = so; i < eo; i++) if (s[i] == '\n') consumed++;
             if (doit) {
-                pb_add(&out, s + copied, so - copied);
+                pb_add(&out, s + ccopied, so - ccopied);
                 if (!count_only) expand_rep(&out, rep, s, m, ng);
-                copied = eo;
                 changed++;
                 subs++;
+                if (consumed) {
+                    size_t line_start = 0;               /* offset in subj of the line the match ends in */
+                    long k = 0;
+                    for (size_t i = 0; i < eo && k < consumed; i++) if (s[i] == '\n') { k++; line_start = i + 1; }
+                    int past_end = cl + consumed > nl - 1;              /* the match took the line break after the last line */
+                    if (past_end) { cl = nl - 1; ccopied = cpos = LN(cl).len + 1; }
+                    else { cl += consumed; ccopied = cpos = eo - line_start; }
+                    pb_free(&subj);
+                    if (quit_all || past_end) break;
+                    if (cl <= end || g) continue;        /* the joined line is looked at again */
+                    break;
+                }
+                ccopied = eo;
             }
-            if (quit_all && !doit) break;
+            if (quit_all && !doit) { pb_free(&subj); break; }
             if (eo == so) {                              /* an empty match: step over one character */
-                if (so >= len) break;
-                size_t nx = (size_t)next_c(l, (int)so);
-                if (doit) pb_add(&out, s + so, nx - so);
-                copied = nx;
-                pos = nx;
-            } else pos = eo;
-            if (!g) break;
-            if (quit_all) break;
+                if (so >= len0) { pb_free(&subj); break; }
+                size_t nx = (size_t)next_c(cl, (int)so);
+                if (doit) { pb_add(&out, s + so, nx - so); ccopied = nx; }
+                cpos = nx;
+            } else cpos = eo;
+            pb_free(&subj);
+            if (!g || quit_all) break;
         }
         if (changed && !count_only) {
-            pb_add(&out, s + copied, len - copied);
-            /* the replacement may contain newlines (from \r): split into lines */
-            char *copy = out.p;
-            size_t olen = out.len;
-            const char *nlp = memchr(copy, '\n', olen);
-            if (!nlp) {
-                ln_set(l, copy, olen);
-            } else {
-                size_t p = 0;
-                long at = l;
-                int first = 1;
-                while (p <= olen) {
-                    const char *e = memchr(copy + p, '\n', olen - p);
-                    size_t n = e ? (size_t)(e - (copy + p)) : olen - p;
-                    if (first) { ln_set(at, copy + p, n); first = 0; }
-                    else ln_insert(at, copy + p, n);
-                    at++;
-                    if (!e) break;
-                    p += n + 1;
-                }
-                end += at - 1 - l;
-                l = at - 1;
+            if (LN(cl).len > ccopied) pb_add(&out, ls(cl) + ccopied, LN(cl).len - ccopied);
+            /* the replacement may contain line breaks (from \r): the lines l..cl become as many lines as there are pieces */
+            size_t olen = out.len, p = 0;
+            long at = l, old_count = cl - l + 1, pieces = 0;
+            while (p <= olen) {
+                const char *e = olen - p ? memchr(out.p + p, '\n', olen - p) : NULL;
+                size_t n = e ? (size_t)(e - (out.p + p)) : olen - p;
+                const char *piece = out.p ? out.p + p : "";
+                if (pieces == 0) ln_set(at, piece, n);
+                else ln_insert(at, piece, n);
+                at++;
+                pieces++;
+                if (!e) break;
+                p += n + 1;
             }
+            if (old_count > 1) ln_delete(at, old_count - 1);
+            end += pieces - old_count;
+            lines_changed++;
+            last_changed = l + pieces - 1;
+            l += pieces;
+        } else {
+            if (changed) { lines_changed++; last_changed = l; }
+            l = (count_only ? cl : l) + 1;
         }
-        if (changed) { lines_changed++; last_changed = l; }
         pb_free(&out);
     }
     regfree(&re);
     if (!subs) {
-        if (!noerr) err("E486: Pattern not found: %s", pat);
+        if (!noerr && !in_global) err("E486: Pattern not found: %s", pat);
         return 0;
     }
-    if (last_changed >= 0 && !count_only) { cur.l = last_changed; cur.c = first_nonblank(cur.l); }
+    if (last_changed >= 0 && !count_only) { cur.l = imin(last_changed, nl - 1); cur.c = first_nonblank(cur.l); }
     if (count_only) set_msg("%ld match%s on %ld line%s", subs, subs == 1 ? "" : "es", lines_changed, lines_changed == 1 ? "" : "s");
     else if (subs > 2) set_msg("%ld substitution%s on %ld line%s", subs, subs == 1 ? "" : "s", lines_changed, lines_changed == 1 ? "" : "s");
     return 1;
@@ -441,7 +505,17 @@ static int cmd_substitute(long l1, long l2, const char *p, int kind) {
         l1 = l2;
         l2 = imin(nl, l1 + c - 1);
     }
-    if (have_pat && !strcmp(rep, "~")) snprintf(rep, sizeof rep, "%s", last_sub_rep);
+    if (have_pat && strchr(rep, '~')) {                  /* an unescaped ~ stands for the previous replacement string */
+        char out[sizeof rep];
+        size_t k = 0;
+        for (const char *r = rep; *r && k < sizeof out - 1; r++) {
+            if (*r == '\\' && r[1]) { out[k++] = *r++; if (k < sizeof out - 1) out[k++] = *r; continue; }
+            if (*r == '~') { for (const char *t = last_sub_rep; *t && k < sizeof out - 1; t++) out[k++] = *t; continue; }
+            out[k++] = *r;
+        }
+        out[k] = 0;
+        snprintf(rep, sizeof rep, "%s", out);
+    }
     snprintf(last_sub_pat, sizeof last_sub_pat, "%s", pat);
     snprintf(last_search, sizeof last_search, "%s", pat);
     snprintf(last_sub_rep, sizeof last_sub_rep, "%s", rep);
@@ -451,8 +525,9 @@ static int cmd_substitute(long l1, long l2, const char *p, int kind) {
 
 /* ------------------------------------------------------------------ files */
 
-static int do_write(long l1, long l2, const char *arg, int bang, int whole, int have_range) {
+static int do_write(long l1, long l2, const char *arg, int bang, int whole, int have_range, int saveas) {
     arg = skipws(arg);
+    if (whole) { l1 = 1; l2 = nl; }
     int append = 0;
     if (arg[0] == '>' && arg[1] == '>') { append = 1; arg = skipws(arg + 2); }
     if (*arg == '!') {                                   /* :w !cmd */
@@ -477,15 +552,16 @@ static int do_write(long l1, long l2, const char *arg, int bang, int whole, int 
         struct stat st;
         if (stat(name, &st) == 0) { err("E13: File exists (add ! to override)"); return 0; }
     }
-    if (whole) { l1 = 1; l2 = nl; }
+    if (own && !whole && !bang) { err("E140: Use ! to write partial buffer"); return 0; }
     long nb;
     if (buf_write(name, l1 - 1, l2 - 1, append, &nb) != 0) {
         err("E212: Can't open file for writing");
         return 0;
     }
-    if (!fname[0] && !have_range) snprintf(fname, sizeof fname, "%s", name);
-    if (own && whole) { undo_mark_saved(); }
-    set_msg("\"%s\" %ld%s, %ldB written", name, l2 - l1 + 1, (l2 - l1 + 1) == 1 ? "L" : "L", nb);
+    int renamed = saveas || (!fname[0] && !have_range);
+    if (renamed) snprintf(fname, sizeof fname, "%s", name);
+    if ((own || renamed) && whole) undo_mark_saved();
+    set_msg("\"%s\" %ldL, %ldB %s", name, l2 - l1 + 1, nb, append ? "appended" : "written");
     return 1;
 }
 
@@ -584,44 +660,69 @@ static int addr_ok(long a, int allow0) {
     return 1;
 }
 
+typedef struct { char *s; size_t len; double key; long idx; } SortLine;
+static int sort_numeric, sort_rev, sort_icase;
+
+static int sort_cmp0(const SortLine *a, const SortLine *b) {
+    int c;
+    if (sort_numeric) c = a->key < b->key ? -1 : a->key > b->key ? 1 : 0;
+    else {
+        size_t n = a->len < b->len ? a->len : b->len;
+        c = sort_icase ? strncasecmp(a->s, b->s, n) : memcmp(a->s, b->s, n);
+        if (!c) c = a->len < b->len ? -1 : a->len > b->len ? 1 : 0;
+    }
+    return c;
+}
+
+static int sort_cmp(const void *pa, const void *pb) {
+    const SortLine *a = pa, *b = pb;
+    if (a->idx == b->idx) return 0;
+    int c = sort_cmp0(a, b);
+    if (sort_rev) c = -c;
+    if (!c) c = a->idx < b->idx ? -1 : 1;                /* equal lines keep their order */
+    return c;
+}
+
+/* :sort [n x f] [r] [u] [i] and :sort! */
 static void cmd_sort(long l1, long l2, const char *arg, int bang) {
-    int numeric = 0, rev = bang, uniq = 0, icase = 0;
-    for (const char *p = arg; *p; p++) { if (*p == 'n') numeric = 1; else if (*p == 'r') rev = 1; else if (*p == 'u') uniq = 1; else if (*p == 'i') icase = 1; }
+    int uniq = 0, kind = 0;
+    sort_numeric = 0;
+    sort_rev = bang;
+    sort_icase = 0;
+    for (const char *p = arg; *p; p++) {
+        if (*p == 'n' || *p == 'x' || *p == 'f') { kind = *p; sort_numeric = 1; }
+        else if (*p == 'r') sort_rev = 1;
+        else if (*p == 'u') uniq = 1;
+        else if (*p == 'i') sort_icase = 1;
+    }
     long n = l2 - l1 + 1;
     if (n < 2) return;
-    typedef struct { char *s; size_t len; double key; } SL;
-    SL *a = malloc((size_t)n * sizeof *a);
+    SortLine *a = malloc((size_t)n * sizeof *a);
     if (!a) pt_oom();
     for (long i = 0; i < n; i++) {
-        a[i].len = L[l1 - 1 + i].len;
+        a[i].len = LN(l1 - 1 + i).len;
         a[i].s = malloc(a[i].len + 1);
+        if (!a[i].s) pt_oom();
         memcpy(a[i].s, ls(l1 - 1 + i), a[i].len);
         a[i].s[a[i].len] = 0;
         a[i].key = 0;
-        if (numeric) {
+        a[i].idx = i;
+        if (sort_numeric) {
             const char *q = a[i].s;
-            while (*q && !isdigit((unsigned char)*q) && !(*q == '-' && isdigit((unsigned char)q[1]))) q++;
-            a[i].key = *q ? strtod(q, NULL) : -1e300;
+            a[i].key = -1e300;                           /* lines without a number come first */
+            if (kind == 'x') {
+                while (*q && !isxdigit((unsigned char)*q)) q++;
+                if (*q) { int neg = q > a[i].s && q[-1] == '-'; if (q[0] == '0' && (q[1] == 'x' || q[1] == 'X')) q += 2; a[i].key = (double)strtoul(q, NULL, 16) * (neg ? -1 : 1); }
+            } else {
+                while (*q && !isdigit((unsigned char)*q) && !(*q == '-' && isdigit((unsigned char)q[1])) && !(kind == 'f' && (*q == '.' || *q == '-' || *q == '+') && isdigit((unsigned char)q[1]))) q++;
+                if (*q) a[i].key = kind == 'f' ? strtod(q, NULL) : (double)strtol(q, NULL, 10);
+            }
         }
     }
-    /* insertion-free stable merge sort via qsort on index with tie-break */
-    for (long i = 1; i < n; i++) {                       /* binary insertion keeps it simple and stable */
-        SL x = a[i];
-        long lo = 0, hi = i;
-        while (lo < hi) {
-            long mid = (lo + hi) / 2;
-            int c;
-            if (numeric) c = a[mid].key < x.key ? -1 : a[mid].key > x.key ? 1 : 0;
-            else c = icase ? strcasecmp(a[mid].s, x.s) : strcmp(a[mid].s, x.s);
-            if (rev) c = -c;
-            if (c <= 0) lo = mid + 1; else hi = mid;
-        }
-        memmove(&a[lo + 1], &a[lo], (size_t)(i - lo) * sizeof *a);
-        a[lo] = x;
-    }
+    qsort(a, (size_t)n, sizeof *a, sort_cmp);
     long w = 0;
     for (long i = 0; i < n; i++) {
-        if (uniq && w > 0 && a[i].len == a[w - 1].len && !memcmp(a[i].s, a[w - 1].s, a[i].len)) { free(a[i].s); continue; }
+        if (uniq && w > 0 && sort_cmp0(&a[i], &a[w - 1]) == 0) { free(a[i].s); continue; }
         a[w++] = a[i];
     }
     for (long i = 0; i < w; i++) { ln_set(l1 - 1 + i, a[i].s, a[i].len); free(a[i].s); }
@@ -629,6 +730,23 @@ static void cmd_sort(long l1, long l2, const char *arg, int bang) {
     free(a);
     cur.l = l1 - 1;
     cur.c = 0;
+}
+
+/* :global. A matching line gets a number (Line.gid); a line that leaves the buffer is noted in global_dead[], so the lines still
+ * to be done are found again wherever the commands moved them. */
+static unsigned char *global_dead;
+static unsigned global_n;
+
+static void global_hook(const Line *l) {
+    if (l->gid && l->gid <= global_n) global_dead[l->gid - 1] = 1;
+}
+
+static long find_gid(unsigned id, long hint) {
+    if (hint < 0) hint = 0;
+    if (hint > nl) hint = nl;
+    for (long i = hint; i < nl; i++) if (LN(i).gid == id) return i;
+    for (long i = 0; i < hint; i++) if (LN(i).gid == id) return i;
+    return -1;
 }
 
 static void cmd_global(long l1, long l2, const char *p, int invert) {
@@ -649,35 +767,46 @@ static void cmd_global(long l1, long l2, const char *p, int invert) {
     else snprintf(last_search, sizeof last_search, "%s", pat);
     regex_t re;
     if (re_compile(&re, pat, -1) != 0) { err("E486: Invalid pattern: %s", pat); return; }
-    for (long i = 0; i < nl; i++) L[i].gm = 0;
-    long marked = 0;
+    for (long i = 0; i < nl; i++) LN(i).gid = 0;
+    unsigned id = 0;
     for (long i = l1 - 1; i <= l2 - 1 && i < nl; i++) {
-        int hit = re_exec_at(&re, ls(i), L[i].len, 0, NULL, 0) == 0;
-        if (hit != invert) { L[i].gm = 1; marked++; }
+        int hit = re_exec_at(&re, ls(i), LN(i).len, 0, NULL, 0) == 0;
+        if (hit != invert) LN(i).gid = ++id;
     }
     regfree(&re);
-    if (!marked) { err(invert ? "E538: Pattern found in every line: %s" : "E486: Pattern not found: %s", pat); return; }
+    if (!id) { err(invert ? "E538: Pattern found in every line: %s" : "E486: Pattern not found: %s", pat); return; }
+    unsigned char *saved_dead = global_dead;
+    unsigned saved_n = global_n;
+    void (*saved_hook)(const Line *) = line_deleted_hook;
+    global_dead = calloc(id, 1);
+    if (!global_dead) pt_oom();
+    global_n = id;
+    line_deleted_hook = global_hook;
     in_global++;
     undo_nest++;
-    long scan = 0;
+    long hint = 0;
     char *cmdcopy = strdup(cmd);
-    while (!ex_error && !quit_flag) {
-        long i = scan;
-        while (i < nl && !L[i].gm) i++;
-        if (i >= nl) break;
-        L[i].gm = 0;
+    for (unsigned k = 1; k <= id && !quit_flag; k++) {
+        if (intr_check()) { err("Interrupted"); break; }
+        if (global_dead[k - 1]) continue;
+        long i = find_gid(k, hint);
+        if (i < 0) continue;
+        LN(i).gid = 0;
         cur.l = i;
         cur.c = 0;
         ex_execute(cmdcopy);
         if (ex_error) break;
-        scan = imax(0, imin(cur.l, nl - 1) - 1);
-        if (scan > i) scan = i;
-        if (i > 0) scan = imin(scan, i);
+        hint = imin(i, nl > 0 ? nl - 1 : 0);
     }
     free(cmdcopy);
     undo_nest--;
     in_global--;
-    for (long i = 0; i < nl; i++) L[i].gm = 0;
+    line_deleted_hook = saved_hook;
+    free(global_dead);
+    global_dead = saved_dead;
+    global_n = saved_n;
+    for (long i = 0; i < nl; i++) LN(i).gid = 0;
+    if (cur.l >= nl) cur.l = nl - 1;
 }
 
 static const char *help_text =
@@ -694,7 +823,7 @@ static const CmdDef cmds[] = {
     { "join", 1 }, { "normal", 4 }, { "global", 1 }, { "vglobal", 1 }, { "read", 1 }, { "edit", 1 }, { "file", 1 }, { "mark", 2 }, { "k", 1 },
     { "print", 1 }, { "number", 2 }, { "undo", 1 }, { "redo", 3 }, { "registers", 3 }, { "display", 2 }, { "marks", 5 }, { "nohlsearch", 3 },
     { "sort", 3 }, { "help", 1 }, { "map", 3 }, { "nmap", 2 }, { "noremap", 2 }, { "nnoremap", 2 }, { "unmap", 3 }, { "nunmap", 3 }, { "imap", 2 }, { "inoremap", 3 }, { "iunmap", 3 },
-    { "abbreviate", 2 }, { "iabbrev", 2 }, { "next", 1 }, { "previous", 4 }, { "Next", 1 }, { "args", 2 }, { "cquit", 2 }, { "version", 2 },
+    { "abbreviate", 2 }, { "iabbrev", 2 }, { "unabbreviate", 3 }, { "iunabbrev", 4 }, { "abclear", 3 }, { "iabclear", 5 }, { "next", 1 }, { "previous", 4 }, { "Next", 1 }, { "args", 2 }, { "cquit", 2 }, { "version", 2 },
     { "jumps", 2 }, { "list", 1 }, { "retab", 3 }, { "ascii", 2 }, { "wnext", 2 }, { "rewind", 3 }, { "first", 3 }, { "last", 2 }, { "syntax", 2 }, { "filetype", 5 },
     { "left", 2 }, { "right", 2 }, { "center", 2 }, { "update", 2 }, { "stop", 2 }, { "suspend", 3 }, { "redraw", 4 }, { "echo", 2 }, { "let", 3 }, { "startinsert", 4 },
     { "stopinsert", 5 }, { "saveas", 3 }, { "changes", 7 }, { "undolist", 5 }, { "sview", 2 }, { "view", 3 }, { "visual", 2 }, { "vi", 2 }, { "vim", 3 }, { "append", 1 },
@@ -708,13 +837,58 @@ static int match_cmd(const char *word, size_t wl, const char **full) {
     return 0;
 }
 
-static int ex_one(const char *line);
+static int ex_one_main(const char *line, char **scratch);
+static const char *ex_rest;                              /* the commands after a "|" that ended the one just run */
+
+static int ex_one(const char *line) {
+    char *scratch = NULL;
+    int r = ex_one_main(line, &scratch);
+    free(scratch);
+    return r;
+}
+
+/* True if "|" ends the argument of this command. :global and :normal take the rest of the line, and so do the commands that
+ * hand it to the shell. */
+static int cmd_takes_bar(const char *cname, const char *arg) {
+    if (!strcmp(cname, "global") || !strcmp(cname, "vglobal") || !strcmp(cname, "normal") || !strcmp(cname, "!")) return 0;
+    if (!strcmp(cname, "read") || !strcmp(cname, "write")) { const char *a = skipws(arg); if (*a == '!') return 0; }
+    return 1;
+}
+
+/* The "|" that ends the argument (not one that is escaped with a backslash), or NULL. For :s the pattern and the replacement
+ * come first: a "|" in them is part of the text. */
+static const char *find_bar(const char *cname, const char *arg) {
+    const char *p = arg;
+    if (!strcmp(cname, "substitute")) {
+        const char *q = skipws(p);
+        if (*q && !isalnum((unsigned char)*q) && *q != ' ' && *q != '"' && *q != '|' && *q != '&') {
+            char d = *q++;
+            for (int part = 0; part < 2; part++) {
+                while (*q && *q != d) { if (*q == '\\' && q[1]) q++; q++; }
+                if (*q == d) q++;
+            }
+            p = q;
+        }
+    }
+    for (; *p; p++) {
+        if (*p == '\\' && p[1]) { p++; continue; }
+        if (*p == '|') return p;
+    }
+    return NULL;
+}
 
 int ex_execute(const char *line) {
+    const char *outer_rest = ex_rest;                    /* this may run inside a command that has more commands after a "|" */
     ex_error = 0;
     pb_clear(&ex_out);
     if (!in_global) msg[0] = 0;
-    int ok = ex_one(line);
+    int ok = 1;
+    for (const char *p = line; p; p = ex_rest) {
+        ex_rest = NULL;
+        ok = ex_one(p);
+        if (!ok || ex_error) break;
+    }
+    ex_rest = outer_rest;
     if (ex_out.len && !in_global) {
         size_t lines = 0;
         for (size_t i = 0; i < ex_out.len; i++) if (ex_out.p[i] == '\n') lines++;
@@ -728,7 +902,7 @@ int ex_execute(const char *line) {
     return ok && !ex_error;
 }
 
-static int ex_one(const char *line) {
+static int ex_one_main(const char *line, char **scratch) {
     const char *p = line;
     while (*p == ':' || *p == ' ' || *p == '\t') p++;
     if (!*p) return 1;
@@ -766,7 +940,7 @@ static int ex_one(const char *line) {
             break;
         }
     }
-    if (naddr >= 2 && l1 > l2) { long t = l1; l1 = l2; l2 = t; }
+    if (naddr >= 2 && l1 > l2) { err("E493: Backwards range given"); return 0; }
     p = skipws(p);
     while (*p == ':') p++;
     if (!*p || *p == '|') {
@@ -777,7 +951,7 @@ static int ex_one(const char *line) {
             cur.l = l2 - 1;
             cur.c = first_nonblank(cur.l);
         }
-        if (*p == '|') return ex_one(p + 1);
+        if (*p == '|') ex_rest = p + 1;
         return 1;
     }
     /* ---- command name */
@@ -811,7 +985,21 @@ static int ex_one(const char *line) {
     else if (match_cmd(name, nlen, &full)) cname = full;
     else { err("E492: Not an editor command: %s", name); return 0; }
     const char *arg = p;                                  /* includes leading spaces */
-    snprintf(last_ex, sizeof last_ex, "%s", line[0] == ':' ? line + 1 : line);
+    if (cmd_takes_bar(cname, arg)) {
+        const char *bar = find_bar(cname, arg);
+        if (bar) {                                        /* "\|" in the argument is a plain "|" */
+            *scratch = malloc((size_t)(bar - arg) + 1);
+            if (!*scratch) pt_oom();
+            size_t k = 0;
+            for (const char *q = arg; q < bar; q++) {
+                if (*q == '\\' && q + 1 < bar && q[1] == '|') continue;
+                (*scratch)[k++] = *q;
+            }
+            (*scratch)[k] = 0;
+            arg = *scratch;
+            ex_rest = bar + 1;
+        }
+    }
 
     #define IS(s) (!strcmp(cname, s))
     /* defaults for ranges */
@@ -820,7 +1008,6 @@ static int ex_one(const char *line) {
     if (naddr == 0 && IS("global")) { l1 = 1; l2 = nl; }
     if (naddr == 0 && IS("vglobal")) { l1 = 1; l2 = nl; }
     if (naddr == 0 && IS("sort")) { l1 = 1; l2 = nl; }
-    if (naddr == 0 && IS("join")) l2 = l1 + 1;
     (void)whole_default;
     int allow0 = IS("read") || IS("put") || IS("copy") || IS("t") || IS("move") || IS("normal") || IS("mark") || IS("k");
     if (naddr && !IS("!") ) {
@@ -830,26 +1017,21 @@ static int ex_one(const char *line) {
     if (l1 > nl) l1 = nl;
     if (l2 > nl) l2 = nl;
 
-    /* commands that change text are refused in read-only (view) mode */
-    if ((view_mode) && (IS("delete") || IS("substitute") || IS("&") || IS("~") || IS("put") || IS("move") || IS("copy") || IS("t") || IS("join") || IS("<") || IS("normal") ||
-                        IS("read") || IS("global") || IS("vglobal") || IS("sort") || IS(">") || IS("!") || IS("append") || IS("retab") || IS("undo") || IS("redo"))) {
-        if (!(IS("!") && naddr == 0)) { err("E21: Cannot make changes, 'modifiable' is off"); return 0; }
-    }
     if (!IS("normal") && !IS("global") && !IS("vglobal") && !in_global && !undo_nest) undo_begin();
 
     if (IS("write") || IS("update") || IS("saveas")) {
         if (IS("update") && !modified) return 1;
-        return do_write(l1, l2, arg, bang, naddr == 0, naddr != 0);
+        return do_write(l1, l2, arg, bang, naddr == 0, naddr != 0, IS("saveas"));
     }
     if (IS("wq") || IS("xit") || IS("exit")) {
         if ((IS("wq") || modified) ) {
-            if (!do_write(1, nl, arg, bang, 1, 0)) return 0;
+            if (!do_write(1, nl, arg, bang, 1, 0, 0)) return 0;
         }
         quit_flag = 1;
         return 1;
     }
-    if (IS("wall") || IS("update")) return do_write(1, nl, "", bang, 1, 0);
-    if (IS("wqall") || IS("xall")) { if (modified && !do_write(1, nl, "", bang, 1, 0)) return 0; quit_flag = 1; return 1; }
+    if (IS("wall") || IS("update")) return do_write(1, nl, "", bang, 1, 0, 0);
+    if (IS("wqall") || IS("xall")) { if (modified && !do_write(1, nl, "", bang, 1, 0, 0)) return 0; quit_flag = 1; return 1; }
     if (IS("quit") || IS("qall") || IS("quitall")) {
         if (IS("qall") || IS("quitall")) { if (modified && !bang) { err("E37: No write since last change (add ! to override)"); return 0; } quit_flag = 1; return 1; }
         return ex_quit(bang);
@@ -962,6 +1144,7 @@ static int ex_one(const char *line) {
         if (naddr == 0) { normal_run_keys(a, strlen(a)); return 1; }
         char *keys = strdup(a);
         for (long l = l1; l <= l2 && l <= nl; l++) {
+            if (intr_check()) { err("Interrupted"); break; }
             cur.l = l - 1;
             cur.c = 0;
             normal_run_keys(keys, strlen(keys));
@@ -1013,7 +1196,7 @@ static int ex_one(const char *line) {
         /* replace the lines with the output */
         ln_delete(l1 - 1, l2 - l1 + 1);
         long at = l1 - 1;
-        if (nl == 1 && L[0].len == 0 && l1 == 1 && at == 0) {
+        if (nl == 1 && LN(0).len == 0 && l1 == 1 && at == 0) {
             if (outl) { put_lines_text(0, outp, outl); ln_delete(nl - 1, 1); }
         } else put_lines_text(at, outp, outl);
         long newlines = 0;
@@ -1029,44 +1212,81 @@ static int ex_one(const char *line) {
         if (IS("=")) { char tmp[32]; snprintf(tmp, sizeof tmp, "%ld\n", naddr ? l2 : nl); pb_adds(&ex_out, tmp); return 1; }
         for (long l = l1; l <= l2; l++) {
             if (IS("number") || IS("#")) { char pre[24]; snprintf(pre, sizeof pre, "%*ld ", 3, l); pb_adds(&ex_out, pre); }
-            out_line(ls(l - 1), L[l - 1].len);
+            out_line(ls(l - 1), LN(l - 1).len);
         }
         cur.l = l2 - 1;
         cur.c = first_nonblank(cur.l);
         return 1;
     }
-    if (IS("undo")) { if (!undo_do(0)) set_msg("Already at oldest change"); return 1; }
-    if (IS("redo")) { if (!undo_do(1)) set_msg("Already at newest change"); return 1; }
+    if (IS("undo")) { undo_counts_reset(); if (!undo_do(0)) set_msg("Already at oldest change"); else undo_message(0); return 1; }
+    if (IS("redo")) { undo_counts_reset(); if (!undo_do(1)) set_msg("Already at newest change"); else undo_message(1); return 1; }
     if (IS("nohlsearch")) { o.hls = 0; return 1; }
     if (IS("set") || IS("setlocal")) { set_option(skipws(arg)); return !ex_error; }
     if (IS("registers") || IS("display")) {
         const char *want = skipws(arg);
-        for (int c = 0; c < 128; c++) {
-            if (!(isalnum(c) || c == '"' || c == '-' || c == '.' || c == ':' || c == '%' || c == '/')) continue;
+        int any = 0;
+        for (const char *p = "\"0123456789abcdefghijklmnopqrstuvwxyz-.:%/"; *p; p++) {       /* Vim's order */
+            int c = (unsigned char)*p;
             if (*want && !strchr(want, c)) continue;
             Reg *r = reg_get(c);
-            if (!r || !r->s) continue;
-            char head[16];
-            snprintf(head, sizeof head, "\"%c   ", c);
-            pb_adds(&ex_out, head);
+            if (!r || !r->s || (c == '.' && !r->len)) continue;
+            if (!any) pb_adds(&ex_out, "Type Name Content\n");
+            any = 1;
+            pb_addf(&ex_out, "  %c  \"%c   ", r->type == 'l' ? 'l' : r->type == 'b' ? 'b' : 'c', c);
             for (size_t i = 0; i < r->len && i < 70; i++) {
                 unsigned char ch = (unsigned char)r->s[i];
                 if (ch == '\n') pb_adds(&ex_out, "^J");
                 else if (ch < 32) { pb_addc(&ex_out, '^'); pb_addc(&ex_out, (char)(ch + 64)); }
+                else if (ch == 127) pb_adds(&ex_out, "^?");
                 else pb_addc(&ex_out, (char)ch);
             }
             pb_addc(&ex_out, '\n');
         }
-        if (!ex_out.len) pb_adds(&ex_out, "No registers\n");
+        if (!any) pb_adds(&ex_out, "No registers\n");
         return 1;
     }
     if (IS("marks")) {
-        for (int i = 0; i < 26; i++) if (marks[i].l >= 0) pb_addf(&ex_out, " %c  %5ld %4d\n", 'a' + i, marks[i].l + 1, marks[i].c);
-        if (mark_ctx.l >= 0) pb_addf(&ex_out, " '  %5ld %4d\n", mark_ctx.l + 1, mark_ctx.c);
-        if (!ex_out.len) pb_adds(&ex_out, "No marks set\n");
+        const char *want = skipws(arg);
+        struct { int name; Pos *p; } all[26 + 8];
+        int n = 0;
+        all[n].name = '\''; all[n++].p = &mark_ctx;
+        for (int i = 0; i < 26; i++) { all[n].name = 'a' + i; all[n++].p = &marks[i]; }
+        all[n].name = '['; all[n++].p = &mark_lb;
+        all[n].name = ']'; all[n++].p = &mark_rb;
+        all[n].name = '^'; all[n++].p = &mark_ins;
+        all[n].name = '.'; all[n++].p = &mark_dot;
+        all[n].name = '<'; all[n++].p = &mark_lt;
+        all[n].name = '>'; all[n++].p = &mark_gt;
+        int any = 0;
+        for (int i = 0; i < n; i++) {
+            Pos *p = all[i].p;
+            if (p->l < 0 || p->l >= nl) continue;
+            if (*want && !strchr(want, all[i].name)) continue;
+            if (!any) pb_adds(&ex_out, "mark line  col file/text\n");
+            any = 1;
+            const char *t = ls(p->l);
+            unsigned tl = LN(p->l).len;
+            while (tl && (*t == ' ' || *t == '\t')) { t++; tl--; }
+            pb_addf(&ex_out, " %c %6ld %4d ", all[i].name, p->l + 1, p->c);
+            out_line(t, tl);
+        }
+        if (!any) pb_adds(&ex_out, "No marks set\n");
         return 1;
     }
-    if (IS("jumps") || IS("changes") || IS("undolist")) { pb_adds(&ex_out, "(not kept)\n"); return 1; }
+    if (IS("jumps")) {
+        pb_adds(&ex_out, " jump line  col file/text\n");
+        for (int i = 0; i < njumps; i++) {
+            if (jumps[i].l < 0 || jumps[i].l >= nl) continue;
+            const char *t = ls(jumps[i].l);
+            unsigned tl = LN(jumps[i].l).len;
+            while (tl && (*t == ' ' || *t == '\t')) { t++; tl--; }
+            pb_addf(&ex_out, " %c %2d %5ld %4d ", i == jumpidx ? '>' : ' ', i > jumpidx ? i - jumpidx : jumpidx - i, jumps[i].l + 1, jumps[i].c);
+            out_line(t, tl);
+        }
+        if (jumpidx >= njumps) pb_adds(&ex_out, ">\n");
+        return 1;
+    }
+    if (IS("changes") || IS("undolist")) { pb_adds(&ex_out, "(not kept)\n"); return 1; }
     if (IS("sort")) { cmd_sort(l1, l2, skipws(arg), bang); return 1; }
     if (IS("help")) { pb_adds(&ex_out, help_text); return 1; }
     if (IS("version")) { pb_adds(&ex_out, "vi (TouhouOS) 1.0 - a small vi/vim-lite\n"); return 1; }
@@ -1092,8 +1312,9 @@ static int ex_one(const char *line) {
     }
     if (IS("abbreviate") || IS("iabbrev")) {
         const char *a = skipws(arg);
+        if (!*a) { abbr_list(&ex_out); return 1; }
         const char *e = a;
-        while (*e && *e != ' ') e++;
+        while (*e && *e != ' ' && *e != '\t') e++;
         if (!*e) return 1;
         char lhs[64];
         size_t ln = (size_t)(e - a) < sizeof lhs - 1 ? (size_t)(e - a) : sizeof lhs - 1;
@@ -1102,6 +1323,11 @@ static int ex_one(const char *line) {
         abbr_add(lhs, skipws(e));
         return 1;
     }
+    if (IS("unabbreviate") || IS("iunabbrev")) {
+        if (!abbr_del(skipws(arg))) { err("E24: No such abbreviation"); return 0; }
+        return 1;
+    }
+    if (IS("abclear") || IS("iabclear")) { abbr_clear(); return 1; }
     if (IS("ascii")) { uint32_t cp = cp_at(cur.l, cur.c); set_msg("<%c>  %u,  Hex %02x", cp >= 32 && cp < 127 ? (int)cp : '?', cp, cp); return 1; }
     if (IS("redraw")) { force_repaint(); return 1; }
     if (IS("stop") || IS("suspend")) { force_repaint(); return 1; }
@@ -1112,11 +1338,11 @@ static int ex_one(const char *line) {
             PtBuf b = { 0 };
             const char *s = ls(l);
             int v = 0;
-            for (unsigned i = 0; i < L[l].len; i++) {
+            for (unsigned i = 0; i < LN(l).len; i++) {
                 if (s[i] == '\t') { int w = o.ts - v % o.ts; if (o.et) for (int k = 0; k < w; k++) pb_addc(&b, ' '); else pb_addc(&b, '\t'); v += w; }
                 else { pb_addc(&b, s[i]); if (((unsigned char)s[i] & 0xC0) != 0x80) v++; }
             }
-            if (b.len != L[l].len || (b.len && memcmp(b.p, s, b.len))) ln_set(l, b.p ? b.p : "", b.len);
+            if (b.len != LN(l).len || (b.len && memcmp(b.p, s, b.len))) ln_set(l, b.p ? b.p : "", b.len);
             pb_free(&b);
         }
         return 1;
@@ -1125,7 +1351,7 @@ static int ex_one(const char *line) {
         int width = isdigit((unsigned char)*skipws(arg)) ? atoi(skipws(arg)) : (o.tw > 0 ? o.tw : 80);
         for (long l = l1 - 1; l <= l2 - 1; l++) {
             const char *s = ls(l);
-            int a0 = 0, e0 = (int)L[l].len;
+            int a0 = 0, e0 = (int)LN(l).len;
             while (a0 < e0 && (s[a0] == ' ' || s[a0] == '\t')) a0++;
             while (e0 > a0 && (s[e0 - 1] == ' ' || s[e0 - 1] == '\t')) e0--;
             PtBuf b = { 0 };
@@ -1156,8 +1382,7 @@ void ex_line_prompt(const char *init) {
     }
     pb_free(&b);
     if (!copy) return;
-    int dr = 0;
-    (void)dr;
+    if (copy[0]) snprintf(last_ex, sizeof last_ex, "%s", copy);   /* the ": register and @: */
     ex_execute(copy);
     free(copy);
 }

@@ -13,6 +13,7 @@
 #include <pwd.h>
 #include <sys/wait.h>
 #include <gensokyo.h>
+#include <audio.h>
 
 #define THROTTLE_MS 1500
 
@@ -94,11 +95,13 @@ static void lock_draw(KApp *app, KUI *ui, void *user) {
     if ((enter || go) && !throttled) {
         if (password_ok(g_pw)) {
             memset(g_pw, 0, sizeof g_pw);
+            audio_event(AUDIO_EV_DIALOG);
             kapp_quit(g_app, 0);
             return;
         }
         memset(g_pw, 0, sizeof g_pw);
         g_msg = "That is not the password.";
+        audio_event(AUDIO_EV_ERROR);
         g_fail_ms = k_now_ms();
         g_refocus = true;
         char note[80];

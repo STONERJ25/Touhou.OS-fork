@@ -2,7 +2,8 @@
 
 TouhouOS has a TCP/IP stack in the kernel, drivers for the network cards of QEMU and of common PCs, a DHCP client, a DNS
 resolver in the C library, and the usual tools. Yukari Yakumo opens gaps between places; here she opens them between
-machines (the kernel log tag is `[Yukari]`). Everything is IPv4, plain HTTP, and polled: no interrupts, no TLS, no IPv6.
+machines (the kernel log tag is `[Yukari]`). Everything in the kernel is IPv4 and polled: no interrupts, no IPv6. Encryption is
+not in the kernel: `fetch` and `wget` speak HTTPS through `libtls` on top of an ordinary TCP socket, see [TLS.md](TLS.md).
 
 ```
  tools (ifconfig ip route ping netstat ss nslookup host fetch wget nc sntp ntpdate httpd)   user/bin/kappabox/net_*.c
@@ -33,7 +34,7 @@ machines (the kernel log tag is `[Yukari]`). Everything is IPv4, plain HTTP, and
   | `ifconfig`, `ip`, `route` | show and set addresses, MTU, up/down, routes, the ARP cache; `ifconfig eth0 dhcp` restarts DHCP |
   | `ping` | ICMP echo through an ICMP datagram socket, any user |
   | `nslookup`, `host` | raw DNS queries (A, AAAA, NS, CNAME, SOA, PTR, MX, TXT) against `/etc/resolv.conf` or a named server |
-  | `fetch`, `wget` | HTTP/1.1 GET with redirects and chunked bodies, to stdout (`fetch`) or a file (`wget`) |
+  | `fetch`, `wget` | HTTP/1.1 and **HTTPS** GET with redirects (also between the two) and chunked bodies, to stdout (`fetch`) or a file (`wget`); certificates are checked against `/etc/ssl/certs/ca-bundle.pem`, `-k` switches that off loudly, `--cacert FILE` names other authorities ([TLS.md](TLS.md)) |
   | `nc` | TCP and UDP, client and listener, `-z` port check |
   | `sntp`, `ntpdate` | NTP query; `-s` steps the clock through `SYS_settime`, `-w` writes the clock chip too (local time with `rtc=local`) |
   | `httpd` | a tiny static file server, one process per connection |
@@ -42,7 +43,9 @@ machines (the kernel log tag is `[Yukari]`). Everything is IPv4, plain HTTP, and
   `/etc/resolv.conf` (`nameserver ADDR[#PORT]`, `search`, `domain`, `options ndots/timeout/attempts`), following CNAME chains.
   Only A records are used. `getservbyname` knows `/etc/services` and a built-in list of common ones.
 * **`/proc/net/`**: `dev`, `route`, `arp`, `tcp`, `udp` in the Linux formats; `tune` (root can write `name value` lines, see
-  below); `inject` (root: one raw Ethernet frame per `write()`, delivered as if it had arrived on `lo`).
+  below); `inject` (root: one raw Ethernet frame per `write()`, delivered as if it had arrived on `lo`); `dhcp` (new, **not yet
+  run in QEMU**, see "State when paused": one line per card, `name state address mask server gateway dns lease_s left_s`,
+  `-` for what is not known, states `off selecting requesting bound renewing`).
 * **Tunables** (`/proc/net/tune`): `lo_drop`, `lo_dup`, `lo_reorder`, `lo_corrupt` (percent of loopback frames),
   `rto_min_ms` (200), `syn_retries` (5), `data_retries` (10), `timewait_ms` (30000). Reading the file also shows `ip_bad`,
   `tcp_bad` (malformed packets rejected) and the number of packet buffers in use.
@@ -78,7 +81,9 @@ machines (the kernel log tag is `[Yukari]`). Everything is IPv4, plain HTTP, and
   with `SIGPIPE`, `ECONNREFUSED`, `ETIMEDOUT`, `ECONNRESET`. Ports below 1024 need root. A connect that outlives
   `SO_SNDTIMEO` fails with `ETIMEDOUT` and abandons the attempt.
 * **`SYS_netctl`** (96) is how the tools read and change interfaces, routes and the ARP cache and restart DHCP (structures in
-  `shared/netabi.h`); changing anything needs root.
+  `shared/netabi.h`); changing anything needs root. `NETCTL_DHCP_STOP` (10, new and **untested**) stops the DHCP client of a
+  card, and setting an address by hand (`NETCTL_IF_CONFIG` with an address) now does that too, so that a late DHCP offer
+  cannot replace an address someone chose.
 * **libgap** also gained `htons/htonl/ntohs/ntohl`, `inet_aton/addr/ntoa/pton/ntop`, `select`, `sockaddr_in`, `netdb.h`,
   and `gap_dns_*` (the resolver one level down, used by `nslookup`).
 
@@ -143,14 +148,18 @@ output with generous timeouts or retry.
 
 ## Limits and known problems
 
-* No IPv6, TLS, raw sockets, multicast, VLANs, bridging or forwarding (the stack is a host, not a router).
+* No IPv6, raw sockets, multicast, VLANs, bridging or forwarding (the stack is a host, not a router). TLS exists only as a
+  library in user space ([TLS.md](TLS.md)): no kernel sockets with encryption, no `nc --ssl`, no HTTPS server (`httpd` is plain).
 * One address per interface; setting an address drops that interface's routes.
 * A socket has fixed 128 KiB rings; `SO_SNDBUF`/`SO_RCVBUF` are accepted and ignored. At most 4096 sockets.
 * UDP receive queues are capped at 128 KiB per socket; ICMP sockets deliver whole IP packets (header included).
 * The TCP out-of-order table holds 8 intervals; data beyond that is dropped and resent.
 * TIME_WAIT lasts 30 s, not the traditional 60 to 120.
 * The drivers copy every frame once (no zero-copy); the receive path allocates a 2 KiB buffer per packet.
-* `nc`, `fetch` and `httpd` are simple tools: no IPv6, no TLS, no persistent connections, no ranges.
+* `nc`, `fetch` and `httpd` are simple tools: no IPv6, no persistent connections, no ranges; `nc` and `httpd` have no TLS.
+* `/etc` is the in-memory root filesystem, rebuilt from the initrd at every boot: whatever a tool writes there (a static
+  address file, `/etc/resolv.conf` from DHCP) lasts until the next restart. See "State when paused" for what that means for the
+  planned `/etc/network.conf`.
 
 ## Files
 
@@ -159,4 +168,76 @@ output with generous timeouts or retry.
 `sys/socket.h`, `sys/select.h`, `netinet/{in,tcp}.h`, `arpa/inet.h`, `netdb.h`, `user/bin/kappabox/net_*.c`,
 `user/bin/nettest.c`, `initrd/Hakurei/etc/hosts`, the manual pages (`network(7)`, `resolv.conf(5)`, `hosts(5)` and one per tool),
 `tests/case_net.py`. `procfs` gained subdirectories (`procfs_register("net/dev", gen)`) and writable files
-(`procfs_register_rw`) for `/proc/net`.
+(`procfs_register_rw`) for `/proc/net`. For HTTPS: [TLS.md](TLS.md), `user/lib/tls`, `user/bin/kappabox/net_fetch.c`,
+`initrd/Hakurei/etc/ssl/certs/ca-bundle.pem`, `tests/case_tls.py`.
+
+## State when paused
+
+Work was stopped on the user's request. Everything is committed on branch `worktree-agent-a46f2d415c0a1a9ca`; the tree builds.
+
+**HTTPS (item 1 to 4 and 6 of the TLS task): done**, see [TLS.md](TLS.md): `libtls`, the Mozilla CA bundle, `fetch`/`wget` over
+HTTPS, the tests (`tls_host_*`, `tls_guest_*`: all passed on their last runs), the manual pages `tls(7)`, `fetch(1)`, `wget(1)`,
+`network(7)`. `net`, `manual` and the other older suites were **not re-run** after the `fetch` rewrite and the kernel commit below.
+
+**The network panel and static configuration: not done, only its kernel foundation exists.**
+
+| Piece | State |
+|-------|-------|
+| `NETCTL_DHCP_STOP` (10), `dhcp_stop()`, "a static address stops DHCP", `/proc/net/dhcp` (`kernel/net/{net,dhcp}.c`, `kernel/include/net.h`, `shared/netabi.h`) | **committed (`361314b`) and builds, but never run in QEMU.** A separate commit, so `git revert 361314b` removes it alone if `net_ifconfig_set` or `net_link_*` object |
+| `/etc/network.conf` and its application at boot | not started |
+| `netconfig` helper | not started |
+| Control Panel "Network" page | not started |
+| Panel indicator in hakurei-shell, `KI_NETWORK` icon | not started |
+| Manual pages `netconfig(1)`, `network.conf(5)`; tests; DESKTOP/APPS docs | not started |
+
+What was settled by reading the code (so the next session need not rediscover it):
+
+1. **`/etc/network.conf`**, one line per card, `#` comments, a card that is not listed uses DHCP (today's behaviour):
+   ```
+   eth0  dhcp
+   eth1  static 192.168.1.20/24  gateway 192.168.1.1  dns 1.1.1.1 9.9.9.9
+   ```
+2. **`user/bin/netconfig.c`**: a standalone setuid-root program like `passwd` and `eiki` (a kappabox applet cannot be setuid, it is
+   a symlink): add `"bin/netconfig": 0o4755` to `SPECIAL_MODES` in `tools/build.py`. It acts for root and for members of group
+   `shrine` (the same rule as the power button in `sys_reboot`: "anyone sitting at the machine"); `status` is open to everybody.
+   Commands: `status [IFACE]`, `static IFACE ADDR/PREFIX [gateway GW] [dns D...]`, `dhcp IFACE`, `renew IFACE`, `apply` (root, for
+   init). Applying `static`: `NETCTL_IF_CONFIG` with address, mask and `GIFF_UP` (the kernel now stops DHCP itself), the default
+   route with `NETCTL_ROUTE_ADD`, `/etc/resolv.conf` written by the tool. Applying `dhcp`: `GIFF_CLEARADDR`, then `NETCTL_DHCP`.
+   Validate before touching anything: address not 0.x, 127.x or multicast, prefix 1 to 30, gateway inside the subnet and not the
+   address itself, at most three DNS servers. The file is rewritten atomically (temp file and rename), keeping other lines.
+3. **Boot**: in `user/sbin/init.c`, after `setup_clock()`, if `/etc/network.conf` exists and `/bin/netconfig` is executable, run
+   `netconfig apply` and wait for it; a failure is logged, never fatal. (The kernel has already started DHCP on cards with a
+   carrier by then; `apply` stops it where a static line says so.)
+4. **Control Panel page** (`user/bin/kappa-panel`, a new `net.c`): append `PANE_NETWORK` *after* `PANE_APPEARANCE` in `panel.h`
+   and `k_cats` in `main.c` (index 7; `tests/case_apps.py` presses Alt+digit for the existing panes, so do not insert it in the
+   middle), `--pane network`. Per card (`k_tabs` when there are several): link state, driver, MAC, address and mask, gateway
+   (default route from `NETCTL_ROUTE_GET`), name servers (`/etc/resolv.conf`), DHCP lease (server, length, seconds left as a
+   `k_progress`, from `/proc/net/dhcp`), received/sent bytes, packets and errors (`struct gnet_if`), a **Renew lease** button
+   (runs `netconfig renew IFACE`), and a *Configuration* group: `k_radio` Automatic / Manual, `k_textfield`s for address, prefix,
+   gateway, DNS, an **Apply** button (runs `netconfig static ...` or `netconfig dhcp ...` through `popen` and shows its output in a
+   `k_messagebox` when it fails). The page is redrawn once a second already (`kapp_set_tick`). Print `kappa-panel: pane network`
+   and `kappa-panel: renew eth0`-style trace lines like the other panes so tests can wait for them.
+5. **Panel indicator** (`user/bin/hakurei-shell/{shell.h,panel.c}`): `sample_system()` already runs once a second; add the card
+   state there (`gap_netctl(NETCTL_IF_GET, ...)` for every card, `/proc/net/dhcp` for the lease) as `G.net_state` (none, no link,
+   link but no address yet, connected) and a tooltip string ("eth0 10.0.2.15, DHCP"); draw a small icon between the clock
+   (`cr`) and the CPU/memory meters in `panel_draw`, green, amber or red; a click does `launch("kappa-panel --pane network")`.
+   There is no network icon in libkappa: add `KI_NETWORK` before `KI_COUNT` in `user/lib/kappa/include/kappa.h` and the name and
+   drawing in `user/lib/kappa/src/icons.c` (a hub with two machines under it, built from `kc_fill`/`kc_outline`).
+6. **Persistence.** `/etc` is the in-memory root and is rebuilt from the initrd at every boot, so a `network.conf` written by the
+   panel is gone after a restart; "applied at boot" is only true for a file shipped in `initrd/Hakurei/etc/network.conf`. Either
+   also read a copy on the HUMANVILLAGE volume (for example `/HumanVillage/.config/network.conf`) in `netconfig apply`, or wait for
+   a persistent `/etc` (the same limitation is documented for passwords in [ACCOUNTS.md](ACCOUNTS.md)). Say which in `network.conf(5)`.
+7. **Pages and tests**: `netconfig(1)`, `network.conf(5)` (and the lists in `network(7)`); tests in the style of `tests/case_net.py`
+   (`netconfig` as root, as a `shrine` member and as an outsider; `apply` on a prepared file; `/proc/net/dhcp` columns before and
+   after a lease; a static address stops DHCP, which shows as no further lease line) and of `tests/case_apps.py` for the page
+   (`kappa-panel --trace --pane network`, a screenshot of page and indicator).
+
+## How to resume
+
+1. `python tools/build.py`; `python tests/run_all.py net,manual` first: they are the suites the kernel commit and the new manual
+   pages can affect and were not run afterwards. Revert `361314b` if the net tests object, or fix it (`ifconfig eth0 ADDR` is the
+   path that now calls `dhcp_stop`).
+2. `python tests/run_all.py tls` (host and guest TLS tests) to make sure the starting point is as described in TLS.md.
+3. Build the pieces in this order, committing each: `netconfig` (+ `SPECIAL_MODES`, + tests), the `init` hook, `PANE_NETWORK`, the
+   `KI_NETWORK` icon, the panel indicator, the manual pages, the docs (`DESKTOP.md`, `APPS.md`, `STATUS.md`).
+4. Finish with the whole suite, `python tests/run_all.py`.

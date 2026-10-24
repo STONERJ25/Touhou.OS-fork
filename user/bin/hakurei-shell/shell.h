@@ -50,6 +50,11 @@ void menu_close(void);
 void calendar_toggle(void);
 void sample_system(void);
 
+/* volume.c: the speaker in the tray, only when the machine has a sound device */
+bool volume_present(void);
+void volume_tray(KUI *ui, KRect r);
+void volume_close(void);
+
 /* desktop.c */
 void desktop_draw(KApp *app, KUI *ui, void *user);
 void context_open(int x, int y);

@@ -1,0 +1,44 @@
+.page tls 7 HTTPS: libtls, certificates and what to trust
+
+# DESCRIPTION
+Most of the web speaks only HTTPS. `libtls` (the sources are in `user/lib/tls`) is a TLS client that `fetch(1)` and `wget(1)` use for `https://` addresses; any C program can link it (it is part of the usual link line) and include `<tls.h>`. It is a client only, written for this system, and small enough to read.
+
+# WHAT IT SPEAKS
+@ TLS 1.3
+    The ciphers `TLS_AES_128_GCM_SHA256`, `TLS_AES_256_GCM_SHA384` and `TLS_CHACHA20_POLY1305_SHA256`; key exchange with x25519, or P-256 or P-384 when the server asks for them (HelloRetryRequest); key updates in both directions.
+@ TLS 1.2
+    ECDHE key exchange only (x25519, P-256, P-384) with certificates signed by RSA or ECDSA keys, and AES-128-GCM, AES-256-GCM or ChaCha20-Poly1305. The extended master secret is used when the server offers it.
+@ Extensions
+    Server name indication (not for addresses written as numbers), ALPN (`http/1.1`).
+@ Left out
+    Client certificates, session resumption and tickets, renegotiation, 0-RTT, compression, CBC ciphers, RSA key exchange, plain Diffie-Hellman, Ed25519 and P-521 keys, IPv6 names. Details and the reasons are in `docs/TLS.md`.
+
+# HOW A SERVER IS CHECKED
+A connection is refused unless every step passes.
+@ The chain
+    The certificates the server sends are put in order and followed up to a certificate that is in the trust store. Signatures must be RSA (PKCS#1 v1.5, 2048 bits or more for the server and the authorities below the root) or ECDSA (P-256, P-384) with SHA-256, SHA-384 or SHA-512; SHA-1 is not accepted. Every authority must be allowed to be one (the CA flag, the path length limit, key usage), and a certificate with a critical extension this code does not understand (name constraints, for one) is not accepted.
+@ The dates
+    Every certificate must be valid at this computer's time. A computer whose clock is wrong cannot make safe connections: set it with `sntp -s` first.
+@ The name
+    The host name in the URL must be in the certificate's subjectAltName list. A wildcard counts only as a whole first label (`*.example.org` matches `www.example.org`, not `example.org` or `a.b.example.org`). Addresses written as numbers are matched against address entries only. The old Common Name field is ignored, like in every current browser.
+@ The key
+    The server must prove it holds the certificate's private key by signing the handshake.
+Not done: revocation lists, OCSP, Certificate Transparency, and fetching missing intermediate certificates from the web; a server that forgets to send its intermediate certificate is refused.
+
+# THE TRUST STORE
+`/etc/ssl/certs/ca-bundle.pem` holds the root certificates trusted by default: Mozilla's list as it was when this system was built (about 120 roots, read from the Python `certifi` package by `tools/mkcabundle.py`, which also leaves out roots with keys this code cannot use). It does not update itself; an authority that is later removed from Mozilla's list stays trusted here until the file is rebuilt. `fetch --cacert FILE` and the variable `SSL_CERT_FILE` replace it for one command. A server certificate that is itself in the file is trusted as it is, which is how to use a self-made certificate without switching all checking off.
+
+# RANDOM NUMBERS
+Keys and nonces come from `getrandom()`, the kernel's ChaCha20 generator (see `/proc/random`). It is seeded at boot from the processor's RDSEED and RDRAND instructions when they exist, plus timing jitter and events. On a processor without them (older than about 2012, or an emulator's default model) the seed is little more than timing jitter; `/proc/random` then says `ready: no` and the TLS code refuses to connect (exit status 5, `--weak-random` overrides) rather than make keys from a guessable seed.
+
+# SECURITY NOTES
+The primitives are checked against Python's `cryptography` and OpenSSL, but this is new code that nobody else has audited. The AES-NI and ChaCha20 paths do not index memory with secrets, the portable AES does (it is used only when the processor has no AES-NI, and then ChaCha20 is offered first), and nothing has been checked for timing leaks in the generated machine code. Do not rely on it for anything that matters.
+
+# FILES
+@ /etc/ssl/certs/ca-bundle.pem
+    The default trust store.
+@ /proc/random
+    State of the random number generator.
+
+# SEE ALSO
+fetch(1), wget(1), sntp(1), network(7)

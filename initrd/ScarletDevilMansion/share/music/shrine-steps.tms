@@ -1,0 +1,47 @@
+tms 1
+title Shrine Steps at Dawn
+mood a quiet climb up the stone steps while the mist lifts
+author Claude (original)
+tempo 84
+loop yes
+
+; Four voices and a light beat. C major pentatonic with F and B as passing notes; bars are written one per "|".
+channel lead  inst=fm-lead  pan=-0.15 gain=0.90
+channel bells inst=fm-pluck pan=0.35  gain=0.75
+channel pad   inst=fm-pad   pan=0.00  gain=0.55
+channel bass  inst=bass     pan=0.00  gain=0.90
+channel drums inst=hat      pan=0.10  gain=0.60
+
+pattern intro
+  lead:  r1 | r1 | r1 | r1
+  bells: o5 [c8 e8 g8 e8]2 | o4 [a8 >c8 e8 c8 <]2 | o4 [f8 a8 >c8 a8 <]2 | o4 [g8 b8 >d8 b8 <]2
+  pad:   o4 e1 | e1 | f1 | d1
+  bass:  o2 [c4 g4]2 | [a4 >e4 <]2 | [f4 >c4 <]2 | [g4 >d4 <]2
+  drums: r1 | r1 | r1 | r1
+
+pattern A
+  lead:  o5 e4 g8 a8 g4 e4 | o5 d4 e8 g8 e2 | o5 a4 g8 e8 d4 c4 | o5 d2 g4 e4 |
+         o5 e4 g8 a8 >c4 <a4 | o5 g4 e8 d8 e2 | o5 a8 g8 e8 d8 c4 d4 | o5 e2. r4
+  bells: o5 [c8 e8 g8 e8]2 | o4 [a8 >c8 e8 c8 <]2 | o4 [f8 a8 >c8 a8 <]2 | o4 [g8 b8 >d8 b8 <]2 |
+         o5 [c8 e8 g8 e8]2 | o4 [e8 g8 b8 g8]2 | o4 [f8 a8 >c8 a8 <]2 | o5 [c8 e8 g8 e8]2
+  pad:   o4 e1 | e1 | f1 | d1 | e1 | e1 | f1 | e1
+  bass:  o2 [c4 g4]2 | [a4 >e4 <]2 | [f4 >c4 <]2 | [g4 >d4 <]2 | [c4 g4]2 | [e4 b4]2 | [f4 >c4 <]2 | [c4 g4]2
+  drums: [@5 v10 o2 c @3 v5 o7 c c c @5 v9 o2 c @3 v5 o7 c c c]8
+
+pattern B
+  lead:  o5 a4 >c8 <a8 g4 e4 | o5 a4 g8 a8 >c4 <a4 | o5 g4 e8 g8 a4 g4 | o5 d4 e8 d8 g2 |
+         o5 a4 >c8 d8 e4 d4 | o5 a4 >c4 <a4 f4 | o5 g4 b8 >d8 <b4 g4 | o5 g2. r4
+  bells: o4 [a8 >c8 e8 c8 <]2 | o4 [f8 a8 >c8 a8 <]2 | o5 [c8 e8 g8 e8]2 | o4 [g8 b8 >d8 b8 <]2 |
+         o4 [a8 >c8 e8 c8 <]2 | o4 [f8 a8 >c8 a8 <]2 | o4 [g8 b8 >d8 b8 <]2 | o4 [g8 b8 >d8 b8 <]2
+  pad:   o4 e1 | f1 | e1 | d1 | e1 | f1 | d1 | d1
+  bass:  o2 [a4 >e4 <]2 | [f4 >c4 <]2 | [c4 g4]2 | [g4 >d4 <]2 | [a4 >e4 <]2 | [f4 >c4 <]2 | [g4 >d4 <]2 | [g4 >d4 <]2
+  drums: [@5 v10 o2 c @3 v5 o7 c @4 v6 o5 c @3 v5 o7 c @5 v9 o2 c @3 v5 o7 c @4 v6 o5 c @3 v5 o7 c]8
+
+pattern outro
+  lead:  o5 e2 g2 | a2 e2 | d2 c2 | c1
+  bells: o5 [c8 e8 g8 e8]2 | o4 [a8 >c8 e8 c8 <]2 | o4 [f8 a8 >c8 a8 <]2 | o5 c1
+  pad:   o4 e1 | e1 | f1 | e1
+  bass:  o2 [c4 g4]2 | [a4 >e4 <]2 | [f4 >c4 <]2 | c1
+  drums: r1 | r1 | r1 | r1
+
+order intro A B A outro

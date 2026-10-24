@@ -1,25 +1,34 @@
-.page play 1 play WAV files and raw audio
+.page play 1 play WAV files, songs and raw audio
 
 # SYNOPSIS
-*play* [*-q*] [*-v* _PERCENT_] _FILE.wav_ ...
+*play* [*-q*] [*-v* _PERCENT_] [*-g* _MS_] _FILE.wav_ | _FILE.tms_ | _FILE.mod_ ...
 *play* *-r* _RATE_ *-c* _1|2_ *-b* _BITS_ [*-q*] _FILE_ ...
+*play* [*-s* _SECONDS_] [*-t* _SECONDS_] [*-L*] _SONG_
+*play* *-i* [*-t* _SECONDS_] _SONG_ ...
+*play* *-w* _OUT.wav_ [*-s* _SECONDS_] [*-t* _SECONDS_] _SONG_
 
 # DESCRIPTION
-`play` sends audio files to the sound card through `/dev/audio` and returns when the last one has been heard. A file that starts like a WAV file is played with the format its header gives (PCM, 8, 16, 24 or 32 bits, mono or stereo, any rate from 4000 to 192000 Hz). Anything else is taken to be raw samples: little endian, with the format named by `-r`, `-c` and `-b` (44100 Hz, stereo, 16 bits if they are left out). The file name `-` reads raw samples from standard input.
+`play` sends audio files to the sound card through `/dev/audio` and returns when the last one has been heard. A file that starts like a WAV file is played with the format its header gives (PCM, 8, 16, 24 or 32 bits, mono or stereo, any rate from 4000 to 192000 Hz). A file that is named `*.tms` or starts with the word `tms` is a song (see tms(5)) and is synthesized as it plays. A file that is named `*.mod`, or has a ProTracker signature such as `M.K.` at byte 1080, is a module: the usual 4 to 32 channel kinds are mixed as they play (see audio(7) for what is and is not understood). In this page _SONG_ means either kind. Anything else is taken to be raw samples: little endian, with the format named by `-r`, `-c` and `-b` (44100 Hz, stereo, 16 bits if they are left out). The file name `-` reads raw samples from standard input.
 
-The kernel mixes `play` with every other program that is making sound, converts the rate and the sample size, and applies the master volume (see `volume(1)`). Ctrl+C stops the sound at once. If the machine has no sound device `play` says so and exits with status 1.
+The kernel mixes `play` with every other program that is making sound, converts the rate and the sample size, and applies the master volume (see `volume(1)`). Ctrl+C stops the sound at once. If the machine has no sound device `play` says so and exits with status 1, except for `-i` and `-w`, which do not need one.
 
 # OPTIONS
 @ *-q*
-    Do not print the format of each file.
+    Do not print the format of each file or the title of each song.
 @ *-v* _PERCENT_
     The volume of this playback alone, 0 to 100, on top of the master volume.
-@ *-r* _RATE_
-    Raw input: frames per second.
-@ *-c* _CHANNELS_
-    Raw input: 1 or 2.
-@ *-b* _BITS_
-    Raw input: 8 (unsigned), 16, 24 or 32 (signed).
+@ *-g* _MS_
+    Wait this long between files with the sound device still open, so the stream runs dry in between (a test of how the mixer handles silence).
+@ *-r* _RATE_, *-c* _CHANNELS_, *-b* _BITS_
+    Raw input: frames per second, 1 or 2 channels, 8 (unsigned), 16, 24 or 32 (signed) bits.
+@ *-s* _SECONDS_, *-t* _SECONDS_
+    For a song: start this far into it, and play (or measure, or render) only this long.
+@ *-L*
+    Repeat a song for ever instead of playing it once.
+@ *-i*
+    Describe a song instead of playing it: title, tempo, channels and their instruments (for a module: its title, channel count and length), anything the parser had to fix, and, from rendering the first 30 seconds (or `-t`), its peak level, loudness and how much of it is silence.
+@ *-w* _OUT.wav_
+    Render a song to a 44100 Hz stereo WAV file instead of playing it.
 
 # EXIT STATUS
 0 on success; 1 if there is no sound device or a file could not be played; 2 for a usage error.
@@ -27,8 +36,11 @@ The kernel mixes `play` with every other program that is making sound, converts 
 # EXAMPLES
     play ~/Music/shrine.wav
     play -q -v 40 a.wav b.wav
+    play /ScarletDevilMansion/share/music/moonlit-lake.tms
+    play ~/Music/tune.mod
+    play -i -t 10 mysong.tms
+    play -w /tmp/mysong.wav mysong.tms
     play -r 22050 -c 1 -b 8 voice.raw
-    beep -f 330 -o /tmp/e4.wav && play /tmp/e4.wav
 
 # SEE ALSO
-beep(1), volume(1), audio(7)
+beep(1), volume(1), jukebox(1), tms(5), audio(7)

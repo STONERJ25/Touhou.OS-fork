@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <gensokyo.h>
+#include <audio.h>
 #include <sys/utsname.h>
 
 static uint32_t *g_wall;
@@ -184,14 +185,16 @@ static void shutdown_draw(KApp *app, KUI *ui, void *user) {
     kc_text(cv, 66, 44, "Reimu will close the shrine for the night.", ui->theme->text);
     int bw = 88, x = 16, y = cv->h - 42;
     if (k_button(ui, kr(x, y, bw, 28), "Shut down")) {
+        audio_event_wait(AUDIO_EV_SHUTDOWN);
         sync();
         gap_reboot(REBOOT_POWEROFF);
     }
     if (k_button(ui, kr(x + bw + 8, y, bw, 28), "Restart")) {
+        audio_event_wait(AUDIO_EV_SHUTDOWN);
         sync();
         gap_reboot(REBOOT_RESTART);
     }
-    if (k_button(ui, kr(x + 2 * (bw + 8), y, bw, 28), "Log out")) { G.quit = true; kapp_quit(G.app, 0); }
+    if (k_button(ui, kr(x + 2 * (bw + 8), y, bw, 28), "Log out")) { audio_event(AUDIO_EV_SHUTDOWN); G.quit = true; kapp_quit(G.app, 0); }
     if (k_button(ui, kr(x + 3 * (bw + 8), y, bw, 28), "Cancel") || k_key_pressed(ui, KEY_ESC)) { kwin_close(G.shutdown); G.shutdown = NULL; }
 }
 

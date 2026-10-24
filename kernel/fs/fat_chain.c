@@ -382,7 +382,15 @@ int chain_prepare(FatNode *n) {
         return 0;
     }
     int rc = chain_walk(n, want);
-    if (rc == 0) { n->flags |= FN_NOWRITE; return -EIO; }              /* more clusters than the size needs */
+    if (rc == 0) {                                                      /* more clusters than the size needs */
+        if (v->trusted && !(n->flags & FN_DIR)) {                       /* a power cut leaves this behind (FAT written, size not yet); the consistency check */
+            rc = chain_shrink(n, want);                                 /* vouched that the surplus belongs to nobody else, so it goes back to the free pool */
+            if (!rc) rc = fatd_commit(n);
+            if (!rc) return chain_prepare(n);
+        }
+        n->flags |= FN_NOWRITE;
+        return -EIO;
+    }
     if (rc != -ENXIO) return rc;
     if (n->known < want) { n->flags |= FN_NOWRITE; return -EIO; }       /* fewer than the size claims */
     n->flags |= FN_CHAIN_OK | FN_CHAIN_END;
