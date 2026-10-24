@@ -1,77 +1,98 @@
 # What is next (hand-over notes)
 
-Written at the end of the first long build session. `main` is the verified tree: everything in docs/STATUS.md works and
-is covered by `python tests/run_all.py`. Already merged from agents: Patchouli's library (pnote, pager, manuals), FAT32/virtio-blk,
-AHCI/NVMe, USB, the five desktop apps, the games, the Notebook and the Sketchbook. The branches below were started by background agents and are **not merged**.
-Each has its own `docs/<AREA>.md` written by its author; read that first, then `git log main..<branch>`.
+Written on 2026-10-23 at about 21:00, when the user paused all work. Read [STATUS.md](STATUS.md) for what exists and this file for what is
+parked on branches and what to do first when work resumes.
 
-## Branches and how to merge one
+## Where things stand
 
-```powershell
-git log --oneline main..refs/heads/<branch>          # what it adds
-git merge --no-ff refs/heads/<branch>                # resolve conflicts (shared files: shared/syscall.h, kernel/sys/syscalls.c,
-                                                     #  tools/qemu.py, kappabox.h, launch.c, build.py are the usual suspects)
-python tools/build.py ; python tests/run_all.py      # the whole suite (about 25 minutes; split it with comma-separated
-                                                     #  prefixes, e.g. run_all.py "usb" in a second worktree to run groups in parallel)
-```
+`main` (`6be638f` at the time of writing) holds everything that has been merged so far:
 
-Never run two test runs in the same checkout at once: they share `build/esp/cmdline.txt`. A second `git worktree` has its own `build/`.
-New kappabox applets need a manual page (`initrd/ScarletDevilMansion/share/patchouli/1/NAME.pw`) or the `manual` test fails.
+- first wave: kernel foundations, desktop, accounts and login, power and time, FAT32 and the HUMANVILLAGE mount policy, AHCI and NVMe,
+  xHCI USB with HID, the desktop apps, the games, Patchouli's library, Notebook and Sketchbook;
+- merged today: the network stack with its tools, DNS and the NIC drivers (I219 and RTL8168 never ran on hardware), audio core
+  (HDA, AC'97, mixer, `play`, `beep`, `volume`), threads, the kernel half of job control, `nice`/`renice`, hard links, `/proc/<pid>/fd`,
+  libz with gzip/tar/zip, awk/diff/patch/bc/dc and a first `vi`, **USB mass storage with `TOUHOU.LOG` on the stick**, the Gensokyo
+  Explorer, hardware audit round 1 (console rewrite, write-combining framebuffer, timer and APIC fallbacks, loader robustness), image
+  decoders, the Gallery, wallpapers, PNG screenshots, the PS/2 wheel fix, `/bin/sh` as a link to gapsh and `TOUHOU_CPU` in `tools/qemu.py`.
 
-| Branch (worktree-agent-...) | Area | Notes |
-|-----------------------------|------|-------|
-| a2a5636a2291d096d | Gensokyo Explorer (file manager) | **no application code exists**. The branch adds only `docs/EXPLORER.md` (design decisions, platform facts, known toolkit problems, the order to build it in); `tests/guitools.py` from this agent is already in `main` |
-| a21c5271eaed80a2d | Notebook polish (a sub-agent of the explorer agent) | 6 small commits on top of the merged Notebook: Reload from Disk (F5), the unsaved-changes Save goes through the changed-on-disk check, a hint on an empty page, line-ending and gutter-click tests. Merges cleanly into `main` (dry run); the context-menu retry in its last commit is unverified |
-| ad1f2fdb71587f5e6 | Sketchbook polish (a sub-agent of the explorer agent) | 3 small commits on top of the merged Sketchbook (Enter confirms the size dialog and so on). Merges cleanly; the last tweak was only rebuilt, not re-tested |
-| a4adbf8e4aa5804b3 | threads: clone, futex, pthreads (syscalls 106-115) | 15 commits, paused, builds; the most mature branch of the second wave. Its last full test run was at a279b04. `docs/THREADS.md` on the branch |
-| a46f2d415c0a1a9ca | networking (syscalls 90-99) | 4 commits, paused: loopback TCP/IP, sockets, virtio-net/e1000/e1000e drivers and DHCP are in. Not done: ping/wget/nslookup tools, DNS, the RTL8168 driver. `docs/NETWORK.md` |
-| a3d380c78d6285728 | audio (syscalls 100-105) | 12 commits, paused: kernel mixer, HDA and AC97 drivers, libaudio, `play`/`beep`/`volume`. Not done: Jukebox, songs. `docs/AUDIO.md` |
-| a651f6420dbc8cc2c | media: libz, gzip/tar/zip, libimg, Gallery, wallpaper, screenshots | done and merged into `main` (the first part twice: `SYS_utimes` = 82 stays). libimg reads PNG, JPEG (baseline and progressive), GIF (with animation), BMP, PNM and TGA and writes PNG, BMP and PPM; the Gallery, a wallpaper picture (`wallpaper`, Control Panel, Gallery), PNG screenshots in `~/Pictures`, `k_image_thumbnail`, `imginfo`/`convert`, and the FAT `settimes` hook are in. Not done: thumbnails inside the Explorer, JPEG decode-time downscaling. `docs/MEDIA.md` |
-| abec503ce2c98467a (parent) | userland utilities: merges the four children below, plus `docs/UTILITIES.md` | merge this one, not the children (same content). Done: awk, diff, patch, bc, dc and a first vi. Not started: the gapsh audit, job control (needs a kernel stopped state), join/split/fmt/column/timeout/time/watch/nohup/pgrep/killall..., extensions of the weak applets. `docs/UTILITIES.md` lists everything |
-| a8e93238212e069d8 / ac04a73bcf43119ad / a1fd026321d1dbac3 / aa2e138ddaa272338 | awk / diff and patch / bc and dc / vi | children of the utilities parent. **vi has only run 11 checks in the guest** (basic insert/delete/yank/put, undo, search, counts, dot, `:wq`); motions, text objects, registers, macros, visual modes, `:s`, `:g`, filters and mappings are written but untested, so expect bugs. awk, diff, patch, bc and dc passed their own tests on their branches |
+How well `main` is verified: the whole suite (182 tests) passed at `711688b` (two mouse-driven GUI flakes passed when rerun alone); the Explorer (10 tests) and the manual-page test passed on top of
+it; the media agent's whole run (201 tests, 0 failed) covered `f9358db` plus the media branch, and the network, USB-storage and audit work
+were tested on their own branches. **There has been no full run on the exact final commit**; that is the first job when work resumes.
 
-The agents were stopped at about 15:58 on 2026-10-23 (the user had to close the laptop). All of these branches, and `main`, are on the
-Forgejo copy of the repository (`origin` = `stonerj/Touhou.OS-fork`, private).
+Nothing has ever run on the real PC (Dell, i5-7500). [HARDWARE_AUDIT.md](HARDWARE_AUDIT.md) (in `main`) has the first-boot checklist.
 
-When merging any of them: tests that wait for a serial shell prompt need `text` in their command line (the desktop is the default
-boot now, and it never prints a prompt), and the guest clock runs slowly when the host is busy, so give tests generous timeouts.
+## Branches that are not merged
 
-The agents were told to commit working states before the session ended; a branch may stop mid-task. `git log -1 <branch>` and
-the doc of the area say how far it got. An agent that is still resumable can be sent a message with the same id.
+All paused with a clean, building tree unless a row says otherwise. Each has its own `docs/<AREA>.md` with "State when paused" and
+"How to resume". Branch names are `worktree-agent-<id>`; the worktrees are under `.claude/worktrees/agent-<id>`.
 
-## Ideas that were not started
+| Id | Area | Head | What it holds / what to know |
+|----|------|------|------------------------------|
+| a6d5e6306014eb8c7 | hardware audit, round 2 | 9efbc0a | MTRR write-combining as a measured fallback (`fb.mtrr=auto|on|off`), **a PCI BAR sizing fix** (the old code could loop over ~2^47 pages on a 64-bit BAR and hang the first boot), `pci_set_d0` for every device, NVMe admin queue clamped to MQES; 15 `hwaudit` tests pass. Not re-run after it: usb, net, audio, desktop, the full suite. Side branch `wip/usb-storage-soft-fallbacks` (5bd592f) holds half-done stick quirk handling (size ladder 64K to 4K, quirk table, bring-up retries); it does **not compile** yet, the missing list is in `docs/HARDWARE_AUDIT.md` |
+| a504bf8a5a198d471 | USB follow-up: dirty volumes, fsck | 55638b8 | A dirty HUMANVILLAGE volume is checked read-only at mount (FAT copies, chains, cross-links, sizes, names): consistent means read-write (so `TOUHOU.LOG` keeps working after a hard power-off), problems mean read-only with the reason in the log and `/proc/fatcheck`; `hvforce` and `hvcheck=off` switches; one C scanner shared by the kernel and a host DLL, agreeing with `tools/mkdisk.py --check` on ~50 damage kinds; 7 `fsck_*` tests pass. The `fsck` program and its repair engine (`shared/fatfix.c`) are written but **have never run in the guest**; the FAT write-order review found four ordering gaps (listed in `docs/STORAGE.md`) and nothing is changed there yet |
+| a3d380c78d6285728 | audio, round 2 | 797966a | generic HDA codec path walk (unit-tested on 12 invented Realtek-style graphs), Reimu's Jukebox, five original songs (`.tms`, nobody has listened to them), a ProTracker `.mod` player, system sounds with `nosounds`, volume slider in the panel; 20 audio tests pass, the suite was 207/0 with 39 not reached. Merging main conflicts only in `user/bin/hakurei-shell/launch.c`: keep both menu lines (Gallery and Jukebox) |
+| a46f2d415c0a1a9ca | network, round 2: HTTPS | 0212736 | `libtls` (TLS 1.3 and 1.2 client with its own crypto, strict X.509), a new kernel RNG (ChaCha20 seeded from RDSEED/RDRAND), a 119-root CA bundle in the initrd, `https://` in `fetch`/`wget`, 14 `tls_*` tests (they need the Python package `cryptography`). The kernel DHCP-stop commit `361314b` was never run in QEMU: if `net_ifconfig_set` or `net_link_*` fail, `git revert 361314b`. **The network panel is not started** (design in `docs/NETWORK.md`). New man pages were not checked by the `manual` test |
+| a93e3061dde450b33 | `mcc`, a C compiler | 83acf6a | `mcc`/`cc`/`mld`/`mar` run on the OS; the docs claim byte-identical self-hosting (stage 2 = stage 3). The newest edits (constant folding, jump peephole, inline `mem*`, merged string literals) were **never run in QEMU**; with the whole userland built by `mcc`, 12 GUI tests failed (8 notebook, 4 sketchbook; two causes fixed, not re-run). An early commit contains a stray 400 KB binary: squash-merge it. `docs/MCC.md` |
+| abec503ce2c98467a | utilities (parent), with `vi` hardening | c61ba0d | merged with main; `vi` has ~950 scripted checks plus screen tests, a differential test against the host's vim still shows differences (listed in `docs/VI.md`). Nothing shared touched. **Not started:** gapsh job control, the gapsh audit and conformance test, the small new tools and the extensions of the weak applets |
+| a503fea82ea373559 | libc accuracy and speed (helper of the utilities agent) | 3a99e04 | exact `strtod` and `printf %f %e %g %a`, block-wise stdio, a faster `malloc`, accurate libm, a leftmost-longest regex: `sort -n` 38 s to 14 s, a 1 MB-line `grep 'a.*b'` no longer crashes. **Conflicts with main in `user/libc/src/stdio.c`** (main has per-stream locks); the resolution recipe and test list are in `docs/UTILITIES.md`; keep its worktree until merged |
+| a4adbf8e4aa5804b3 | kernel hardening | c889090 | sysfuzz and groundwork (`kwarn`, `/proc/kstats`, heap limits); was still working when this file was written, see its report and `docs/HARDENING.md` if it exists. Planned: OOM killer, SMEP/SMAP, lockup detector, and raising the `exec` argument limits (today 256 entries and about 32 KiB) |
+| a31f584d8c0674dd6 | `vi` helper | 2dfc883 | merged into abec503ce2c98467a; nothing more to do |
 
-- **USB mass storage** (the brief is below): the highest-value next step for the real PC, because it makes `/HumanVillage` on the stick persistent.
-- Hi-dpi scaling in Fairies/Kappa (render at 1x, pixel-double into the window, divide pointer coordinates, scale the decorations).
-- Japanese text: a double-width bitmap font (kana + common kanji) and double-width cells in the terminal and `kc_text`.
-- SMP bring-up (LAPIC IPIs, per-CPU run queues, honest locking), IOAPIC/MSI.
-- A small C compiler running on the OS itself.
-- A kernel hardening pass: syscall fuzzing, stress and leak tests, an OOM killer.
+Old helper worktrees that are merged and can be deleted: `agent-a8e93238212e069d8`, `agent-ac04a73bcf43119ad`, `agent-a1fd026321d1dbac3`,
+`agent-aa2e138ddaa272338`, `agent-a31f584d8c0674dd6`, and the explorer and notebook helpers (`a2a5636a2291d096d`, `a21c5271eaed80a2d`,
+`ad1f2fdb71587f5e6`, `a217848ad6a67762c`). A scratch copy of about 1 GB from the media agent lives in
+`C:\Users\jston\AppData\Local\Temp\claude\C--Users-jston--claude-spares-spare-rkeNO5\...\scratchpad\mc` and can be deleted.
+
+## What to do first when work resumes
+
+1. Merge in this order, building after each and running the tests named (the usual suspects for conflicts are `docs/STATUS.md`,
+   `docs/ROADMAP.md`, `tools/qemu.py`, `tools/build.py` EXTRA_LINKS, `user/bin/hakurei-shell/launch.c`, `shared/syscall.h`):
+   1. a6d5e6306014eb8c7 (audit round 2, small and important): `hwaudit,usb,blk,selftest`
+   2. a504bf8a5a198d471 (dirty volumes): `fsck,storage,usbstor`, then run `/bin/fsck` in a VM for the first time
+   3. a3d380c78d6285728 (audio): `audio,manual,desktop`
+   4. a46f2d415c0a1a9ca (HTTPS): `net,tls,manual`
+   5. abec503ce2c98467a (utilities and `vi`): `manual,vi,shell`
+   6. a503fea82ea373559 (libc): hand-merge `stdio.c`, then `threads,utest,shell,libc` and everything that uses stdio
+   7. a4adbf8e4aa5804b3 (hardening) once it has a final report: everything
+   8. a93e3061dde450b33 (`mcc`), squashed: `mcc,mld,manual`
+2. Run the whole suite on a quiet machine in six parallel worktrees (the split that worked: usb / storage / blk,crash,selftest,utest,kshell,jobctl /
+   notebook,sketchbook / the rest of tools, audio, net, threads / power, accounts, login, time, apps, desktop and the games). Mouse-driven GUI
+   tests (`notebook_*`, `sketchbook_*`, `audio_panel_volume`) flake when the host is busy; rerun a failure alone before suspecting the code.
+3. Only then build a stick image (`python tools/mkimage.py --zip`) for the Dell. Before that, finish **gapsh job control**: in this tree Ctrl-Z in a
+   terminal freezes the foreground job and the shell with it (`docs/JOBCONTROL.md` lists what the shell has to do). Raise the `exec` argument
+   limits (hardening branch) so `rm *` and `xargs` work on big folders.
+4. First real boot: use a spare stick, Secure Boot off, follow [REAL_HARDWARE.md](REAL_HARDWARE.md); read the on-screen log (photograph it) and, after
+   a clean shutdown or a bad one, `TOUHOU.LOG` and `TOUHOU.PRV` on the stick from another PC. Useful command-line words: `video=1024x768`, `text`,
+   `usbstorage=off`, `bootlog=off`, `noaudio`, `fb.mtrr=off`, `fb.cache=uc`, `hvforce`, `hvcheck=off`.
 
 ## Problems found along the way (not fixed)
 
-- `kernel/drivers/keyboard.c` `mouse_byte()` passes the PS/2 wheel nibble through unchanged, so every app scrolls backwards with
-  QEMU's mouse; the fix is probably `wheel = -wheel;` there (check the xHCI HID mouse path separately).
-- Fairies has no call that tells a window where it is on the screen after the user moved it, so a popup menu cannot be placed at the
-  pointer (the Notebook draws its menu inside the window; `docs/EXPLORER.md` on the explorer branch has a plan).
-- Kappa: the system clipboard is capped at 1024 bytes; KUI keeps 64 key presses per frame; `k_slider` ignores a click whose press and release
-  land in one frame; `k_menubar` leaves the drop-down painted for a frame after a pick or Esc and crashes on a NULL label;
-  `k_input_dialog` does not preselect its initial text; there is no triple click.
-- libc/kernel (from the utilities agent): `strtod` is inexact ("0.3" parses as 0.30000000000000004), `printf %f` rounds approximately,
-  `fwrite` goes byte by byte, regex is a recursive leftmost-first backtracker, there is no hard link, no process priority, no
-  `/proc/<pid>/fd`; SIGTSTP/SIGSTOP are ignored because the kernel has no stopped state (so no job control).
-- The guest clock lags when the host is busy and the PS/2 pointer drops packets under load: GUI tests should poll and retry once.
+- Fairies has no call that tells a window where it is on the screen after the user moved it, so popup menus are drawn inside the window.
+- Kappa: the system clipboard is capped at 1024 bytes; KUI keeps 64 key presses per frame; `k_slider` ignores a click whose press and release land in
+  one frame; `k_menubar` leaves the drop-down painted for a frame after a pick or Esc and crashes on a NULL label; `k_input_dialog` does not preselect its
+  text; `k_confirm_dialog` has only two buttons; there is no triple click.
+- `sed` and `grep` call `regexec` on `line + pos` with `REG_NOTBOL`, so `\<`, `\b`, `\B` lose the previous character (`echo aa | sed 's/\<a/X/g'` prints
+  `XX`); they should use `REG_STARTEND`. gapsh: `"$@"` with no arguments expands to one empty word; the `printf` builtin needs `\0NNN`.
+- Kernel: user-mode SIGSEGV handlers never seem to run; `alarm()` is a stub; `exec` refuses more than 256 arguments or 32 KiB of strings.
+- `/etc` is rebuilt in RAM at every boot, so passwords, new accounts and a planned `/etc/network.conf` do not persist; only `/HumanVillage` does.
+- The `bc_language` test once caught the kernel log line about a SIGPIPE-killed `echo` (a race in the test, not in bc).
+- Security: libtls has no side-channel guarantees, no revocation or OCSP, and the CA bundle is frozen at build time (see `docs/TLS.md`).
 
-## Brief for the USB mass storage task
+## Ideas that were not started
 
-YOUR TASK: USB mass storage, so that the stick TouhouOS booted from can be used as storage.
+- Hi-dpi scaling in Fairies/Kappa (render at 1x, pixel-double into the window, divide pointer coordinates, scale the decorations).
+- Japanese text: a double-width bitmap font (kana and common kanji) and double-width cells in the terminal and `kc_text`.
+- SMP bring-up (LAPIC IPIs, per-CPU run queues, honest locking), IOAPIC/MSI instead of polling.
+- A web browser (HTML subset in a Kappa window) on top of libtls and libimg; a Kappa network panel.
+- A PC-98 emulator for the user's own game copies (see `docs/ASSETS.md`: only original or procedural art ships with the OS).
+- Panic-time log writes to the stick (unsafe today because block drivers need the scheduler), `gapget` package format.
 
-Context: docs/USB.md ("Writing another class driver"), docs/STORAGE.md, docs/BLOCKDEVICES.md and docs/REAL_HARDWARE.md describe what exists: an xHCI driver with hubs and HID (kernel/drivers/usb/*), the block layer (kernel/fs/blk.c, kernel/include/blk.h), SATA/NVMe drivers, a FAT32 driver and the HUMANVILLAGE mount policy (kernel/fs/mountpolicy.c: exactly one volume labelled HUMANVILLAGE is mounted automatically, nothing else ever is). The real target is a Dell PC that boots from a USB stick containing an EFI System Partition and a HUMANVILLAGE FAT32 partition (tools/mkimage.py builds the image). Today the OS runs from RAM and cannot see the stick; with this task `/HumanVillage` becomes the stick's persistent partition.
+## Working notes
 
-1. A bulk-only-transport class driver (interface class 8, subclass 6 "SCSI transparent", protocol 0x50; also accept subclass 2/4/5 only if trivially similar, otherwise ignore) in kernel/drivers/usb/storage.c, following the extension recipe in docs/USB.md: GET MAX LUN, CBW/data/CSW with tag checking, reset recovery (bulk-only reset + clear halt on both endpoints) on STALL or a bad CSW, INQUIRY, TEST UNIT READY with REQUEST SENSE polling (sticks need seconds to become ready; give up after a bounded time), READ CAPACITY(10) and (16), READ/WRITE(10) and (16) in chunks of at most 64 KiB, SYNCHRONIZE CACHE(10) on flush (ignore "not supported"), write-protect detection through MODE SENSE(6) (register the device read-only), 512 and 4096 byte logical blocks, removable media states (no media / media changed), several LUNs, and hot-unplug (requests in flight fail with -ENODEV, the block device goes away cleanly; blk.h has no unregister call yet: add one in the block layer if needed, keeping it small and safe, partition children included). Remember the thread rule from USB.md: the USB stack belongs to the usbd thread, so block requests run through usb_call().
-2. Register disks with the block layer under the shared SCSI-disk naming the SATA driver uses (sda, sdb ... : look at how kernel/drivers/ahci.c allocates names and share the allocator instead of inventing a second scheme), with a driver name like "usb-storage" visible in /proc/partitions and lsblk. Honour the `blk.ro` command-line switch only for internal SATA/NVMe disks (as documented), but make USB sticks respect the device's own write-protect state. Writes need the same write-through policy the block drivers use (flush after writes).
-3. Make HUMANVILLAGE-on-the-stick work end to end: USB enumeration finishes seconds after the kernel starts, long after the boot-time storage_mount_boot_volumes() call, so (a) call it (or a hotplug-aware variant in kernel/fs/mountpolicy.c) when a USB disk appears, and (b) make boot wait for USB to settle before init starts the first session: expose something simple like /proc/usb-ready or a kernel function `usb_wait_settled(ms)` that kmain calls (bounded, at most about 8 seconds, only when an xHCI controller exists and at least one port reported a device; the wait must end early the moment the controller and all ports are quiet) so the stick's HUMANVILLAGE partition is mounted before login. The policy must still mount only the volume labelled HUMANVILLAGE; if a second one shows up, ignore it with a log line (already the policy). Also decide what happens when the internal disk has a HUMANVILLAGE label too (first one found wins; document it).
-4. FAT timestamps: the FAT driver writes times as UTC while Windows and most other systems read FAT times as local time. Add a mount option (e.g. tzoffset=MINUTES) and make the mount policy and the `mount` applet pass the system's current UTC offset (the kernel has no time zone: derive it in user space for `mount`, and for the boot-time automount use the offset implied by the `tz=` command-line word, parsing only the standard offset of a POSIX TZ string, or leave UTC when absent). Keep it small, test it.
-5. Safety: never write to a USB disk unless it is mounted (as above) or root writes the /dev node; never format; the partition scan is read-only. Validate everything the device reports (capacity zero or absurd, block size not a power of two, sense data lies, CSW residue larger than the request): a hostile or broken stick must not crash the kernel or hang boot beyond the bounded waits.
-6. Tests (tests/case_usbstorage.py) using QEMU's `-device usb-storage,drive=...` on an `-device qemu-xhci` with a raw image built by tools/mkdisk.py: the device appears with the right size/model, partitions are scanned, reads match the host's checksums, writes land in the image after the VM exits, HUMANVILLAGE on a USB disk is mounted automatically before the first session and files persist across a reboot (two boots on the same image), a stick plugged in later via QMP device_add (hot-plug, mounted by policy hook or by hand) and unplugged via device_del while idle and during I/O (no panic, the block device vanishes), a read-only stick (QEMU `readonly=on`), a stick with a corrupt partition table, UASP-capable QEMU device (`usb-uas` needs a bus; skip if QEMU lacks it) is simply ignored, two sticks, 4096-byte blocks if QEMU can emulate them (`logical_block_size=4096`), and the timestamp option (create a file with a known time zone, read it back with tools/mkdisk.py --ls). Extend tools/qemu.py minimally if the harness needs it (extra drives/devices already work through Qemu(extra=[...])).
-7. Update docs/USB.md, docs/STORAGE.md and docs/REAL_HARDWARE.md (section 5 says reading the stick from inside TouhouOS needs USB mass storage; that becomes true) and tools/mkimage.py's help text if anything changes.
+- Never run two test runs in one checkout (they share `build/esp/cmdline.txt`); use extra `git worktree`s. The guest clock runs several times
+  slower than wall time when the host is busy, so tests wait for serial output or pixels and retry instead of sleeping.
+- Tests that wait for a serial shell prompt need `text` in their kernel command line (the desktop is the default boot and prints no prompt).
+- Every new kappabox applet needs a manual page (`initrd/ScarletDevilMansion/share/patchouli/1/NAME.pw`, lines at most 78 columns) or `manual` fails.
+- Agents started with worktree isolation get a worktree made from `origin/main`: tell them to run `git merge main` first, or push before starting them.
+- `TOUHOU_CPU=Skylake-Client-noTSX-IBRS` runs QEMU as a CPU closer to the target i5-7500.
+- Commits stay local; push to `origin` (`stonerj/Touhou.OS-fork`, private) only when the user asks. Never push to `upstream`.
