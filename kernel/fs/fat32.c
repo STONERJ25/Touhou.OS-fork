@@ -465,7 +465,16 @@ static int fat_rename(VNode *olddir, const char *oldname, VNode *newdir, const c
     if (!rc) rc = vol_begin_write(v);
     if (!rc) {
         bool was_dir_move = (src->flags & FN_DIR) && od != nd;
-        rc = fatd_attach_renamed(nd, src, newname, dst);        /* new entry first, then the old ones go */
+        int how = -EAGAIN;
+        if (dst && !((src->flags | dst->flags) & FN_DIR))       /* a file over a file: the name stays in place (fat_dir.c) */
+            how = fatd_replace_file(nd, src, newname, dst);
+        if (how != -EAGAIN) {
+            rc = how;
+            if (!dst->parent) node_dispose(dst);                 /* its clusters go now that no entry points at them on the device */
+            dst = NULL;
+        } else {
+            rc = fatd_attach_renamed(nd, src, newname, dst);    /* new entry first, then the old ones go */
+        }
         if (!rc && dst) {
             fatd_remove(nd, dst);
             if (dst->flags & FN_DIR) {
@@ -768,6 +777,7 @@ static const VNodeOps fat_file_ops = {
 
 typedef struct {
     bool ro, rw, force, userdirs, sync;
+    bool espgrant;                                              /* take the ESP write grant the caller holds (blk_unlock.c) */
     bool have_umask;
     u32 uid, gid, fmask, dmask;
     s32 tz_min;                                                 /* tzoffset=MINUTES: minutes east of UTC that the volume's local clock is ahead */
@@ -811,6 +821,7 @@ static int parse_opts(FatVol *v, const char *s, Opts *o) {
         else if (KEY("force")) o->force = true;
         else if (KEY("sync")) o->sync = true;
         else if (KEY("userdirs")) o->userdirs = true;
+        else if (KEY("espgrant")) o->espgrant = true;
         else if (KEY("uid") && eq) { o->uid = parse_num(val, &end, 10); if (*end) return -EINVAL; }
         else if (KEY("gid") && eq) { o->gid = parse_num(val, &end, 10); if (*end) return -EINVAL; }
         else if (KEY("fmask") && eq) { o->fmask = parse_num(val, &end, 8) & 0777; if (*end) return -EINVAL; }
@@ -954,6 +965,7 @@ static bool device_in_use(const BlockDev *dev) {
 }
 
 static void start_flusher(void);
+static void fat_grant_revoke(void *holder);
 
 static int fat_mount(const char *source, u32 flags, Mount *m) {
     fat_global_init();
@@ -1022,7 +1034,13 @@ static int fat_mount(const char *source, u32 flags, Mount *m) {
     bool unclean = !fat_clean || boot_dirty || hard_error;
     const char *why_unclean = hard_error && fat_clean && !boot_dirty ? "the volume reported disk errors on its last use"
                                                                        : "the volume was not cleanly unmounted";
-    v->ro = o.ro || (flags & MNT_RDONLY) || dev->readonly;
+    bool grant = false;
+    if (o.espgrant) {                                            /* the ESP write grant: only for a read-write mount by its holder */
+        rc = (o.ro || (flags & MNT_RDONLY)) ? -EINVAL : blk_esp_grant_claim(dev);
+        if (rc) { fc_destroy(v); kfree(v); return rc; }
+        grant = true;
+    }
+    v->ro = o.ro || (flags & MNT_RDONLY) || (dev->readonly && !grant);
     if (o.ro && o.rw) { klog("Keine", "fat32: conflicting ro and rw options"); fc_destroy(v); kfree(v); return -EINVAL; }
     char note[200] = "";
     if (unclean && !v->ro) {
@@ -1036,6 +1054,13 @@ static int fat_mount(const char *source, u32 flags, Mount *m) {
         }
     } else if (unclean) {
         v->was_dirty = true;
+    }
+    if (grant && v->ro) {                                        /* asked for read-write on purpose: say no rather than mount it read-only */
+        klog("Keine", "%s: %s is not mounted with the ESP write grant: %s (a power cut during an update?); check it first, or add force",
+             v->fstype, dev->name, why_unclean);
+        fc_destroy(v);
+        kfree(v);
+        return -EROFS;
     }
     if (v->ro) m->flags |= MNT_RDONLY;
 
@@ -1079,6 +1104,11 @@ static int fat_mount(const char *source, u32 flags, Mount *m) {
         strlcpy(dev->label, v->label, sizeof dev->label);
         v->label_set = true;
     }
+    if (grant && blk_esp_grant_attach(dev, v, fat_grant_revoke, m->target)) {   /* the grant's file was closed meanwhile */
+        v->ro = true;
+        m->flags |= MNT_RDONLY;
+        snprintf(note, sizeof note, ": the ESP write grant was gone before the mount could take it");
+    }
 
     mutex_lock(&g_vols_lock);
     g_vols[slot] = v;
@@ -1121,8 +1151,25 @@ static void fat_unmount(Mount *m) {
     }
     fc_destroy(v);
     mutex_unlock(&v->lock);
+    blk_esp_grant_detach(v->dev, v);                             /* after the last write-back, outside the volume lock (blk_unlock.c) */
     kfree(v);
     m->priv = NULL;
+}
+
+/* The ESP write grant ended while the volume is still mounted (the open file that held it was closed: the process that asked for it
+ * ended, or handed it back): everything is written back while that is still allowed, then the volume is read-only until unmounted. */
+static void fat_grant_revoke(void *holder) {
+    FatVol *v = holder;
+    mutex_lock(&v->lock);
+    if (!v->ro && !v->dying) {
+        int rc = vol_sync(v, true);
+        v->ro = true;
+        if (v->mount) v->mount->flags |= MNT_RDONLY;
+        if (rc) klog("Keine", "%s: %s: writing back before the ESP write grant ended failed (%d) -- run a file system check", v->fstype, v->dev->name, rc);
+        klog("Keine", "%s: %s on %s is read-only now: the ESP write grant ended%s", v->fstype, v->dev->name,
+             v->mount ? v->mount->target : "?", rc ? "" : " (everything was written back first)");
+    }
+    mutex_unlock(&v->lock);
 }
 
 /* umount asks first: busy while anything but the mount's own root vnode is in use, or while the data cannot be

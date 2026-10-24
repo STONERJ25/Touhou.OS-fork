@@ -116,7 +116,9 @@ format could carry a list of accepted key ids.
 ## The intended update protocol (the client, task 5)
 
 The ESP is never mounted by the policy today (only `HUMANVILLAGE` is), so the client, run as root, mounts it read-write for the
-update and unmounts it at the end. The steps, with the reason for each:
+update and unmounts it at the end; on an installed disk under `blk.ro` that takes the ESP write grant (task 10, "Writing the ESP" below).
+The steps, with the reason for each (steps 4 and 5 as written here leave a moment without `kernel.elf`; "Writing the ESP" below has an
+order without that moment, which the client should use):
 
 1. **Fetch and verify the manifest** (at most 4096 bytes): strict parse, key id, signature. Compare `issued` with the installed
    manifest (`update.mf` on the ESP, written by the previous update; none on a fresh install): refuse an equal or older one
@@ -139,6 +141,68 @@ update and unmounts it at the end. The steps, with the reason for each:
 booting from the stick once. The client should skip the loader when its hash did not change (the usual case) and could offer
 `--no-loader`.
 
+## Writing the ESP (task 10: the ESP write grant and a power-cut-safe order)
+
+Under `blk.ro` an installed system's ESP is read-only; root gets it read-write for one mount through the **ESP write grant**
+(`BLKESPGRANT` on the ESP's partition node, then `mount -o rw,espgrant`; rules, scope and release in [INSTALL.md](INSTALL.md), "The ESP
+write grant"). The grant ends with the unmount or with the program, so a crashed updater leaves the ESP mounted read-only, not writable.
+`user/bin/kappabox/espgrant.h` has the pieces for the client, and the `espgrant` applet uses them:
+
+```c
+EspSession s;
+char err[400];
+if (esp_open(&s, NULL, 0, err, sizeof err)) fail(err);          // root; the grant and a read-write mount on /BambooForest/espgrant.PID
+EspFile f[] = { { "kernel.elf", k, klen }, { "initrd.img", i, ilen } };
+if (esp_update(&s, f, 2, 1, say, err, sizeof err)) fail(err);    // the sequence below; 1 = keep the current files as .old
+esp_close(&s);                                                   // sync, unmount, hand the grant back
+```
+
+**The sequence** (`esp_update()`; `espgrant [-k] put SRC NAME [SRC NAME]...` from the shell):
+
+1. Check the free space: the new files, plus the `.old` copies with `-k`, next to the current files. Not enough: stop, nothing changed.
+2. **Stage**: write every file as `NAME.new`, then `sync`. Data, FAT and directory entry reach the disk in that order (the FAT cache's
+   flush classes), with a device cache flush between them.
+3. **Compare from the disk**: unmount, take a fresh grant, mount again (the page cache is gone), and compare every `NAME.new` byte for
+   byte with what it should hold. Any difference: delete the `.new` files and stop; nothing else changed. (The client compares the
+   SHA-256 of the manifest here as well.)
+4. **Keep** (`-k`): copy each current `NAME` to `OLD.new`, `sync`, rename `OLD.new` over `OLD` (`kernel.elf` -> `kernel.old`,
+   `initrd.img` -> `initrd.old`, `cmdline.txt` -> `cmdline.old`, `EFI/BOOT/BOOTX64.EFI` -> `EFI/BOOT/BOOTX64.old`: the extension
+   replaced, so the names stay 8.3), `sync`. A copy rather than a rename, so `NAME` exists at every moment.
+5. **Replace**: for each file, the loader (`EFI/...`) last, rename `NAME.new` over `NAME` and `sync` before the next one.
+6. Unmount, close the grant.
+
+**The rename over an existing file** is what makes step 5 safe, and it needed a change in the FAT driver (`fatd_replace_file()` in
+`kernel/fs/fat_dir.c`, called by `fat_rename()`). Before, the new entry went into free slots, the target's old entry was marked deleted
+and its clusters freed, all in the cache, and the cache writes the FAT before the directory: a cut in between left `kernel.elf` pointing
+at clusters the FAT already called free. Now, when the new entry set has as many slots as the replaced one (always, for the same name):
+(1) the source's old entry is removed and everything the cache holds is flushed; (2) the target's entry is rewritten **in place** to point
+at the source's clusters and flushed; (3) only then are the target's old clusters freed. A cut after (1) leaves the old file and the new
+data as lost clusters; after (2) the new file and the old data as lost clusters; never a missing name, a cross-link or an entry that points
+at free clusters. Names whose entry sets differ in size (a long name over a short one) take the old path.
+
+What a cut leaves, step by step (checked by `espgrant_power_cut`, see Tests):
+
+| Cut during | `NAME` on the ESP | Leftovers the checker may report | Boots |
+|------------|-------------------|----------------------------------|-------|
+| 2, writing or flushing `NAME.new` | old | a partial `NAME.new` or none, lost clusters, FAT copy 2 behind, stale FSInfo, the dirty flags | old |
+| 3, comparing | old, `NAME.new` complete | (clean, or the dirty flags) | old |
+| 4, keeping | old; `OLD` the previous copy or the new one | `OLD.new`, lost clusters | old |
+| 5, inside the rename, before the in-place write | old, `NAME.new` gone | its clusters lost | old |
+| 5, after the in-place write | new | the old clusters lost until freed, FSInfo stale | new |
+| 5, after the rename | new | FAT copy 2 behind, stale FSInfo, the dirty flags | new |
+
+With two files (kernel and initrd) a cut between their renames leaves a new kernel with the old initrd. Both are complete, so the
+loader starts the kernel, but they belong to different builds; that is a failed trial for the fallback below. So the client should
+**arm the trial (`update.try`) and keep the `.old` set before the first rename**, not after the last one as step 6 above says: then a cut
+anywhere in step 5 boots on trial and falls back to the `.old` pair if the mix does not come up.
+
+**After a cut the ESP is flagged dirty** (the flags are set before the first write and cleared by every `sync` that finds nothing left to
+write). The loader does not care, but the next `espgrant` mount fails with "was not cleanly unmounted" until the volume has been checked
+or `-f` is given (it then stays flagged). The client should run the dirty-volume check of the `parked/usb-dirty-fsck` work (on
+`cloud/staging`) before it writes; given the table above, `-f` after a cut is safe in practice but leaves lost clusters behind.
+
+The loader's **"confirm this boot"** step (fallback step 3 below) is `espgrant rm update.try` (or `esp_open()`, `unlink`, `esp_close()`).
+
 ## The fallback in the loader (task 5)
 
 What the loader does at each start, using the NVRAM trick of `start_count()` in `boot/main.c` (a non-volatile variable counting
@@ -155,7 +219,7 @@ starts):
 3. **Confirming the boot** is the OS's job, since the kernel has no UEFI runtime services after the exit call: when the system is
    up (later than the kernel's own `boot complete` line: init has started and the login screen or desktop came up, so a broken
    initrd also counts as a failed update) and the command line has `update.trial`, a root step mounts the ESP, deletes `update.try`
-   and unmounts. A kernel that panics, hangs or reboots before that never confirms, and after N starts the loader takes the old set.
+   and unmounts (`espgrant rm update.try`, through the ESP write grant). A kernel that panics, hangs or reboots before that never confirms, and after N starts the loader takes the old set.
 4. With `update.fellback` the OS tells the user (the `update` tool's status, and a kernel log line in the theme: the shrine's
    gap closed and Yukari brought the previous kernel back) and `update --rollback` renames the `.old` set back into place and deletes
    `update.try`, so the fallback is not repeated on every start.
@@ -172,6 +236,23 @@ server on `127.0.0.1` port 0: files byte-exact, `HEAD`, the reference client, a 
 traversal attempts and unlisted files. The client tests in QEMU (good update, bad signature, bad hash, VM killed during the write)
 belong to task 5 and will reach this server at `10.0.2.2` through QEMU's user-mode network.
 
+The ESP side has its QEMU tests already (task 10, `python tests/run_all.py espgrant_`, `tests/case_espgrant.py`; INSTALL.md lists all
+three). `espgrant_power_cut` is the "VM killed in the middle of the write" test for the sequence above: a copy of an installed NVMe disk
+(`text user=root blk.ro`) boots alone, `/tmp/new.elf` is the installed kernel plus 400000 bytes (an ELF with trailing bytes still loads),
+the disk's writes are throttled to 4 per second (QMP `block_set_io_throttle`), `espgrant put /tmp/new.elf kernel.elf` starts, and QMP
+`quit` pulls the plug a random 0 to 2.5 s after a given step line. On the host: no checker error worse than lost clusters, a FAT copy 2
+that lags, a stale FSInfo or a chain longer than its file (the dirty flags are warnings); `kernel.elf` byte for byte the old or the new
+kernel; the other files unchanged; then the disk boots alone, the loader's `kernel.elf N bytes` line names that kernel, and `espgrant run
+true` is refused on a dirty ESP and works on a clean one. `TOUHOU_ESP_CUT_RUNS` (default 4), `TOUHOU_ESP_CUT_SEED`, `TOUHOU_ESP_CUT_AT`
+(a step: `staging`, `staged`, `synced`, `verified`, `replacing`, `replaced`) and `TOUHOU_ESP_CUT_IOPS` change it.
+
+Results (Ubuntu 24.04, QEMU 8.2, TCG, `TOUHOU_TIMEOUT_SCALE=3`): 4 default runs (cuts after `replacing`, `staging`, `replacing`,
+`verified`) pass; 16 runs cut after `replacing` (seeds 1000-1015) pass and cover every state of the table above: the old kernel with
+the new data lost (seed 1012), the new kernel with the old clusters lost (1005, 1006, 1011), the new kernel with only FAT copy 2 or
+FSInfo behind, and the old kernel untouched. **Control**: the same 10 seeds (1000-1009) with the in-place replacement switched off (the
+FAT driver's old rename) failed once: seed 1006 left `/kernel.elf: chain runs into a free cluster` (the entry still pointed at the
+old kernel, whose clusters the FAT had already freed), an ESP that does not boot.
+
 ## State when paused
 
 Written on 2026-10-24, branch `cloud/update-server` (from `main` `6df1c46`).
@@ -181,8 +262,11 @@ Written on 2026-10-24, branch `cloud/update-server` (from `main` `6df1c46`).
 - **Not verified:** the tool on Windows (written for it: `pathlib`, no POSIX-only calls except the file mode, which Windows ignores);
   a real `build/esp` (the tests use made-up files; `python tools/build.py` could not run here before task 1); serving to another
   machine on a real LAN or to QEMU at `10.0.2.2`.
-- **Not started:** everything on the OS side: the `update` tool, the baked-in public key, the ESP mount for the update, the loader
-  fallback, the boot confirmation, the QEMU tests.
+- **Not started:** everything on the OS side: the `update` tool, the baked-in public key, the loader fallback, the boot confirmation,
+  the client's QEMU tests.
+- **Task 10 (2026-10-24, branch `cloud/esp-grant`):** the ESP mount for the update exists: the ESP write grant, `espgrant` and
+  `espgrant.h` (`esp_open`, `esp_update`, `esp_close`), the power-cut-safe sequence and the FAT rename order above, tested in QEMU
+  (`espgrant_`). Not on real hardware.
 
 ## How to resume
 
@@ -192,7 +276,9 @@ Written on 2026-10-24, branch `cloud/update-server` (from `main` `6df1c46`).
    committed; the build could also take it from an environment variable so that forks use their own).
 3. Write the client following "The intended update protocol" and the loader part of "The fallback in the loader"; the parser must
    accept exactly what `parse_body`/`split_manifest` in `tools/serve-update.py` accept (port the cases of
-   `tests/host/test_serve_update.py` to the client's own test).
+   `tests/host/test_serve_update.py` to the client's own test). Write the ESP with `esp_open()` / `esp_update()` / `esp_close()` of
+   `user/bin/kappabox/espgrant.h` (make `update` a kappabox applet next to it), in the order of "Writing the ESP": `update.try` and the
+   `.old` copies before the first rename; the boot confirmation is `espgrant rm update.try`.
 4. QEMU tests: run `serve-update.py serve --bind 127.0.0.1 --port 0` from the test (or `make_server()` in-process, as the host tests
    do), point the guest at `http://10.0.2.2:PORT/`, and cover a good update, a bad signature (sign with another key), a bad hash
    (`UpdateServer` with a changed file, as in `test_tampered_file_on_the_wire_refused`), and the VM killed in the middle of the write.

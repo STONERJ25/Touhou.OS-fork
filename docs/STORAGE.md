@@ -102,6 +102,7 @@ mounted rather than losing data).
 | `ro`, `rw` | read-only / read-write (also `-r`); a read-only device is always mounted read-only |
 | `force` | mount a volume that is flagged dirty read-write anyway (its flags then stay dirty) |
 | `sync` | write back after every operation |
+| `espgrant` | take the ESP write grant the caller holds (root, `BLKESPGRANT` first): the ESP the system started from mounts read-write although `blk.ro` is set, until the unmount or until the grant's file is closed; refused on a volume flagged dirty unless `force` ([INSTALL.md](INSTALL.md), `espgrant(1)`) |
 | `uid=N`, `gid=N` | owner of every file (default root, 0) |
 | `fmask=OCT`, `dmask=OCT`, `umask=OCT` | permission bits to remove; defaults `fmask=0133`, `dmask=0022` give files 0644, directories 0755 |
 | `userdirs` | a top-level directory named like a user, and everything below it, belongs to that user (see below) |
@@ -146,6 +147,12 @@ Any other option fails the mount. The option string reaches the kernel through t
 * **Write ordering.** The cache flushes file data first, then the FAT, then directory entries/FSInfo/boot sector, with a
   device cache flush between the classes. A power cut can therefore leak clusters (fsck reclaims them) but not leave
   an entry pointing at data that was never written. Unlinking while open keeps the clusters until the last close.
+* **Rename over an existing file keeps the name.** The target's entry is rewritten in place (when the entry sets have the same size,
+  as for the same name) after the source's old entry is gone from the disk, and the replaced file's clusters are freed only after that
+  (`fatd_replace_file()`, a flush before and after the in-place write): a power cut leaves the old or the new file under the name, at
+  worst with lost clusters. The ESP update relies on it ([UPDATE.md](UPDATE.md), "Writing the ESP"; test `espgrant_power_cut`).
+* **The ESP write grant.** A FAT volume mounted with `-o espgrant` writes through `blk_write_as()` as the holder of the grant on its
+  partition; when the grant ends while it is mounted it is written back and turns read-only ([INSTALL.md](INSTALL.md)).
 * **Periodic and explicit flushing.** A kernel thread (`fat-flush`) writes back dirty pages older than 3 s; `sync(2)`
   (the `sync` applet, `dd`, `reboot`, `poweroff`) flushes every writable filesystem; a large backlog is flushed by the
   writer itself.

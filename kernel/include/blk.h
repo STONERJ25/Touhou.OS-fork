@@ -23,6 +23,7 @@ struct BlockDev {
     bool readonly;
     bool ro_policy;                 /* read-only because of blk.ro (not because the medium is write-protected): BLKWRUNLOCK can lift it */
     bool rw_grant;                  /* a partition named by blk.rw=: writable although its disk is read-only by blk.ro (blk_unlock.c) */
+    const void *grant_holder;       /* the boot ESP while a mount holds its write grant: that mount's writes pass blk.ro (blk_unlock.c) */
     volatile bool removed;          /* hot-unplugged (blk_unregister): every request fails with -ENODEV; the struct itself is never freed */
     int  (*read)(BlockDev *d, u64 lba, u32 count, void *buf);            /* 0 or -errno */
     int  (*write)(BlockDev *d, u64 lba, u32 count, const void *buf);
@@ -56,6 +57,7 @@ BlockDev  *blk_next(BlockDev *d);
 int  blk_read(BlockDev *d, u64 lba, u32 count, void *buf);       /* bounds checked */
 int  blk_write(BlockDev *d, u64 lba, u32 count, const void *buf);
 int  blk_flush(BlockDev *d);
+int  blk_write_as(BlockDev *d, const void *holder, u64 lba, u32 count, const void *buf);   /* a filesystem that may hold the ESP grant */
 size_t blk_describe(char *buf, size_t cap);                      /* text for /proc/partitions */
 
 /* Mount policy (kernel/fs/mountpolicy.c). storage_mount_boot_volumes() runs once at boot for the disks that exist by then. A driver whose
@@ -74,6 +76,12 @@ int  blk_unlock_ioctl(BlockDev *d, File *f, unsigned long req, void *arg);
 bool blk_unlock_allows(BlockDev *d, File *f);
 void blk_unlock_closed(BlockDev *d, File *f);
 void blk_rw_check(BlockDev *part, const u8 part_guid[16]);
+/* The ESP write grant (BLKESPGRANT, docs/INSTALL.md): root asks for it through an open file of the boot ESP's /dev node, a mount with
+ * -o espgrant takes it (claim checks, attach binds it to the mounted volume `holder`), it ends at unmount (detach) or when that open file
+ * is closed, which calls revoke(holder) first so the filesystem can write everything back and turn read-only. */
+int  blk_esp_grant_claim(BlockDev *part);
+int  blk_esp_grant_attach(BlockDev *part, void *holder, void (*revoke)(void *holder), const char *target);
+void blk_esp_grant_detach(BlockDev *part, void *holder);
 
 /* GPT type GUID helpers (on-disk byte order). */
 extern const u8 GPT_GUID_EFI_SYSTEM[16], GPT_GUID_MS_BASIC_DATA[16], GPT_GUID_LINUX_FS[16];

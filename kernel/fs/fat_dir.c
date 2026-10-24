@@ -610,6 +610,52 @@ int fatd_attach_renamed(FatNode *nd, FatNode *c, const char *newname, const FatN
     return 0;
 }
 
+/* Renames file c over file dst of directory nd so that the name never leaves the directory, when the new entry set takes as many slots
+ * as dst's (the usual case: the same name). On the device, in this order: whatever c still has in the cache together with the removal of
+ * c's old entry set (one flush), then dst's entry set rewritten in place to point at c's clusters (a second flush). The caller frees
+ * dst's clusters after that. A power cut therefore leaves the old or the new file under the name, at worst with lost clusters; the update
+ * of the ESP (docs/UPDATE.md, kernel.elf.new over kernel.elf) relies on it. Returns -EAGAIN, having changed nothing, when the entry
+ * sets differ in size; the caller then takes the general path (fatd_attach_renamed). */
+int fatd_replace_file(FatNode *nd, FatNode *c, const char *newname, FatNode *dst) {
+    FatVol *v = nd->vol;
+    FatDir *dd = nd->dir;
+    u16 name16[FAT_MAX_NAME + 1];
+    int n16 = fatn_utf8_to_utf16(newname, strlen(newname), name16, FAT_MAX_NAME);
+    if (n16 < 0) return n16 == -ENAMETOOLONG ? -ENAMETOOLONG : -EINVAL;
+    if (!fatn_valid16(name16, n16)) return -EINVAL;
+    TakenCtx tc = { dd, c, dst };
+    u8 sfn[11], ntres;
+    bool need_lfn;
+    int rc = fatn_make_sfn(name16, n16, sfn, &ntres, &need_lfn, sfn_taken, &tc);
+    if (rc) return rc;
+    u32 nslots = need_lfn ? 1 + (u32)(n16 + 12) / 13 : 1;
+    if (nslots != dst->nslots) return -EAGAIN;
+    char *nname = kmalloc(strlen(newname) + 1);
+    if (!nname) return -ENOMEM;
+    strcpy(nname, newname);
+    u8 raw[21 * FAT_SLOT];
+    if (need_lfn) fatn_pack_lfn(name16, n16, fatn_checksum(sfn), raw);
+    build_short_entry(raw + (nslots - 1) * FAT_SLOT, sfn, c->attr, ntres, c->first, c->size, c->ctime, c->mtime, c->atime, v);
+    fatd_remove(c->parent, c);                          /* (1) the old name goes; c's data, FAT and entry reach the device before it */
+    rc = fc_flush(v);
+    if (!rc) rc = dir_write(nd, (u64)dst->slot * FAT_SLOT, raw, (size_t)nslots * FAT_SLOT);    /* (2) the name, now c's clusters */
+    if (rc) { kfree(nname); return rc; }                /* c is out of its directory (the caller disposes of it); dst is unchanged */
+    dir_unlist(dd, dst);                                /* its slots hold c's entry set now and stay marked used */
+    dst->parent = NULL;
+    kfree(c->name);
+    c->name = nname;
+    c->name_len = (u16)strlen(nname);
+    memcpy(c->sfn, sfn, 11);
+    c->ntres = ntres;
+    c->slot = dst->slot;
+    c->nslots = (u8)nslots;
+    c->parent = nd;
+    int ins = dir_insert(dd, c);
+    if (ins) c->parent = NULL;
+    rc = fc_flush(v);                                   /* before the caller frees dst's clusters */
+    return rc ? rc : ins;
+}
+
 /* "." and ".." for a fresh directory cluster (already zeroed). */
 int fatd_write_dots(FatVol *v, u32 cluster, u32 parent_cluster, u64 now) {
     u8 raw[2 * FAT_SLOT];

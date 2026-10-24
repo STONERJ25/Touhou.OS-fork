@@ -51,6 +51,8 @@ PC-98 emulation groundwork is on branch `cloud/pc98` (2026-10-24, task 18): `use
 
 gapsh job control is on branch `cloud/job-control` (2026-10-24): Ctrl-Z, `jobs`, `fg`, `bg`, `wait %N`, `disown`, `%` job names; tests `jobctl_shell_console`, `jobctl_shell_pty`, `jobctl_desktop_terminal`; see [JOBCONTROL.md](JOBCONTROL.md) "State when paused".
 
+The ESP write grant (task 10) is on branch `cloud/esp-grant` (2026-10-24): root mounts the installed ESP read-write for one mount (`BLKESPGRANT` + `mount -o rw,espgrant`, released at the unmount or when the program ends), the `espgrant` applet and `espgrant.h` with the power-cut-safe update sequence for task 5, a FAT rename that keeps the target name in place; tests `espgrant_rules`, `espgrant_helper`, `espgrant_power_cut`; see [INSTALL.md](INSTALL.md) "The ESP write grant" and [UPDATE.md](UPDATE.md) "Writing the ESP".
+
 Test infrastructure is on branch `cloud/test-infra` (task 15, 2026-10-24): `tests/run_all.py --retry-failed` (flaky or failed), an `@xfail` marker (only `usbstor_4k_blocks`, on QEMU before 9), `tools/suite.py` (the seven groups in parallel worktrees) and the manual/weekly `full-suite.yml` workflow (not run yet: it appears once it is on `main`); see [LINUX.md](LINUX.md) "Test runner".
 
 Before both: merge the parked branches (below) and run the whole suite on the result, in particular the network/HTTPS branch, the dirty-volume `fsck` branch (an installed disk and a

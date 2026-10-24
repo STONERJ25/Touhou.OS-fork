@@ -7,7 +7,10 @@
  *    `blk.ro` is set. Only those partitions: the rest of their disk, the whole-disk node and every other disk stay read-only. The installer
  *    writes the GUID of the installed HUMANVILLAGE partition into the cmdline.txt of the system it installs, so the homes are writable
  *    while the installed ESP (loader, kernel, initrd, cmdline.txt) and a Windows disk next to it stay read-only.
- *  - /proc/bootdisk: the partition the loader was read from (BootInfo.boot_part) and the block devices that match it.
+ *  - the ESP write grant (BLKESPGRANT): root lifts `blk.ro` for one read-write mount of the ESP the loader came from, for as long as
+ *    that mount and the open file that asked for it both last (an update of the installed system, the loader's "confirm this boot").
+ *  - /proc/bootdisk: the partition the loader was read from (BootInfo.boot_part), the block devices that match it, which of them may get
+ *    the ESP write grant, and the grants held.
  */
 #include "blk.h"
 #include "kernel.h"
@@ -43,8 +46,11 @@ static bool drop(BlockDev *d, File *f) {
     return found;
 }
 
+static bool esp_grant_drop(BlockDev *d, File *f, const char *why);
+
 void blk_unlock_closed(BlockDev *d, File *f) {
     if (drop(d, f)) klog("Marisa", "blk: %s is read-only again (the file that held the write unlock was closed)", d->name);
+    if (d->parent) esp_grant_drop(d, f, "the file that held it was closed");
 }
 
 /* Is the disk, or one of its partitions, the source of a mount? */
@@ -94,16 +100,249 @@ static int unlock(BlockDev *d, File *f, const struct gblk_unlock *u) {
     return 0;
 }
 
+static int esp_grant(BlockDev *d, File *f, const struct gblk_unlock *u);
+static int esp_grant_state(BlockDev *d, File *f);
+
 int blk_unlock_ioctl(BlockDev *d, File *f, unsigned long req, void *arg) {
     switch (req) {
     case BLKWRUNLOCK: return unlock(d, f, arg);
+    case BLKESPGRANT: return esp_grant(d, f, arg);
     case BLKWRLOCK:
         if (drop(d, f)) klog("Marisa", "blk: %s is read-only again (the write unlock was handed back)", d->name);
+        if (d->parent) esp_grant_drop(d, f, "it was handed back");
         return 0;
-    case BLKWRSTATE:
-        return (d->readonly ? BLKWR_READONLY : 0) | (d->ro_policy ? BLKWR_POLICY : 0) | (blk_unlock_allows(d, f) ? BLKWR_UNLOCKED : 0);
+    case BLKWRSTATE: {
+        bool policy = d->parent ? d->parent->ro_policy : d->ro_policy;     /* a partition is read-only by the policy of its disk */
+        return (d->readonly ? BLKWR_READONLY : 0) | (policy ? BLKWR_POLICY : 0) | (blk_unlock_allows(d, f) ? BLKWR_UNLOCKED : 0) |
+               esp_grant_state(d, f);
+    }
     default: return -ENOTTY;
     }
+}
+
+/* ---------------------------------------------------------------- the ESP write grant
+ *
+ * Under blk.ro an installed system's ESP is read-only (blk.rw= names only its HUMANVILLAGE partition), but an update has to replace the
+ * kernel and initrd on it, and the loader's fallback wants a "this boot worked" mark written there. The grant is the narrow way:
+ *
+ *   - asked for with BLKESPGRANT on an open file (O_RDWR) of the partition's own /dev node, by root (uid 0), naming the node;
+ *   - only for the partition the loader was read from: number, start and size as the firmware reported them (/proc/bootdisk), the GPT
+ *     partition GUID or MBR disk signature read back from the disk, an EFI System Partition type on GPT, and no second registered
+ *     partition that matches all of it (a byte copy of the disk could not be told apart);
+ *   - it makes nothing writable by itself: one mount of that partition with the option `espgrant`, made by a process that holds the
+ *     open file, takes it, and that mounted volume (`holder`) is then the only writer (blk_write_as); writes through the partition node,
+ *     the whole-disk node, the other partitions and every other disk keep failing with EROFS;
+ *   - it ends at the unmount, or when the open file is closed (also at exit or a crash, when the kernel closes the descriptors), or with
+ *     BLKWRLOCK; if the volume is still mounted then, the filesystem's revoke() writes it back and turns it read-only first;
+ *   - it lives in this table only: nothing goes to disk, NVRAM or the command line, and a restart forgets it.
+ *
+ * Without blk.ro (a USB stick, which blk.ro does not cover) the partition is writable anyway; the grant then changes nothing about
+ * writability, but the mount still turns read-only when the file is closed, so an updater behaves the same on the stick and on a disk.
+ */
+
+#define MAX_GRANTS 2
+
+typedef struct {
+    File *f;                            /* the open partition node that asked */
+    BlockDev *part;
+    int pid;
+    char who[32];
+    void *holder;                       /* the mounted volume that took it, or NULL */
+    void (*revoke)(void *holder);
+    char target[64];                    /* where it is mounted */
+} EspGrant;
+
+static EspGrant g_grants[MAX_GRANTS];
+static Mutex g_grant_lock;              /* taken before a volume's own lock (revoke), never while holding one */
+
+static bool part_matches_boot(const BlockDev *d, const BootPartition *bp) {
+    return d->parent && d->part_index == (int)bp->part_number && d->part_start == bp->part_start && d->sectors == bp->part_size;
+}
+
+/* 1: the disk carries the boot partition's signature (GPT entry GUID or MBR disk signature), 0: another one, -1: cannot tell. */
+static int boot_signature_on(const BlockDev *part, const BootPartition *bp) {
+    BlockDev *disk = part->parent;
+    u32 ss = disk->sector_size;
+    u8 *buf = kmalloc(2 * (size_t)ss);
+    if (!buf) return -1;
+    int ok = -1;
+    if (bp->sig_type == 1 && blk_read(disk, 0, 1, buf) == 0) {
+        ok = !memcmp(buf + 440, bp->signature, 4);
+    } else if (bp->sig_type == 2 && blk_read(disk, 1, 1, buf) == 0 && !memcmp(buf, "EFI PART", 8)) {
+        u64 entries_lba;
+        u32 esize;
+        memcpy(&entries_lba, buf + 72, 8);
+        memcpy(&esize, buf + 84, 4);
+        if (part->part_index >= 1 && esize >= 128 && esize <= 1024) {
+            u64 off = entries_lba * ss + (u64)(part->part_index - 1) * esize + 16;       /* the entry's unique GUID */
+            u64 lba = off / ss;
+            u32 n = off % ss + 16 > ss ? 2 : 1;
+            if (lba + n <= disk->sectors && blk_read(disk, lba, n, buf) == 0) ok = !memcmp(buf + off % ss, bp->signature, 16);
+        }
+    }
+    kfree(buf);
+    return ok;
+}
+
+/* NULL when `d` is the ESP the loader came from, else why not (in words, for the log and /proc/bootdisk). */
+static const char *esp_ineligible(BlockDev *d) {
+    const BootPartition *bp = &g_boot.boot_part;
+    if (g_boot.version < 2 || !bp->valid) return "the firmware did not say which partition the loader came from";
+    if (!part_matches_boot(d, bp)) return "it is not the partition the loader came from (see /proc/bootdisk)";
+    if (bp->table == 2 && memcmp(d->part_type_guid, GPT_GUID_EFI_SYSTEM, 16)) return "it is not an EFI System Partition";
+    int s = boot_signature_on(d, bp);
+    if (s < 0) return "its partition signature cannot be read";
+    if (!s) return "its disk carries another partition signature than the one the loader came from (the same layout, another disk)";
+    for (BlockDev *o = blk_first(); o; o = blk_next(o))
+        if (o != d && !o->removed && part_matches_boot(o, bp) && boot_signature_on(o, bp) == 1)
+            return "another disk carries the very same partition (a byte copy?), so which one the system came from cannot be told";
+    return NULL;
+}
+
+static bool part_mounted(const BlockDev *d, char *which, size_t wn) {
+    char t[64], y[16], s[64];
+    for (int i = 0; vfs_mount_list(i, t, sizeof t, y, sizeof y, s, sizeof s); i++) {
+        if (strncmp(s, "/dev/", 5)) continue;
+        if (blk_find(s) == d) { strlcpy(which, t, wn); return true; }
+    }
+    return false;
+}
+
+static int esp_grant(BlockDev *d, File *f, const struct gblk_unlock *u) {
+    Process *p = current->proc;
+    if (p->cred.uid != 0) {
+        klog("Eiki", "%s (uid %u) asked for write access to the ESP %s and was refused: only root may", p->name, p->cred.uid, d->name);
+        return -EPERM;
+    }
+    if (!d->parent) return -EINVAL;                                  /* the ESP's partition node, never a whole disk */
+    if (d->removed) return -ENODEV;
+    if ((f->flags & O_ACCMODE) == O_RDONLY) return -EBADF;
+    char name[sizeof u->name];
+    memcpy(name, u->name, sizeof name);
+    name[sizeof name - 1] = 0;
+    if (strcmp(name, d->name)) {
+        klog("Marisa", "blk: ESP write grant refused: the caller named '%s' but the file is /dev/%s", name, d->name);
+        return -EINVAL;
+    }
+    const char *why = esp_ineligible(d);
+    if (why) {
+        klog("Marisa", "blk: ESP write grant for %s refused: %s", d->name, why);
+        return -EACCES;
+    }
+    if (d->readonly && !d->parent->ro_policy) return -EROFS;         /* a write-protected medium: nothing to lift */
+    char where[64];
+    if (part_mounted(d, where, sizeof where)) {
+        klog("Marisa", "blk: ESP write grant for %s refused: it is mounted on %s (unmount it first)", d->name, where);
+        return -EBUSY;
+    }
+    mutex_lock(&g_grant_lock);
+    int slot = -1, rc = 0;
+    for (int i = 0; i < MAX_GRANTS && !rc; i++) {
+        if (g_grants[i].part == d) rc = g_grants[i].f == f ? 1 : -EBUSY;    /* already ours: nothing to do; somebody else's: busy */
+        else if (!g_grants[i].part && slot < 0) slot = i;
+    }
+    if (!rc && slot < 0) rc = -EBUSY;
+    if (!rc) {
+        EspGrant *g = &g_grants[slot];
+        memset(g, 0, sizeof *g);
+        g->f = f;
+        g->part = d;
+        g->pid = p->pid;
+        strlcpy(g->who, p->name, sizeof g->who);
+    }
+    mutex_unlock(&g_grant_lock);
+    if (rc < 0) return rc;
+    if (!rc)
+        klog("Marisa", "blk: %s, the ESP this system started from, is lent to %s (pid %d) for one read-write mount (this time Marisa asked "
+             "first)%s; its node, the rest of %s and every other disk stay as they were", d->name, p->name, p->pid,
+             d->readonly ? ": blk.ro is lifted for that mount only" : " (it was writable anyway)", d->parent->name);
+    return 0;
+}
+
+static int esp_grant_state(BlockDev *d, File *f) {
+    int bits = 0;
+    mutex_lock(&g_grant_lock);
+    for (int i = 0; i < MAX_GRANTS; i++)
+        if (g_grants[i].part == d && g_grants[i].f == f) bits = BLKWR_ESPGRANT | (g_grants[i].holder ? BLKWR_ESPMOUNTED : 0);
+    mutex_unlock(&g_grant_lock);
+    return bits;
+}
+
+/* The open file went away (or BLKWRLOCK): a volume still mounted with the grant is written back and turned read-only first. */
+static bool esp_grant_drop(BlockDev *d, File *f, const char *why) {
+    bool found = false;
+    mutex_lock(&g_grant_lock);
+    for (int i = 0; i < MAX_GRANTS; i++) {
+        EspGrant *g = &g_grants[i];
+        if (g->part != d || g->f != f) continue;
+        found = true;
+        if (g->holder) {
+            if (g->revoke) g->revoke(g->holder);                     /* still allowed to write while it writes back */
+            d->grant_holder = NULL;
+            klog("Marisa", "blk: %s is read-only again: the ESP write grant of %s (pid %d) ended because %s; the volume on %s stays mounted "
+                 "read-only until it is unmounted", d->name, g->who, g->pid, why, g->target);
+        } else {
+            klog("Marisa", "blk: the ESP write grant for %s ended unused (%s)", d->name, why);
+        }
+        memset(g, 0, sizeof *g);
+    }
+    mutex_unlock(&g_grant_lock);
+    return found;
+}
+
+/* mount -o espgrant: a grant for this partition, not taken yet, held by an open file of the calling process. */
+static EspGrant *claimable(BlockDev *part) {
+    Process *p = current->proc;
+    for (int i = 0; i < MAX_GRANTS; i++) {
+        EspGrant *g = &g_grants[i];
+        if (g->part != part || g->holder) continue;
+        for (int k = 0; k < MAX_FD; k++)
+            if (p->fds[k] == g->f) return g;
+    }
+    return NULL;
+}
+
+int blk_esp_grant_claim(BlockDev *part) {
+    Process *p = current->proc;
+    mutex_lock(&g_grant_lock);
+    bool ok = p->cred.uid == 0 && claimable(part) != NULL;
+    mutex_unlock(&g_grant_lock);
+    if (!ok) klog("Marisa", "blk: %s asked for a read-write mount of %s with espgrant but holds no ESP write grant for it (BLKESPGRANT first)",
+                  p->name, part->name);
+    return ok ? 0 : -EPERM;
+}
+
+int blk_esp_grant_attach(BlockDev *part, void *holder, void (*revoke)(void *holder), const char *target) {
+    mutex_lock(&g_grant_lock);
+    EspGrant *g = claimable(part);
+    char who[32] = "";
+    int pid = 0;
+    if (g) {
+        g->holder = holder;
+        g->revoke = revoke;
+        strlcpy(g->target, target, sizeof g->target);
+        part->grant_holder = holder;
+        strlcpy(who, g->who, sizeof who);
+        pid = g->pid;
+    }
+    mutex_unlock(&g_grant_lock);
+    if (!pid) return -EPERM;                                         /* the file was closed in the meantime */
+    klog("Marisa", "blk: %s is writable through the volume mounted on %s only, until it is unmounted or %s (pid %d) closes the grant",
+         part->name, target, who, pid);
+    return 0;
+}
+
+/* The volume is being unmounted (after its last write-back): the grant ends with it. */
+void blk_esp_grant_detach(BlockDev *part, void *holder) {
+    mutex_lock(&g_grant_lock);
+    for (int i = 0; i < MAX_GRANTS; i++) {
+        EspGrant *g = &g_grants[i];
+        if (g->part != part || !g->holder || g->holder != holder) continue;
+        part->grant_holder = NULL;
+        klog("Marisa", "blk: %s is read-only again: the ESP write grant ended with the unmount of %s", part->name, g->target);
+        memset(g, 0, sizeof *g);
+    }
+    mutex_unlock(&g_grant_lock);
 }
 
 /* ---------------------------------------------------------------- blk.rw= */
@@ -179,8 +418,29 @@ static size_t gen_bootdisk(char *b, size_t cap) {
             found++;
         }
     if (!found) n += (size_t)snprintf(b + n, cap - n, "device - (no partition with that number, start and size is registered)\n");
+    /* which partition the ESP write grant may be given for (BLKESPGRANT), and the grants held */
+    BlockDev *esp = NULL;
+    const char *why = "no partition with that number, start and size is registered";
+    for (BlockDev *d = blk_first(); d && !esp; d = blk_next(d))
+        if (part_matches_boot(d, bp)) {
+            why = esp_ineligible(d);
+            if (!why) esp = d;
+        }
+    if (esp) n += (size_t)snprintf(b + n, cap - n, "esp %s %s\n", esp->name, esp->readonly ? "read-only" : "writable");
+    else n += (size_t)snprintf(b + n, cap - n, "esp - (%s)\n", why);
+    mutex_lock(&g_grant_lock);
+    for (int i = 0; i < MAX_GRANTS && n + 160 < cap; i++) {
+        const EspGrant *g = &g_grants[i];
+        if (!g->part) continue;
+        if (g->holder) n += (size_t)snprintf(b + n, cap - n, "grant %s pid %d %s mounted %s\n", g->part->name, g->pid, g->who, g->target);
+        else n += (size_t)snprintf(b + n, cap - n, "grant %s pid %d %s unused\n", g->part->name, g->pid, g->who);
+    }
+    mutex_unlock(&g_grant_lock);
     return n;
 }
 
-static void bootdisk_init(void) { procfs_register("bootdisk", gen_bootdisk); }
+static void bootdisk_init(void) {
+    mutex_init(&g_grant_lock);
+    procfs_register("bootdisk", gen_bootdisk);
+}
 INITCALL(bootdisk_init);
