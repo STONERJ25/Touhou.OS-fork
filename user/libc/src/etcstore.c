@@ -67,6 +67,12 @@ static int split(char *line, char sep, char **f, int max) {
     }
 }
 
+static int count_fields(const char *line, char sep) {
+    int n = 1;
+    for (; *line; line++) n += *line == sep;
+    return n;
+}
+
 static bool good_name(const char *s) {
     size_t n = strlen(s);
     if (n == 0 || n > 31 || s[0] == '-' || s[0] == '.') return false;
@@ -102,8 +108,9 @@ static bool seen_before(Seen *s, const char *name) {
 
 static int check_passwd(char *line, int ln, Why *w, Seen *seen, bool *root) {
     char *f[8];
-    int n = split(line, ':', f, 7);
-    if (n != 7) return bad(w, ln, "%d fields, a passwd line has 7 (name:x:uid:gid:full name:home:shell)", n > 7 ? 8 : n);
+    int fields = count_fields(line, ':');
+    if (fields != 7) return bad(w, ln, "%d fields, a passwd line has 7", fields);
+    split(line, ':', f, 7);
     if (!good_name(f[0])) return bad(w, ln, "'%s' is not a user name", f[0]);
     if (!good_number(f[2], 4294967294ul)) return bad(w, ln, "the uid of %s is not a number", f[0]);
     if (!good_number(f[3], 4294967294ul)) return bad(w, ln, "the gid of %s is not a number", f[0]);
@@ -116,8 +123,9 @@ static int check_passwd(char *line, int ln, Why *w, Seen *seen, bool *root) {
 
 static int check_group(char *line, int ln, Why *w, Seen *seen) {
     char *f[5];
-    int n = split(line, ':', f, 4);
-    if (n != 4) return bad(w, ln, "%d fields, a group line has 4 (name:x:gid:members)", n > 4 ? 5 : n);
+    int fields = count_fields(line, ':');
+    if (fields != 4) return bad(w, ln, "%d fields, a group line has 4", fields);
+    split(line, ':', f, 4);
     if (!good_name(f[0])) return bad(w, ln, "'%s' is not a group name", f[0]);
     if (!good_number(f[2], 4294967294ul)) return bad(w, ln, "the gid of %s is not a number", f[0]);
     if (f[3][0]) {
@@ -131,8 +139,9 @@ static int check_group(char *line, int ln, Why *w, Seen *seen) {
 
 static int check_shadow(char *line, int ln, Why *w, Seen *seen, bool *root) {
     char *f[10];
-    int n = split(line, ':', f, 9);
-    if (n < 2 || n > 9) return bad(w, ln, "%d fields, a shadow line has 2 to 9 (name:hash:...)", n);
+    int fields = count_fields(line, ':');
+    if (fields < 2 || fields > 9) return bad(w, ln, "%d fields, a shadow line has 2 to 9", fields);
+    split(line, ':', f, 9);
     if (!good_name(f[0])) return bad(w, ln, "'%s' is not a user name", f[0]);
     const char *h = f[1];
     if (!strncmp(h, "$gap$", 5)) {
@@ -274,7 +283,7 @@ int etc_validate(const char *name, const char *data, size_t len, char *why, size
     if (len > ETC_MAX_BYTES) return bad(&w, 0, "%lu bytes, more than %d", (unsigned long)len, ETC_MAX_BYTES);
     bool conf = !strcmp(name, "network.conf") || !strcmp(name, "update.conf");
     if (len == 0) return conf ? 0 : bad(&w, 0, "the file is empty");
-    if (data[len - 1] != '\n') return bad(&w, 0, "the last line is cut short (no newline at the end)");
+    if (data[len - 1] != '\n') return bad(&w, 0, "the last line is cut short, it has no newline");
     int ln = 1;
     for (size_t i = 0; i < len; i++) {
         unsigned char c = (unsigned char)data[i];

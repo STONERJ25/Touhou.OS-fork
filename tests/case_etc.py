@@ -11,6 +11,7 @@ import re
 
 import mkdisk
 from case_storage import Image, Guest, hv_part, MIB
+from case_usbstorage import XHCI, stick
 from harness import test, Qemu
 
 KEPT = "/HumanVillage/.system/etc"
@@ -18,14 +19,14 @@ KLOG_LINE = re.compile(r"^\[[A-Z][A-Za-z]+\] .*(\n|$)", re.M)
 
 
 @contextlib.contextmanager
-def boot(img, user="root", host="gensokyo", cmdline="", name="t-etc", login=False):
+def boot(img, user="root", host="gensokyo", cmdline="", name="t-etc", login=False, extra=()):
     """Boots the image in text mode: a root shell (user=root), reimu's shell, or the login prompt (login=True)."""
     cl = "text bootlog=off " + cmdline
     if login:
         cl += " login"
     elif user == "root":
         cl += " user=root"
-    with Qemu(cmdline=cl.strip(), disk=img.path if img else None, name=name, mem="512M") as vm:
+    with Qemu(cmdline=cl.strip(), disk=img.path if img else None, name=name, mem="512M", extra=list(extra)) as vm:
         g = Guest(vm, user == "root")
         if not login:
             vm.expect(rf"{user}@{host} \S+ [#$] ", timeout=90)
@@ -213,3 +214,17 @@ def etc_nohumanvillage():
             assert say(g, "date +%Z") == "JST"
             g.poweroff()
         assert img.sha() == before, "the disk changed although nohumanvillage was given"
+
+
+@test
+def etc_usb_stick():
+    """HUMANVILLAGE on a USB stick (the owner's setup): the records are back before the first session starts."""
+    files = {"/.system/etc/hostname": b"hakugyokurou\n", "/.system/etc/timezone": b"JST-9\n"}
+    with hv_image("etc-stick", files) as img:
+        with boot(None, host="hakugyokurou", extra=XHCI + stick(img), name="t-etc-stick") as (g, vm):
+            assert re.search(r"\[Keine\] /etc restored from the Human Village's records \(/HumanVillage/\.system/etc\): hostname timezone", vm.text())
+            assert re.search(r"Keine's records: /HumanVillage/\.system/etc on /dev/sd[a-z]1 \(read-write\)", say(g, "etckeep"))
+            assert say(g, "date +%Z") == "JST"
+            assert "hakugyokurou" in say(g, "su marisa -c 'sudo hostname'")
+            g.poweroff()
+        img.check()
