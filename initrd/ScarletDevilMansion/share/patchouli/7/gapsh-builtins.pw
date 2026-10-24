@@ -17,7 +17,8 @@ Builtins run inside the shell itself. A few of them (`echo`, `true`, `false`, `k
     source  .  eval  exec     run code
     read                      read a line
     test  [                   conditions
-    jobs  fg  bg  wait  kill  processes
+    jobs  fg  bg  wait  disown  kill
+                              jobs and processes
     trap                      run something at exit; ignore signals
     history  umask  ulimit  getopts  help
 

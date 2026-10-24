@@ -1,21 +1,57 @@
-.page jobs 1 manage background jobs
-.alias fg bg
+.page jobs 1 list, stop and resume jobs
+.alias fg bg disown
 
 # SYNOPSIS
-*jobs*
-*fg* [%_N_]
-*bg* [%_N_]
+*jobs* [*-lp*] [_JOB_...]
+*fg* [_JOB_]
+*bg* [_JOB_...]
+*disown* [*-a*] [_JOB_...]
 
 # DESCRIPTION
-These gapsh builtins deal with commands started with `&`. `jobs` lists the running jobs as `[N]  Running  COMMAND`. `fg` makes the most recent job (or job _N_) the foreground job and waits for it, returning its status. `bg` only prints the job: background jobs already run in the background, and a job cannot be stopped and resumed here.
+These gapsh builtins work on jobs: everything one command line started, a program, a pipeline (one job however many programs it has) or a subshell. An interactive shell does job control: every job gets a process group of its own, the job in front gets the terminal, and ^Z stops it and gives the terminal back to the shell, which says `[1]+  Stopped  COMMAND`. A stopped job keeps its memory and open files, but nothing in it runs until it is continued, like a scene Sakuya froze with her stopwatch.
+
+`jobs` lists the jobs: number, mark, state and command. `+` marks the current job (the one stopped last, else the one put in the background last), `-` the one before. The states are `Running`, `Stopped` (^Z), `Stopped (signal)` (`kill -STOP`), `Stopped (tty input)` (a background job that tried to read the terminal), `Stopped (tty output)`, `Done`, `Exit N`, `Terminated`, `Killed` and so on. A finished job is shown once and then forgotten; before each prompt the shell reports the jobs that stopped or finished in the background.
+
+`fg` brings a job to the front: it prints the command, gives the job the terminal and the terminal settings it had when it stopped, continues it (`CONT`) and waits for it. `bg` continues stopped jobs in the background (`[1]+ COMMAND &`); a background job that wants to read the terminal stops again until `fg`. `disown` forgets jobs: the shell no longer lists, reports or waits for them; a stopped one is continued first, since nobody could do it later.
+
+`wait %N`, `kill %N` and `kill -CONT %N` take the same job names; see wait(1) and kill(1).
+
+# JOB NAMES
+@ %N, N
+    Job number N.
+@ %%, %+, %
+    The current job, which is also what fg and bg take without an argument.
+@ %-
+    The previous job.
+@ %NAME
+    The job whose command starts with NAME.
+@ %?TEXT
+    The job whose command contains TEXT.
+
+# OPTIONS
+@ *-l*
+    jobs: show the process ids as well (all processes of a pipeline).
+@ *-p*
+    jobs: print only the process group of each job, one per line.
+@ *-a*
+    disown: all jobs.
 
 # EXIT STATUS
-1 if there is no such job.
+fg returns the job's status: its exit status, 128 plus the signal that killed it, or 128 plus the stop signal (148 for ^Z) if it stopped again. The others return 1 if a job does not exist or a name fits more than one job.
+
+# NOTES
+Only an interactive shell does job control. In a script these builtins see the jobs started with `&`, but every job stays in the shell's process group and fg only waits for it.
+
+^Z and ^C also drop the rest of the command line, so `while true; do cat; done` can be left. The full-screen programs (vi, pnote, the pager) read ^Z as a key of their own and do not stop. Leaving the shell (exit or ^D) with stopped jobs only warns the first time; at once again, the shell leaves and the stopped jobs get `HUP` and `CONT`.
 
 # EXAMPLES
-    sleep 100 &
-    jobs
-    fg %1
+    cat > notes.txt      (type a little, then ^Z)
+    jobs                 [1]+  Stopped  cat > notes.txt
+    sleep 300 &
+    fg %cat
+    bg %1
+    kill %?300
+    disown %2
 
 # SEE ALSO
-wait(1), kill(1), ps(1)
+wait(1), kill(1), ps(1), gapsh(1), jobcontrol(7)
