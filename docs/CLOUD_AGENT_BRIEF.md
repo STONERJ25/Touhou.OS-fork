@@ -174,3 +174,6 @@ Two more tasks that follow from it:
 20. **The loader registers a UEFI boot entry for an installed system.** A second ESP on an internal disk is not always offered by the firmware's boot menu. On the first start from an installed medium the loader (it still
     has boot services) should add a boot entry named after the OS (`Boot####` plus an entry in `BootOrder`, placed after the existing entries, never replacing Windows' entry) pointing at `\EFI\BOOT\BOOTX64.EFI` of its
     own ESP, once, recorded so that it is not repeated. Refuse to touch an existing entry, handle a full variable store, and test with QEMU's OVMF variable store (list the variables before and after, boot twice).
+
+Facts for tests and the installer (owner's Disk Management, 2026-10-24): the internal disk is a 238.35 GB disk with a 500 MB ESP, a 55.87 GB NTFS volume that is **BitLocker encrypted** (so a BitLocker signature is
+present and `install` must refuse it), and 181.99 GB unallocated at the end. Task 19's tests should use a disk image with exactly this shape (scaled down).
