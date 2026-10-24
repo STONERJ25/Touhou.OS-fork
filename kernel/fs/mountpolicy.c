@@ -30,6 +30,7 @@
 #include "mm.h"
 #include "cmdline.h"
 #include "bootlog.h"
+#include "fatcheck.h"
 
 extern const FsType g_vfat_type, g_fat16_type;
 
@@ -191,6 +192,46 @@ static void mount_options(char *out, size_t cap) {
     }
 }
 
+/* A volume that was not shut down cleanly is gone through, read-only and without any VFS lock held, before it is mounted (fat_check.c): when
+ * nothing is out of place it is mounted read-write on that word ("fsck=ok", or "fsck=left" when a power cut left harmless leftovers); when
+ * something is, it stays read-only and the log says precisely what. `hvforce` on the kernel command line mounts it read-write whatever the check
+ * says (dangerous), `hvcheck=off` skips the check (a dirty volume is then read-only, as it always was). */
+static void check_before_mount(BlockDev *hv, char *opts, size_t cap) {
+    bool force = cmdline_flag("hvforce");
+    char v[16];
+    bool check = !(cmdline_value("hvcheck", v, sizeof v) && (!strcmp(v, "off") || !strcmp(v, "0") || !strcmp(v, "no")));
+    if (hv->readonly) check = false;                                 /* nothing can be written there anyway */
+    if (check) {
+        FatCheckReport *rep = kzalloc(sizeof *rep);
+        if (rep) {
+            int verdict = fat_check_device(hv, rep);
+            if (rep->dirty || rep->hard_error || rep->ran) fat_check_publish(rep);
+            if (verdict == 1 || verdict == 2) {
+                strlcat(opts, verdict == 1 ? ",fsck=ok" : ",fsck=left", cap);
+                if (verdict == 1)
+                    klog("Keine", "%s was left untidy (the power went out before it was closed), but Keine went through the whole ledger in %u ms "
+                         "(%u files in %u directories) and nothing is out of place: the Human Village may write in it again", hv->name, rep->ms, rep->files, rep->dirs);
+                else
+                    klog("Keine", "%s was left untidy and Keine found only harmless leftovers in the ledger (%u lost cluster(s), %u other; the first: %s): "
+                         "it is mounted read-write, and `fsck -a /dev/%s` as root tidies it up", hv->name, rep->lost_clusters, rep->leaks, rep->nleak_lines ? rep->leak_line[0] : "-", hv->name);
+            } else if (verdict < 0 && verdict != -2) {
+                if (rep->incomplete)
+                    klog("Keine", "%s was left untidy and the check of its ledger could not be finished (out of time or memory, or the stick failed): "
+                         "it stays read-only. As root, `umount /HumanVillage` and run `fsck -a /dev/%s`", hv->name, hv->name);
+                else
+                    klog("Keine", "%s was left untidy and its ledger does not add up: %u error(s). It stays read-only so that nothing gets worse. "
+                         "As root, `umount /HumanVillage` and run `fsck -a /dev/%s` (see /proc/fatcheck)", hv->name, rep->errors, hv->name);
+                for (u32 i = 0; i < rep->nerr_lines && i < 4; i++) klog("Keine", "  %s", rep->err_line[i]);
+                if (rep->errors > 4) klog("Keine", "  ... and %u more (cat /proc/fatcheck)", rep->errors - 4);
+                if (force)
+                    klog("Keine", "hvforce: %s is mounted read-write although its ledger does not add up. Files may be lost, and what is written may be too", hv->name);
+            }
+            kfree(rep);
+        }
+    }
+    if (force) strlcat(opts, ",force", cap);
+}
+
 static Mutex g_policy_lock;                                        /* the policy runs one pass at a time (boot call, hot-plug workers) */
 static bool g_policy_ready;
 static BlockDev *g_hv_dev;                                         /* what /HumanVillage was mounted from (may have been unplugged since) */
@@ -235,9 +276,10 @@ static void run_policy(BlockDev *added) {
         else klog("Keine", "%s has no HUMANVILLAGE volume: nothing to mount from it (the policy never mounts anything else)", added->name);
         return;
     }
-    char source[32], opts[64];
+    char source[32], opts[112];
     snprintf(source, sizeof source, "/dev/%s", hv->name);
     mount_options(opts, sizeof opts);
+    check_before_mount(hv, opts, sizeof opts);
     int rc = vfs_mount_opts("fat32", source, "/HumanVillage", 0, opts);
     if (rc) {
         klog("Keine", "HUMANVILLAGE on %s (%s) cannot be mounted (%d): homes stay in RAM (tmpfs)", hv->name, how, rc);
@@ -273,6 +315,7 @@ static void tz_selftest(void) {
 void storage_mount_boot_volumes(void) {
     static bool registered;
     policy_init_once();
+    fat_check_init();
     if (cmdline_flag("storage.selftest")) tz_selftest();
     if (!registered) {
         registered = true;

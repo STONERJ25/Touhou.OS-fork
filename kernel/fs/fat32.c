@@ -688,6 +688,7 @@ static const VNodeOps fat_file_ops = {
 typedef struct {
     bool ro, rw, force, userdirs, sync;
     bool have_umask;
+    u8 checked;                                                 /* fsck=ok: the caller ran the read-only consistency check and found nothing, not even leftovers; fsck=left: only harmless leftovers */
     u32 uid, gid, fmask, dmask;
     s32 tz_min;                                                 /* tzoffset=MINUTES: minutes east of UTC that the volume's local clock is ahead */
 } Opts;
@@ -743,6 +744,11 @@ static int parse_opts(FatVol *v, const char *s, Opts *o) {
             u32 minutes = parse_num(q, &end, 10);
             if (end == q || *end || minutes > 24 * 60) return -EINVAL;
             o->tz_min = neg ? -(s32)minutes : (s32)minutes;
+        }
+        else if (KEY("fsck") && eq) {                            /* set by the mount policy after fat_check_device(); see fatcheck.h */
+            if (!strcmp(val, "ok")) o->checked = 1;
+            else if (!strcmp(val, "left")) o->checked = 2;
+            else return -EINVAL;
         }
         else if (KEY("usermap") && eq) {                         /* name:uid:gid/name:uid:gid */
             v->nusers = 0;
@@ -948,6 +954,15 @@ static int fat_mount(const char *source, u32 flags, Mount *m) {
             v->forced = true;
             v->was_dirty = true;
             snprintf(note, sizeof note, ", FORCED read-write although %s", why_unclean);
+        } else if (o.checked) {
+            v->trusted = true;
+            if (o.checked == 1) {                                /* only the flag was out of place: take it over, it is cleared at the first idle flush */
+                v->media_dirty = true;
+                snprintf(note, sizeof note, ", read-write: the consistency check found nothing out of place (the dirty flag goes once everything is written)");
+            } else {
+                v->was_dirty = true;
+                snprintf(note, sizeof note, ", read-write: the consistency check found only harmless leftovers (the dirty flag stays until fsck tidies them)");
+            }
         } else {
             v->ro = true;
             snprintf(note, sizeof note, ": %s (mount with -o force to override)", why_unclean);
