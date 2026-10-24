@@ -66,6 +66,9 @@
 #define R_MRQC    0x5818
 #define R_H2ME    0x5B50
 #define R_FWSM    0x5B54
+#define R_GPRC    0x4074                /* statistics: good packets received / transmitted, total packets transmitted */
+#define R_GPTC    0x4080
+#define R_TPT     0x40D4
 
 #define CTRL_SLU   (1u << 6)
 #define CTRL_ASDE  (1u << 5)
@@ -94,6 +97,7 @@
 
 #define NDESC   256
 #define BUFSZ   2048
+#define NTXVAR  4                       /* ways of starting the transmit unit, tried one after the other when it hangs (g_txvar) */
 
 typedef struct { u64 addr; u16 len; u16 csum; u8 status; u8 errors; u16 special; } PACKED RxDesc;
 typedef struct { u64 addr; u16 len; u8 cso; u8 cmd; u8 status; u8 css; u16 special; } PACKED TxDesc;
@@ -114,7 +118,14 @@ typedef struct EDev {
     u64 tx_stuck_since;                 /* when the transmit ring last had work and made no progress; 0 = fine */
     u32 tx_resets;
     int last_link;                      /* -1 unknown, 0 down, 1 up */
+    int txvar;                          /* which way of starting the transmit unit is in use (see g_txvar); the watchdog moves on to the next when it hangs */
+    int txstall;                        /* test hook "e1000.txstall=N": the doorbell is ignored until variant N (a pretend hang) */
+    bool var_reported;                  /* "transmit works with variant N" has been said */
+    bool no_errata;                     /* variant 3: leave out the errata bits of the PCH parts */
 } EDev;
+
+static void e_dump(NetDev *d, EDev *e, const char *why);
+static void tx_apply_variant(NetDev *d, EDev *e, int var);
 
 static inline u32 rr(EDev *e, u32 reg) { return *(volatile u32 *)(e->mmio + reg); }
 static inline void wr(EDev *e, u32 reg, u32 v) { *(volatile u32 *)(e->mmio + reg) = v; }
@@ -142,16 +153,31 @@ static void tx_program(EDev *e) {
     wr(e, R_TIDV, 0);
     wr(e, R_TADV, 0);
     wr(e, R_TIPG, e->pch ? 0x00602008u : 0x0060200Au);
-    if (e->e1000e) wr(e, R_TXDCTL, DESC_WB | (1u << 22) | QUEUE_ENABLE | 0x1Fu);          /* bit 22: count descriptors still to be processed */
+    if (e->e1000e) wr(e, R_TXDCTL, DESC_WB | (e->no_errata ? 0 : (1u << 22)) | QUEUE_ENABLE | 0x1Fu);     /* bit 22: count descriptors still to be processed */
     wr(e, R_TCTL, TCTL_EN | TCTL_PSP | (0x0Fu << 4) | (0x40u << 12));
     flush(e);
 }
 
 static void tx_reclaim(EDev *e) {
+    u16 before = e->tx_head;
     while (e->tx_head != e->tx_tail && (e->tx[e->tx_head].status & 1)) {
         e->tx[e->tx_head].status = 0;
         e->tx_head = (u16)((e->tx_head + 1) % NDESC);
+    }
+    /* A card that fetched the descriptors but never wrote the done bit back (the write-back setting differs between parts) still moved its head
+     * pointer: trust that too, as long as it lies between our head and tail. */
+    u32 hw = rr(e, R_TDH);
+    u16 pending = (u16)((e->tx_tail + NDESC - e->tx_head) % NDESC);
+    u16 taken = (u16)((hw + NDESC - e->tx_head) % NDESC);
+    if (hw < NDESC && pending && taken <= pending && taken) {
+        for (u16 k = 0; k < taken; k++) { e->tx[e->tx_head].status = 0; e->tx_head = (u16)((e->tx_head + 1) % NDESC); }
+    }
+    if (e->tx_head != before) {
         e->tx_stuck_since = 0;
+        if (e->tx_resets && !e->var_reported) {
+            e->var_reported = true;
+            klog("Yukari", "transmit works with variant %d", e->txvar);
+        }
     }
 }
 
@@ -172,7 +198,7 @@ static int e_tx(NetDev *d, NetBuf *nb) {
     barrier();
     if (e->tx_head == e->tx_tail) e->tx_stuck_since = net_now();
     e->tx_tail = next;
-    wr(e, R_TDT, next);
+    if (e->txstall <= e->txvar) wr(e, R_TDT, next);                /* (test hook: a pretend hang swallows the doorbell until the ladder reaches variant txstall) */
     d->tx_packets++;
     d->tx_bytes += nb->len;
     nb_free(nb);
@@ -187,14 +213,14 @@ static void tx_watchdog(NetDev *d, EDev *e) {
     if (!e->tx_stuck_since) { e->tx_stuck_since = net_now(); return; }
     if (net_now() - e->tx_stuck_since < 2000) return;
     d->tx_errors += (u64)((e->tx_tail + NDESC - e->tx_head) % NDESC);
-    if (e->tx_resets++ < 5) klog("Yukari", "%s: the transmit queue stopped moving; restarting it", d->name);
-    wr(e, R_TCTL, TCTL_PSP);
-    flush(e);
-    udelay(2000);
-    memset(e->tx, 0, (size_t)NDESC * 16);
-    e->tx_head = e->tx_tail = 0;
-    e->tx_stuck_since = 0;
-    tx_program(e);
+    if (e->tx_resets < 8) {
+        klog("Yukari", "%s: the transmit queue stopped moving (variant %d)", d->name, e->txvar);
+        e_dump(d, e, "stuck");
+    }
+    e->tx_resets++;
+    e->var_reported = false;
+    e->txvar = (e->txvar + 1) % NTXVAR;                            /* every new hang tries the next way of starting the transmit unit */
+    tx_apply_variant(d, e, e->txvar);
 }
 
 static void e_poll(NetDev *d) {
@@ -301,7 +327,37 @@ static void pch_leave_ulp(EDev *e, const char *name) {
     if (i == 30) klog("Yukari", "%s: the ME did not finish leaving ULP mode within 300 ms", name);
 }
 
-/* ---- probing ---- */
+/* ---- the transmit variants ---- */
+
+static const char *const g_txvar[NTXVAR] = {
+    "the plain restart (ring programmed again, queue enabled, transmitter on)",
+    "the transmit unit switched off and idle first, queue enable polled",
+    "a MAC reset (the PHY is left alone), then everything programmed again",
+    "no errata bits (TARC0, TXDCTL bit 22, IOSFPC), the unit switched off first",
+};
+
+/* What a photograph of the screen has to say about a card that does not transmit: the registers that matter and the statistics counters (GPTC grows
+ * if frames really leave the card, even when the descriptors never come back as done). */
+static void e_dump(NetDev *d, EDev *e, const char *why) {
+    klog("Yukari", "%s: %s: CTRL %08x STATUS %08x CTRLEXT %08x TCTL %08x TXDCTL %08x TARC0 %08x", d->name, why, rr(e, R_CTRL), rr(e, R_STATUS),
+         rr(e, R_CTRLEXT), rr(e, R_TCTL), rr(e, R_TXDCTL), rr(e, R_TARC0));
+    klog("Yukari", "%s: %s: TDBAL %08x TDLEN %u TDH %u TDT %u (software %u/%u) GPTC %u TPT %u GPRC %u FWSM %08x EXTCNF %08x pci04 %08x pciE4 %08x", d->name, why,
+         rr(e, R_TDBAL), rr(e, R_TDLEN), rr(e, R_TDH), rr(e, R_TDT), e->tx_head, e->tx_tail, rr(e, R_GPTC), rr(e, R_TPT), rr(e, R_GPRC),
+         e->pch ? rr(e, R_FWSM) : 0u, e->pch ? rr(e, R_EXTCNF) : 0u, pci_read32(e->pci, 0x04), pci_read32(e->pci, 0xE4));
+}
+
+/* The transmit unit off and idle: the state in which a driver may reprogram the ring. */
+static void tx_quiesce(EDev *e) {
+    wr(e, R_TCTL, TCTL_PSP);
+    wr(e, R_TXDCTL, rr(e, R_TXDCTL) & ~QUEUE_ENABLE);
+    flush(e);
+    for (int i = 0; i < 100 && (rr(e, R_TXDCTL) & QUEUE_ENABLE); i++) udelay(100);
+    udelay(2000);
+}
+
+static void tx_enable_wait(EDev *e) {
+    for (int i = 0; i < 100 && !(rr(e, R_TXDCTL) & QUEUE_ENABLE); i++) udelay(100);
+}
 
 static bool wait_clear(EDev *e, u32 reg, u32 mask, int ms) {
     for (int i = 0; i < ms * 10; i++) {
@@ -310,6 +366,105 @@ static bool wait_clear(EDev *e, u32 reg, u32 mask, int ms) {
     }
     return false;
 }
+
+/* The MAC (not the PHY: the ME and the firmware set that up) back to its power-on state, the way Linux's e1000_reset_hw_ich8lan does it for the MAC part. */
+static void mac_reset(EDev *e) {
+    wr(e, R_IMC, 0xFFFFFFFFu);
+    wr(e, R_RCTL, 0);
+    wr(e, R_TCTL, TCTL_PSP);
+    flush(e);
+    udelay(10000);
+    bool owned = e->pch && swflag_acquire(e);
+    wr(e, R_CTRL, rr(e, R_CTRL) | CTRL_RST);
+    udelay(20000);
+    wait_clear(e, R_CTRL, CTRL_RST, 100);
+    if (owned) swflag_release(e);
+    udelay(20000);                                                 /* the card reloads its address registers from the NVM */
+    wr(e, R_IMC, 0xFFFFFFFFu);
+    (void)rr(e, R_ICR);
+    if (e->e1000e) wr(e, R_CTRLEXT, rr(e, R_CTRLEXT) | CTRLEXT_DRV_LOAD);
+}
+
+/* Everything between "the card answers" and "frames can flow": link up, filters, the PCH extras, the receive ring, the transmit ring. Used at probe
+ * and again after a MAC reset by transmit variant 2. */
+static void hw_setup(EDev *e) {
+    /* link up, auto speed detection; forced speed and duplex off */
+    u32 ctrl = rr(e, R_CTRL);
+    ctrl |= CTRL_SLU | CTRL_ASDE;
+    ctrl &= ~(CTRL_LRST | CTRL_PHYRST | CTRL_ILOS | CTRL_VME | CTRL_FRCSPD | CTRL_FRCDPX);
+    wr(e, R_CTRL, ctrl);
+    for (int i = 0; i < 128; i++) wr(e, R_MTA + 4 * (u32)i, 0);
+
+    if (e->pch && !e->no_errata) {                               /* Linux's e1000_initialize_hw_bits_ich8lan */
+        wr(e, R_CTRLEXT, rr(e, R_CTRLEXT) | (1u << 22));
+        wr(e, R_TXDCTL, rr(e, R_TXDCTL) | (1u << 22));
+        wr(e, R_TARC0, rr(e, R_TARC0) | (1u << 23) | (1u << 24) | (1u << 26) | (1u << 27));
+        wr(e, R_RFCTL, 0x00C0u);                                 /* NFS filtering off, extended descriptors off */
+        wr(e, R_MRQC, 0);                                        /* no receive-side scaling */
+    }
+    if (e->spt && !e->no_errata) {                               /* SPT / KBL silicon errata: keep the transmit queue from hanging */
+        wr(e, R_IOSFPC, rr(e, R_IOSFPC) | 0x00010000u);
+        u32 t = rr(e, R_TARC0);
+        t &= ~(3u << 28);
+        t |= (1u << 29);
+        wr(e, R_TARC0, t);
+    }
+
+    /* receive */
+    for (int i = 0; i < NDESC; i++) { e->rx[i].status = 0; e->rx[i].errors = 0; }
+    e->rx_next = 0;
+    wr(e, R_RDBAL, (u32)e->rx_phys);
+    wr(e, R_RDBAH, (u32)(e->rx_phys >> 32));
+    wr(e, R_RDLEN, NDESC * 16);
+    wr(e, R_RDH, 0);
+    wr(e, R_RDT, 0);
+    wr(e, R_RDTR, 0);
+    wr(e, R_RADV, 0);
+    if (e->e1000e) wr(e, R_RXDCTL, DESC_WB | QUEUE_ENABLE | 0x1Fu);
+    wr(e, R_RXCSUM, 0);
+    wr(e, R_RCTL, RCTL_EN | RCTL_BAM | RCTL_SECRC);                 /* 2048-byte buffers, legacy descriptors, broadcast accepted, CRC stripped */
+    wr(e, R_RDT, NDESC - 1);
+    tx_program(e);
+}
+
+static void tx_apply_variant(NetDev *d, EDev *e, int var) {
+    klog("Yukari", "%s: transmit variant %d: %s", d->name, var, g_txvar[var]);
+    e->tx_head = e->tx_tail = 0;
+    e->tx_stuck_since = 0;
+    e->no_errata = (var == 3);
+    switch (var) {
+    case 1:
+        tx_quiesce(e);
+        memset(e->tx, 0, (size_t)NDESC * 16);
+        tx_program(e);
+        tx_enable_wait(e);
+        break;
+    case 2:
+        mac_reset(e);
+        memset(e->tx, 0, (size_t)NDESC * 16);
+        hw_setup(e);
+        tx_enable_wait(e);
+        break;
+    case 3:
+        tx_quiesce(e);
+        wr(e, R_TARC0, rr(e, R_TARC0) & ~((1u << 23) | (1u << 24) | (1u << 26) | (1u << 27) | (1u << 29)));
+        if (e->spt) wr(e, R_IOSFPC, rr(e, R_IOSFPC) & ~0x00010000u);
+        memset(e->tx, 0, (size_t)NDESC * 16);
+        tx_program(e);
+        tx_enable_wait(e);
+        break;
+    default:
+        wr(e, R_TCTL, TCTL_PSP);
+        flush(e);
+        udelay(2000);
+        memset(e->tx, 0, (size_t)NDESC * 16);
+        tx_program(e);
+        break;
+    }
+    e_dump(d, e, "after");
+}
+
+/* ---- probing ---- */
 
 static void e_probe(PciDev *p, int kind, bool ulp, const char *name) {
     EDev *e = kzalloc(sizeof *e);
@@ -359,41 +514,11 @@ static void e_probe(PciDev *p, int kind, bool ulp, const char *name) {
     if (!e->rxbuf || !e->txbuf) goto fail;
     for (int i = 0; i < NDESC; i++) e->rx[i].addr = e->rxbuf_phys + (u64)i * BUFSZ;
 
-    /* link up, auto speed detection; forced speed and duplex off */
-    u32 ctrl = rr(e, R_CTRL);
-    ctrl |= CTRL_SLU | CTRL_ASDE;
-    ctrl &= ~(CTRL_LRST | CTRL_PHYRST | CTRL_ILOS | CTRL_VME | CTRL_FRCSPD | CTRL_FRCDPX);
-    wr(e, R_CTRL, ctrl);
-    for (int i = 0; i < 128; i++) wr(e, R_MTA + 4 * (u32)i, 0);
-
-    if (e->pch) {                                                /* Linux's e1000_initialize_hw_bits_ich8lan */
-        wr(e, R_CTRLEXT, rr(e, R_CTRLEXT) | (1u << 22));
-        wr(e, R_TXDCTL, rr(e, R_TXDCTL) | (1u << 22));
-        wr(e, R_TARC0, rr(e, R_TARC0) | (1u << 23) | (1u << 24) | (1u << 26) | (1u << 27));
-        wr(e, R_RFCTL, 0x00C0u);                                 /* NFS filtering off, extended descriptors off */
-        wr(e, R_MRQC, 0);                                        /* no receive-side scaling */
-    }
-    if (e->spt) {                                                /* SPT / KBL silicon errata: keep the transmit queue from hanging */
-        wr(e, R_IOSFPC, rr(e, R_IOSFPC) | 0x00010000u);
-        u32 t = rr(e, R_TARC0);
-        t &= ~(3u << 28);
-        t |= (1u << 29);
-        wr(e, R_TARC0, t);
-    }
-
-    /* receive */
-    wr(e, R_RDBAL, (u32)e->rx_phys);
-    wr(e, R_RDBAH, (u32)(e->rx_phys >> 32));
-    wr(e, R_RDLEN, NDESC * 16);
-    wr(e, R_RDH, 0);
-    wr(e, R_RDT, 0);
-    wr(e, R_RDTR, 0);
-    wr(e, R_RADV, 0);
-    if (e->e1000e) wr(e, R_RXDCTL, DESC_WB | QUEUE_ENABLE | 0x1Fu);
-    wr(e, R_RXCSUM, 0);
-    wr(e, R_RCTL, RCTL_EN | RCTL_BAM | RCTL_SECRC);                 /* 2048-byte buffers, legacy descriptors, broadcast accepted, CRC stripped */
-    wr(e, R_RDT, NDESC - 1);
-    tx_program(e);
+    char opt[8];                                                   /* test and experiment hooks: e1000.txvar=N starts at transmit variant N, e1000.txstall=N pretends a hang until variant N */
+    if (cmdline_value("e1000.txvar", opt, sizeof opt) && opt[0] >= '0' && opt[0] < '0' + NTXVAR) e->txvar = opt[0] - '0';
+    if (cmdline_value("e1000.txstall", opt, sizeof opt) && opt[0] >= '0' && opt[0] <= '9') e->txstall = opt[0] - '0';
+    e->no_errata = (e->txvar == 3);
+    hw_setup(e);
 
     NetDev *d = kzalloc(sizeof *d);
     if (!d) goto fail;
@@ -407,6 +532,7 @@ static void e_probe(PciDev *p, int kind, bool ulp, const char *name) {
     if (rr(e, R_STATUS) & STATUS_LU) d->flags |= NDF_LINK;
     p->driver = "e1000";
     p->driver_data = d;
+    if (e->txvar) tx_apply_variant(d, e, e->txvar);                /* an experiment asked to start at a later variant */
     netdev_register("eth", d);
     klog("Yukari", "%s: Intel %s at %02x:%02x:%02x.%x, MAC %02x:%02x:%02x:%02x:%02x:%02x%s", d->name, name, 0, p->bus, p->dev, p->fn,
          mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], (rr(e, R_STATUS) & STATUS_LU) ? "" : " (no carrier yet: the link is polled)");

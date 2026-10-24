@@ -108,7 +108,8 @@ Most applications have a menu bar, F1 for help or the list of keys, and Ctrl+Q (
   (SIGKILL, "Exorcise"); both ask first. Ctrl+F filters, F5 refreshes, Ctrl+1..4 switch tabs.
 - **Kappa Control Panel**: panes for System, Display, Keyboard & Mouse (shows every key and button you press, handy for testing a keyboard),
   Devices, Users (with *Change password...*), Power (Shut down, Restart) and Appearance (12/24 hour clock, the wallpaper). The screen
-  resolution is not changed here: it is chosen at boot (`video=` in [Boot options](#boot-options)).
+  resolution is not changed here: it is chosen at boot (`video=` in [Boot options](#boot-options)), and so is the ui scale (`ui.scale=`); the
+  Display pane shows both.
 - **Gensokyo Gallery**: Left / Right (or Space / Backspace) for the previous and next picture of the folder, the wheel or `+` / `-` to zoom,
   `0` or F to fit, `1`..`4` for 100% to 400%, drag to pan, R / L rotate, H / V flip (the file is never changed), S or F5 slideshow,
   **W makes the picture the wallpaper**, I shows details, Ctrl+O opens another file. Without a file it opens the newest picture in `~/Pictures`.
@@ -290,6 +291,7 @@ if the file is missing the loader uses the same two words.
 | Word | Effect |
 |------|--------|
 | `video=native` / `video=max` / `video=1280x800` | screen mode: keep the firmware's (normally the monitor's own resolution) / the largest offered, up to 2560x1600 / exactly that one. Without `video=` the loader asks for 1024x768 |
+| `ui.scale=2` | draw the desktop twice as large (every pixel of the programs becomes 2x2 screen pixels). Without it this happens by itself on screens at least 2560 wide or 1440 high; `ui.scale=1` keeps the small 1x desktop there |
 | `blk.ro` | every SATA and NVMe disk is read-only (keep it) |
 | `text` or `nogui` | no desktop, a text console |
 | `login` | the login screen instead of reimu's desktop |
@@ -306,7 +308,9 @@ More words, for diagnosing a PC that does not boot, are in [REAL_HARDWARE.md](RE
 
 - **Ctrl+Z in a terminal freezes it** (see [the shell](#the-terminal-and-the-shell)); the shell's job control is not finished.
 - Settings in `/etc` (passwords, new accounts) are forgotten at every restart; only the HUMANVILLAGE volume keeps files.
-- The screen is drawn at 1x: on a large monitor (2560x1440) the 8x16 text is small. There is no scaling yet.
+- On a large monitor (2560x1440 or more) the desktop is drawn twice as large by itself (`ui.scale=` in [Boot options](#boot-options)); text is the
+  same 8x16 font with every dot doubled, not a finer font. Danmaku, Snake, Minesweeper, the Sketchbook and the Gallery are enlarged as a whole, so
+  photos in the Gallery are not shown with every screen pixel. The text console before the desktop starts stays small.
 - US keyboard layout only; no Japanese text.
 - Only one processor core is used.
 - Alt+F2 does nothing yet (the window server reserves it for a "run a command" dialog, which the desktop shell does not have).

@@ -46,9 +46,11 @@ static void bamboo(KCanvas *cv, int x, int base, int height, int width, uint32_t
     kc_fill(cv, kr(x, base - height, width, 3), joint);
 }
 
-void k_scenery_night(uint32_t *px, int w, int h, int stride) {
+void k_scenery_night(uint32_t *px, int w, int h, int stride) { k_scenery_night_scaled(px, w, h, stride, 1); }
+
+void k_scenery_night_scaled(uint32_t *px, int w, int h, int stride, int scale) {
     KCanvas cv;
-    kc_init(&cv, px, w, h, stride);
+    kc_init_scaled(&cv, px, w, h, stride, scale);
     int horizon = h * 62 / 100;
 
     /* sky */

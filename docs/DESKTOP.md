@@ -105,6 +105,57 @@ other is two small repaints and not one full-screen one. The copy uses 16-byte n
 worst frame, the flush speed in MB/s. `fairyd.copy=rep` and `fairyd.damage=bbox` on the kernel command line select the old copy and
 the old single bounding box, for comparing (see [HARDWARE_AUDIT.md](HARDWARE_AUDIT.md)).
 
+## Hi-dpi screens (the ui scale)
+
+The 8x16 font is tiny on a 2560x1440 monitor, so the window server has an integer **ui scale**: at scale N every logical pixel is
+an N x N block of screen pixels and the desktop looks like a 1280x720 one, only sharper where there is something to gain.
+
+* **When**: `fairyd` decides once at start (`choose_scale()` in `user/bin/fairyd/comp.c`). Automatically it is **2 when the screen is
+  at least 2560 wide or at least 1440 high** (27-inch 2560x1440, 4K), else 1, so 1920x1080 and everything QEMU usually gives stay at 1.
+  `ui.scale=N` on the kernel command line forces N (1 to 4); `ui.scale=1` switches the automatic choice off. A scale that would leave a
+  logical screen smaller than 640x480 (the size every application promises to fit, see above) is lowered, e.g. `ui.scale=2` on 1280x800
+  gives 1. `fairyd` logs `fairyd: ui scale N (automatic|ui.scale)`; `/tmp/fairyd.stat` and the Control Panel's Display page show it too.
+  A screen size that does not divide by N leaves the last column or row black.
+* **Coordinates are logical everywhere in the protocol**: the screen and work area in `FE_WELCOME`, window positions and sizes,
+  `FE_CONFIGURE`, pointer events, commit rectangles, `fairy_warp_pointer()`. The window manager (`wm.c`) does not know about the scale
+  at all. `FeWelcome.scale` carries it; clients read it with `fairy_scale()`.
+* **The pointer** moves in screen pixels: mouse motion is added to a physical position (`S.ptr_x/ptr_y`) and the logical position is
+  that divided by N, so a mouse feels the same at any scale and tests that move it by k pixels move it k screen pixels. The arrow and
+  the other sprites are drawn at N times the resolution (same shapes, finer edges).
+* **What the compositor draws itself** (frames, title bars, buttons, the Alt+Tab box, the background) goes through a Kappa canvas
+  with scale N, so it is drawn at the finer resolution.
+* **Client buffers**: a window created with `FW_HIDPI` has a buffer N times as wide and high as its logical size and is copied pixel
+  for pixel. Without the flag the buffer is logical-sized and the compositor enlarges it, nearest neighbour (`draw_content_enlarged()`):
+  this is the fallback for programs that draw their own pixels, and they need no change to work (input is logical, so clicks land
+  where they should). At scale 1 `FW_HIDPI` is dropped by libfairy and nothing differs.
+* **Kappa**: `KCanvas` has a `scale` field (0 or 1 means 1). On a scaled canvas `w`, `h`, the clip and every coordinate stay logical
+  and all `kc_*` functions and widgets draw at the finer resolution: text and bevels as N x N blocks (the bitmap font has nothing
+  finer), lines with a pen one logical pixel wide, circles, ellipses and gradients computed with the extra pixels, `k_icon()` drawn
+  at N times its size, `kc_blit()` enlarging logical pictures and `kc_blit_native()` taking pictures that already have the canvas'
+  resolution. `kc_native_view()` gives a 1x view of the same pixels for code that wants to draw finely itself. KApp windows ask for
+  `FW_HIDPI` by default; a program that writes into `cv->px` itself calls **`kapp_set_hidpi(false)`** before its first window and gets
+  1x windows enlarged by the server. `kapp_scale()` tells a program the scale either way. The `ks_*` blitters of `kappa_gfx2d.h`
+  assume a 1x canvas.
+* **Who does what at 2x**: the shell (panel, start menu, desktop icons), the lock screen and the login screen, the terminal, Explorer,
+  Notebook, Calculator, Pocket Watch, Spell Manager, the Control Panel, Bunbunmaru News and the Kappa dialogs draw at full resolution;
+  the wallpaper is rendered for the whole screen (`k_wallpaper_render_scaled()`: a picture uses every screen pixel, the night scene is
+  drawn on a scaled canvas so it keeps its proportions). **Danmaku, Snake, Minesweeper, the Sketchbook and the Gallery** call
+  `kapp_set_hidpi(false)` and are enlarged by the server: they look as they do at 1x, twice as large, and work the same (Gallery photos
+  and Explorer thumbnails are therefore shown at logical resolution, enlarged).
+* **1x is unchanged**: every scaled path is a separate branch taken only when the scale is above 1. `tests/pixel_identity.py` checks it bit
+  for bit: it boots two builds at 1024x768 with the clock set to a fixed time and compares screenshots of the desktop, the start menu, a
+  terminal and seven applications (Calculator, Notebook, Explorer, Minesweeper, Sketchbook, Control Panel, kdemo) byte for byte. Against
+  `origin/main` at b8f0e84 and again at 395eb79 (after the job control and installer merges) every frame of every scene had an identical
+  twin in the other run (2026-10-24). Pixels that show data rather than drawing are blanked in both runs first: the panel's CPU and memory
+  meters, and the uptime, the memory in use and the free space of `/tmp` (these differ by 0.1 MB between builds of different size) on the
+  Control Panel and in Explorer. The existing desktop and application tests pass unchanged.
+* **Tests**: `tests/case_hidpi.py` (`hidpi_`): the 1x metrics, 2560x1440 (OVMF in QEMU offers it; start menu and terminal opened with
+  clicks, title bar, glyphs exactly twice as large), `ui.scale=2` at 2048x1536 (the 1024x768 layout doubled) with a click into
+  Minesweeper, `ui.scale=2` at 1920x1080 (where the automatic choice is 1) with 7 + 2 = clicked on the Calculator's keypad,
+  `ui.scale=1` at 2560x1440 and `ui.scale=2` at 1280x800 (lowered to 1).
+  Their `ScreenGui.home()` waits for the pointer to arrive in the corner before moving on: QEMU sums pending motion, and on a big,
+  slow-to-paint screen the overshoot of the homing moves otherwise eats part of the way to the target.
+
 ## Testing and looking at your work
 
 `python tests/gui_session.py script.txt prefix` boots the OS in QEMU, types shell lines, drives mouse and keyboard, and saves
@@ -134,3 +185,21 @@ has no sound device, and every program must cope with that. `audio_event(AUDIO_E
 has switched the system sounds off (`/etc/hakurei/sounds` or `$HAKUREI_SOUNDS`). Status: the functions work, but the shell,
 the greeter, the lock screen and the Kappa dialogs do not call them yet, and Reimu's Jukebox is not written. See
 [AUDIO.md](AUDIO.md) for the design and for what is done.
+
+## State when paused (hi-dpi, 2026-10-24, branch `cloud/hidpi`)
+
+Done: the ui scale in `fairyd` (automatic at 2560 wide or 1440 high, `ui.scale=N`), logical protocol with `FW_HIDPI` buffers and the
+nearest-neighbour fallback, scaled Kappa canvases, the shell, lock and login screens and the wallpaper at full resolution, the five
+pixel-drawing programs opted out, `hidpi_` tests, the bit-exact 1x comparison (`tests/pixel_identity.py`). Verified in QEMU at 1024x768,
+1280x800, 1920x1080, 2048x1536 and 2560x1440; merged with `main` after the job control and installer pull requests, and the desktop and
+application tests pass on the result. Not seen on the owner's monitor yet. Compose time per full-screen frame at 2560x1440 under QEMU TCG is about 24 ms (four times the pixels of 1280x720);
+on the Dell it should be far less, `/tmp/fairyd.stat` will tell.
+
+## How to resume (hi-dpi)
+
+- On the Dell: boot with `video=native` and check `fairyd: ui scale 2 (automatic)` in `dmesg`/the log and that the pointer speed feels right.
+- The text console (kernel framebuffer console) is not scaled; a 16x32 console font for large screens would be the next step there.
+- The opted-out programs could draw natively: the Gallery and Explorer thumbnails would gain most (decode at `size * kapp_scale()` and
+  draw with `kc_blit_native()`); the games and the Sketchbook would need their own pixel code to take `kc_scale()` into account.
+- `kc_blit_argb()` on a scaled canvas blends block by block (slow for big pictures); nothing uses it for large images today.
+

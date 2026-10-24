@@ -54,17 +54,27 @@ enum {
 
 /* ---------------------------------------------------------------- canvas */
 
+/* Coordinates, sizes and the clip rectangle are in logical pixels. A canvas with scale N > 1 (a window on a hi-dpi screen, see
+ * fairy_scale()) has N x N pixels in px for each logical pixel, and stride counts those: every kc_* function and every widget
+ * draws at that finer resolution by itself (text and bevels N times as thick, icons, circles and gradients drawn with the extra
+ * pixels). Code that writes px directly must take the scale into account (kc_scale()), or ask for 1x windows with
+ * kapp_set_hidpi(false) before opening any. scale 0 means 1, so canvases set up by hand need not mention it. */
 typedef struct KCanvas {
     uint32_t *px;
-    int w, h, stride;               /* stride in pixels */
+    int w, h, stride;               /* w, h: logical size; stride in pixels of px */
     KRect clip;
+    int scale;                      /* pixels of px per logical pixel; 0 or 1: the same thing */
 } KCanvas;
+
+static inline int kc_scale(const KCanvas *c) { return c->scale > 1 ? c->scale : 1; }
 
 typedef enum { KB_RAISED, KB_SUNKEN, KB_FLAT, KB_ETCHED, KB_FRAME } KBevel;
 typedef enum { KA_LEFT, KA_CENTER, KA_RIGHT } KAlign;
 
 void kc_init(KCanvas *c, uint32_t *px, int w, int h, int stride);
+void kc_init_scaled(KCanvas *c, uint32_t *px, int w, int h, int stride, int scale);   /* w, h logical; px holds w*scale x h*scale pixels */
 void kc_set_clip(KCanvas *c, KRect r);                           /* intersected with the canvas bounds */
+KCanvas kc_native_view(const KCanvas *c);                         /* the same pixels as a 1x canvas: coordinates in pixels of px */
 void kc_pixel(KCanvas *c, int x, int y, uint32_t rgb);
 void kc_blend_pixel(KCanvas *c, int x, int y, uint32_t rgb, int alpha);    /* alpha 0..255 */
 void kc_fill(KCanvas *c, KRect r, uint32_t rgb);
@@ -83,6 +93,10 @@ void kc_panel(KCanvas *c, KRect r, KBevel kind, uint32_t fill);  /* fill + bevel
 void kc_blit(KCanvas *dst, int x, int y, const uint32_t *src, int sw, int sh, int sstride);
 void kc_blit_part(KCanvas *dst, int x, int y, const uint32_t *src, int sstride, KRect part);
 void kc_blit_argb(KCanvas *dst, int x, int y, const uint32_t *src, int sw, int sh, int sstride);   /* alpha in bits 24..31 */
+/* The kc_blit functions take a picture of sw x sh logical pixels (enlarged on a scaled canvas). kc_blit_native takes one that is
+ * already at the canvas' resolution (sw x sh pixels of px, e.g. a wallpaper rendered for the whole screen) and puts its top-left
+ * corner at logical (x, y). On a 1x canvas the two are the same. */
+void kc_blit_native(KCanvas *dst, int x, int y, const uint32_t *src, int sw, int sh, int sstride);
 void kc_scroll(KCanvas *c, KRect r, int dy);                     /* moves the pixels inside r up (dy < 0) or down */
 
 /* Text: the built-in 8x16 bitmap font. Strings are UTF-8; a code point is one 8 px cell. */
@@ -251,6 +265,13 @@ KWin *kapp_main(KApp *app);
 KUI  *kapp_ui(KApp *app);
 void  kapp_unwatch_fd(KApp *app, int fd);
 
+/* Hi-dpi: on a screen with a ui scale above 1 (fairy_scale()) KApp windows get buffers at that scale and Kappa draws everything
+ * at the finer resolution (FW_HIDPI). A program that writes pixels into its canvas itself calls kapp_set_hidpi(false) before
+ * opening its first window: its windows are then 1x and the window server enlarges them. Sizes and coordinates are logical
+ * either way. */
+void  kapp_set_hidpi(bool enabled);
+int   kapp_scale(KApp *app);                                      /* the ui scale of the screen (1, 2, ...) */
+
 KApp *kapp_new_screen(const char *title, unsigned fairy_flags);   /* window the size of the screen */
 KApp *kapp_new(const char *title, int w, int h, unsigned fairy_flags);
 KApp *kapp_new_at(const char *title, int x, int y, int w, int h, unsigned fairy_flags);
@@ -297,6 +318,7 @@ int   k_messagebox(FairyDisplay *d, const char *title, const char *message, KIco
 /* ---------------------------------------------------------------- scenery */
 /* The default wallpaper (moon, bamboo, torii) rendered into any pixel buffer; used by the desktop and the login screen. */
 void k_scenery_night(uint32_t *px, int w, int h, int stride);
+void k_scenery_night_scaled(uint32_t *px, int w, int h, int stride, int scale);     /* w, h logical; px holds w*scale x h*scale */
 
 /* Round avatar with the resident's initial; ring: 0 plain, 1 hovered, 2 selected. */
 void k_avatar(KCanvas *cv, int cx, int cy, const char *name, int ring);

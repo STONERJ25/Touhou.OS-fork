@@ -45,18 +45,19 @@ void desktop_draw(KApp *app, KUI *ui, void *user) {
         g_wall_checked = ui->now_ms;
         changed = k_wallpaper_stamp() != g_wall_stamp;
     }
-    if (!g_wall || g_wall_w != cv->w || g_wall_h != cv->h || changed) {
-        if (!g_wall || g_wall_w != cv->w || g_wall_h != cv->h) {
+    int s = kc_scale(cv);                                             /* the wallpaper gets every pixel of a hi-dpi screen */
+    if (!g_wall || g_wall_w != cv->w * s || g_wall_h != cv->h * s || changed) {
+        if (!g_wall || g_wall_w != cv->w * s || g_wall_h != cv->h * s) {
             free(g_wall);
-            g_wall = malloc((size_t)cv->w * (size_t)cv->h * 4);
+            g_wall = malloc((size_t)cv->w * (size_t)cv->h * 4 * (size_t)(s * s));
         }
-        g_wall_w = cv->w;
-        g_wall_h = cv->h;
+        g_wall_w = cv->w * s;
+        g_wall_h = cv->h * s;
         g_wall_checked = ui->now_ms;
         g_wall_stamp = k_wallpaper_stamp();
-        if (g_wall) wallpaper_render(g_wall, cv->w, cv->h, cv->w);
+        if (g_wall) k_wallpaper_render_scaled(g_wall, cv->w, cv->h, g_wall_w, s);
     }
-    if (g_wall) for (int y = 0; y < cv->h; y++) memcpy(cv->px + (size_t)y * cv->stride, g_wall + (size_t)y * g_wall_w, (size_t)cv->w * 4);
+    if (g_wall) kc_blit_native(cv, 0, 0, g_wall, g_wall_w, g_wall_h, g_wall_w);
     reap_children();
 
     int hover = -1;

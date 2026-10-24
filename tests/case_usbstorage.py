@@ -15,7 +15,7 @@ from pathlib import Path
 import mkdisk
 import case_storage
 from case_storage import (Image, Guest, hv_part, decoy_esp, file_sha, sha, MIB, WORK, HV, H, ROOT_PROMPT, USER_PROMPT)
-from harness import test, Qemu, BUILD, scaled
+from harness import test, xfail, qemu_version, Qemu, BUILD, scaled
 
 
 def boot(*args, **kw):
@@ -544,6 +544,8 @@ def usbstor_driver_off():
 # block size, time stamps
 
 @test
+@xfail(reason="QEMU before 9.0: usb-storage does not hand logical_block_size to its SCSI disk (docs/LINUX.md)",
+       when=lambda: qemu_version() < (9, 0))
 def usbstor_4k_blocks():
     """A stick with 4096-byte logical blocks: the partition table (4Kn GPT) is read, HUMANVILLAGE mounts and survives a reboot."""
     parts = [hv_part({"/reimu/hello.txt": b"4k hello\n"}, cluster=4096)]
