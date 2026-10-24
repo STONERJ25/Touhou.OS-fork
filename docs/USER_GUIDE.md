@@ -299,6 +299,7 @@ if the file is missing the loader uses the same two words.
 | `nohumanvillage` | do not mount any HUMANVILLAGE volume |
 | `bootlog=off` | do not write `TOUHOU.LOG` |
 | `nonet`, `noaudio`, `usbstorage=off`, `usb=off` | leave the network cards, the sound card, USB sticks, or all of USB alone |
+| `ahci=off`, `nvme=off` | leave the SATA controllers, or the NVMe drives, alone |
 
 More words, for diagnosing a PC that does not boot, are in [REAL_HARDWARE.md](REAL_HARDWARE.md) (section 4) and [HARDWARE_AUDIT.md](HARDWARE_AUDIT.md).
 
