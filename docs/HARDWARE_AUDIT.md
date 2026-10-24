@@ -29,6 +29,7 @@ Lines added or changed for this audit, in the order they appear (the tags follow
 [Sakuya] PIT online at 1000 Hz, TSC ~3407 MHz (PIT)
 [Kappa] framebuffer speed: a full-screen fill (8100 KiB) took 3.1 ms, ~2600 MB/s
 [Marisa] pci: 21 devices found on the bus   ...   [Boundary] reclaimed 61000 KiB of loader and firmware memory
+[Kappa] fb.mtrr=auto: the screen takes 2600 MB/s, fast enough: the MTRRs stay as the firmware set them
 [Marisa] storage probing took 640 ms
 [Satori] no PS/2 controller found; keyboard and mouse must come from USB        (or: the PS/2 controller has no mouse on it)
 [Gensokyo] boot complete after 4310 ms
@@ -38,7 +39,12 @@ The numbers above are invented to show the shape of the lines; they were not rea
 real machine is photographed:
 
 * `framebuffer speed ... ~N MB/s`: a write-combining mapping fills 1080p in a few milliseconds (hundreds to thousands of MB/s);
-  an uncached one needs tens of milliseconds or more. Under 400 MB/s the kernel adds a warning line.
+  an uncached one needs tens of milliseconds or more. Under 400 MB/s the kernel adds a warning line, and after the PCI scan it corrects
+  itself if it can (section 1, F7): `mtrr: ...` (the firmware's layout), `framebuffer 0x... lies in a prefetchable BAR of ...`, and
+  one line with the verdict, either `framebuffer: write-combining MTRR #N over ...: fb speed before N MB/s after M MB/s, kept` (or `no gain:
+  the MTRR is removed again`) or `framebuffer: no MTRR added (reason); fb speed N MB/s stays`.
+* `[Marisa] pci 00:xx.x ... was asleep (power state D3): moved to D0` appears only if the firmware left a function in a low-power state that a
+  driver then claimed (P9).
 * `no timer interrupt arrived in 200 ms ...` means the PIT's IRQ0 never reached the CPU and the local APIC timer took over
   (the boot continues; this line tells you the chipset routing is different from what the 8259 expects).
 * `unexpected interrupt vector N` (at most five lines): something the firmware left armed fired; the kernel acknowledges it.
@@ -56,14 +62,15 @@ writing it uncached is a slideshow, and **reading** it in either mode is slow (e
 | F4 | The window server (`fairyd`) copied the damaged area with `memcpy` = `rep movsb`: on uncached memory that is one bus transaction per byte, on write-combining memory it is fine but not ideal, and there was no `sfence`. | `user/bin/fairyd/comp.c` `flush_rect`. | medium (the "single-digit frames per second" scenario if the mapping were uncached) | **fixed**: 16-byte non-temporal stores (`movntdq`, 4 per iteration = one cache line), sequential, never reading the destination, and an `sfence` after every frame. The kernel's own fills use 8-byte `rep stos/movs` and `sfence`. | |
 | F5 | The compositor kept ONE bounding box of damage: a pointer in one corner and a clock tick in the opposite one meant a full-screen compose and a full-screen framebuffer write. | `comp_damage` unioned every rectangle into `S.dirty`. | medium | **fixed**: a list of up to 12 rectangles, merged when they overlap or touch with little waste (`comp_damage` in `comp.c`); `S.dirty` stays the bounding box for the main loop. | |
 | F6 | There was no way to see what a frame costs. | | | **fixed**: `/tmp/fairyd.stat` (rewritten every 2 s) shows frames, rectangles, pixels, compose and flush microseconds per frame, the worst frame and the flush speed in MB/s; the kernel times its first full-screen fill and prints the speed (`framebuffer speed: ...`). | `cat /tmp/fairyd.stat` in a terminal window. |
-| F7 | **PAT versus MTRR.** The effective memory type combines the PAT entry and the MTRR for the address. Firmware normally leaves the GMADR aperture to the default MTRR type (uncached) or marks it write-combining. As far as the SDM's table for combining the page-level (PAT) and MTRR types says, and as Linux's `ioremap_wc` (which works on machines whose firmware says UC for the aperture) relies on, a PAT entry of WC wins over an MTRR of UC, so the mapping should be write-combining either way. This was not verified against hardware. | cannot be verified in QEMU (it does not model cache types). | medium | **open**: the boot log prints the MTRR type the firmware gave the framebuffer's range (`the firmware's MTRR for it: UC`; QEMU's firmware says UC too) and the measured fill speed is the verification. If it reports a slow framebuffer, boot once with `fb.cache=uc` on the kernel command line and compare: equal speed means the write-combining mapping is not taking effect; the next step would be programming a write-combining MTRR over the aperture (not implemented: it needs the cache-disable / MTRR update dance on every processor). | `framebuffer speed` on both boots. |
+| F7 | **PAT versus MTRR.** The effective memory type combines the PAT entry of the page and the MTRR type of the address. Re-read for this round (Intel SDM vol. 3A, "Effective Page-Level Memory Types for Pentium III and More Recent Processor Families", as Xen's `mm_type_tbl` and Linux's `ioremap_wc` use it; AMD's table says the same for WC): **a PAT entry of WC gives write-combining whatever the MTRR says, UC included**, so a firmware MTRR of UC over the aperture (QEMU's OVMF and most PCs: default UC, or a UC range for the PCI hole) does not by itself call for anything. The other direction does not work: an MTRR of type WC does nothing for a page whose PAT type is UC (only for UC-, the `PTE_PCD`-alone encoding), a UC MTRR range always wins over a WC one, and WB over WC is undefined. So the MTRR is a second route, useful only if the PAT route measures slow. | cannot be verified in QEMU (it does not model cache types, only the registers). | medium | **fixed as a measured fallback**, see F8. The boot log still prints the MTRR type the firmware gave the framebuffer's range (`the firmware's MTRR for it: UC`) next to the measured speed. | `framebuffer speed`, `fb.mtrr=auto: ...` |
+| F8 | **No second route when the screen is slow.** The owner can boot the real machine only by hand, one boot at a time; a console that crawls (write-combining not in effect for any reason) was the likeliest way for that boot to go wrong, and nothing corrected it. | `gfx/fbtune.c`, `arch/x86_64/mtrr.c` | medium | **fixed**: `fb_tune()` runs after the PCI scan. It times a fill of the bottom text rows (at least 512 KiB, best of three, repainted afterwards); under 400 MB/s (`fb.mtrr=on`: always) it prints the firmware's MTRR layout, finds the memory BAR of the display adapter that holds the framebuffer (sized on demand with decoding left on, as Linux does for the boot display; must be prefetchable and contain no RAM), asks `mtrr_plan_wc` for a free variable register with **no overlapping range of any other type** (UC wins over WC, WB/WT/WP over WC is undefined, so such layouts are refused with the reason on screen), writes one WC range over the whole BAR with the SDM's update sequence (interrupts off, CD=1, `wbinvd`, ranges off, write the pair, ranges on, flush again, CD=0; the other processors are already parked; the values are read back), switches the framebuffer pages to UC- (`PTE_PCD` alone, for the kernel and for later `/dev/fb0` mappings), measures again, logs `fb speed before N MB/s after M MB/s`, and **removes the range and restores the page flags unless the screen got 1.5 times faster** (`fb.mtrr=on`: unless it got clearly slower). `fb.mtrr=off` never touches the MTRRs; `fb.cache=uc` disables all of it. A future SMP start must copy the boot processor's MTRRs into each core it wakes. Tests: the kernel self test runs the decision function over made-up firmware layouts (OVMF's own, a UC range over the aperture, a WB range over it, a partial overlap, no free register, already WC, a mask with holes, MTRRs off, no WC type, bad windows, above the address width), the real update sequence on QEMU's emulated MSRs (CR0, CR4 and the default-type register compared before and after) and the whole attempt with scripted speeds (kept, no gain, forced, loss) with the framebuffer's PTE flags checked each time (`hwaudit_mtrr_selftest`); `hwaudit_mtrr_forced_attempt` boots with `fb.mtrr=on` (OVMF puts a UC range over its aperture, so the log must say why no MTRR was added, with the BAR found by sizing) and with a CPU without MTRRs; `hwaudit_mtrr_knob_off_and_auto`. | `mtrr: ...`, `framebuffer ... lies in a prefetchable BAR`, `fb speed before N MB/s after M MB/s` (only when the screen was slow). |
 
 Measured in QEMU TCG (a guest framebuffer is plain RAM there, so these numbers only show the instrumentation works and that the
 copy method matters when the host emulates instructions one by one): `fairyd` frame flush 584 us with the non-temporal copy and the
 rectangle list against 3555 us with `fairyd.copy=rep fairyd.damage=bbox` (the old behaviour; both knobs are read from the kernel command line
 through `/proc/cmdline`), 1024x768, a pointer moving over a desktop with one terminal window.
 
-Knobs (all on the kernel command line, i.e. `cmdline.txt` on the stick): `fb.cache=uc`, `fairyd.copy=rep`, `fairyd.damage=bbox`.
+Knobs (all on the kernel command line, i.e. `cmdline.txt` on the stick): `fb.cache=uc`, `fb.mtrr=off|on|auto`, `fairyd.copy=rep`, `fairyd.damage=bbox`.
 
 ## 2. The loader (`boot/`)
 
@@ -105,8 +112,9 @@ written for real silicon first. Verified, with the function that does it:
 * HID boot keyboards: `SET_PROTOCOL(boot)` and `SET_IDLE(0)`, neither fatal if the device stalls; LED report; mice by report descriptor.
 * Every wait is bounded and a controller that stops answering is switched off with one log line (`x_die`).
 
-This audit changed nothing in `kernel/drivers/usb/`. The USB mass storage driver (`usb/storage.c`) and the log on the stick were merged from main after
-the review and are not part of it.
+The only change this audit made in `kernel/drivers/usb/` is one line in `xhci.c`: its private D0 wake-up in `xhci_create` is gone, `pci_enable` does it for
+every driver now and puts the BARs back after a soft reset (P9). The USB mass storage driver (`usb/storage.c`) and the log on the stick were merged from main after
+the first review; the second review is the subsection below.
 
 Check on the machine: `[Kappa] xhci 00:14.0: took the controller over from the firmware` (or nothing, if the firmware had already
 released it), the `xHCI 8086:a2af ... ports (N usb2, M usb3) ...` line, `N of M ports have something attached: ...`, then
@@ -115,17 +123,50 @@ raw PORTSC of every port (`no USB keyboard is bound 8 s after boot; ...`). `usb=
 Use a rear port directly on the board for the first try (many Dell keyboards contain a hub; hubs are supported, but fewer layers
 is easier to read).
 
+### Booting from a stick: the sequence, and `storage.c`, `mountpolicy.c`, `bootlog.c` against what real sticks do
+
+**The sequence** (read, judged right; nothing changed): the firmware's xHCI driver reads `kernel.elf` from the stick and halts the controller at
+`ExitBootServices` (EDK2's `XhciDxe` does `XhcHaltHC` and clears the BIOS-owned flag). Then `bios_handoff` (only if the firmware still claims the
+controller), `x_halt_reset` (`HCRST`), the ports re-detect their devices and queue Port Status Change events, `port_connect` debounces for 100 ms, resets
+the port (a warm reset for a USB 3 link that does not train; a stick whose SuperSpeed link never trains shows up on the companion USB 2 port of the same
+connector), addresses the device with BSR first, reads descriptors with three tries each and repeats everything with a fresh reset up to four times.
+The port reset is a bus reset for the stick, so the address and configuration the firmware gave it are forgotten before we address it. The boot waits
+at most 8 s for the bus (`usb_wait_settled`); a stick that needs longer is mounted later by the hot-plug hook (`usbstor_late_ready`).
+
+**Against real sticks** (Linux's `usb-storage` and its unusual-devices list are the catalogue). Status "WIP" means: designed and at least partly written,
+not finished, not built, not tested, parked on the branch `wip/usb-storage-soft-fallbacks` ("State when paused" below says which parts exist); the
+audit branch's `storage.c` is still the merged original, so none of the fixes in this table is in effect yet.
+
+| # | What real sticks do | What `storage.c` does today (evidence) | Status |
+|---|---------------------|----------------------------------------|--------|
+| U1 | Do not answer GET MAX LUN at all: the control request times out (Linux takes one LUN). | `msc_probe`: `rc == -ETIMEDOUT` returns `-ENODEV`; the stick is not driven. | WIP: clear `dev->broken`, one LUN |
+| U2 | Hang on MODE SENSE (the write-protect probe). | `lun_write_protected` says "writable" but the timeout left `dev->broken` set: every later transfer fails with `-ENODEV`, the disk registers and is useless. | WIP: reset recovery, writable, never asked again |
+| U3 | Put nonsense in the status wrapper's residue: more than was asked for, or "nothing moved" after a read that went through (Linux: `US_FL_IGNORE_RESIDUE`, and it clamps). | `csw_check` turned a residue above the request into a phase error (reset recovery, retry: a stick that always does it never becomes ready); `msc_io_one` failed a good read whose residue was not 0. | WIP: the bytes that moved and the status byte decide, residue clamped and counted |
+| U4 | Hang or garble transfers above 32 KiB (Linux caps some at 32 KiB by quirk entry). | One size, 64 KiB; a hang ends in `msc_died`, the stick is gone. | WIP: ladder 64, 32, 16, 4 KiB: a hang resets the stick and goes down at once, a second failure of a command goes down; logged |
+| U5 | Need more than 400 ms after SET_CONFIGURATION (Linux waits 1 s). | `FIRST_COMMAND_DELAY_MS 400`. | WIP: 1000 |
+| U6 | Hang once on INQUIRY, TEST UNIT READY or READ CAPACITY while still waking up. | `msc_died` at the first timeout. | WIP: `msc_run_boot`: up to two resets and retries per stick |
+| U7 | READ CAPACITY(10) says "more than 2 TiB" (0xFFFFFFFF) on a bridge that cannot do (16); block size 0. | Both end with the stick ignored. | WIP: 2^32 blocks like Linux; block size 0 means 512 |
+| U8 | The last block is off by one (`US_FL_FIX_CAPACITY`). | Trusted. | WIP: quirk `fixcap` only; no probing read (reading the last block of a flaky stick can itself hang it) |
+| U9 | Individual behaviour that cannot be guessed. | No table. | WIP: `g_quirk_table` (empty) and `usbstorage.quirk=VID:PID:flag,flag/...` (flags `nosync nowp fixcap chunk32k chunk16k chunk4k slowstart`) |
+| U10 | A stick that stalls or ignores the bulk-only reset itself: Linux falls back to a port reset (`usb_reset_device`) and re-enumerates it in place. | `msc_garbage` gives the stick up (`-ENODEV`). | **not done**: needs a re-enumerate-in-place facility in `usb.c`/`xhci.c` (Reset Device command or port reset, Address Device, Configure Endpoint again) |
+| U11 | Diagnostics that fit a photograph. | Events are logged (stick with vendor:product, size, writable, "given up on", ...); a failing single command was only in `usb=debug`. | WIP: `msc_note` (the first 8 problems per stick on the screen, with opcode, LBA, sense key/asc/ascq). **Not done**: one `usb: summary` line before "boot complete" (devices with their drivers, LUN states, HUMANVILLAGE result) |
+| U12 | Sticks and enclosures that offer both UAS and bulk-only. | Only alternate setting 0 of an interface is parsed, so bulk-only is used when it is alt 0; a device whose alt 0 is UAS is logged and ignored (`usbstor_uas_ignored`). | **fine** |
+| U13 | `mountpolicy.c`, `bootlog.c`. | Boot sectors and labels are read, nothing else; one HUMANVILLAGE volume, the first found, internal disks before sticks; the log is written only to a clean, writable volume, synced after every write, rotated to `TOUHOU.PRV`; a stick pulled mid-run costs `-ENODEV`, not a hang. | **fine**; the FAT dirty-volume work in `fat*.c` and `mountpolicy.c` belongs to the USB agent and was not touched |
+
 ## 4. PCI
 
 | # | Finding | Evidence | Risk | Status |
 |---|---------|----------|------|--------|
 | P1 | Enumeration starts at bus 0 and follows PCI-to-PCI bridges through the secondary bus numbers the firmware assigned, depth 8. | `scan_bus`/`scan_function` | | **fine** on a UEFI desktop (firmware assigns bus numbers and BARs for everything it enabled, including the root port in front of an NVMe drive). A bridge with secondary bus 0 is skipped. |
 | P2 | Configuration access is the legacy `0xCF8/0xCFC` mechanism: no ECAM/MCFG, so config space above 0xFF (PCIe extended capabilities: AER, L1 substates, SR-IOV) is unreachable. | `cfg_read32` | low | **open**: no driver needs extended capabilities; adding MCFG is straightforward when one does. |
-| P3 | BAR sizing switches the device's memory decoding off and writes all ones into the BARs. For the display adapter that is the window the console is drawing through. | `probe_bars` | low-medium | **fixed**: class 03 devices are not sized at all (Linux's `mmio_always_on`). |
-| P4 | BARs: 64-bit and prefetchable BARs are sized correctly (`type == 2` takes two registers), memory and I/O decoding are restored. A BAR the firmware left unassigned (base 0) makes `pci_map_bar` return NULL and the driver logs `has no memory BAR`. | | | **fine** |
+| P3 | BAR sizing switches the device's memory decoding off and writes all ones into the BARs. For the display adapter that is the window the console is drawing through. | `probe_bars` | low-medium | **fixed**: class 03 devices are not sized at scan time (Linux's `mmio_always_on`); see P10 for the one case where it is sized later. |
+| P4 | BARs: 64-bit and prefetchable BARs are read as two registers where `type == 2` (and sized by the lowest-set-bit rule, see P8), memory and I/O decoding are restored. A BAR the firmware left unassigned (base 0) makes `pci_map_bar` return NULL and the driver logs `has no memory BAR`. | | | **fine** |
 | P5 | Driver matching is by class code (`pci_find_class`): xHCI `0C/03/30`, AHCI `01/06/01`, NVMe `01/08/02`, HDA `04/03`, Ethernet by vendor/device id only for the Intel/virtio families that are known. | | | **fine** |
 | P6 | The kernel assigns no resources: bridge windows and BARs are whatever the firmware programmed. A device the BIOS left disabled has base 0 and is skipped by `pci_map_bar` (its driver logs it); nothing is ever moved. | `probe_bars`, `pci_map_bar` | | **fine** for a PC that boots from UEFI (it enumerates and assigns everything it enabled, including the ranges behind the root port of an NVMe drive). |
 | P7 | `quiesce_dma` clears bus mastering on storage, network, audio and USB endpoints at scan time so firmware leftovers cannot DMA into reused memory (bridges and the display adapter are left alone on purpose); each driver turns it back on when it claims the device. | | | **fine** |
+| P8 | **BAR sizes were computed as `~mask + 1`** from the value read back after writing all ones. That is only right when every address bit above the BAR's size reads back as one. A 64-bit BAR of a device with a 40- or 48-bit address width reads zeros in the upper bits (so does a small 32-bit device that implements fewer bits), and the result was a size of exabytes: `pci_map_bar` would then `ioremap` that, a loop over about 2^47 pages that never comes back. (Found while writing P9's code; the first review of this file called BAR sizing "fine".) | `probe_bars` | **medium-high**: an xHCI, NVMe or HDA BAR0 of that kind would hang the boot at the first `pci_map_bar`, with the last log line being the driver's probe line. | **fixed**: the size is the lowest address bit that reads back as one (`bar_size`, what Linux's `pci_size` does). Tested with the awkward read-backs (`hwaudit_pci_selftest`). |
+| P9 | A function the firmware (or a previous OS) left in D1-D3hot only answers its power-management registers. The xHCI driver woke its own function; the others (e1000e/I219, HDA, AHCI, NVMe, the other NICs) did not. | `pci_enable` | low-medium (the I219 on an unused-LAN BIOS setting, an HDA function the BIOS turned off) | **fixed**: `pci_enable` calls `pci_set_d0` first: PMCSR to D0 (PME_Status not cleared by accident), 10 ms after D3hot (1 ms after D1/D2), and unless the NoSoftReset bit says otherwise the BARs and the command register are written back, as Linux's `pci_restore_bars` does. `xhci.c`'s private copy is gone. Logged: `pci 00:1f.3 ... was asleep (power state D3): moved to D0`, or `stays in power state D3 after being told to wake up`. `hwaudit_pci_selftest` puts an emulated e1000e into D3hot and checks D0, the delay and the BARs. Check: no `was asleep` line is the normal case. |
+| P10 | The display adapter's BARs are never sized at scan time (P3), but the MTRR fallback needs the size of the one that holds the framebuffer. | `pci_display_bar` | | **fixed**: sized on demand, only when the screen measured slow (F8), with interrupts off and decoding left on (Linux's `mmio_always_on` way). Only BARs that start at or below the framebuffer are touched. |
 
 ## 5. AHCI and NVMe
 
@@ -144,7 +185,9 @@ Read against AHCI 1.3.1 and NVMe 1.4 and Linux's `libahci`/`nvme-pci`. **No defe
 * Safety: `blk.ro` makes both drivers register read-only devices. IDENTIFY and the partition scan only read. Neither driver writes
   to a disk unless something above the block layer writes (the HUMANVILLAGE mount policy, `dd` by root). The NVMe driver resets the
   *controller* (`CC.EN` 0 then 1) as part of taking it over, which does not touch the media.
-* Minor, **open**: the admin queue is 16 entries and is not clamped to `CAP.MQES` (every real controller has MQES >= 63).
+* The queue depths against the controller's limits: the NVMe I/O queue was always `min(MQES+1, nvme.depth)`; the 16-entry admin queue is now
+  clamped to `CAP.MQES` as well (**fixed**; every real controller has MQES >= 63, so this changes nothing on a working one). AHCI uses command
+  slot 0 only (one command at a time), so there is no depth to clamp.
 
 ## 6. CPU, timers, interrupts
 
@@ -191,8 +234,8 @@ Read against AHCI 1.3.1 and NVMe 1.4 and Linux's `libahci`/`nvme-pci`. **No defe
 ### Network and audio drivers on main (noted, not changed; their owners review the details)
 
 * `e1000.c` (I219 family on the target): the network branch has since added the PCH-specific care (ME handshake, PHY semaphore and power-up,
-  explicit ring registers, a transmit watchdog), which is its owner's to review. One thing seen while reading: `pci_enable` does not check or clear the
-  PCI power state first (the xHCI driver does), which matters only if the BIOS leaves the LAN function in D3; the MAC address comes from RAL/RAH.
+  explicit ring registers, a transmit watchdog), which is its owner's to review. One thing seen while reading: `pci_enable` did not check or clear the
+  PCI power state first (only the xHCI driver did); since the second round it does for every driver (P9). The MAC address comes from RAL/RAH.
   Boot is not affected either way: the driver logs and leaves a card that does not answer alone.
 * `audio/hda.c`: matches by class (`04/03`), all waits are bounded (reset 100-200 ms, codec wait up to 500 ms, stream resets 5-20 ms), so a codec that does not
   answer costs less than a second of boot.
@@ -204,7 +247,10 @@ Read against AHCI 1.3.1 and NVMe 1.4 and Linux's `libahci`/`nvme-pci`. **No defe
    `TSC references`, `pci: N devices`, `xhci ...`, `ahci0 ...`/`nvme0 ...` (and that `blk.ro` is in the `cmdline` shown in the `image` line).
    Once the log has scrolled away (or on the desktop, in a terminal window):
    `dmesg | grep -E "cpu:|memory map|framebuffer|TSC|acpi|APIC|xhci|ahci|nvme|storage|boot complete"`.
-3. If the log scrolls slowly: `fb.cache=uc` once, compare the two `framebuffer speed` lines (F7).
+3. If the log scrolls slowly: the kernel has already tried to fix it (F8); read the `fb.mtrr=auto` / `mtrr:` / `framebuffer: ... MTRR` lines after the PCI
+   lines: they say what the firmware's MTRRs are, which BAR holds the screen, and either `fb speed before N MB/s after M MB/s, kept` or why nothing was
+   added. If the speed is still low, boot once with `fb.cache=uc` and compare the two `framebuffer speed` lines (F7): equal speed means the display
+   memory itself is the limit, not the mapping.
 4. If the keyboard does not work: `[Satori] no USB keyboard is bound 8 s after boot; xhci ... ports (number:PORTSC): ...` is the line to photograph.
 5. On the desktop: `cat /tmp/fairyd.stat` in a terminal; compose and flush microseconds per frame, and the flush speed.
 6. If the machine resets by itself a few seconds after the picture appears: suspect memory the firmware still used (L5/C4 should have made that
@@ -213,9 +259,76 @@ Read against AHCI 1.3.1 and NVMe 1.4 and Linux's `libahci`/`nvme-pci`. **No defe
    before) in the root of its big partition on another computer, see [REAL_HARDWARE.md](REAL_HARDWARE.md). They hold the same lines as the screen,
    the audit lines above included, up to about five seconds before the end; a file without the "clean run" line at its end belongs to a boot that did not finish.
 
+8. If the stick is not mounted (no `/HumanVillage`, `TOUHOU.LOG` missing on the stick afterwards): read the `usb-storage ...` lines (vendor:product, size,
+   `writable` / `given up on` / `did not become ready`) and the `[Keine]` lines right after them; `usb=debug` on the command line adds every command. The
+   fallbacks for sticks that behave badly are still being written (U1-U11 above).
+
 ## Tests
 
-`python tests/run_all.py hwaudit` runs the audit tests: PIT missing, other processors parked, a CPU without PAT, `fb.cache=uc`, no PS/2 controller,
-6 GiB of RAM, cmdline.txt encodings, missing cmdline.txt, the fbcon self test, the pixel-exact scroll check and fairyd's statistics and knobs. The
-`selftest` test includes the fbcon check. `tools/qemu.py` honours `TOUHOU_CPU=Skylake-Client-noTSX-IBRS` (set by another branch) if you want
+`python tests/run_all.py hwaudit` runs the audit tests: PIT missing, other processors parked, a CPU without PAT, `fb.cache=uc`, the MTRR fallback
+(`hwaudit_mtrr_selftest`, `hwaudit_mtrr_forced_attempt`, `hwaudit_mtrr_knob_off_and_auto`), `hwaudit_pci_selftest` (BAR sizes, D3hot to D0 with an e1000e),
+no PS/2 controller, 6 GiB of RAM, cmdline.txt encodings, missing cmdline.txt, the fbcon self test, the pixel-exact scroll check and fairyd's statistics and
+knobs. The `selftest` test includes the fbcon, MTRR and PCI checks. `tools/qemu.py` honours `TOUHOU_CPU=Skylake-Client-noTSX-IBRS` (set by another branch) if you want
 the guest to look like the target's CPU family.
+
+## State when paused
+
+The second round (asked for after the first audit was merged) was stopped on request in the middle of its second item. Branch
+`worktree-agent-a6d5e6306014eb8c7`; the head builds. Main at the start of the round was the merge of the first audit (`f9358db`) and had not moved.
+
+**Done, built, tested**
+
+* Write-combining MTRR as a measured, automatic fallback with the knob `fb.mtrr=off|on|auto` (F7, F8): `kernel/arch/x86_64/mtrr.c`, `kernel/gfx/fbtune.c`,
+  `kernel/include/mtrr.h`, `fbcon_speed_probe` in `fbcon.c`, `fb_set_map_flags` in `fb.c`, `pci_display_bar` in `pci.c`.
+* PCI: the BAR sizing bug (P8), the D0 wake-up in `pci_enable` for every driver (P9), the BAR lookup for the display adapter (P10); the NVMe admin queue is
+  clamped to `CAP.MQES`; `xhci.c` lost its private D0 code.
+* Tests added to `tests/case_hwaudit.py`: `hwaudit_mtrr_selftest`, `hwaudit_mtrr_forced_attempt`, `hwaudit_mtrr_knob_off_and_auto`, `hwaudit_pci_selftest`.
+  Run before the pause and all passed: those four, `hwaudit_fbcon_selftest`, `hwaudit_framebuffer_cache_knob`, `blk_nvme_read`, `blk_nvme_errors`,
+  `blk_nvme_timeout`, `blk_nvme_mdts`, `image_nvme_and_virtio_boot` (every QEMU boot also goes through the new `pci_enable` for the AHCI controller). One
+  early failure of `hwaudit_pci_selftest` was the test's own timing margin (it measured 8 ms for a 10 ms wait on the millisecond clock); the check now
+  allows 7.
+* **Not re-run after those changes**: the USB tests (xhci.c lost its private D0 block; the wake-up is a no-op for a function in D0, which QEMU's always is), the
+  network and audio tests (also through `pci_enable`), the whole `hwaudit` group in one go, the desktop tests. Run `python tests/run_all.py` before merging.
+
+**Half done: USB mass storage soft fallbacks (U1-U11 above)**, parked, because it does not compile yet, on the branch `wip/usb-storage-soft-fallbacks` (one
+commit, `5bd592f`, only `kernel/drivers/usb/storage.c`). In it: the header comment with the new knobs, the quirk machinery (empty table,
+`usbstorage.quirk=`, parser, flag names), the size ladder helpers, a `csw_check` that no longer judges the residue, `residue_clamped`, the fault
+variables and their use in `msc_run` (`maxlen`, `modehang`, `residue`, `badresidue`), a rewritten `msc_io_one` (splits by `Msc.chunk`, trusts the bytes that
+moved, ladder on the second failure, a hang means reset and go down at once, `msc_note`), `msc_blk_rw` reading the chunk each round, a `lun_write_protected` that
+survives a hang, `msc_run_boot`/`msc_run_boot_retry` (two resets for a bring-up command that hangs), and the 1 s first-command delay.
+Still to write before it builds and works: `cfg_load` must parse the new faults (`maxlen`, `modehang`, `lunhang`, `residue`, `badresidue`, `cap10max`,
+`rc16illegal`) and keep `usbstorage.quirk=` in `g_quirk_opt`; `msc_probe` must set `Msc.chunk` (`MSC_CHUNK`, or the chunk quirk), `Msc.quirks`
+(`quirks_for`), the first-command delay (`slowstart`), log the quirks, treat a GET MAX LUN timeout as one LUN (clear `dev->broken`, fault `lunhang`);
+`lun_step` (INQUIRY) and `lun_ready` must call `msc_run_boot`; `lun_capacity` must use `msc_run_boot_retry`, map block size 0 to 512, fall back to 2^32
+blocks when READ CAPACITY(10) says 0xFFFFFFFF and READ CAPACITY(16) is refused, honour `fixcap` and the faults `cap10max`/`rc16illegal`, and fill
+`MscLun.cap_how`; `Q_NO_SYNC` must set `l->no_sync`; `lun_register` should print `cap_how`, `wp_how`, the chunk and the quirks; `msc_describe` should show chunk,
+quirks and the residue counter.
+
+**Not started**: U10 (re-enumerating a stick in place when its bulk-only reset fails), U11's one-line `usb: summary` before "boot complete", a section in
+`docs/USB.md` for the new knobs, the tests below.
+
+## How to resume
+
+1. `git checkout worktree-agent-a6d5e6306014eb8c7` (or merge it into main first), `python tools/build.py`, `python tests/run_all.py hwaudit` (15 tests, all
+   passed before the pause), then the full suite once, because the regression runs listed above were not repeated.
+2. The USB work: the owner of `storage.c` and `mountpolicy.c` is the USB agent, who was editing the FAT dirty-volume checks (`fat*.c`, `mountpolicy.c`) at
+   the time; the diff in `storage.c` is large (about 300 lines). Bring it over with `git checkout wip/usb-storage-soft-fallbacks -- kernel/drivers/usb/storage.c`
+   (if `storage.c` changed on main meanwhile: `git merge wip/usb-storage-soft-fallbacks` and resolve), finish the list above, build, then fix `selftest()`
+   in `storage.c`: a residue above the request is now accepted and clamped (`EXPECT(!csw_check(...))`), and add checks for `quirks_for`/`quirk_entry`,
+   `ladder_below` and `residue_clamped`. Agree the scope with the USB agent first if a smaller patch is preferred (the ladder and the residue rule matter
+   most; the quirk table can follow).
+3. Tests to write in `tests/case_usbstorage.py` (each needs its fault in `cfg_load`):
+
+   | Test | Command line | Must show |
+   |------|--------------|-----------|
+   | ladder | `usbstorage.fault=maxlen:16384 usbstorage.timeout=1500` | `hung the stick ... at most 32 KiB`, then `at most 16 KiB`; 35 MiB read back identical, a 2.7 MB file written and read back by the host; no `given up on` |
+   | residue | `usbstorage.fault=residue:50,badresidue:60` | data identical, `0 reset recoveries`, the residue counter above 0 |
+   | MODE SENSE hang | `usbstorage.fault=modehang:1 usbstorage.timeout=2000` | `MODE SENSE hung the stick`, the disk online and writable, one reset recovery |
+   | GET MAX LUN hang | `usbstorage.fault=lunhang:1` | online with one LUN |
+   | capacity | `usbstorage.fault=cap10max:1,rc16illegal:1` | 4294967296 blocks of 512, no `ignored` |
+   | bring-up nudge | `usbstorage.fault=drop:2 usbstorage.timeout=1500` | `got no answer; the stick was reset (1 of 2 tries)` and the stick online. The existing `usbstor_silent_stick_bounded` expects exactly this fault to condemn the stick, so it needs a persistent fault (for example a new `deaf:2`: every command from the second on) to keep testing "a stick that stays silent is given up on" |
+   | quirks | `usbstorage.quirk=46f4:0001:chunk4k,fixcap` | `/proc/usbstorage` shows 204799 blocks and a 4 KiB chunk, reads and writes correct |
+
+   Then `python tests/run_all.py usbstor,hwaudit,selftest`.
+4. The remaining candidates after that: U10 and U11, MTRR copying for a future SMP start (F8), ECAM/MCFG (P2, not needed), and the checks that only the real
+   machine can do (the checklist for the first boot, above).

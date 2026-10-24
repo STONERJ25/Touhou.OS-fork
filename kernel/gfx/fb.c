@@ -80,12 +80,30 @@ void fb_init(const BootFramebuffer *bf) {
     g_fb.ready   = true;
 }
 
+static bool g_remapped;                         /* g_fb.front is the kernel's own ioremap now (fb_set_map_flags may edit it) */
+
 void fb_remap(void) {
     if (!g_fb.ready) return;
     bool direct = g_fb.back == g_fb.front;
     u64 flags = g_fb_force_uc ? (PTE_PCD | PTE_PWT) : pte_wc_flags();
     g_fb.front = ioremap(g_fb.phys, (size_t)g_fb.pitch * g_fb.height * 4, flags);
     if (direct) g_fb.back = g_fb.front;
+    g_remapped = true;
+}
+
+/* Rewrites the cache type bits of every page of the kernel's framebuffer mapping and flushes the TLB entries (vmm_map does). The
+ * write-combining buffers are drained first so that no store is in flight while the type changes. Only the kernel's own mapping:
+ * what a process mapped through /dev/fb0 keeps its flags (fb_tune runs before any process exists). */
+void fb_set_map_flags(u64 flags) {
+    if (!g_fb.ready || !g_remapped) return;
+    size_t size = (size_t)g_fb.pitch * g_fb.height * 4;
+    u64 virt = (u64)g_fb.front & PAGE_MASK;
+    paddr_t phys = g_fb.phys & PAGE_MASK;
+    u64 pages = ((g_fb.phys & 0xFFF) + size + PAGE_SIZE - 1) >> PAGE_SHIFT;
+    u64 f = irq_save();
+    fb_sync();
+    for (u64 i = 0; i < pages; i++) vmm_map(vmm_kernel_pml4(), virt + (i << PAGE_SHIFT), phys + (i << PAGE_SHIFT), PTE_W | PTE_NX | flags);
+    irq_restore(f);
 }
 
 /* ---------------------------------------------------------------- drawing primitives */
@@ -189,7 +207,8 @@ void fb_bench_fill(u32 rgb) {
 }
 
 const char *fb_cache_name(void) {
-    return g_fb_force_uc ? "uncached (fb.cache=uc)" : g_cpu.pat_wc ? "write-combining (PAT)" : "uncached (this CPU has no PAT)";
+    return g_fb_force_uc ? "uncached (fb.cache=uc)" : g_cpu.wc_by_mtrr ? "write-combining (MTRR)" :
+           g_cpu.pat_wc ? "write-combining (PAT)" : "uncached (this CPU has no PAT)";
 }
 
 void fb_report(u64 tsc_mhz) {
@@ -198,7 +217,8 @@ void fb_report(u64 tsc_mhz) {
     u64 mbps = us ? g_fb.bench_bytes / us : 0;                  /* bytes per microsecond = MB/s */
     klog("Kappa", "framebuffer speed: a full-screen fill (%lu KiB) took %lu.%lu ms, ~%lu MB/s", (unsigned long)(g_fb.bench_bytes >> 10),
          (unsigned long)(us / 1000), (unsigned long)(us % 1000 / 100), (unsigned long)mbps);
-    if (mbps && mbps < 400 && !g_fb_force_uc)
-        klog("Kappa", "the framebuffer is slow (under 400 MB/s): the mapping is probably not write-combining and the console will crawl "
-                      "(compare with fb.cache=uc on the kernel command line)");
+    if (mbps && mbps < FB_SLOW_MBPS && !g_fb_force_uc)
+        klog("Kappa", "the framebuffer is slow (under %d MB/s): the mapping is probably not write-combining and the console will crawl "
+                      "(compare with fb.cache=uc on the kernel command line); after the PCI scan the kernel tries a write-combining MTRR "
+                      "(fb.mtrr=off stops that)", FB_SLOW_MBPS);
 }

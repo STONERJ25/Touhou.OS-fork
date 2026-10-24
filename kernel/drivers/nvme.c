@@ -650,11 +650,14 @@ static void ctrl_probe(PciDev *pci) {
         return;
     }
 
+    /* CAP.MQES limits the I/O queues on PCIe (the admin queue may be up to 4096 entries), but a controller that supports only a few
+     * entries per queue is happier when the admin queue stays within that too: never deeper than MQES allows. */
+    u16 adepth = (u16)MAX(2u, MIN((u32)NVME_ADMIN_DEPTH, c->mqes));
     c->ident = dma_alloc_low(4096, &c->ident_phys);
     c->prp = dma_alloc_low((size_t)NVME_WINDOW_MAX * PAGE_SIZE, &c->prp_phys);
-    if (!c->ident || !c->prp || !queue_alloc(c, &c->admin, 0, NVME_ADMIN_DEPTH)) { klog("Kappa", "nvme%d: out of DMA memory", c->index); return; }
+    if (!c->ident || !c->prp || !queue_alloc(c, &c->admin, 0, adepth)) { klog("Kappa", "nvme%d: out of DMA memory", c->index); return; }
 
-    WREG32(c, NVME_AQA, ((u32)(NVME_ADMIN_DEPTH - 1) << 16) | (NVME_ADMIN_DEPTH - 1));
+    WREG32(c, NVME_AQA, ((u32)(adepth - 1) << 16) | (adepth - 1));
     wreg64(c, NVME_ASQ, c->admin.sq_phys);
     wreg64(c, NVME_ACQ, c->admin.cq_phys);
     if (!ctrl_enable(c)) {

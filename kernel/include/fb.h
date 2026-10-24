@@ -37,4 +37,11 @@ void fb_bench_fill(u32 rgb);            /* a timed full-screen fill; the result 
 void fb_report(u64 tsc_mhz);            /* one log line: fill speed (call once the TSC is calibrated) */
 const char *fb_cache_name(void);        /* "write-combining (PAT)", "uncached ..." */
 
+/* A framebuffer written slower than this (MB/s) is not write-combining: uncached stores run at 50-250 MB/s, write-combining at GB/s. */
+#define FB_SLOW_MBPS 400
+
+void fb_set_map_flags(u64 flags);       /* changes the cache type bits of the kernel's mapping of the framebuffer in place (after fb_remap) */
+void fb_tune(u64 tsc_mhz);              /* after pci_init: if the screen is slow, tries a write-combining MTRR over its BAR (gfx/fbtune.c; fb.mtrr=off|on|auto) */
+int  fb_tune_selftest(void);            /* "selftest": the MTRR decisions on made-up firmware layouts, and the real update sequence; returns the failures */
+
 #endif

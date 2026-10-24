@@ -107,7 +107,8 @@ clock is hours off on the first boot, the PC's clock chip holds local time (Wind
 | `rtc=local` | the clock chip keeps local time (a PC that also runs Windows does that) |
 | `nohumanvillage` | do not mount the HUMANVILLAGE volume |
 | `init=kshell` | skip userland, start the kernel's own tiny shell |
-| `fb.cache=uc` | map the framebuffer uncached instead of write-combining: only for comparing the `framebuffer speed` log line when the screen feels slow |
+| `fb.cache=uc` | map the framebuffer uncached instead of write-combining: only for comparing the `framebuffer speed` log line when the screen feels slow (it also switches the MTRR fallback below off) |
+| `fb.mtrr=auto` (default), `on`, `off` | the slow-screen fallback: when the screen measures under 400 MB/s the kernel tries a write-combining MTRR over the display adapter's BAR, logs `fb speed before N MB/s after M MB/s` and takes it back if the screen did not get faster. `on` tries it even when the screen is fast, `off` never touches the MTRRs |
 | `fairyd.copy=rep`, `fairyd.damage=bbox` | the window server's old drawing paths (byte-string copy, one damage rectangle): for comparing `/tmp/fairyd.stat` |
 | `usb=debug` | log every USB enumeration step; `usb=off` leaves USB alone |
 
@@ -140,8 +141,10 @@ any editor will do. If there is no `cmdline.txt` at all the loader uses `video=n
 
 - **No picture after the loader**: add `video=1024x768` (a mode every GOP offers), or `text`.
 - **The text console or the desktop is slow**: the `framebuffer speed` log line says how fast the screen memory takes writes (hundreds of
-  MB/s or more is healthy). Boot once with `fb.cache=uc` and compare; on the desktop `cat /tmp/fairyd.stat` shows what a frame costs
-  (compose = painting in RAM, flush = writing the screen).
+  MB/s or more is healthy). Under 400 MB/s the kernel corrects itself: after the PCI scan it prints the firmware's MTRR layout and tries a
+  write-combining MTRR over the display adapter's BAR (`framebuffer: write-combining MTRR #N ... fb speed before N MB/s after M MB/s, kept`, or
+  the reason none was added); photograph those lines. Boot once with `fb.cache=uc` and compare if in doubt; on the desktop
+  `cat /tmp/fairyd.stat` shows what a frame costs (compose = painting in RAM, flush = writing the screen).
 - **Frozen right after the picture appears, or a reset a few seconds later**: see the checklist at the end of [HARDWARE_AUDIT.md](HARDWARE_AUDIT.md).
 - **Keyboard or mouse dead**: try another USB port without a hub; `cat /proc/usb` (from a USB device you do have, or
   read the log lines `[Kappa] xhci ...` on screen) shows whether the controller started and what it saw.

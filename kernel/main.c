@@ -140,6 +140,7 @@ NORETURN void kmain(BootInfo *bi) {
     /* Buses and device drivers. Each *_init is a weak no-op until a driver supplies it (see drivers/driver_stubs.c). */
     pci_init();
     pmm_reclaim_boot_memory();          /* only now: pci_init has switched off any DMA the firmware left running into that memory */
+    fb_tune(timer_tsc_mhz());           /* a slow screen (no write-combining) gets a write-combining MTRR over its BAR, if that makes it faster: gfx/fbtune.c */
     u64 t_storage = uptime_ms();
     virtio_blk_init();
     ahci_init();

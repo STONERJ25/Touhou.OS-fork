@@ -7,6 +7,8 @@
 #include "arch.h"
 #include "futex.h"
 #include "fbcon.h"
+#include "fb.h"
+#include "pci.h"
 
 static int g_failures;
 
@@ -144,6 +146,8 @@ void selftest_run(void) {
     test_vmm();
     g_failures += futex_selftest();             /* kernel/sys/futex.c */
     g_failures += fbcon_selftest();             /* kernel/gfx/fbcon.c: the diff renderer must leave the screen equal to the grid */
+    g_failures += fb_tune_selftest();           /* kernel/gfx/fbtune.c: MTRR decisions over made-up firmware layouts, the update sequence on the real registers */
+    g_failures += pci_selftest();               /* kernel/drivers/pci.c: BAR sizes from read-backs, waking a function from D3hot */
     test_sched();
     if (g_failures) {
         printk("SELFTEST FAIL (%d failures)\n", g_failures);

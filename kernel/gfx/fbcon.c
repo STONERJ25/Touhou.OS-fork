@@ -392,6 +392,40 @@ void fbcon_redraw(void) {
     irq_restore(f);
 }
 
+/*
+ * How fast can the framebuffer be written right now? Fills the bottom text rows (at least 512 KiB) with the background colour,
+ * the colour they have on a screen that is still empty there, times it with the TSC, three times (the best one counts), then
+ * repaints those rows from the grid. A band and not the whole screen so that the boot banner and the log stay where they are;
+ * on a framebuffer that really is slow (uncached: ~100 MB/s) it still takes only a few milliseconds. Returns MB/s, or 0 when
+ * the console does not own the screen or the TSC rate is not known. fb_tune() compares it with and without a MTRR.
+ */
+u64 fbcon_speed_probe(u64 tsc_mhz) {
+    if (!g_fb.ready || !g_enabled || g_cols == 0 || !tsc_mhz) return 0;
+    u64 f = irq_save();
+    size_t row_bytes = (size_t)g_fb.pitch * 4 * FONT_H;
+    int n = (int)((512 * 1024 + row_bytes - 1) / row_bytes);
+    if (n < 1) n = 1;
+    if (n > g_rows) n = g_rows;
+    int y0 = (g_rows - n) * FONT_H, h = n * FONT_H;
+    u64 bytes = (u64)g_fb.width * 4 * (u64)h, best = 0;
+    for (int pass = 0; pass < 3; pass++) {
+        u64 t0 = rdtsc();
+        fb_fill_rect(0, y0, (int)g_fb.width, h, DEFAULT_BG);
+        u64 cycles = rdtsc() - t0;
+        u64 us = cycles / tsc_mhz;
+        u64 mbps = bytes / (us ? us : 1);                                   /* bytes per microsecond = MB/s */
+        if (mbps > best) best = mbps;
+        if (us > 30000) break;                                              /* a very slow screen: one sample is enough */
+    }
+    for (int r = g_rows - n; r < g_rows; r++) {
+        for (int c = 0; c < g_cols; c++) shown(c, r)->cp = UNKNOWN_CP;
+        mark(r);
+    }
+    flush();
+    irq_restore(f);
+    return best;
+}
+
 /* A kernel panic has to show up on the screen even if the window server owns it: no serial port to read it from on a PC. */
 void fbcon_force_on(void) {
     if (!g_fb.ready || g_cols == 0) return;

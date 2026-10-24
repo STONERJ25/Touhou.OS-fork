@@ -104,44 +104,12 @@ void cpu_init(void) {
     write_cr8(0);                               /* the firmware may have left the APIC task priority raised: no interrupt would get through */
 }
 
-/*
- * The memory type the firmware's MTRRs give a physical range (IA32_MTRR_DEF_TYPE and the variable ranges; the fixed ranges only cover
- * the first MiB). The CPU combines it with the page table's PAT type, so for the framebuffer this is half of the answer to "why is
- * the screen slow": the boot log prints it next to the measured fill speed. "mixed" if the range's start, middle and end differ.
- */
-static int mtrr_type_at(u64 addr, u32 vcnt, u64 def) {
-    int type = -1;
-    for (u32 i = 0; i < vcnt; i++) {
-        u64 base = rdmsr(0x200 + 2 * i), mask = rdmsr(0x201 + 2 * i);
-        if (!(mask & (1UL << 11))) continue;                                    /* range not valid */
-        if ((addr & mask & ~0xFFFUL) != (base & mask & ~0xFFFUL)) continue;
-        int t = (int)(base & 0xFF);
-        if (type < 0) type = t;
-        else if (type == 0 || t == 0) type = 0;                                  /* uncached beats everything */
-        else if ((type == 4 && t == 6) || (type == 6 && t == 4)) type = 4;       /* write-through beats write-back */
-    }
-    return type >= 0 ? type : (int)(def & 0xFF);
-}
-
-const char *cpu_mtrr_type_name(paddr_t start, u64 len) {
-    if (!(g_cpu.feat_edx & (1U << 12))) return "no MTRRs";
-    u64 cap = rdmsr(0xFE), def = rdmsr(0x2FF);
-    if (!(def & (1UL << 11))) return "MTRRs off (everything uncached)";
-    u32 vcnt = (u32)(cap & 0xFF);
-    if (vcnt > 16) vcnt = 16;
-    int a = mtrr_type_at(start, vcnt, def), b = mtrr_type_at(start + len / 2, vcnt, def), c = mtrr_type_at(start + len - 1, vcnt, def);
-    if (a != b || b != c) return "mixed";
-    switch (a) {
-    case 0: return "UC";
-    case 1: return "WC";
-    case 4: return "WT";
-    case 5: return "WP";
-    case 6: return "WB";
-    default: return "?";
-    }
-}
+/* (cpu_mtrr_type_name, the firmware's MTRR type for a physical range, lives in mtrr.c.) */
 
 u64 pte_wc_flags(void) {
+    /* A write-combining MTRR range was added for the framebuffer (gfx/fbtune.c): PCD alone selects the UC- entry, which is the one
+     * type an MTRR of type WC can still turn into write-combining (UC in the page table would stay UC). */
+    if (g_cpu.wc_by_mtrr) return BIT(4);
     /* With the PAT reprogrammed above, PWT alone selects entry 1 = write-combining. Without a PAT the closest thing that does
      * not cache is uncached, which is slow for a framebuffer but never wrong. */
     return g_cpu.pat_wc ? BIT(3) : (BIT(3) | BIT(4));

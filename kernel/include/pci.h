@@ -43,6 +43,7 @@ typedef struct PciDev {
 #define PCI_CAP_VENDOR 0x09     /* virtio capabilities live here */
 
 void    pci_init(void);                             /* enumerate every bus; safe to call once, after the VFS exists */
+int     pci_selftest(void);                         /* "selftest": BAR size arithmetic and the D3hot -> D0 wake-up; returns the failures */
 size_t  pci_describe(char *buf, size_t cap);        /* text for /proc/pci */
 PciDev *pci_first(void);
 PciDev *pci_next(PciDev *d);
@@ -56,7 +57,9 @@ void pci_write32(const PciDev *d, u16 off, u32 v);
 void pci_write16(const PciDev *d, u16 off, u16 v);
 void pci_write8(const PciDev *d, u16 off, u8 v);
 
-void  pci_enable(PciDev *d, u16 command_bits);       /* ORs PCI_CMD_* bits into the command register, INTx stays off */
+int   pci_set_d0(PciDev *d);                         /* wakes a function that sleeps in D1-D3hot (10 ms recovery); returns the old state, 0 if awake */
+void  pci_enable(PciDev *d, u16 command_bits);       /* wakes the function (pci_set_d0), then ORs PCI_CMD_* bits into the command register; INTx stays off */
+bool  pci_display_bar(paddr_t addr, u64 len, paddr_t *base, u64 *size, bool *prefetch);   /* the memory BAR of a display adapter holding [addr, addr+len) */
 u8    pci_find_cap(const PciDev *d, u8 cap_id);      /* config-space offset of the capability, or 0 */
 void *pci_map_bar(PciDev *d, int bar);               /* uncached mapping of a memory BAR (cached in d->bar[bar].virt) */
 
