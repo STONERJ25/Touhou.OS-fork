@@ -1,0 +1,106 @@
+# Tables (CSS 2.1 chapter 17). Same format as block.txt.
+
+=== auto layout: column widths from the cells, a spanning cell spread by the maximums
+<style>body{margin:0} table{border-spacing:2px} td{padding:1px}</style>
+<table id=t><tr><td id=a>one</td><td id=b>two two</td></tr><tr><td id=c colspan=2>three three three</td></tr></table>
+---
+#t 0 0 142 42
+#a 2 2 42.09 18
+#b 46.09 2 93.91 18
+#c 2 22 138 18
+
+=== a table with a width gives the extra to its columns
+<style>body{margin:0} table{border-spacing:0;width:200px} td{padding:0}</style>
+<table><tr><td id=a>ab</td><td id=b>abcdef</td></tr></table>
+---
+#a 0 0 50 16
+#b 50 0 150 16
+
+=== a narrow table: columns between their minimum and maximum
+<style>body{margin:0;width:100px} table{border-spacing:0} td{padding:0}</style>
+<table id=t><tr><td id=a>aaa aaa aaa</td><td id=b>bbbbbb bbbbbb</td></tr></table>
+---
+#t 0 0 100 48
+#a 0 0 38.92 48
+#b 38.92 0 61.08 48
+
+=== fixed layout: widths from the first row
+<style>body{margin:0} table{table-layout:fixed;width:300px;border-spacing:0} td{padding:0}</style>
+<table><tr><td id=a style="width:100px">x</td><td id=b>y</td></tr><tr><td id=c>a very long text that wraps</td><td>z</td></tr></table>
+---
+#a 0 0 100 16
+#b 100 0 200 16
+#c 0 16 100 48
+
+=== col elements set column widths
+<style>body{margin:0} table{border-spacing:0} td{padding:0}</style>
+<table><col style="width:80px"><col style="width:20px"><tr><td id=a>x</td><td id=b>y</td></tr></table>
+---
+#a 0 0 80 16
+#b 80 0 20 16
+
+=== rowspan, and vertical-align: middle in the tall cell
+<style>body{margin:0} table{border-spacing:0} td{padding:0}</style>
+<table><tr><td id=a rowspan=2>a</td><td id=b>b</td></tr><tr><td id=c>c</td></tr></table>
+---
+#a 0 0 8 32
+#a frag "a" 0 8 8
+#b 8 0 8 16
+#c 8 16 8 16
+
+=== vertical-align: top and bottom in cells
+<style>body{margin:0} table{border-spacing:0} td{padding:0}</style>
+<table><tr><td id=a style="height:50px;vertical-align:top">a</td><td id=b style="vertical-align:bottom">b</td></tr></table>
+---
+#a frag "a" 0 0 8
+#b frag "b" 8 34 8
+
+=== cells on a row line up their baselines
+<style>body{margin:0} table{border-spacing:0} td{padding:0;vertical-align:baseline}</style>
+<table><tr><td id=a style="font-size:32px">A</td><td id=b>b</td></tr></table>
+---
+#a frag "A" 0 0 16
+#b frag "b" 16 12 8
+
+=== border-collapse: neighbours share one line
+<style>body{margin:0} table{border-collapse:collapse} td{border:2px solid;padding:0}</style>
+<table id=t><tr><td id=a>a</td><td id=b>b</td></tr></table>
+---
+#t 0 0 22 20
+#a 0 0 12 20
+#b 10 0 12 20
+
+=== a caption above the table
+<style>body{margin:0} table{border-spacing:0} td{padding:0}</style>
+<table id=t><caption id=c>cap</caption><tr><td id=a>abcdef</td></tr></table>
+---
+#c 0 0 48 16
+#a 0 16 48 16
+#t 0 0 48 32
+
+=== header and footer groups go first and last
+<style>body{margin:0} table{border-spacing:0} td{padding:0}</style>
+<table><tfoot><tr><td id=f>f</td></tr></tfoot><tbody><tr><td id=b>b</td></tr></tbody><thead><tr><td id=h>h</td></tr></thead></table>
+---
+#h 0 0 8 16
+#b 0 16 8 16
+#f 0 32 8 16
+
+=== cells without a table get one (anonymous table objects)
+<style>body{margin:0} .t{display:table-cell} </style>
+<div><span id=a class=t>a</span><span id=b class=t>bb</span></div>
+---
+#a 0 0 8 16
+#b 8 0 16 16
+
+=== margin: auto centers a table
+<style>body{margin:0} table{margin:0 auto;border-spacing:0;width:200px}</style>
+<table id=t><tr><td>x</td></tr></table>
+---
+#t 300 0 200 18
+
+=== percentage width of a table
+<style>body{margin:0} table{width:50%;border-spacing:0}</style>
+<table id=t><tr><td>x</td></tr></table>
+---
+#t 0 0 400 18

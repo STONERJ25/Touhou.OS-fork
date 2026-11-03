@@ -1,0 +1,37 @@
+.page echo 1 write its arguments to standard output
+
+# SYNOPSIS
+*echo* [*-neE*] [_STRING_...]
+
+# DESCRIPTION
+`echo` writes its arguments to standard output, separated by single spaces and followed by a newline. gapsh has a builtin `echo` that behaves the same way; this page describes both.
+
+# OPTIONS
+@ *-n*
+    Do not write the trailing newline.
+@ *-e*
+    Interpret backslash escapes in the arguments (see below).
+@ *-E*
+    Do not interpret backslash escapes. This is the default.
+
+The options may be combined (`-ne`) and must come first; the first argument that is not made only of the letters n, e and E ends them.
+
+With `-e` these escapes are recognised:
+
+    \a  alert (bell)           \b  backspace        \e  escape (ESC)
+    \f  form feed              \n  newline          \r  carriage return
+    \t  horizontal tab         \v  vertical tab     \\  a backslash
+    \0NNN  the byte with octal value NNN (up to three digits)
+    \c  stop here: write nothing more, not even the newline
+
+# EXAMPLES
+    echo hello gensokyo
+    echo -n "no newline"
+    echo -e 'one\ttwo\nthree'
+    echo -e '\e[1;31mred\e[0m'
+
+# EXIT STATUS
+Always 0.
+
+# SEE ALSO
+printf(1), cat(1), gapsh(1)

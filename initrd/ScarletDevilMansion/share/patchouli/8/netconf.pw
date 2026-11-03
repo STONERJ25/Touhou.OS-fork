@@ -1,0 +1,18 @@
+.page netconf 8 apply /etc/network.conf: static addresses at boot
+
+# SYNOPSIS
+*netconf* [*-n*] [_FILE_]
+
+# DESCRIPTION
+`netconf` reads network.conf(5) (by default `/etc/network.conf`) and gives every network card that has a `static` line its address, its default route and its name servers (written to `/etc/resolv.conf`). A card with a `dhcp` line, or with no line, is left alone: the DHCP client asks for its address as usual. A card with a static address never asks.
+
+`init` runs it before the first session. It can be run again by hand, as root, after the file changed. A line that names a `mac` applies only to the card with that hardware address; it beats a line for the same card name without one.
+
+The addresses must be right for the network the machine is on: nothing checks that nobody else uses the address. The kernel log gets one line per card (`[netconf] eth0: static 192.168.1.185/24, gateway 192.168.1.1, dns 192.168.1.1`).
+
+# OPTIONS
+@ *-n*
+    Say what would be done, change nothing.
+
+# SEE ALSO
+network.conf(5), ifconfig(1), route(1), init(8)

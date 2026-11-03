@@ -1,0 +1,51 @@
+.page ssh_config 5 the configuration of the ssh client
+
+# DESCRIPTION
+ssh(1), scp(1) and sftp(1) take their settings from, in this order: the command line (`-o`, `-p`, `-i`, ...), the user's file `~/.ssh/config` (or the file named by `-F`), and the system file `/etc/ssh/ssh_config`. For each keyword the FIRST value found is the one used; only `IdentityFile`, `LocalForward`, `RemoteForward`, `DynamicForward` and `SendEnv` collect every value.
+
+A line is `Keyword value` or `Keyword=value`. Keywords are not case-sensitive, blank lines and lines starting with `#` are ignored, and a value with blanks in it is put in double quotes. `~` stands for the home directory, and in file names `%d` for the home directory, `%u` for your user name here, `%h` for the host, `%r` for the user there, `%p` for the port, `%%` for a percent sign. The file may be written by you only; nothing in it is run.
+
+A `Host` line starts a section: the lines after it count only for a host name (as typed on the command line) that matches one of its patterns, which may use `*` and `?` and may be excluded with a leading `!`. `Host *` at the end of the file gives defaults for all. A `Match` line does the same with conditions: `all`, `host` _PATTERNS_, `originalhost` _PATTERNS_, `user` _PATTERNS_, `localuser` _PATTERNS_. `Include` _FILE_ reads another file (relative names are looked for next to the file that includes it).
+
+# KEYWORDS
+@ HostName
+    The machine to connect to (the name on the command line is only a label; `%h` stands for it).
+@ User, Port
+    The account name and the port (default: your name here, 22).
+@ IdentityFile
+    A private key to offer. Several lines add up. With none, `~/.ssh/id_ed25519` is used.
+@ PubkeyAuthentication, KbdInteractiveAuthentication, PasswordAuthentication
+    `yes` or `no`: which ways to log in may be tried (default all three). *PreferredAuthentications* names the ones allowed (`publickey`, `keyboard-interactive`, `password`); the order is always the same.
+@ NumberOfPasswordPrompts
+    How many times a password is asked for (default 3).
+@ BatchMode
+    `yes`: never ask a question; what would need an answer fails (unknown hosts, passwords, passphrases).
+@ StrictHostKeyChecking
+    `ask` (the default), `accept-new`, `yes`, `no`; see ssh(1). A host key that has CHANGED is refused with every value.
+@ UserKnownHostsFile, GlobalKnownHostsFile, HashKnownHosts, HostKeyAlias
+    Where host keys are kept (`~/.ssh/known_hosts` and `/etc/ssh/ssh_known_hosts`; the first of several names is where new keys are written), whether the names written are hashed (default no), and the name to record and look up instead of the host name.
+@ ConnectTimeout
+    Seconds to wait for the connection and the key exchange (`30`, `1m`).
+@ ServerAliveInterval, ServerAliveCountMax
+    After this many seconds of silence the server is asked whether it is still there; after this many unanswered questions (default 3) the connection is given up.
+@ RekeyLimit
+    New keys after this much data, and optionally this much time: `256M`, `1G 1h`. The default is 1 GB.
+@ RequestTTY
+    `no`, `yes`, `force` or `auto`, as *-T*, *-t*, *-tt* and the default.
+@ EscapeChar
+    The escape character, `^X` or `none`.
+@ LocalForward, RemoteForward, DynamicForward
+    The forwardings of *-L*, *-R* and *-D*, one per line. *ExitOnForwardFailure* `yes` ends ssh when one cannot be set up.
+@ LogLevel
+    `QUIET`, `ERROR`, `INFO` (default), `VERBOSE`, `DEBUG1`, `DEBUG2`, `DEBUG3`.
+
+Many keywords of OpenSSH are accepted and ignored because they make no difference here (`Compression`, `ControlMaster`, `Ciphers`, `HostKeyAlgorithms`, `ForwardAgent` ...); agent and X11 forwarding stay off whatever is written, with a warning. `ProxyCommand` and `ProxyJump` are errors, not silently dropped, since they would send the connection somewhere other than where the file says.
+
+# FILES
+@ ~/.ssh/config
+    The user's file.
+@ /etc/ssh/ssh_config
+    The system's file.
+
+# SEE ALSO
+ssh(1), known_hosts(5), scp(1), sftp(1)

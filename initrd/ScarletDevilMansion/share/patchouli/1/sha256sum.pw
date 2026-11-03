@@ -1,0 +1,25 @@
+.page sha256sum 1 compute and check SHA-256 message digests
+
+# SYNOPSIS
+*sha256sum* [*-b*] [_FILE_...]
+*sha256sum* *-c* [_LISTFILE_]
+
+# DESCRIPTION
+`sha256sum` prints the SHA-256 digest of each _FILE_ as 64 hexadecimal digits, two spaces and the file name. With no file it reads standard input and prints `-` as the name. It works exactly like md5sum(1) with a stronger algorithm.
+
+# OPTIONS
+@ *-c*
+    Check the files listed in _LISTFILE_ (or standard input); each is reported as `NAME: OK` or `NAME: FAILED`.
+@ *-b*
+    Accepted for compatibility.
+
+# EXIT STATUS
+0 if all went well, 1 if a file was unreadable or a check failed.
+
+# EXAMPLES
+    echo -n abc | sha256sum
+    sha256sum /bin/* > /tmp/sums
+    sha256sum -c /tmp/sums | grep -v OK
+
+# SEE ALSO
+md5sum(1), crc32(1), cmp(1)

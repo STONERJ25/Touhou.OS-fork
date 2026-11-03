@@ -1,0 +1,3 @@
+# /etc/sudoers -- who may ask Eiki for the power of root
+root
+marisa    # she borrows everything anyway

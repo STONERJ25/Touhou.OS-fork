@@ -1,0 +1,13 @@
+.page return 1 leave a shell function
+
+# SYNOPSIS
+*return* [_STATUS_]
+
+# DESCRIPTION
+`return` is a gapsh builtin that ends the current function, or a script run with `source`, with the given status (the status of the last command by default).
+
+# EXAMPLES
+    isdir() { [ -d "$1" ] && return 0; return 1; }
+
+# SEE ALSO
+exit(1), local(1), gapsh-language(7)

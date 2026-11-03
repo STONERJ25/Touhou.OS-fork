@@ -1,0 +1,36 @@
+# Selector specificity (Selectors Level 4, section 17): a = ids, b = classes, attributes and pseudo-classes, c = types and
+# pseudo-elements; :is(), :not() and :has() count their most specific argument, :where() counts nothing, :nth-child(...
+# of S) counts one pseudo-class plus S. A list gives one triple per selector. "invalid" for a syntax error.
+# selector  =>  expected
+*                               => 0,0,0
+li                              => 0,0,1
+ul li                           => 0,0,2
+ul ol+li                        => 0,0,3
+h1 + *[rel=up]                  => 0,1,1
+ul ol li.red                    => 0,1,3
+li.red.level                    => 0,2,1
+#x34y                           => 1,0,0
+#s12:not(FOO)                   => 1,0,1
+.foo :is(.bar, #baz)            => 1,1,0
+:where(#a, .b) p                => 0,0,1
+a::before                       => 0,0,2
+a:before                        => 0,0,2
+a:hover::after                  => 0,1,2
+:nth-child(2n+1 of .x)          => 0,2,0
+:nth-child(odd)                 => 0,1,0
+:has(> img)                     => 0,0,1
+a, #b, .c                       => 0,0,1 1,0,0 0,1,0
+[a=b i]                         => 0,1,0
+*|svg                           => 0,0,1
+.a .b > .c ~ .d + .e            => 0,5,0
+:not(.a, #b)                    => 1,0,0
+:is(div, p) > :where(span)      => 0,0,1
+li:first-child:last-child       => 0,2,1
+input[type="text" s]:focus      => 0,2,1
+div >                           => invalid
+::nosuch                        => invalid
+:nosuch                         => invalid
+a::before.x                     => invalid
+p:nth-child(2n + )              => invalid
+#1x                             => invalid
+:is(::nosuch, .ok)              => 0,1,0

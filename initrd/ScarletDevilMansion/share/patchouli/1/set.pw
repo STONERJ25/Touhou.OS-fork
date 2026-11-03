@@ -1,0 +1,16 @@
+.page set 1 list variables or set the arguments
+
+# SYNOPSIS
+*set*
+*set* [*--*] [_ARGUMENT_...]
+
+# DESCRIPTION
+`set` is a gapsh builtin. Without arguments it prints all the shell variables as `NAME=VALUE`. With arguments it replaces the positional parameters `$1`, `$2` ... by them; leading options (`-e`, `-x` and the like) are accepted and ignored.
+
+# EXAMPLES
+    set -- a b c
+    echo $# $2
+    set -- $(date)
+
+# SEE ALSO
+shift(1), export(1)

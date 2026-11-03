@@ -1,0 +1,110 @@
+.page awk 1 pattern scanning and processing language
+
+# SYNOPSIS
+*awk* [*-F* _FS_] [*-v* _VAR_=_VALUE_]... [*-f* _PROGFILE_]... [_PROGRAM_] [_VAR_=_VALUE_ | _FILE_]...
+*awk* *--version*
+
+# DESCRIPTION
+`awk` reads its input a record (normally a line) at a time, splits each record into fields, and for every record runs the rules of the program whose pattern matches. A program is a list of `pattern { action }` rules, `function` definitions, and the special rules `BEGIN` (run before any input is read) and `END` (run after the last record). A rule without a pattern runs for every record; a rule without an action prints the record.
+
+The program is the first argument that is not an option, or the concatenation of the files named by `-f`. The remaining arguments are input files (`-` is standard input) and assignments of the form _VAR_=_VALUE_, which are carried out when `awk` reaches them in the list, so they can change `FS` between two files. With no file, standard input is read. If the program has only `BEGIN` rules, no input is read at all.
+
+# OPTIONS
+@ *-F* _FS_
+    Set the field separator `FS`. The value `t` means a tab, and escapes such as `\t` are understood.
+@ *-v* _VAR_=_VALUE_
+    Assign _VALUE_ to _VAR_ before the `BEGIN` rules run. Backslash escapes in the value are processed.
+@ *-f* _PROGFILE_
+    Read the program from _PROGFILE_ (`-` is standard input). May be given several times.
+@ *--version*
+    Print the version and exit.
+@ *--*
+    End of the options.
+
+# PATTERNS
+`BEGIN`, `END`, an expression (the rule runs when it is true), a regular expression `/re/` (matches the record), `!` _pattern_, patterns joined with `&&`, `||` and `?:`, and a range _p1_`,`_p2_ (from a record that matches _p1_ to the next one that matches _p2_).
+
+# EXPRESSIONS
+Numbers are floating point; integral values print as integers and others with `OFMT` (`CONVFMT` when converted to a string inside an expression). Fields, `getline` input, `ARGV`, `ENVIRON` and command line assignments that look like numbers compare as numbers; everything else compares as a string. An unset variable is both 0 and the empty string. Operators, from low to high precedence:
+
+    = += -= *= /= %= ^=      assignment, right to left
+    ?:                       conditional
+    ||  &&  in               logic and array membership
+    ~  !~                    regular expression match
+    <  <=  !=  ==  >  >=     comparison
+    (concatenation)          two expressions side by side
+    + -    * / %    unary + - !    ^ (**)    ++ --    $
+
+`$` _expr_ is a field (`$0` the whole record), `a[i]` an array element, `(i,j) in a` a membership test on `i SUBSEP j`. Strings have \" \\ \/ \n \t \r \a \b \f \v and \ddd escapes.
+
+# STATEMENTS
+`if`/`else`, `while`, `do`/`while`, `for (;;)`, `for (k in a)`, `break`, `continue`, `next` (go to the next record), `nextfile`, `exit [`_code_`]` (runs the `END` rules, then ends with the status), `return`, `delete a[i]` and `delete a`, `print`, `printf`. `print` and `printf` may be redirected with `> file`, `>> file` or `| command`; a file or command stays open (and is written to in order) until it is closed with `close()` or the program ends. `/dev/stdout` and `/dev/stderr` name the standard streams. Statements end at a newline, a semicolon or a `}`; a backslash at the end of a line continues it. `#` starts a comment.
+
+Functions are defined with `function name(a, b, local) { ... }`. Scalars are passed by value, arrays by reference; extra parameters are local variables.
+
+# VARIABLES
+@ *NF*, *NR*, *FNR*
+    Number of fields; records read so far; records read from the current file. Assigning to `NF` adds or drops fields and rebuilds `$0`.
+@ *FS*, *OFS*
+    Input and output field separators. `FS` is a single space (split on runs of blanks, ignoring leading and trailing ones), another single character (used literally), or a longer regular expression. Assigning a field rebuilds `$0` joined with `OFS`.
+@ *RS*, *ORS*
+    Input and output record separators. `RS` can be a single character, the empty string (paragraphs separated by blank lines; newline then also separates fields), or a longer regular expression.
+@ *FILENAME*
+    Name of the current input file.
+@ *SUBSEP*
+    Joins the parts of a multi-dimensional subscript (default `\034`).
+@ *RSTART*, *RLENGTH*
+    Set by `match()`.
+@ *CONVFMT*, *OFMT*
+    Number to string conversion for non-integral values, default `%.6g`.
+@ *ENVIRON*, *ARGC*, *ARGV*
+    The environment, and the command line arguments (`ARGV[0]` is `awk`). Changing `ARGV` before the input starts changes which files are read.
+
+# FUNCTIONS
+@ *length*[(_s_)]
+    Length of _s_ (default `$0`), or the number of elements of an array.
+@ *substr*(_s_, _m_[, _n_])
+    The _n_ characters of _s_ starting at position _m_ (counted from 1).
+@ *index*(_s_, _t_)
+    Position of _t_ in _s_, or 0.
+@ *split*(_s_, _a_[, _fs_])
+    Split _s_ into the array _a_ (cleared first, elements numbered from 1); returns the number of pieces. _fs_ is a string or `/regex/`; the default is `FS`. An empty _fs_ splits into single characters.
+@ *sub*(_re_, _repl_[, _target_]), *gsub*(...)
+    Replace the first (all) match of _re_ in _target_ (default `$0`) by _repl_, in which `&` stands for the matched text and `\&` for a literal `&`. Returns the number of replacements.
+@ *match*(_s_, _re_)
+    Position of the first match of _re_ in _s_ (0 if none); sets `RSTART` and `RLENGTH`.
+@ *sprintf*(_fmt_, ...)
+    Format like `printf` and return the string.
+@ *tolower*(_s_), *toupper*(_s_)
+    Case conversion.
+@ *sin*, *cos*, *atan2*(_y_, _x_), *exp*, *log*, *sqrt*, *int*, *rand*(), *srand*([_seed_])
+    Arithmetic. `int` truncates; `rand` returns a number from 0 up to but excluding 1; `srand` returns the previous seed.
+@ *system*(_cmd_)
+    Run a command with the shell and return its exit status. Output of `awk` is flushed first.
+@ *close*(_name_), *fflush*([_name_])
+    Close a file or command used with a redirection or `getline` (the result is the command's exit status, 0 for files, -1 if nothing was open); flush output.
+@ *getline*
+    Reads the next record into `$0` (and sets `NR`, `FNR`, `NF`). `getline` _var_ sets only _var_. `getline < `_file_ and _var_ forms read from a file, `` `cmd` | getline `` from a command's output. The value is 1, 0 at end of input and -1 on error.
+@ *systime*(), *strftime*([_fmt_[, _time_[, _utc_]]])
+    Seconds since the epoch; format a time like `date`.
+
+# PRINTF
+The conversions are `%c %d %i %o %x %X %u %e %E %f %F %g %G %s` and `%%`, with the flags `-`, `+`, space, `#` and `0`, a width and a precision, either of which can be `*` to take it from the arguments. `%c` prints the character with a given code, or the first character of a string.
+
+# EXAMPLES
+    awk '{ print $1, $NF }' file
+    awk -F: '$3 >= 1000 { print $1 }' /Hakurei/etc/passwd
+    awk '{ s += $1 } END { print s, s / NR }' numbers
+    awk 'length > 72' file
+    awk '!seen[$0]++' file
+    awk 'NR == 2, NR == 4' file
+    awk -v n=3 'BEGIN { for (i = 1; i <= n; i++) print i * i }'
+
+# EXIT STATUS
+0, or the value given to `exit`; 2 for a syntax error, a run time error such as division by zero, or an input file that cannot be opened (the other files are still processed).
+
+# NOTES
+Regular expressions are POSIX extended expressions (see `regex(7)`) with the usual awk escapes. The matcher picks the first alternative that works rather than the longest, and strings are counted in bytes.
+
+# SEE ALSO
+sed(1), grep(1), cut(1), regex(7)

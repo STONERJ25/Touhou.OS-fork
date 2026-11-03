@@ -1,0 +1,7 @@
+listening on loopback: port assigned=1
+sent [hello marisa] got [HELLO MARISA]
+sent [master spark] got [MASTER SPARK]
+sent [danmaku is power] got [DANMAKU IS POWER]
+socketpair: ping pong
+htons/htonl: 3412 44332211
+run-rc=0

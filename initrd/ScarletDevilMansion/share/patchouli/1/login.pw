@@ -1,0 +1,12 @@
+.page login 1 sign in to the shrine
+
+# SYNOPSIS
+*login* [_USER_]
+
+# DESCRIPTION
+`login` asks for a user name (unless one is given) and a password, checks them against shadow(5), and, when they are right, becomes that resident's login shell: group list, user and group ids, `HOME`, `USER`, `LOGNAME`, `SHELL`, `PATH`, `HOSTNAME` and `TERM` are set up and the shell from passwd(5) is started with `-l`, so profile(5) is read. An account with no password accepts an empty one. After a wrong answer `login` waits two seconds and says `Login incorrect`; five failures end the program.
+
+`init`(8) runs `login` on the console when the door is set to ask: `login` or `autologin=none` on the kernel command line, the *Text console* button of the login screen, or a desktop that died. When the shell ends `init` runs it again.
+
+# SEE ALSO
+su(1), passwd(1), init(8), passwd(5), shadow(5), accounts(7)

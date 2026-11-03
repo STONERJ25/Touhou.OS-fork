@@ -1,0 +1,24 @@
+.page mkdir 1 make directories
+
+# SYNOPSIS
+*mkdir* [*-p*] [*-m* _MODE_] _DIRECTORY_...
+
+# DESCRIPTION
+`mkdir` creates each _DIRECTORY_. It is an error if the directory exists or if its parent does not, unless `-p` is given.
+
+# OPTIONS
+@ *-p*
+    Create missing parent directories as needed. A directory that already exists is not an error.
+@ *-m* _MODE_
+    Give the new directories the permissions _MODE_, an octal number. The default is 755.
+
+# EXIT STATUS
+0, 1 if a directory could not be created, 2 for an unknown option.
+
+# EXAMPLES
+    mkdir projects
+    mkdir -p /tmp/a/b/c
+    mkdir -m 700 private
+
+# SEE ALSO
+rmdir(1), rm(1), chmod(1)

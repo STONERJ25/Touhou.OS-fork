@@ -1,0 +1,14 @@
+.page tac 1 write lines in reverse order
+
+# SYNOPSIS
+*tac* [_FILE_...]
+
+# DESCRIPTION
+`tac` (`cat` backwards) writes the lines of each input, last line first. The whole input is read before anything is written. Standard input is used when no file is given.
+
+# EXAMPLES
+    tac /Hakurei/etc/group
+    seq 1 5 | tac
+
+# SEE ALSO
+cat(1), rev(1), sort(1)

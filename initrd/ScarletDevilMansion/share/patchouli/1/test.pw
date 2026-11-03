@@ -1,0 +1,64 @@
+.page test 1 check file types and compare values
+.alias [
+
+# SYNOPSIS
+*test* _EXPRESSION_
+*[* _EXPRESSION_ *]*
+
+# DESCRIPTION
+`test` is a gapsh builtin that evaluates _EXPRESSION_ and exits with status 0 if it is true, 1 if it is false. When written as `[` the last argument must be `]`. An empty expression is false.
+
+# FILE TESTS
+@ *-e* _FILE_
+    _FILE_ exists.
+@ *-f* _FILE_, *-d* _FILE_
+    It is a regular file / a directory.
+@ *-c* _FILE_, *-p* _FILE_
+    It is a character device / a named pipe.
+@ *-L* _FILE_, *-h* _FILE_
+    It is a symbolic link.
+@ *-s* _FILE_
+    It exists and is not empty.
+@ *-r* _FILE_, *-w* _FILE_, *-x* _FILE_
+    It can be read / written / executed by the caller.
+@ *-t* _FD_
+    File descriptor _FD_ is a terminal.
+@ _FILE1_ *-nt* _FILE2_, _FILE1_ *-ot* _FILE2_
+    _FILE1_ is newer / older than _FILE2_.
+
+# STRING TESTS
+@ *-z* _STRING_
+    The string is empty.
+@ *-n* _STRING_, _STRING_
+    The string is not empty.
+@ _A_ = _B_, _A_ == _B_, _A_ != _B_
+    The strings are equal / equal / different.
+@ _A_ < _B_, _A_ > _B_
+    _A_ sorts before / after _B_.
+
+# NUMBER TESTS
+@ _N_ *-eq* _M_, *-ne*, *-lt*, *-le*, *-gt*, *-ge*
+    Integer comparison: equal, not equal, less, less or equal, greater, greater or equal.
+
+# COMBINING
+@ ! _EXPR_
+    Not.
+@ _EXPR_ *-a* _EXPR_
+    And.
+@ _EXPR_ *-o* _EXPR_
+    Or.
+@ ( _EXPR_ )
+    Grouping.
+
+Quote parentheses, `<` and `>` from the shell.
+
+# EXIT STATUS
+0 true, 1 false, 2 for a `[` without its closing `]`.
+
+# EXAMPLES
+    [ -f /Hakurei/etc/passwd ] && echo yes
+    [ "$USER" = reimu ] || echo "not Reimu"
+    [ $n -gt 10 -a $n -lt 20 ]
+
+# SEE ALSO
+expr(1), gapsh-language(7)

@@ -1,0 +1,15 @@
+ten=385
+twelve_d=650.0
+interleaved=171.0
+byte_args=92
+rets: 44 -56 4464 1 0 6.00
+ret_ptr: 1
+1 2 3 5 7 8 9 
+apple banana fig pear 
+each=735
+fact(20)=2432902008176640000 depth_sum(1000)=500500
+id: 1 2 | 11 20 30 | 3.0 7 | 1.5 3.5 12
+args_mix=1097
+fn ptrs: 6 11 1
+nested calls: 261
+abs/labs: 5 6000000000

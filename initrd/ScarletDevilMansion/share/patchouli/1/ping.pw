@@ -1,0 +1,35 @@
+.page ping 1 send ICMP echo requests to a host
+
+# SYNOPSIS
+*ping* [*-c* _COUNT_] [*-i* _SECONDS_] [*-W* _SECONDS_] [*-s* _BYTES_] [*-t* _TTL_] [*-q*] _HOST_
+
+# DESCRIPTION
+`ping` sends an ICMP echo request to _HOST_ (a name or a dotted address) once a second and prints a line for every answer: the size of the reply, the sender, the sequence number, the time to live that was left in it, and the round-trip time. Without `-c` it goes on until interrupted with Ctrl+C. At the end it prints how many packets were sent and received and the shortest, average and longest round trip.
+
+It uses an ICMP datagram socket, so any user may run it. Times are measured with the one-millisecond clock of the kernel: a reply on the same machine shows as 0 or 1 ms.
+
+If a router or the stack itself answers with an error, the line says so (`Destination Host Unreachable`, `Time to live exceeded`) instead of a reply. A request that gets no answer within the timeout prints `Request timeout for icmp_seq N`.
+
+# OPTIONS
+@ *-c* _COUNT_
+    Stop after COUNT requests.
+@ *-i* _SECONDS_
+    Wait this long between requests (at least 0.2, default 1).
+@ *-W* _SECONDS_
+    Wait this long for each answer (default 2).
+@ *-s* _BYTES_
+    Size of the data in the request (8 to 1400, default 56).
+@ *-t* _TTL_
+    Time to live of the outgoing packets.
+@ *-q*
+    Quiet: only the summary.
+
+# EXAMPLES
+    ping -c 3 10.0.2.2
+    ping -c 1 localhost
+
+# EXIT STATUS
+0 if at least one answer arrived, 1 if none did, 2 for a usage error or a name that does not resolve.
+
+# SEE ALSO
+nslookup(1), ifconfig(1), network(7)

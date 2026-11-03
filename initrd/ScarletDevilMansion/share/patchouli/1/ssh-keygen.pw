@@ -1,0 +1,45 @@
+.page ssh-keygen 1 make and examine ssh keys, look after known_hosts
+
+# SYNOPSIS
+*ssh-keygen* [*-q*] [*-a* _ROUNDS_] [*-C* _COMMENT_] [*-f* _FILE_] [*-N* _PASSPHRASE_] *-t* ed25519
+*ssh-keygen* [*-E* md5|sha256] [*-f* _FILE_] [*-v*] *-l*
+*ssh-keygen* [*-f* _FILE_] [*-P* _PASSPHRASE_] *-y*
+*ssh-keygen* [*-f* _FILE_] [*-P* _OLD_] [*-N* _NEW_] *-p*
+*ssh-keygen* [*-f* _FILE_] [*-P* _PASSPHRASE_] *-C* _COMMENT_ *-c*
+*ssh-keygen* [*-f* _KNOWN_HOSTS_] *-F* _HOST_ | *-R* _HOST_ | *-H*
+
+# DESCRIPTION
+`ssh-keygen` makes the key pair that proves who you are to an SSH server, and looks at keys. A key pair is two files: a private key, which stays on this machine (and must not be readable by others), and a public key (the same name with `.pub`), a line you put into the `authorized_keys` file of the account you want to log in to. Only ed25519 keys are made; the files are in OpenSSH's own format, so OpenSSH reads what is written here and this reads what OpenSSH wrote.
+
+With no option but `-t` (or no option at all) a new key pair is made, in `~/.ssh/id_ed25519` unless `-f` says otherwise (the directory is made if it does not exist). It asks for a passphrase twice (empty for none) unless `-N` gives one; a passphrase encrypts the private key with bcrypt_pbkdf and AES-256, so a stolen file is of no use without it (at least five characters). The key's fingerprint and its random-art picture are shown, which lets you recognise it later. An existing file is only replaced after you say yes.
+
+# OPTIONS
+@ *-t* ed25519
+    The key type; ed25519 is the only one.
+@ *-f* _FILE_
+    The key file to make or to read.
+@ *-N*, *-P* _PASSPHRASE_
+    The new, and the existing, passphrase, so that scripts need not ask. Beware that a passphrase on a command line can be seen in the process list.
+@ *-C* _COMMENT_
+    The comment kept with the key (by default _USER_@_HOST_).
+@ *-a* _ROUNDS_
+    How many rounds of the key derivation (default 16); more is slower for you and for anyone guessing.
+@ *-l*
+    Show a key's size, fingerprint, comment and type. The file may be a public key, a private key (its public half is read without the passphrase), or a file of keys such as `known_hosts` or `authorized_keys`. *-E* md5 shows the old MD5 form; *-v* adds the random-art picture.
+@ *-y*
+    Print the public key of a private key file.
+@ *-p*, *-c*
+    Change the passphrase of a private key (the existing one is asked for unless given with `-P`), or only its comment.
+@ *-F* _HOST_, *-R* _HOST_, *-H*
+    In a known_hosts file (`~/.ssh/known_hosts` unless `-f` names another): find the entries of a host, remove them (the old file is kept as `known_hosts.old`; this is the cure when ssh says a host's key has changed because it was reinstalled), or replace every host name by its hash so that the file does not list where you have been.
+@ *-q*
+    Make no noise.
+
+# EXAMPLES
+    ssh-keygen -t ed25519
+    ssh-keygen -l -f ~/.ssh/id_ed25519.pub
+    ssh-keygen -y -f ~/.ssh/id_ed25519 >> authorized_keys
+    ssh-keygen -R gensokyo
+
+# SEE ALSO
+ssh(1), ssh-keyscan(1), known_hosts(5), sshd(8)

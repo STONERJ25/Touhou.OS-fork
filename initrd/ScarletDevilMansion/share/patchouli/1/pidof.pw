@@ -1,0 +1,17 @@
+.page pidof 1 find the process ids of programs
+
+# SYNOPSIS
+*pidof* _NAME_...
+
+# DESCRIPTION
+`pidof` prints, on one line, the ids of all processes whose name is exactly one of the _NAME_s.
+
+# EXIT STATUS
+0 if some process was found, 1 if none was.
+
+# EXAMPLES
+    pidof gapsh
+    kill $(pidof sleep)
+
+# SEE ALSO
+ps(1), pkill(1), kill(1)

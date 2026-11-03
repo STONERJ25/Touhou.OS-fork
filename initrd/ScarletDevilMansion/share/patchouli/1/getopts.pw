@@ -1,0 +1,19 @@
+.page getopts 1 parse options in shell scripts
+
+# SYNOPSIS
+*getopts* _OPTSTRING_ _NAME_ [_ARGUMENT_...]
+
+# DESCRIPTION
+`getopts` is a gapsh builtin for scripts that take options. Each call looks at the next option among the _ARGUMENT_s (the positional parameters if none are given), stores its letter in the variable _NAME_ and updates `OPTIND`. _OPTSTRING_ lists the option letters; a letter followed by a colon takes an argument, which is stored in `OPTARG`. An unknown letter is stored as `?`. The status is 0 while there are options and 1 when they have run out (at the first word that does not start with a dash, or at `--`).
+
+# EXAMPLES
+    while getopts "ab:" o; do
+        case $o in
+            a) echo "-a given";;
+            b) echo "-b says $OPTARG";;
+            \?) echo "bad option";;
+        esac
+    done
+
+# SEE ALSO
+shift(1), set(1), gapsh-language(7)

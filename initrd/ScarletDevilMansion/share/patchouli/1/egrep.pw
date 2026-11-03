@@ -1,0 +1,14 @@
+.page egrep 1 grep with extended regular expressions
+
+# SYNOPSIS
+*egrep* [_OPTION_...] _PATTERN_ [_FILE_...]
+
+# DESCRIPTION
+`egrep` is `grep -E`: the pattern is an extended regular expression. All the options of grep(1) are accepted.
+
+# EXAMPLES
+    egrep 'root|reimu' /Hakurei/etc/passwd
+    ls | egrep '\.(c|h)$'
+
+# SEE ALSO
+grep(1), fgrep(1), regex(7)

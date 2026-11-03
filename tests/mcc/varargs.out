@@ -1,0 +1,12 @@
+sum_ints: 0 6 55
+sum_doubles: 4.00 55.00
+mixed: 76.50
+mixed many: 110.0
+structs: 975
+points: 26
+my_format: 42-str-x- 3.14-123456789012 (27)
+twice: 20
+[tag] cart has 3 items costing 9.50
+late: 45
+count: 1 4
+snprintf: abc|   42|42   |00042|ff|FF|10|q|%

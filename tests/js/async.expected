@@ -1,0 +1,11 @@
+got a
+cleanup
+{"value":1,"done":false} {"value":2,"done":false} {"value":9,"done":true} {"done":true}
+1,2,x,ret
+fib 0,1,1,2,3,5,8,13,21,34
+caught boom
+tree 1,2,3
+private 13 1 true false
+brand TypeError
+log then 1 | catch bad | finally | withResolvers ok | all 1,2,3 | settled rejected,fulfilled | any 5 | race fast | async catch TypeError | async 21 | for-await-sync p,q | for-await 1,2
+order 1,2,3,4

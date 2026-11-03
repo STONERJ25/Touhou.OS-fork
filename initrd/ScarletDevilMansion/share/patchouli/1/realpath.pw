@@ -1,0 +1,14 @@
+.page realpath 1 print an absolute, tidy path
+
+# SYNOPSIS
+*realpath* _PATH_...
+
+# DESCRIPTION
+`realpath` prints each _PATH_ as an absolute path with `.` and `..` components and repeated slashes removed, resolving relative paths against the current directory. It does not follow symbolic links and does not check that the path exists.
+
+# EXAMPLES
+    realpath ../Hakurei//etc/./passwd
+    realpath .
+
+# SEE ALSO
+readlink(1), basename(1), dirname(1)

@@ -1,0 +1,20 @@
+.page nslookup 1 ask a name server about a name
+
+# SYNOPSIS
+*nslookup* [*-type=*_TYPE_] _NAME_ [_SERVER_]
+
+# DESCRIPTION
+`nslookup` sends one query to a name server and prints what comes back. Without _SERVER_ it asks the servers listed in `/etc/resolv.conf` (the DHCP client fills that file in), in order, until one answers. It does not consult `/etc/hosts` and does not apply the search list; it shows the DNS exactly as the server gives it. For the friendlier lookup that programs use, see `ping` or `fetch`, which go through the resolver in the C library.
+
+The answer is printed under the name and address of the server that gave it. The _TYPE_ is one of `A` (the default), `AAAA`, `NS`, `CNAME`, `SOA`, `PTR`, `MX`, `TXT` or `ANY`. If _NAME_ is a dotted IPv4 address the query is a reverse lookup (`PTR`, for `2.2.0.10.in-addr.arpa` when you give 10.0.2.2). _SERVER_ may carry a port: `10.0.2.2#5353`.
+
+# EXAMPLES
+    nslookup kappa.gensokyo
+    nslookup -type=MX gensokyo 10.0.2.3
+    nslookup 10.0.2.2
+
+# EXIT STATUS
+0 when records were found, 1 when the name does not exist (`NXDOMAIN`), the answer is empty or no server answered, 2 for a usage error.
+
+# SEE ALSO
+host(1), resolv.conf(5), hosts(5), network(7)

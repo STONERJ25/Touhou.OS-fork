@@ -1,0 +1,52 @@
+.page espgrant 1 write the boot partition (ESP) for a moment
+
+# SYNOPSIS
+*espgrant*
+*espgrant* [*-f*] [*-d* _DIR_] *run* _COMMAND_ [_ARG_]...
+*espgrant* [*-f*] [*-k*] [*-q*] *put* _SRC_ _NAME_ [_SRC_ _NAME_]...
+*espgrant* [*-f*] [*-q*] *rm* _NAME_...
+
+# DESCRIPTION
+The EFI System Partition (ESP) the system started from holds the loader, `kernel.elf`, `initrd.img` and `cmdline.txt`. On a disk TouhouOS was installed on, `blk.ro` keeps it read-only, even for root: only the HUMANVILLAGE partition is named by `blk.rw=`. `espgrant` asks the kernel for the *ESP write grant*, mounts the ESP read-write on a private directory for as long as it needs it, and unmounts it again. Marisa has to ask first this time, and give the key back.
+
+Without arguments it says which partition that is (from `/proc/bootdisk`) and whether a grant is held.
+
+@ *run* _COMMAND_ [_ARG_]...
+    Mounts the ESP read-write, runs _COMMAND_ with `$ESP` set to the mount directory and `$ESPGRANT_PID` to the pid of `espgrant`, waits for it, then unmounts. The exit status is the command's.
+@ *put* _SRC_ _NAME_ [_SRC_ _NAME_]...
+    Replaces the file _NAME_ on the ESP (`kernel.elf`, `initrd.img`, `cmdline.txt`, `EFI/BOOT/BOOTX64.EFI`) with the contents of _SRC_, in an order that survives a power cut (see UPDATE SEQUENCE).
+@ *rm* _NAME_...
+    Deletes files on the ESP, such as the `update.try` mark of an update on trial.
+
+# UPDATE SEQUENCE
+*put* writes every file as _NAME_`.new` and flushes; it then unmounts and mounts the ESP again, so that what it reads back comes from the disk, and compares every byte; with *-k* it copies each current file to its `.old` name (`kernel.elf` becomes `kernel.old`); last it renames each _NAME_`.new` over _NAME_, the loader last, flushing after each. The file system keeps the name in place while it moves it to the new contents, so a power cut at any moment leaves each file either old or new in full, at worst with some lost clusters, and the ESP stays bootable. Nothing is renamed when a comparison fails, and the staged files are removed again.
+
+# SAFETY
+Only root, and only the ESP the loader was read from: the kernel checks the partition's number, start, size, type and GPT GUID (or MBR disk signature) against what the firmware reported, and refuses when two disks carry the very same partition. The grant belongs to the open file of the partition node that asked for it and lets one mount write; the partition node, the whole disk, its other partitions and every other disk stay read-only. It ends at the unmount, or when `espgrant` ends in any way: if it is killed, the kernel writes the volume back and leaves it mounted read-only until someone unmounts it. It is kept in kernel memory only.
+
+A volume left dirty by a power cut is refused until it has been checked; *-f* mounts it anyway (it then stays flagged dirty).
+
+On a USB stick, which `blk.ro` does not cover, the ESP is writable without a grant; `espgrant` works the same there.
+
+# OPTIONS
+@ *-f*
+    Mount the ESP read-write although it is flagged dirty.
+@ *-k*
+    With *put*: keep the current files under their `.old` names.
+@ *-q*
+    Quiet: no step lines.
+@ *-d* _DIR_
+    Mount on _DIR_ instead of `/BambooForest/espgrant.`_PID_.
+
+# EXAMPLES
+    espgrant
+    sudo espgrant put /tmp/kernel.elf kernel.elf
+    sudo espgrant put /tmp/k.elf kernel.elf /tmp/i.img initrd.img
+    sudo espgrant rm update.try
+    sudo espgrant run sh -c 'cat $ESP/cmdline.txt'
+
+# EXIT STATUS
+0 on success, 1 when refused or failed, 2 for a usage error; with *run*, the command's status.
+
+# SEE ALSO
+install(1), mount(8), proc(5)

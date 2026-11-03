@@ -1,0 +1,17 @@
+.page stat 1 display file status
+
+# SYNOPSIS
+*stat* _FILE_...
+
+# DESCRIPTION
+`stat` prints the details of each _FILE_ without following a final symbolic link: the size, the number of blocks, the inode and link count, the mode in octal and as `-rw-r--r--`, the owner and group with their numbers, and the modification time in UTC.
+
+# EXIT STATUS
+0, or 1 if a file does not exist.
+
+# EXAMPLES
+    stat /Hakurei/etc/passwd
+    stat /bin/ls
+
+# SEE ALSO
+ls(1), chmod(1), find(1)

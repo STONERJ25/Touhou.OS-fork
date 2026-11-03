@@ -1,0 +1,133 @@
+#data
+<svg viewbox="0 0 10 10"><clippath><path d=M0/></clippath></svg>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <svg svg>
+|       viewBox="0 0 10 10"
+|       <svg clipPath>
+|         <svg path>
+|           d="M0/"
+
+#data
+<svg><a xlink:href=#x xml:lang=ja xmlns:xlink=http://www.w3.org/1999/xlink>t</a></svg>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <svg svg>
+|       <svg a>
+|         xlink href="#x"
+|         xml lang="ja"
+|         xmlns xlink="http://www.w3.org/1999/xlink"
+|         "t"
+
+#data
+<svg><p>breaks out</svg>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <svg svg>
+|     <p>
+|       "breaks out"
+
+#data
+<svg><foreignObject><p>html <b>inside</b></p></foreignObject><g/></svg>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <svg svg>
+|       <svg foreignObject>
+|         <p>
+|           "html "
+|           <b>
+|             "inside"
+|       <svg g>
+
+#data
+<svg><title><b>t</b></title><desc>d</desc></svg>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <svg svg>
+|       <svg title>
+|         <b>
+|           "t"
+|       <svg desc>
+|         "d"
+
+#data
+<math><mi>x</mi><mo>+</mo><mtext><b>t</b></mtext><annotation-xml encoding=text/html><p>h</p></annotation-xml></math>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <math math>
+|       <math mi>
+|         "x"
+|       <math mo>
+|         "+"
+|       <math mtext>
+|         <b>
+|           "t"
+|       <math annotation-xml>
+|         encoding="text/html"
+|         <p>
+|           "h"
+
+#data
+<math definitionurl=x><mglyph/><malignmark/></math>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <math math>
+|       definitionURL="x"
+|       <math mglyph>
+|       <math malignmark>
+
+#data
+<svg><![CDATA[a<b]]></svg><![CDATA[c]]>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <svg svg>
+|       "a<b"
+|     <!-- [CDATA[c]] -->
+
+#data
+<svg><font color=red>x</font></svg>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <svg svg>
+|     <font>
+|       color="red"
+|       "x"
+
+#data
+<svg><script>a</script><script/></svg>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <svg svg>
+|       <svg script>
+|         "a"
+|       <svg script>

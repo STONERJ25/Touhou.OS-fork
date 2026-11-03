@@ -1,0 +1,66 @@
+#data
+<td>cell</td>after
+#errors
+#document-fragment
+td
+#document
+| "cellafter"
+
+#data
+<tr><td>x
+#errors
+#document-fragment
+tbody
+#document
+| <tr>
+|   <td>
+|     "x"
+
+#data
+<b>not markup</b>
+#errors
+#document-fragment
+textarea
+#document
+| "<b>not markup</b>"
+
+#data
+<p>a</p><svg><g/></svg>
+#errors
+#document-fragment
+div
+#document
+| <p>
+|   "a"
+| <svg svg>
+|   <svg g>
+
+#data
+<g/><p>breaks
+#errors
+#document-fragment
+svg svg
+#document
+| <svg g>
+| <p>
+|   "breaks"
+
+#data
+<option>x<option>y
+#errors
+#document-fragment
+select
+#document
+| <option>
+|   "x"
+| <option>
+|   "y"
+
+#data
+<td>x
+#errors
+#document-fragment
+template
+#document
+| <td>
+|   "x"

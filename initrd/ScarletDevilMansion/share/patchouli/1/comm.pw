@@ -1,0 +1,22 @@
+.page comm 1 compare two sorted files line by line
+
+# SYNOPSIS
+*comm* [*-123*] _FILE1_ _FILE2_
+
+# DESCRIPTION
+`comm` reads two files that are already sorted and writes three columns: lines only in _FILE1_, lines only in _FILE2_, and lines in both. The columns are separated by tabs. A file name of `-` means standard input.
+
+# OPTIONS
+@ *-1*
+    Leave out the first column.
+@ *-2*
+    Leave out the second column.
+@ *-3*
+    Leave out the third column.
+
+# EXAMPLES
+    comm -12 a.txt b.txt
+    comm -3 old.txt new.txt
+
+# SEE ALSO
+sort(1), uniq(1), cmp(1)

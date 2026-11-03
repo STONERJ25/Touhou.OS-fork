@@ -1,0 +1,14 @@
+.page uptime 1 say how long the system has been running
+
+# SYNOPSIS
+*uptime* [*-p*]
+
+# DESCRIPTION
+`uptime` prints one line: the time of day, how long the system has been up, and the load averages (from `/proc/loadavg`). With `-p` it prints just the uptime in words, such as `up 1 hour, 12 minutes`.
+
+# EXAMPLES
+    uptime
+    uptime -p
+
+# SEE ALSO
+date(1), top(1), free(1)

@@ -1,0 +1,18 @@
+.page export 1 put variables into the environment of commands
+.alias readonly
+
+# SYNOPSIS
+*export* [_NAME_[=_VALUE_]]...
+*readonly* [_NAME_[=_VALUE_]]...
+
+# DESCRIPTION
+`export` is a gapsh builtin. It marks each _NAME_ so that programs started afterwards receive it in their environment, assigning _VALUE_ first if one is given. Without arguments it prints the exported variables in the form `export NAME="VALUE"`. `-n` is accepted and ignored.
+
+`readonly` does exactly the same here: it exports, but it does not make a variable read-only.
+
+# EXAMPLES
+    export EDITOR=pnote
+    export PATH="$PATH:/tmp/bin"
+
+# SEE ALSO
+unset(1), set(1), env(1), printenv(1)

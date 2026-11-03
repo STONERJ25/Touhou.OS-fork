@@ -1,0 +1,58 @@
+# Chords on the SSG: C - F - G - C, then the last C again fading out through the envelope generator, and a
+# short noise burst (a hi-hat made of the noise generator) on the off-beats of the G chord.
+# YM2203 at 3.9936 MHz (the PC-9801-26K). Render: opnatool --script ssg_chords.txt --out build/opna/ssg_chords.wav --rate 48000
+#
+# Tone period TP = phiM / (64 f) = 62400 / f here: C4 EFh, E4 BDh, F4 B3h, G4 9Fh, A4 8Eh, B4 7Eh, C5 77h, D5 6Ah.
+
+chip 2203 3993600
+w 0 07 b8                   # tones A, B, C on, noise off; port A in, port B out
+w 0 06 01                   # noise period 1: the brightest hiss
+# C major: C4 E4 G4
+w 0 00 ef
+w 0 01 00
+w 0 02 bd
+w 0 03 00
+w 0 04 9f
+w 0 05 00
+w 0 08 0c
+w 0 09 0b
+w 0 0a 0b
+wait 700
+# F major: F4 A4 C5
+w 0 00 b3
+w 0 02 8e
+w 0 04 77
+wait 700
+# G major: G4 B4 D5, with noise on channel C every other 175 ms
+w 0 00 9f
+w 0 02 7e
+w 0 04 6a
+wait 175
+w 0 07 98
+w 0 0a 09
+wait 60
+w 0 07 b8
+w 0 0a 0b
+wait 290
+w 0 07 98
+w 0 0a 09
+wait 60
+w 0 07 b8
+w 0 0a 0b
+wait 115
+# C major, then once more, decaying: envelope shape 0 (one ramp down), EP = 1000h: 256 x 4096 SSG clocks = 1.05 s
+w 0 00 ef
+w 0 02 bd
+w 0 04 9f
+wait 700
+w 0 0b 00
+w 0 0c 10
+w 0 0d 00
+w 0 08 10
+w 0 09 10
+w 0 0a 10
+wait 1300
+w 0 08 00
+w 0 09 00
+w 0 0a 00
+end 4300

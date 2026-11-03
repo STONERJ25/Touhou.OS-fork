@@ -1,0 +1,30 @@
+.page renice 1 change the scheduling priority of running processes
+
+# SYNOPSIS
+*renice* [*-n*] _PRIORITY_ [[*-p*] _PID_...] [[*-g*] _PGRP_...] [[*-u*] _USER_...]
+
+# DESCRIPTION
+`renice` sets the nice value of processes that are already running to _PRIORITY_, a number from -20 (greedy) to 19 (polite). The identifiers that follow are process ids unless a switch changes what they mean: `-p` for process ids, `-g` for process group ids (every process of the group), `-u` for users (every process of the user, by name or number). The switches may be repeated. All threads of a process share its nice value.
+
+Anybody may make their own processes more polite; only root may lower a nice value or change other people's processes. For every process `renice` prints the old and the new value.
+
+_PRIORITY_ is the new value itself, not an increment. The leading `-n` is optional and only there for people who like to type it.
+
+# OPTIONS
+@ *-p*
+    The following identifiers are process ids (the default).
+@ *-g*
+    The following identifiers are process group ids.
+@ *-u*
+    The following identifiers are users, by name or number.
+
+# EXIT STATUS
+0 if every priority was changed, 1 if any failed (the message names the process and the reason).
+
+# EXAMPLES
+    renice 10 -p 123 124
+    renice -n 19 -g 77
+    renice 5 -u reimu
+
+# SEE ALSO
+nice(1), ps(1), kill(1)

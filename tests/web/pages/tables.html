@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Spell card statistics</title>
+<style>
+  body { font-family: sans-serif; margin: 16px; }
+  table { border-collapse: collapse; margin-bottom: 16px; }
+  th, td { border: 1px solid #888; padding: 4px 8px; }
+  th { background: #335; color: white; }
+  tr:nth-child(even) td { background: #eef; }
+  td.num { text-align: right; }
+  caption { font-weight: bold; padding: 4px; }
+  #wide { width: 100%; }
+  #fixed { table-layout: fixed; width: 400px; border-collapse: separate; border-spacing: 4px; }
+</style>
+</head>
+<body>
+<table id="stats">
+  <caption>Captures by stage</caption>
+  <thead><tr><th>Stage</th><th>Boss</th><th>Cards</th><th>Captured</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>Rumia</td><td class="num">2</td><td class="num">2</td></tr>
+    <tr><td>2</td><td>Cirno</td><td class="num">3</td><td class="num">1</td></tr>
+    <tr><td>3</td><td>Hong Meiling</td><td class="num">4</td><td class="num">3</td></tr>
+    <tr><td rowspan="2">4</td><td>Patchouli Knowledge</td><td class="num">8</td><td class="num">2</td></tr>
+    <tr><td>Koakuma</td><td class="num">0</td><td class="num">0</td></tr>
+    <tr><td colspan="2">Total</td><td class="num">17</td><td class="num">8</td></tr>
+  </tbody>
+</table>
+<table id="wide">
+  <tr><td>A table at the full width shares the space in proportion to what the columns want.</td><td>Short</td></tr>
+</table>
+<table id="fixed">
+  <tr><td style="width:100px">Fixed</td><td>layout follows the first row and does not look at the rest</td></tr>
+  <tr><td>a long cell that has to wrap inside its column</td><td>x</td></tr>
+</table>
+</body>
+</html>

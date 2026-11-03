@@ -1,0 +1,17 @@
+.page crc32 1 print the CRC-32 checksum of files
+
+# SYNOPSIS
+*crc32* [_FILE_...]
+
+# DESCRIPTION
+`crc32` prints the CRC-32 checksum (the one used by zip and PNG) of each _FILE_, followed by the size in bytes and the file name. Standard input is read when there is no file; then the line has no name.
+
+# EXAMPLES
+    echo -n abc | crc32
+    crc32 /Hakurei/etc/passwd
+
+# EXIT STATUS
+0, or 1 if a file could not be read.
+
+# SEE ALSO
+md5sum(1), sha256sum(1)

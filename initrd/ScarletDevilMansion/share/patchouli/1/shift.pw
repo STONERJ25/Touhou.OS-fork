@@ -1,0 +1,13 @@
+.page shift 1 drop positional parameters
+
+# SYNOPSIS
+*shift* [_N_]
+
+# DESCRIPTION
+`shift` is a gapsh builtin that removes the first _N_ (default 1) positional parameters, so that `$2` becomes `$1` and so on. It fails with status 1 if there are fewer than _N_.
+
+# EXAMPLES
+    while [ $# -gt 0 ]; do echo "arg: $1"; shift; done
+
+# SEE ALSO
+set(1), getopts(1)

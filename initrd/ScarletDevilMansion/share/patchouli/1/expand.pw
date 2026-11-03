@@ -1,0 +1,18 @@
+.page expand 1 convert tabs to spaces
+
+# SYNOPSIS
+*expand* [*-t* _N_] [_FILE_]
+
+# DESCRIPTION
+`expand` copies _FILE_ (or standard input) to standard output with every tab character replaced by enough spaces to reach the next tab stop. Tab stops are every 8 columns unless `-t` is given. Only one file is read.
+
+# OPTIONS
+@ *-t* _N_
+    Put the tab stops _N_ columns apart.
+
+# EXAMPLES
+    expand -t 4 Makefile | less
+    expand source.c > spaces.c
+
+# SEE ALSO
+pnote(1), fold(1), tr(1)

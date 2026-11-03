@@ -1,0 +1,147 @@
+# Two bars of a rock beat on the YM2608's rhythm section (eighth notes at 120 BPM: 250 ms), a fill on the toms and
+# a cymbal at the end, over an FM bass line so there is something to hear even without drum samples.
+# The six drums live in the chip's ROM; this model plays samples the host supplies:
+#   opnatool --script rhythm.txt --out build/opna/rhythm.wav --rate 48000 --rhythm DIR
+# where DIR holds 2608_BD.WAV, 2608_SD.WAV, 2608_TOP.WAV, 2608_HH.WAV, 2608_TOM.WAV and 2608_RIM.WAV (16-bit mono).
+#
+# 10h: bit 7 = 1 stops ("dump"), 0 starts the drums in bits 0-5: BD 01, SD 02, TOP 04, HH 08, TOM 10, RIM 20.
+# 11h: total level (3Fh loudest); 18h-1Dh: per drum, bits 7-6 left/right, bits 4-0 level.
+
+chip 2608 7987200
+w 0 29 80
+w 0 11 3c                   # total level
+w 0 18 df                   # BD: both sides, full
+w 0 19 dc                   # SD
+w 0 1a 98                   # TOP: left
+w 0 1b 57                   # HH: right, a little quieter
+w 0 1c d9                   # TOM
+w 0 1d d6                   # RIM
+
+# FM bass on channel 1: algorithm 4 (S1 -> S2, S3 -> S4), feedback 5, a round low sound with a short pluck
+w 0 b0 2c
+w 0 b4 c0
+w 0 30 01
+w 0 40 1c
+w 0 50 1f
+w 0 60 0a
+w 0 70 04
+w 0 80 27
+w 0 38 01
+w 0 48 06
+w 0 58 1f
+w 0 68 05
+w 0 78 03
+w 0 88 28
+w 0 34 01
+w 0 44 24
+w 0 54 1f
+w 0 64 10
+w 0 74 06
+w 0 84 46
+w 0 3c 01
+w 0 4c 0c
+w 0 5c 1f
+w 0 6c 08
+w 0 7c 04
+w 0 8c 38
+
+wait 20
+# bar 1: BD+HH, HH, SD+HH, HH, BD+HH, BD+HH, SD+HH, HH; bass C2 C2 C2 C2 / G2 G2 G2 G2 (block 2: C 26Ah, G 39Eh)
+w 0 10 0d                   # BD HH TOP
+w 0 a4 12
+w 0 a0 6a
+w 0 28 f0
+wait 200
+w 0 28 00
+wait 50
+w 0 10 08
+w 0 28 f0
+wait 200
+w 0 28 00
+wait 50
+w 0 10 0a
+w 0 28 f0
+wait 200
+w 0 28 00
+wait 50
+w 0 10 08
+w 0 28 f0
+wait 200
+w 0 28 00
+wait 50
+w 0 10 09
+w 0 a4 13
+w 0 a0 9e
+w 0 28 f0
+wait 200
+w 0 28 00
+wait 50
+w 0 10 09
+w 0 28 f0
+wait 200
+w 0 28 00
+wait 50
+w 0 10 0a
+w 0 28 f0
+wait 200
+w 0 28 00
+wait 50
+w 0 10 08
+w 0 28 f0
+wait 200
+w 0 28 00
+wait 50
+# bar 2: the same beat over F2 F2 G2 G2 (F 339h), the last two eighths a tom fill with the rim shot
+w 0 10 09
+w 0 a4 13
+w 0 a0 39
+w 0 28 f0
+wait 200
+w 0 28 00
+wait 50
+w 0 10 08
+w 0 28 f0
+wait 200
+w 0 28 00
+wait 50
+w 0 10 0a
+w 0 28 f0
+wait 200
+w 0 28 00
+wait 50
+w 0 10 08
+w 0 28 f0
+wait 200
+w 0 28 00
+wait 50
+w 0 10 09
+w 0 a4 13
+w 0 a0 9e
+w 0 28 f0
+wait 200
+w 0 28 00
+wait 50
+w 0 10 0a
+w 0 28 f0
+wait 200
+w 0 28 00
+wait 50
+w 0 10 30                   # TOM + RIM
+w 0 28 f0
+wait 125
+w 0 10 10
+wait 75
+w 0 28 00
+wait 50
+w 0 10 12                   # TOM + SD
+wait 125
+w 0 10 10
+wait 125
+# the end: BD and the cymbal on C2
+w 0 10 05
+w 0 a4 12
+w 0 a0 6a
+w 0 28 f0
+wait 900
+w 0 28 00
+end 5600

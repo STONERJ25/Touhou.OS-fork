@@ -1,0 +1,203 @@
+# A C major scale on FM channel 1, up and down, then a C major chord on channels 1-3.
+# YM2608 at 7.9872 MHz (the PC-9801-86). Render: opnatool --script fm_scale.txt --out build/opna/fm_scale.wav --rate 48000
+#
+# The patch (our own): algorithm 4, two modulator -> carrier pairs. S1 -> S2 is the body (feedback 4 on S1),
+# S3 (MUL 7, detuned down) -> S4 (MUL 2) the bright, faster-decaying attack of an electric piano.
+# F-numbers for block 4 at 55466 Hz: C 26Ah, D 2B6h, E 30Bh, F 339h, G 39Eh, A 410h, B 48Fh, C 4D4h.
+
+chip 2608 7987200
+w 0 22 00                   # LFO off
+w 0 29 80                   # six channels (and no timer interrupts: nobody is listening)
+
+# channels 1-3 (register offsets 0, 1, 2), the same patch
+w 0 b0 24
+w 0 b1 24
+w 0 b2 24
+w 0 b4 c0
+w 0 b5 80                   # channel 2 a little to the left
+w 0 b6 40                   # channel 3 to the right
+# S1: DT 3, MUL 1, TL 35, KS 1, AR 31, DR 12, SR 3, SL 2, RR 6
+w 0 30 31
+w 0 31 31
+w 0 32 31
+w 0 40 23
+w 0 41 23
+w 0 42 23
+w 0 50 5f
+w 0 51 5f
+w 0 52 5f
+w 0 60 0c
+w 0 61 0c
+w 0 62 0c
+w 0 70 03
+w 0 71 03
+w 0 72 03
+w 0 80 26
+w 0 81 26
+w 0 82 26
+# S3 (offset 4): DT 7 (-3), MUL 7, TL 45, KS 2, AR 31, DR 18, SR 6, SL 6, RR 6
+w 0 34 77
+w 0 35 77
+w 0 36 77
+w 0 44 2d
+w 0 45 2d
+w 0 46 2d
+w 0 54 9f
+w 0 55 9f
+w 0 56 9f
+w 0 64 12
+w 0 65 12
+w 0 66 12
+w 0 74 06
+w 0 75 06
+w 0 76 06
+w 0 84 66
+w 0 85 66
+w 0 86 66
+# S2 (offset 8, carrier): MUL 1, TL 4, AR 31, DR 6, SR 2, SL 3, RR 7
+w 0 38 01
+w 0 39 01
+w 0 3a 01
+w 0 48 04
+w 0 49 04
+w 0 4a 04
+w 0 58 1f
+w 0 59 1f
+w 0 5a 1f
+w 0 68 06
+w 0 69 06
+w 0 6a 06
+w 0 78 02
+w 0 79 02
+w 0 7a 02
+w 0 88 37
+w 0 89 37
+w 0 8a 37
+# S4 (offset C, carrier): MUL 2, TL 12, AR 31, DR 10, SR 4, SL 4, RR 7
+w 0 3c 02
+w 0 3d 02
+w 0 3e 02
+w 0 4c 0c
+w 0 4d 0c
+w 0 4e 0c
+w 0 5c 1f
+w 0 5d 1f
+w 0 5e 1f
+w 0 6c 0a
+w 0 6d 0a
+w 0 6e 0a
+w 0 7c 04
+w 0 7d 04
+w 0 7e 04
+w 0 8c 47
+w 0 8d 47
+w 0 8e 47
+
+wait 50
+# up: C D E F G A B C, 400 ms each with a short gap
+w 0 a4 22
+w 0 a0 6a
+w 0 28 f0
+wait 330
+w 0 28 00
+wait 70
+w 0 a4 22
+w 0 a0 b6
+w 0 28 f0
+wait 330
+w 0 28 00
+wait 70
+w 0 a4 23
+w 0 a0 0b
+w 0 28 f0
+wait 330
+w 0 28 00
+wait 70
+w 0 a4 23
+w 0 a0 39
+w 0 28 f0
+wait 330
+w 0 28 00
+wait 70
+w 0 a4 23
+w 0 a0 9e
+w 0 28 f0
+wait 330
+w 0 28 00
+wait 70
+w 0 a4 24
+w 0 a0 10
+w 0 28 f0
+wait 330
+w 0 28 00
+wait 70
+w 0 a4 24
+w 0 a0 8f
+w 0 28 f0
+wait 330
+w 0 28 00
+wait 70
+w 0 a4 24
+w 0 a0 d4
+w 0 28 f0
+wait 330
+w 0 28 00
+wait 70
+# down: B A G F E D C
+w 0 a4 24
+w 0 a0 8f
+w 0 28 f0
+wait 330
+w 0 28 00
+wait 70
+w 0 a4 24
+w 0 a0 10
+w 0 28 f0
+wait 330
+w 0 28 00
+wait 70
+w 0 a4 23
+w 0 a0 9e
+w 0 28 f0
+wait 330
+w 0 28 00
+wait 70
+w 0 a4 23
+w 0 a0 39
+w 0 28 f0
+wait 330
+w 0 28 00
+wait 70
+w 0 a4 23
+w 0 a0 0b
+w 0 28 f0
+wait 330
+w 0 28 00
+wait 70
+w 0 a4 22
+w 0 a0 b6
+w 0 28 f0
+wait 330
+w 0 28 00
+wait 70
+w 0 a4 22
+w 0 a0 6a
+w 0 28 f0
+wait 330
+w 0 28 00
+wait 170
+# the chord: C4 on channel 1, E4 on 2, G4 on 3
+w 0 a4 22
+w 0 a0 6a
+w 0 a5 23
+w 0 a1 0b
+w 0 a6 23
+w 0 a2 9e
+w 0 28 f0
+w 0 28 f1
+w 0 28 f2
+wait 1400
+w 0 28 00
+w 0 28 01
+w 0 28 02
+end 8300

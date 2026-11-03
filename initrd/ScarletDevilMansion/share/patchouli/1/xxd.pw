@@ -1,0 +1,35 @@
+.page xxd 1 make a hex dump or turn one back into bytes
+
+# SYNOPSIS
+*xxd* [*-c* _COLS_] [*-g* _SIZE_] [*-l* _LEN_] [*-s* _SKIP_] [*-pu*] [_FILE_]
+*xxd* *-r* [_FILE_]
+
+# DESCRIPTION
+`xxd` writes a hex dump of _FILE_ (standard input if there is none): the offset, the bytes in hexadecimal and the same bytes as ASCII text. With `-r` it goes the other way.
+
+# OPTIONS
+@ *-c* _COLS_
+    Bytes per line. The default is 16.
+@ *-g* _SIZE_
+    Bytes per group, separated by a space. The default is 2; 0 puts no spaces between the bytes.
+@ *-l* _LEN_
+    Stop after _LEN_ bytes.
+@ *-s* _SKIP_
+    Start _SKIP_ bytes into the file (not for standard input).
+@ *-p*
+    Plain: just the hexadecimal digits, no offsets or text.
+@ *-u*
+    Use upper case hexadecimal digits.
+@ *-r*
+    Reverse: read hexadecimal digits and write the bytes they stand for. It understands plain dumps (`xxd -p`): it takes every pair of hexadecimal digits, skips a leading `offset:` and ignores everything else. A full dump with a text column must have that column cut off first.
+@ *-i*
+    Accepted and ignored.
+
+# EXAMPLES
+    echo -n abc | xxd -p
+    echo 616263 | xxd -r -p
+    xxd -l 32 /bin/hello
+    xxd -c 8 -g 1 /Hakurei/etc/hostname
+
+# SEE ALSO
+hexdump(1), od(1), base64(1)

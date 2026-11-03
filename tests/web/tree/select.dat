@@ -1,0 +1,80 @@
+#data
+<select><option>a<option selected>b<optgroup label=g><option>c</select>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <select>
+|       <option>
+|         "a"
+|       <option>
+|         selected=""
+|         "b"
+|       <optgroup>
+|         label="g"
+|         <option>
+|           "c"
+
+#data
+<select><div>x</div><span>y</span></select>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <select>
+|       <div>
+|         "x"
+|       <span>
+|         "y"
+
+#data
+<select><select>a
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <select>
+|     "a"
+
+#data
+<select><input>x
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <select>
+|     <input>
+|     "x"
+
+#data
+<select><option>a<hr><option>b</select>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <select>
+|       <option>
+|         "a"
+|       <hr>
+|       <option>
+|         "b"
+
+#data
+<table><tr><td><select><option>x</table>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <table>
+|       <tbody>
+|         <tr>
+|           <td>
+|             <select>
+|               <option>
+|                 "x"

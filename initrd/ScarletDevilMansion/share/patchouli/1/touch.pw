@@ -1,0 +1,17 @@
+.page touch 1 create empty files
+
+# SYNOPSIS
+*touch* _FILE_...
+
+# DESCRIPTION
+`touch` creates each _FILE_ as an empty file (mode 644) if it does not exist. A file that already exists is opened and left exactly as it is: in this system `touch` does not change modification times. Words that start with a dash are ignored.
+
+# EXIT STATUS
+0, or 1 if a file could not be created.
+
+# EXAMPLES
+    touch notes.txt
+    touch a b c
+
+# SEE ALSO
+mkdir(1), mktemp(1), stat(1)

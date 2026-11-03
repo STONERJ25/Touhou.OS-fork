@@ -1,0 +1,23 @@
+.page fold 1 wrap long lines
+
+# SYNOPSIS
+*fold* [*-s*] [*-w* _N_] [_FILE_...]
+
+# DESCRIPTION
+`fold` breaks every input line that is longer than _N_ bytes (80 by default) into several output lines.
+
+# OPTIONS
+@ *-w* _N_
+    The width at which to break.
+@ *-s*
+    Break at the last space before the limit when there is one, so words are not cut in half.
+
+# EXAMPLES
+    fold -s -w 60 article.txt
+    echo "a very long line indeed" | fold -w 10
+
+# NOTES
+`fold` counts bytes, not characters, so UTF-8 text may be cut in the middle of a character.
+
+# SEE ALSO
+cut(1), nl(1), patchouli-pager(1)

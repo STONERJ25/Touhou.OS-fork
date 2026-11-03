@@ -1,0 +1,60 @@
+.page ls 1 list directory contents
+
+# SYNOPSIS
+*ls* [*-aAdFhilpRrSt1*] [_FILE_...]
+
+# DESCRIPTION
+`ls` lists the files named on the command line and the contents of the directories named on it. Without an argument it lists the current directory. Names that start with a dot are left out unless `-a` or `-A` is given.
+
+Operands that are not directories are listed first, then each directory in turn. When more than one operand is given, or with `-R`, every directory's listing is introduced by its name and a colon.
+
+On a terminal the names are arranged in columns (filled top to bottom) and coloured by kind: directories bold blue, symbolic links bold cyan, devices bold yellow, named pipes yellow, executable files bold green. When standard output is not a terminal the names come one per line and uncoloured, which is what pipelines want.
+
+Entries are sorted by name; `-t` and `-S` change the key and `-r` reverses the result.
+
+# OPTIONS
+@ *-a*
+    Show every entry, including `.` and `..` and names that start with a dot.
+@ *-A*
+    Like `-a`, but leave out `.` and `..`.
+@ *-d*
+    List a directory operand itself instead of its contents.
+@ *-F*
+    Append a mark to each name: `/` for a directory, `*` for an executable file, `@` for a symbolic link, `|` for a named pipe.
+@ *-h*
+    With `-l`, print sizes in human readable form (1.4M instead of 1468006).
+@ *-i*
+    Print the inode number in front of each name.
+@ *-l*
+    Long format: type and permissions, link count, owner, group, size, modification time and name. A symbolic link is followed by `->` and its target. A `total` line gives the size of the directory's entries in KiB.
+@ *-p*
+    Append `/` to directory names.
+@ *-R*
+    List subdirectories recursively.
+@ *-r*
+    Reverse the sort order.
+@ *-S*
+    Sort by size, largest first.
+@ *-t*
+    Sort by modification time, newest first.
+@ *-1*
+    One entry per line, even on a terminal.
+@ *-C*
+    Accepted for compatibility; columns are already the default on a terminal.
+
+Options may be combined (`ls -laR`). A lone `--` ends the options.
+
+# EXAMPLES
+    ls -l /Hakurei/etc
+    ls -lh /bin | sort -k5 -h
+    ls -ltr /BambooForest
+    ls -d /HumanVillage/*
+
+# NOTES
+Times are shown in UTC; Gensokyo keeps its own time zone. Files modified within the last 180 days show the time of day, older ones show the year.
+
+# EXIT STATUS
+`ls` exits 0 when everything was listed, 1 when a directory could not be read, and 2 when an operand does not exist or an option is not recognised.
+
+# SEE ALSO
+find(1), stat(1), cat(1), gensokyo(7)

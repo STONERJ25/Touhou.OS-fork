@@ -1,0 +1,34 @@
+.page ntp 7 the right time after boot: the kernel's network time client
+
+# DESCRIPTION
+A PC's clock chip can be hours or a year wrong (the Dell this system runs on said 2025 in 2026), and file times, log stamps, certificate checks and ssh all want the right date. So the kernel asks for it by itself: once a network card has an address, a kernel thread called `ntp` asks NTP servers (RFC 4330, the simple form) what time it is and steps the clock. The boot never waits for it; with no network, or no answer, the clock stays as the chip left it and the thread tries again with growing pauses (10 seconds, 20, 40, ... half an hour).
+
+# WHERE IT ASKS
+In this order, stopping at the first group that gives an answer:
+- the NTP servers the DHCP lease names (option 42);
+- the servers named by `ntp=` on the kernel command line, `ntp=host[:port][,host[:port]...]`;
+- a built-in list of public names: time.cloudflare.com, time.google.com, pool.ntp.org, time.nist.gov. This is the only case in which the kernel sends a packet to a stranger on its own; `ntp=off` removes it, and so does naming a server of your own.
+
+When two servers are asked and answer, they must agree to within a second, or neither is believed and the log says so. A reply is thrown away if it does not repeat the time we sent, comes from another address, says stratum 0 (a request to go away), stratum 16 or the alarm flag (the server's clock is not synchronised), carries times before 2020, or took more than three seconds on the wire. Whatever answers, the system clock is stepped to it at once (no slewing).
+
+# KERNEL COMMAND LINE
+@ ntp=off
+    No network time at all. The default of the test suite.
+@ ntp=HOST[:PORT][,HOST[:PORT]...]
+    Servers to ask when the lease names none. A name is looked up in `/etc/hosts` and then with the name servers of `/etc/resolv.conf`.
+@ ntp.interval=SECONDS
+    How often to ask again after an answer. The default is 14400 (4 hours); at least 16.
+@ ntp.rtc=1
+    Also write the clock chip after each answer, as `hwclock -w` does: UTC, or local time with `rtc=local`. Without it the chip is never touched, which is right for a PC that also runs Windows, which keeps local time in the chip and corrects it itself.
+@ ntp.builtin=LIST
+    Replace the built-in list (used by the tests).
+
+# THE CLOCK CHIP AND init
+With `rtc=local`, `init` corrects the system clock once, early, by the zone's offset. If the first answer from a server arrived before that, `init` would be correcting a clock that is already right; so a clock set by anyone else during the first five minutes after boot is noticed, and the servers are asked again a second later.
+
+# FILES
+@ /proc/ntp
+    What the client has done: `ntp:` (synced, failing, waiting for the network, syncing, off), the server and where it came from, the last offset and delay, when, how many rounds, syncs and failures, the next round, the settings, the last error. Root can write `sync` (ask now), `server LIST` (replace the command line's servers until the next start) and `builtin LIST`.
+
+# SEE ALSO
+sntp(1), clock(7), network(7), hwclock(8), init(8)

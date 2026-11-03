@@ -1,0 +1,33 @@
+.page od 1 dump files in octal and other formats
+
+# SYNOPSIS
+*od* [*-A* _RADIX_] [*-t* _TYPE_]... [*-j* _SKIP_] [*-N* _COUNT_] [*-w* _BYTES_] [*-v*] [*-bcdosx*] [_FILE_]
+
+# DESCRIPTION
+`od` (octal dump) writes the bytes of _FILE_ (standard input if none) as numbers, several to a line. Each line starts with the offset of its first byte. Without options the data is shown as two-byte octal words. Values are read in little-endian order.
+
+Identical lines are replaced by a `*` unless `-v` is given. A last line gives the total length.
+
+# OPTIONS
+@ *-A* _RADIX_
+    How to print offsets: `o` octal (the default), `d` decimal, `x` hexadecimal, `n` none.
+@ *-t* _TYPE_
+    Output format. _TYPE_ is a letter and an optional size in bytes: `x` hexadecimal, `o` octal, `u` unsigned decimal, `d` signed decimal, `c` characters (with C escapes), `a` the same as `c`. The default size is 4 bytes, 1 for `c`. Several `-t` options print several lines for each chunk of input.
+@ *-j* _SKIP_
+    Skip _SKIP_ bytes at the start.
+@ *-N* _COUNT_
+    Stop after _COUNT_ bytes.
+@ *-w* _BYTES_
+    Bytes per output line. The default is 16.
+@ *-v*
+    Write every line; do not use `*` for repeated lines.
+@ *-b*, *-c*, *-d*, *-o*, *-s*, *-x*
+    Shorthands: `-b` one-byte octal, `-c` characters, `-d` unsigned decimal words, `-o` octal words, `-s` signed decimal words, `-x` hexadecimal words.
+
+# EXAMPLES
+    echo -n abc | od -An -tx1
+    od -c /Hakurei/etc/hostname
+    od -A x -t x1 -N 32 /bin/hello
+
+# SEE ALSO
+xxd(1), hexdump(1), strings(1)

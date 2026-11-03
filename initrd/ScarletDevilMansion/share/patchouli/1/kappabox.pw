@@ -1,0 +1,33 @@
+.page kappabox 1 Nitori's toolbox: many small tools in one program
+
+# SYNOPSIS
+*kappabox* [*--list*]
+*kappabox* _APPLET_ [_ARGUMENT_...]
+_APPLET_ [_ARGUMENT_...]
+
+# DESCRIPTION
+`kappabox` is a single program that contains most of the everyday commands. Each of them is an applet; the file `/bin/APPLET` is a symbolic link to `kappabox`, and the program looks at the name it was started under to decide which applet to run. That keeps the initrd small and means every tool shares the same option parsing and error messages.
+
+`kappabox --list` (or `kappabox` alone) prints the names of all applets. `kappabox ls -l` runs an applet without going through its link.
+
+The manual has a page for every applet. To see them all: `patchouli -l`.
+
+# THE TOOLBOX
+Files and directories: `ls cat cp mv rm trash mkdir rmdir touch ln chmod chown stat readlink realpath basename dirname find xargs`.
+
+Text: `echo head tail wc sort uniq tr cut tee rev tac nl fold paste comm cmp expand grep egrep fgrep sed less more`.
+
+Bytes and numbers: `hexdump xxd od strings base64 md5sum sha256sum crc32 expr seq factor shuf cal mktemp dd`.
+
+The system: `uname hostname whoami logname id groups date uptime free nproc env printenv ps pidof pkill kill top which sleep usleep true false yes tty clear reset dmesg mount umount sync reboot poweroff halt shutdown lsblk lspci lsusb man`.
+
+Gensokyo: `omikuji fortune saisen reimusay kappasay`.
+
+# EXIT STATUS
+An unknown applet name gives a message and the status 127. Otherwise it is the applet's own status.
+
+# NOTES
+The name is the old kappa joke: the toolbox holds everything, and has never once been found where you left it.
+
+# SEE ALSO
+patchouli(1), gapsh(1), ls(1), grep(1), sed(1)

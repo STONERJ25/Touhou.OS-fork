@@ -1,0 +1,25 @@
+.page route 1 show or change the IP routing table
+
+# SYNOPSIS
+*route* [*-n*]
+*route* *add* | *del* [*-net* | *-host*] _TARGET_ [*netmask* _MASK_] [*gw* _GATEWAY_] [*metric* _N_] [*dev* _IFACE_]
+*route* *add* | *del* *default* *gw* _GATEWAY_
+
+# DESCRIPTION
+Without arguments `route` prints the kernel routing table in the traditional columns: destination, gateway, genmask, flags (`U` up, `G` via a gateway), metric and interface. Addresses are always numeric.
+
+`add` and `del` change the table (root only). _TARGET_ is an address or the word `default`; a `/LEN` suffix or `netmask` gives the size of the network, and without either the address is a host route if its last byte is not zero, and otherwise a network whose size follows from the trailing zero bytes (10.9.0.0 is a /16). The gateway must be reachable over a connected network. When no interface is named, the one that reaches the gateway (or the target) is used.
+
+Routes are kept per destination and mask; adding the same one again replaces it. When an interface gets a new address its old routes are dropped, so set the address first and the default route afterwards.
+
+# EXAMPLES
+    route -n
+    route add default gw 10.0.2.2
+    route add -net 10.9.0.0 netmask 255.255.0.0 gw 192.168.7.1
+    route del default
+
+# EXIT STATUS
+0 on success, 1 when the kernel refused, 2 for a usage error.
+
+# SEE ALSO
+ip(1), ifconfig(1), network(7)

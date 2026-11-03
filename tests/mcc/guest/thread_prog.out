@@ -1,0 +1,7 @@
+shared=8000 atomic=16000 total=7996406
+main thread tls_value=100 tls_sum=0
+ping-pong turns=10
+sleeper returned 42
+cas: 1 0 cell=7 expected=7
+xchg old=7, fetch_or old=7 now=7
+run-rc=0

@@ -1,0 +1,31 @@
+.page profile 5 the login shell's start-up file
+
+# DESCRIPTION
+`/Hakurei/etc/profile` is read by gapsh(1) when it starts as a login shell, which is how init(8) starts it. It is an ordinary gapsh script. The shipped file:
+
+    export PATH=/bin:/sbin:/usr/bin
+    export TERM=xterm
+    export EDITOR=pnote
+    export PAGER=patchouli-pager
+
+    alias ll='ls -l'
+    alias la='ls -la'
+    alias l='ls -CF'
+    alias ..='cd ..'
+    alias grep='grep --color=auto'
+    alias cls='clear'
+    alias shutdown='poweroff'
+    alias exorcise='kill -9'
+    alias spellcards='ps'
+    alias netherworld='ls /Netherworld'
+
+`EDITOR` and `PAGER` are what programs that need to show or edit text look at: the manual viewer uses `PAGER`. A user's own `~/.gaprc` is read afterwards by interactive shells and can override all of it.
+
+# FILES
+@ /Hakurei/etc/profile
+    This file.
+@ ~/.gaprc
+    Personal additions.
+
+# SEE ALSO
+gapsh(1), motd(5), alias(1), export(1)

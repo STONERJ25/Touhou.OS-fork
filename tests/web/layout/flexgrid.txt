@@ -1,0 +1,163 @@
+# Flexbox and grid layout. Same format as block.txt.
+
+=== flex-grow shares the free space, gaps come first
+<style>body{margin:0} #c{display:flex;width:400px;gap:10px} #c div{flex:1;height:20px}</style>
+<div id=c><div id=a></div><div id=b style="flex:2"></div><div id=d></div></div>
+---
+#a 0 0 95 20
+#b 105 0 190 20
+#d 305 0 95 20
+
+=== flex-shrink is weighted by the base size
+<style>body{margin:0} #c{display:flex;width:300px} #c div{height:10px} #a{width:200px} #b{width:200px;flex-shrink:3}</style>
+<div id=c><div id=a></div><div id=b></div></div>
+---
+#a 0 0 175 10
+#b 175 0 125 10
+
+=== the automatic minimum size keeps the content
+<style>body{margin:0} #c{display:flex;width:100px} #a{width:100px} #b{width:100px}</style>
+<div id=c><div id=a>aaaaaaaaa</div><div id=b></div></div>
+---
+#a 0 0 72 16
+#b 72 0 28 16
+
+=== flex-basis and max-width freeze an item
+<style>body{margin:0} #c{display:flex;width:300px} #c div{flex:1 1 0;height:10px} #a{max-width:50px}</style>
+<div id=c><div id=a></div><div id=b></div></div>
+---
+#a 0 0 50 10
+#b 50 0 250 10
+
+=== justify-content: space-between, align-items: center
+<style>body{margin:0} #c{display:flex;width:300px;height:100px;justify-content:space-between;align-items:center} #c div{width:50px;height:20px}</style>
+<div id=c><div id=a></div><div id=b></div><div id=d></div></div>
+---
+#a 0 40 50 20
+#b 125 40 50 20
+#d 250 40 50 20
+
+=== justify-content: center and flex-end
+<style>body{margin:0} .c{display:flex;width:300px} .c div{width:50px;height:10px}</style>
+<div class=c style="justify-content:center"><div id=a></div><div id=b></div></div>
+<div class=c style="justify-content:flex-end"><div id=d></div></div>
+---
+#a 100 0 50 10
+#b 150 0 50 10
+#d 250 10 50 10
+
+=== items stretch to the line; a column takes its items' heights
+<style>body{margin:0} #c{display:flex;flex-direction:column;width:200px} #a{height:30px} #b{flex:1} #s{display:flex;height:50px} #s div{width:10px}</style>
+<div id=c><div id=a></div><div id=b>x</div></div><div id=s><div id=s1></div></div>
+---
+#c 0 0 200 46
+#a 0 0 200 30
+#b 0 30 200 16
+#s1 0 46 10 50
+
+=== a column with a definite height grows its items
+<style>body{margin:0} #c{display:flex;flex-direction:column;height:100px} #a{height:20px} #b{flex-grow:1}</style>
+<div id=c><div id=a></div><div id=b></div></div>
+---
+#b 0 20 800 80
+
+=== flex-wrap makes lines
+<style>body{margin:0} #c{display:flex;flex-wrap:wrap;width:250px} #c div{width:100px;height:10px}</style>
+<div id=c><div id=a></div><div id=b></div><div id=d></div></div>
+---
+#a 0 0 100 10
+#b 100 0 100 10
+#d 0 10 100 10
+#c 0 0 250 20
+
+=== order, and an auto margin takes the free space
+<style>body{margin:0} #c{display:flex;width:300px} #c div{width:50px;height:10px} #a{order:2} #b{margin-left:auto}</style>
+<div id=c><div id=a></div><div id=b></div></div>
+---
+#b 200 0 50 10
+#a 250 0 50 10
+
+=== row-reverse
+<style>body{margin:0} #c{display:flex;flex-direction:row-reverse;width:300px} #c div{width:50px;height:10px}</style>
+<div id=c><div id=a></div><div id=b></div></div>
+---
+#a 250 0 50 10
+#b 200 0 50 10
+
+=== text in a flex container becomes an anonymous item
+<style>body{margin:0} #c{display:flex;width:300px}</style>
+<div id=c>abc<span id=s>de</span></div>
+---
+#s 24 0 16 16
+#c 0 0 300 16
+
+=== inline-flex shrinks to its items
+<style>body{margin:0} #c{display:inline-flex}</style>
+<div><span id=c><span id=a>ab</span><span id=b>cde</span></span></div>
+---
+#c 0 0 40 16
+#b 16 0 24 16
+
+=== grid: fixed and fr columns with gaps
+<style>body{margin:0} #g{display:grid;grid-template-columns:100px 1fr 2fr;gap:5px 10px;width:430px}</style>
+<div id=g><div id=a>a</div><div id=b>b</div><div id=c>c</div><div id=d>d</div></div>
+---
+#a 0 0 100 16
+#b 110 0 103.33 16
+#c 223.33 0 206.66 16
+#d 0 21 100 16
+#g 0 0 430 37
+
+=== grid: spans, rows sized by their content, stretched items
+<style>body{margin:0} #g{display:grid;grid-template-columns:100px 100px;width:200px} #a{grid-column:1/3}</style>
+<div id=g><div id=a>x</div><div id=b>y</div><div id=c style="height:40px">z</div></div>
+---
+#a 0 0 200 16
+#b 0 16 100 40
+#c 100 16 100 40
+
+=== grid: named areas
+<style>body{margin:0} #g{display:grid;grid-template-columns:50px 150px;grid-template-rows:20px 30px;grid-template-areas:"h h" "s m"}
+#m{grid-area:m} #h{grid-area:h} #s{grid-area:s}</style>
+<div id=g><div id=m></div><div id=s></div><div id=h></div></div>
+---
+#h 0 0 200 20
+#s 0 20 50 30
+#m 50 20 150 30
+
+=== grid: repeat(auto-fill) and grid-auto-rows
+<style>body{margin:0} #g{display:grid;grid-template-columns:repeat(auto-fill,100px);width:350px;grid-auto-rows:10px}</style>
+<div id=g><div id=a></div><div id=b></div><div id=c></div><div id=d></div></div>
+---
+#c 200 0 100 10
+#d 0 10 100 10
+
+=== grid: an fr track does not get smaller than its content
+<style>body{margin:0} #g{display:grid;grid-template-columns:1fr 1fr;width:100px}</style>
+<div id=g><div id=a>aaaaaaaaaa</div><div id=b>b</div></div>
+---
+#a 0 0 80 16
+#b 80 0 20 16
+
+=== grid: line numbers, negative lines and auto placement around them
+<style>body{margin:0} #g{display:grid;grid-template-columns:repeat(3,50px);grid-auto-rows:10px}
+#a{grid-column:-2/-1;grid-row:1} #b{grid-column:2} </style>
+<div id=g><div id=a></div><div id=b></div><div id=c></div></div>
+---
+#a 100 0 50 10
+#b 50 0 50 10
+#c 0 10 50 10
+
+=== grid: column flow
+<style>body{margin:0} #g{display:grid;grid-auto-flow:column;grid-template-rows:10px 10px;grid-auto-columns:30px}</style>
+<div id=g><div id=a></div><div id=b></div><div id=c></div></div>
+---
+#a 0 0 30 10
+#b 0 10 30 10
+#c 30 0 30 10
+
+=== grid: justify-self and align-self
+<style>body{margin:0} #g{display:grid;grid-template-columns:100px;grid-template-rows:50px} #a{justify-self:center;align-self:end;width:20px;height:10px}</style>
+<div id=g><div id=a></div></div>
+---
+#a 40 40 20 10

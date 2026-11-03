@@ -1,0 +1,17 @@
+.page hosts 5 names that are known without asking a name server
+
+# DESCRIPTION
+`/etc/hosts` maps names to IPv4 addresses before the DNS is consulted. Each line holds an address followed by one or more names, separated by blanks or tabs; `#` begins a comment. The first name on a line is the official one and is what a reverse lookup (`getnameinfo`, `gethostbyaddr`) returns.
+
+    127.0.0.1   localhost localhost.localdomain
+    127.0.0.1   gensokyo
+    10.0.2.2    yukari-gate
+
+Names are compared without regard to case. Lines with IPv6 addresses are skipped; there is no IPv6 in this system. The file is read every time a name is looked up, so a change takes effect at once.
+
+# FILES
+@ /etc/hosts
+    This file (the system ships with `localhost` and `gensokyo`).
+
+# SEE ALSO
+resolv.conf(5), nslookup(1), network(7)

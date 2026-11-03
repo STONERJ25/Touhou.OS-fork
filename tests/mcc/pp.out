@@ -1,0 +1,24 @@
+hello world 4
+foobar
+myvar=5
+16 4
+[log] no args
+[log] one arg 42
+[log] two args 1 two
+COUNT=3 1
+holder 1 2
+0 0
+5
+elif branch
+4
+pp.c:68
+file ends with pp.c: 1
+stdc=1 c11=1
+adjacent string literals
+7
+a b c
+"quoted"
+'c'
+0 1
+10
+LOCAL undefined

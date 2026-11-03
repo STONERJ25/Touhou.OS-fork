@@ -1,0 +1,92 @@
+# Selector matching: "=== name", a document (until the first line with "=>"), then "selector => matches" lines; the
+# matches are the elements querySelectorAll returns, in tree order, written tag#id.class; "" for none, "invalid" for a
+# syntax error.
+
+=== combinators
+<div id=a class=x><p id=b class="y z">t</p><p id=c>u</p><span id=d></span><p id=e></p></div><p id=f></p>
+div > p                 => p#b.y.z p#c p#e
+div p                   => p#b.y.z p#c p#e
+p + p                   => p#c
+p ~ p                   => p#c p#e
+span + p                => p#e
+#b ~ span               => span#d
+.x > .y.z               => p#b.y.z
+body > p                => p#f
+div > *:last-child      => p#e
+:not(div) > p           => p#f
+
+=== structural pseudo-classes
+<ul id=u><li id=l1>1</li><li id=l2>2</li><li id=l3 class=k>3</li><li id=l4>4</li><li id=l5 class=k>5</li></ul><p id=empty></p><p id=ws> </p><p id=c><!-- x --></p>
+li:first-child          => li#l1
+li:last-child           => li#l5.k
+li:nth-child(2n+1)      => li#l1 li#l3.k li#l5.k
+li:nth-child(even)      => li#l2 li#l4
+li:nth-child(-n+2)      => li#l1 li#l2
+li:nth-last-child(2)    => li#l4
+li:nth-child(2 of .k)   => li#l5.k
+li:nth-of-type(3)       => li#l3.k
+li:only-child           => ""
+ul:only-of-type         => ul#u
+p:empty                 => p#empty p#c
+:root                   => html
+li:not(:first-child):not(:last-child) => li#l2 li#l3.k li#l4
+
+=== attributes
+<a id=a1 href="https://example.org/page.html" lang=en-US rel="nofollow noopener" data-x="AbC"></a><a id=a2 href=/local lang=en></a><input id=i1 type=CHECKBOX><input id=i2 type=text>
+[href]                  => a#a1 a#a2
+[href^="https:"]        => a#a1
+[href$=".html"]         => a#a1
+[href*=example]         => a#a1
+[rel~=noopener]         => a#a1
+[rel~=noo]              => ""
+[lang|=en]              => a#a1 a#a2
+[data-x=abc]            => ""
+[data-x=abc i]          => a#a1
+[type=checkbox]         => input#i1
+[DATA-X]                => a#a1
+a[href][lang=en]        => a#a2
+
+=== logical pseudo-classes
+<div id=d1 class="card"><img id=im><p id=p1>t</p></div><div id=d2 class=card><p id=p2>t</p></div><section id=s><h2 id=h>x</h2><p id=p3>y</p></section>
+:is(#d1, #s) > p        => p#p1 p#p3
+:where(.card) img       => img#im
+div:has(> img)          => div#d1.card
+div:has(img)            => div#d1.card
+section:has(h2 + p)     => section#s
+:has(> p) > p           => p#p1 p#p2 p#p3
+.card:not(:has(img))    => div#d2.card
+p:is(:first-child, :last-child) => p#p1 p#p2 p#p3
+
+=== state and links
+<a id=l1 href=x>x</a><a id=l2 name=anchor>y</a><input id=c1 type=checkbox checked><input id=c2 type=checkbox><input id=t1 disabled><input id=t2 required placeholder=hint><select id=s><option id=o1>a<option id=o2 selected>b</select><textarea id=ta readonly></textarea>
+:link                   => a#l1
+:any-link               => a#l1
+:visited                => ""
+:checked                => input#c1 option#o2
+input:disabled          => input#t1
+:required               => input#t2
+:placeholder-shown      => input#t2
+textarea:read-only      => textarea#ta
+input:read-write        => input#t2
+
+=== quirks mode classes
+<p id=q class=Mixed>x</p>
+.mixed                  => p#q.Mixed
+#Q                      => p#q.Mixed
+
+=== standards mode classes
+<!DOCTYPE html><p id=q class=Mixed>x</p>
+.mixed                  => ""
+.Mixed                  => p#q.Mixed
+
+=== svg names
+<svg id=sv><foreignObject id=fo></foreignObject><clipPath id=cp></clipPath></svg>
+foreignObject           => foreignObject#fo
+clipPath                => clipPath#cp
+svg > *                 => foreignObject#fo clipPath#cp
+
+=== syntax errors
+<p id=x></p>
+p >                     => invalid
+p:nosuch                => invalid
+p::before               => ""

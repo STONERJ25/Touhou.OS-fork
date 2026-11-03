@@ -1,0 +1,27 @@
+.page nl 1 number the lines of files
+
+# SYNOPSIS
+*nl* [*-b* _STYLE_] [*-w* _N_] [*-s* _SEP_] [*-v* _N_] [_FILE_...]
+
+# DESCRIPTION
+`nl` copies its input, putting a line number in front of each line. By default only lines that are not empty are numbered; empty lines are left blank so the numbers stay with the text.
+
+# OPTIONS
+@ *-b* _STYLE_
+    `a` numbers every line; any other value (the default is `t`) numbers only the non-empty lines.
+@ *-w* _N_
+    Width of the number field. The default is 6.
+@ *-s* _SEP_
+    The string put between the number and the text. The default is a tab.
+@ *-v* _N_
+    The number of the first line. The default is 1.
+
+The option `-n` is accepted and ignored.
+
+# EXAMPLES
+    nl /Hakurei/etc/motd
+    nl -ba -s': ' script.sh
+    ls | nl -w3
+
+# SEE ALSO
+cat(1), wc(1), head(1)

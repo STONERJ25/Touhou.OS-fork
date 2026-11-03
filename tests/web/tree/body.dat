@@ -1,0 +1,213 @@
+#data
+<p>one<p>two<div>three</div>four
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <p>
+|       "one"
+|     <p>
+|       "two"
+|     <div>
+|       "three"
+|     "four"
+
+#data
+<ul><li>a<li>b<ul><li>c</ul><li>d</ul>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <ul>
+|       <li>
+|         "a"
+|       <li>
+|         "b"
+|         <ul>
+|           <li>
+|             "c"
+|       <li>
+|         "d"
+
+#data
+<dl><dt>term<dd>def<dt>term2</dl>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <dl>
+|       <dt>
+|         "term"
+|       <dd>
+|         "def"
+|       <dt>
+|         "term2"
+
+#data
+<h1>a<h2>b</h1>c
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <h1>
+|       "a"
+|     <h2>
+|       "b"
+|     "c"
+
+#data
+<pre>
+first line
+</pre><textarea>
+
+keep one</textarea><listing>
+x</listing>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <pre>
+|       "first line
+"
+|     <textarea>
+|       "
+keep one"
+|     <listing>
+|       "x"
+
+#data
+<form id=a><form id=b><input></form><input>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <form>
+|       id="a"
+|       <input>
+|     <input>
+
+#data
+<button>a<button>b</button>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <button>
+|       "a"
+|     <button>
+|       "b"
+
+#data
+<p>para</p></p><br></br>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <p>
+|       "para"
+|     <p>
+|     <br>
+|     <br>
+
+#data
+<image src=x><isindex>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <img>
+|       src="x"
+|     <isindex>
+
+#data
+<plaintext><b>&amp;</plaintext>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <plaintext>
+|       "<b>&amp;</plaintext>"
+
+#data
+<xmp><b></xmp><iframe><p></iframe><noembed>&amp;</noembed>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <xmp>
+|       "<b>"
+|     <iframe>
+|       "<p>"
+|     <noembed>
+|       "&amp;"
+
+#data
+<ruby>a<rb>b<rt>c<rp>d</ruby>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <ruby>
+|       "a"
+|       <rb>
+|         "b"
+|       <rt>
+|         "c"
+|       <rp>
+|         "d"
+
+#data
+<hr><hr/><wbr><embed src=x><keygen>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <hr>
+|     <hr>
+|     <wbr>
+|     <embed>
+|       src="x"
+|     <keygen>
+
+#data
+<frameset><frame></frameset>
+#errors
+#document
+| <html>
+|   <head>
+|   <frameset>
+|     <frame>
+
+#data
+<p>text<frameset>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <p>
+|       "text"
+
+#data
+<body a=1><body a=2 b=3><html c=4>
+#errors
+#document
+| <html>
+|   c="4"
+|   <head>
+|   <body>
+|     a="1"
+|     b="3"

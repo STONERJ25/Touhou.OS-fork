@@ -1,0 +1,29 @@
+.page hwclock 8 show or set the battery-backed hardware clock
+
+# SYNOPSIS
+*hwclock* [*-s* | *-w*] [*--localtime* | *--utc*]
+
+# DESCRIPTION
+`hwclock` talks to the clock chip of the machine, the one that keeps time while the power is off. Without options it shows the time the chip holds, as `YYYY-MM-DD HH:MM:SS` followed by the offset from UTC.
+
+The chip normally keeps UTC. A machine that also runs another system may keep local time in it instead; `--localtime` tells `hwclock` to read and write the chip that way.
+
+# OPTIONS
+@ *-s*, *--hctosys*
+    Set the system clock from the chip.
+@ *-w*, *--systohc*
+    Write the system clock to the chip.
+@ *--localtime*
+    The chip holds local time.
+@ *--utc*
+    The chip holds UTC (the default).
+
+# EXIT STATUS
+0 on success; 1 if the chip could not be read or a clock could not be set; 2 for a usage error.
+
+# EXAMPLES
+    hwclock
+    hwclock --localtime -s
+
+# SEE ALSO
+date(1), uptime(1)

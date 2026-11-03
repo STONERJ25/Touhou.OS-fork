@@ -1,0 +1,17 @@
+.page known_hosts 5 the machines whose keys the ssh client trusts
+
+# DESCRIPTION
+`~/.ssh/known_hosts` (and the system's `/etc/ssh/ssh_known_hosts`) lists the host keys of the machines you have connected to. When ssh(1) connects it compares the key the machine presents with the one on record: a machine that presents a different key is refused, because it is either a different machine or someone in the middle.
+
+Each line is `hosts keytype base64key [comment]`. _hosts_ is one name or several separated by commas; a name may use `*` and `?`, and a leading `!` excludes. A host on a port other than 22 is written `[name]:port`. With the option `HashKnownHosts`, or after `ssh-keygen -H`, a name is replaced by `|1|salt|hash` (HMAC-SHA1 of the name), so that the file does not say where you have been; such a line can only be looked up, not read. A line may begin with `@revoked` (that key is never accepted, for any host) or `@cert-authority` (certificates are not supported here; the line is skipped). Blank lines and lines beginning with `#` are ignored.
+
+Only `ssh-ed25519` keys can be used by this client; keys of other types may be in the file (a file shared with OpenSSH) and are left alone. A host known only by another type counts as unknown. The file is created, with its directory `~/.ssh`, the first time a host is accepted.
+
+# FILES
+@ ~/.ssh/known_hosts
+    The user's list (`UserKnownHostsFile` names another).
+@ /etc/ssh/ssh_known_hosts
+    The system's list.
+
+# SEE ALSO
+ssh(1), ssh-keygen(1), ssh-keyscan(1), ssh_config(5)

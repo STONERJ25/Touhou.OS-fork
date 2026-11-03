@@ -1,0 +1,10 @@
+.page tty 1 print the name of the terminal
+
+# SYNOPSIS
+*tty*
+
+# DESCRIPTION
+`tty` prints the name of the terminal connected to standard input (`/dev/console`). If standard input is not a terminal it says `not a tty` and exits with status 1.
+
+# SEE ALSO
+keys(7), clear(1)

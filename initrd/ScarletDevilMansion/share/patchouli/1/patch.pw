@@ -1,0 +1,52 @@
+.page patch 1 apply a diff to files
+
+# SYNOPSIS
+*patch* [*-p* _N_] [*-d* _DIR_] [*-i* _PATCHFILE_] [*-RNEbs*] [*-o* _OUTFILE_] [*--dry-run*] [_FILE_]
+
+# DESCRIPTION
+`patch` reads a diff made by `diff` (unified, context or normal format) from standard input, or from `-i` _PATCHFILE_, and applies it to the files it names. A diff for several files is applied file by file; lines in between that are not part of a diff (`diff -r ...`, `Index: NAME`) are ignored.
+
+Each hunk must match the file exactly: there is no fuzz. `patch` first tries the line the hunk names; if the text is not there, it looks at lines further and further away (before and after) and uses the nearest match, saying `Hunk #1 succeeded at 12 (offset 3 lines).` A hunk never matches before the end of the one applied just before it. A hunk that cannot be applied is written to `NAME.rej` in unified format and reported as `Hunk #2 FAILED at 40.`; the rest of the file is still patched.
+
+The file to patch is taken from the headers of the diff, after removing as many leading directories as `-p` says. Of the new name, the old name and the `Index:` name, the first that exists is used; a diff from `/dev/null` creates the file (with its directories), a diff to `/dev/null` deletes it. If no file can be found, `patch` says `can't find file to patch at input line N` and skips that diff. A normal-format diff has no names, so _FILE_ is required for it; with _FILE_ given, it is used for every diff in the input.
+
+# OPTIONS
+@ *-p* _N_, *--strip*=_N_
+    Remove _N_ leading path components from the file names in the diff (`-p1` turns `a/src/x.c` into `src/x.c`). Several slashes count as one. The default is 0.
+@ *-d* _DIR_, *--directory*=_DIR_
+    Change to _DIR_ before doing anything else.
+@ *-i* _FILE_, *--input*=_FILE_
+    Read the diff from _FILE_ instead of standard input.
+@ *-o* _FILE_, *--output*=_FILE_
+    Write the patched result to _FILE_ and leave the original alone.
+@ *-R*, *--reverse*
+    Undo the diff: swap the old and new text.
+@ *-N*, *--forward*
+    Accepted, for compatibility.
+@ *-E*, *--remove-empty-files*
+    Delete a file that is empty after patching.
+@ *-b*, *--backup*
+    Keep the original of each patched file as `NAME.orig`.
+@ *-z* _SUFFIX_, *--suffix*=_SUFFIX_
+    Use _SUFFIX_ instead of `.orig` (implies `-b`).
+@ *-r* _FILE_, *--reject-file*=_FILE_
+    Write rejected hunks to _FILE_ instead of `NAME.rej`.
+@ *--dry-run*
+    Check whether the diff would apply and print the messages, but change no file.
+@ *-s*, *--silent*
+    Print nothing except errors.
+@ *-f*, *-t*, *-F* _N_, *-u*, *-c*, *-n*
+    Accepted and ignored (`patch` never asks questions and never uses fuzz).
+
+# EXAMPLES
+    diff -u old.c new.c > fix.patch
+    patch old.c < fix.patch
+    patch -p1 -d /tmp/src -i /tmp/fix.patch
+    patch -R old.c < fix.patch
+    patch --dry-run -p1 < big.patch
+
+# EXIT STATUS
+0 when every hunk was applied, 1 when some hunk failed or a file was skipped, 2 for trouble (no diff in the input, an unreadable file, a bad option).
+
+# SEE ALSO
+diff(1), cmp(1)

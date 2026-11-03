@@ -1,0 +1,38 @@
+.page unzip 1 list, test and extract zip archives
+
+# SYNOPSIS
+*unzip* [*-ltpoqn*] [*-d* _DIR_] _ARCHIVE_[.zip] [_MEMBER_...]
+
+# DESCRIPTION
+`unzip` extracts the members of a zip archive. Stored and deflated members are supported; each member is checked against its recorded CRC-32 and size while it is unpacked, and a damaged or truncated archive is reported rather than half-extracted. _MEMBER_ operands are glob patterns that select members (quote them so the shell leaves them alone).
+
+Members with *..* in their name or with an absolute path are not extracted, and a member is never written through a symbolic link. Unix permissions, symbolic links and modification times stored in the archive are restored. Existing files are not overwritten unless *-o* is given.
+
+Not supported: zip64, encrypted members, other compression methods and multi-disk archives (each is reported by name).
+
+# OPTIONS
+@ *-l*
+    List the members with their sizes and times.
+@ *-t*
+    Test: unpack every member without writing it anywhere, and check its CRC-32 and size.
+@ *-p*
+    Write the contents of the members to standard output.
+@ *-o*
+    Overwrite existing files.
+@ *-n*
+    Never overwrite, and do not complain about it.
+@ *-q*
+    Quiet.
+@ *-d* _DIR_
+    Extract below _DIR_, creating it if needed.
+
+# EXIT STATUS
+0, 1 if a member could not be extracted or failed its check, 2 if the archive cannot be read at all.
+
+# EXAMPLES
+    unzip -l photos.zip
+    unzip -d /tmp/photos photos.zip
+    unzip -p notes.zip a.txt | head
+
+# SEE ALSO
+zip(1), tar(1), gzip(1)

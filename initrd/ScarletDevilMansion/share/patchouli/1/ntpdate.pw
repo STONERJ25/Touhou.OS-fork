@@ -1,0 +1,14 @@
+.page ntpdate 1 set the clock from an NTP server
+
+# SYNOPSIS
+*ntpdate* [*-qw*] [*-p* _PORT_] [*-t* _SECONDS_] _SERVER_
+
+# DESCRIPTION
+`ntpdate` asks the NTP server once and steps the system clock to its time; it is `sntp -s`. `-w` writes the clock chip too, `-q` only asks. Setting the clock needs root. Read `sntp(1)` for the details of the exchange, the options and the time zone question.
+
+# EXAMPLES
+    ntpdate 10.0.2.2
+    ntpdate -w ntp.example.test
+
+# SEE ALSO
+sntp(1), hwclock(8), clock(7)

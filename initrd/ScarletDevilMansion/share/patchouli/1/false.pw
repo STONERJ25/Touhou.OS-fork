@@ -1,0 +1,14 @@
+.page false 1 do nothing, unsuccessfully
+
+# SYNOPSIS
+*false*
+
+# DESCRIPTION
+`false` ignores its arguments and exits with status 1. gapsh has a builtin of the same name.
+
+# EXAMPLES
+    false || echo "that failed, as intended"
+    until false; do echo once; break; done
+
+# SEE ALSO
+true(1), gapsh(1)

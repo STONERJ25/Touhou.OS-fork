@@ -1,0 +1,27 @@
+.page cp 1 copy files and directories
+
+# SYNOPSIS
+*cp* [*-rRavfpi*] _SOURCE_ _DEST_
+*cp* [*-rRavfpi*] _SOURCE_... _DIRECTORY_
+
+# DESCRIPTION
+`cp` copies _SOURCE_ to _DEST_, or several sources into _DIRECTORY_. File permissions are copied with the contents. A symbolic link is copied as a link.
+
+# OPTIONS
+@ *-r*, *-R*, *-a*
+    Copy directories and everything below them. Without it a directory is skipped with a message.
+@ *-v*
+    Say what is copied.
+@ *-f*, *-p*, *-i*
+    Accepted and ignored.
+
+# EXIT STATUS
+0, 1 if any copy failed or the operands are wrong, 2 for an unknown option.
+
+# EXAMPLES
+    cp notes.txt backup.txt
+    cp -r /Hakurei/etc /tmp/etc-copy
+    cp a b c /tmp
+
+# SEE ALSO
+mv(1), rm(1), dd(1)

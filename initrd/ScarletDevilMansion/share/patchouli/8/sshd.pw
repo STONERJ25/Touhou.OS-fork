@@ -1,0 +1,41 @@
+.page sshd 8 the SSH server
+
+# SYNOPSIS
+*sshd* [*-p* _PORT_]
+
+# DESCRIPTION
+`sshd` lets someone on the network log in with an SSH client (OpenSSH, PuTTY and the like): a shell on a terminal, or one command, with the standard input, output and error carried across. `init` starts it at boot (not when `nosshd` is on the kernel command line) and starts it again if it ends; each connection is served by a process of its own, at most 16 at once.
+
+Only the **public key** method is offered, there are no passwords on this door. The server speaks SSH 2.0 with exactly one set of algorithms, the first choice of every current OpenSSH: the key exchange `curve25519-sha256`, the host key `ssh-ed25519`, the cipher `chacha20-poly1305@openssh.com`, no compression. A client that cannot do those is told so and sent away. OpenSSH's strict key exchange (the answer to the Terrapin attack) is on.
+
+`root` never logs in this way: log in as a resident and use `sudo` (see sudoers(5)); `marisa` may.
+
+# KEYS
+A key may log in as _NAME_ when its line is in one of these files (only `ssh-ed25519` lines count, a line with options in front is skipped):
+
+@ /Hakurei/etc/ssh/authorized_keys/_NAME_
+    Put there by the boot image (the image builder takes `assets/local/ssh/NAME.pub`). Must belong to root and not be writable by others, or it is ignored.
+@ ~_NAME_/.ssh/authorized_keys
+    The resident's own, on the HUMANVILLAGE volume, so it survives a restart. Must belong to the resident or root and not be writable by others.
+
+The file is read at every login, so a key added or removed takes effect at once. Six failed attempts or twenty requests of any kind end a connection; a login that has not finished after 30 seconds is dropped. A client that goes silent is asked every 60 seconds whether it is still there and dropped after three unanswered rounds (`sshd.keepalive=SECONDS` on the kernel command line changes that; 0 switches it off).
+
+# LIMITS
+At most 16 connections at once and 4 from one address. An address from which five connections end without a login within a minute is not served for the next minute (one line in the log); a login clears the count. `sshd.peraddr=N` and `sshd.throttle=N` on the kernel command line change the two numbers (0: no limit). The server's timeouts use the monotonic clock, so stepping the clock with sntp(8) does not disturb a connection. `sshd.logcmds` logs the whole command of an exec request; without it the log has the first word and the length.
+
+# THE HOST KEY
+The server's own key is made the first time it runs and kept in `/HumanVillage/.system/ssh_host_ed25519_key` (root's, 0600). A key file that exists but is damaged is left alone and a temporary key is used. Without a HUMANVILLAGE volume it lives in RAM and changes at every boot, and the client will say that the host key has changed. The fingerprint is in the kernel log, in the form `ssh-keygen -l` prints, for checking the first connection of a client:
+
+    dmesg | grep 'sshd.*host key'
+
+# THE SESSION
+A shell request gives the resident's login shell with `HOME`, `USER`, `LOGNAME`, `SHELL`, `PATH`, `HOSTNAME`, `TERM` (from the client, `dumb` without a terminal), `SSH_CONNECTION`, `SSH_CLIENT` and, with a terminal, `SSH_TTY`. A command request runs `SHELL -c COMMAND`, so `ssh marisa@gensokyo 'sudo poweroff'` and `cat file | ssh marisa@gensokyo 'cat > /tmp/file'` work. The `sftp` subsystem (see sftp-server(8)) serves `sftp`, `scp` and graphical clients; there is no port forwarding. Programs of one resident that stay behind when the console session of that resident ends are sent home with it (init(8)).
+
+Everything is logged under the name `sshd` (dmesg(1), and `TOUHOU.LOG` on the volume): the connections, the fingerprint of the key that got someone in, who was turned away and why, and each command run. Nothing secret is logged.
+
+# OPTIONS
+@ *-p* _PORT_
+    Listen on _PORT_ instead of 22. Only root may start the server.
+
+# SEE ALSO
+sftp-server(8), init(8), sudoers(5), dmesg(1), accounts(7)

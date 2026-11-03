@@ -1,0 +1,142 @@
+#data
+<b>bold<i>both</b>italic</i>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <b>
+|       "bold"
+|       <i>
+|         "both"
+|     <i>
+|       "italic"
+
+#data
+<b><p>x</b>y</p>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <b>
+|     <p>
+|       <b>
+|         "x"
+|       "y"
+
+#data
+<a href=1>one<div>two<a href=2>three</a></div>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <a>
+|       href="1"
+|       "one"
+|     <div>
+|       <a>
+|         href="1"
+|         "two"
+|       <a>
+|         href="2"
+|         "three"
+
+#data
+<b><b><b><b>x</b></b></b></b>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <b>
+|       <b>
+|         <b>
+|           <b>
+|             "x"
+
+#data
+<p><b class=x><b class=x><b class=x><b class=x>y</p><p>z
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <p>
+|       <b>
+|         class="x"
+|         <b>
+|           class="x"
+|           <b>
+|             class="x"
+|             <b>
+|               class="x"
+|               "y"
+|     <p>
+|       <b>
+|         class="x"
+|         <b>
+|           class="x"
+|           <b>
+|             class="x"
+|             "z"
+
+#data
+<nobr>a<nobr>b</nobr>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <nobr>
+|       "a"
+|     <nobr>
+|       "b"
+
+#data
+<font color=red><table><tr><td>x</font></table>y
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <font>
+|       color="red"
+|       <table>
+|         <tbody>
+|           <tr>
+|             <td>
+|               "x"
+|       "y"
+
+#data
+<i>a<b>b<div>c</i>d</b>e</div>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <i>
+|       "a"
+|       <b>
+|         "b"
+|     <b>
+|     <div>
+|       <b>
+|         <i>
+|           "c"
+|         "d"
+|       "e"
+
+#data
+<object><b>x</object>y
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <object>
+|       <b>
+|         "x"
+|     "y"

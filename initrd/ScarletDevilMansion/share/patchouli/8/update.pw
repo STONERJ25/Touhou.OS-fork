@@ -1,0 +1,60 @@
+.page update 8 take a pushed update onto the ESP and guard it while on trial
+
+# SYNOPSIS
+*update recv* [*--reboot*[=_SECONDS_]] [*--loader*] [*--no-trial*] [*--replace-trial*] [*--force*]
+*update status*
+*update confirm* [*--anyway*]
+*update rollback*
+*update watchdog* [_SECONDS_]
+
+# DESCRIPTION
+`update` is the receiving end of `tools/push-update.py`, which runs on the development PC and sends a new kernel and initrd through ssh(8): `push-update.py` starts `sudo update recv` on this machine and writes the files to its standard input. Everything runs as root, so use `sudo` (only `marisa` may; see sudoers(5)).
+
+An update is made so that a machine nobody can reach with a USB stick still comes back:
+
+1. Every file is checked against the hash that came with it before the ESP is touched. A damaged transfer changes nothing.
+2. The ESP is mounted read-write for this one job (see espgrant(1)); the new files are written under temporary names, flushed, read back from the disk and compared, and only then renamed over the old ones, one at a time. A power cut at any moment leaves each file whole, old or new.
+3. The previous kernel and initrd are kept as `kernel.old` and `initrd.old` (a kernel runs only with the initrd of its own build, so they always travel as a pair, even when only the command line changed), each copy read back and compared, and listed with its size and hash in `update.old`. While an earlier push is still on trial the kept set is left alone: it is the last one known to work.
+4. `update.try` is written before the first rename. It means: **the new files are on trial**. The loader counts the starts; the first two use the new files, the next ones the previous kernel and initrd (the kernel command line then has `update.fellback`).
+5. After a restart the new system is on trial (`update.trial=N` on the command line). It proves itself when someone runs `update confirm`: `push-update.py` does that from the PC as soon as it can log in again. If nobody does within five minutes, a watchdog started by init restarts the machine, which counts as one failed try.
+
+The loader (`EFI/BOOT/BOOTX64.EFI`) is replaced only with `--loader`: a loader that does not work cannot fall back to anything, and the machine would have to be started from a USB stick once. The part that writes the ESP runs in a process of its own, in a session of its own: if ssh dies halfway, the update is finished all the same. A push is refused when this start's loader does not count trial starts (no `update.loader` on the command line) unless it is `--no-trial`; `cmdline.txt` may not carry the loader's own words (`update.loader`, `update.trial`, `update.fellback`) and is at most 200 characters.
+
+# COMMANDS
+@ *recv*
+    Read a push from standard input and install it. Prints a line `update: ...` for each step and ends with `update: result: installed` (or `unchanged`) and `update: done`, or says why nothing was changed. A push whose files are all installed already changes nothing.
+@ *status*
+    Which files this start uses (the installed ones, the new ones on trial, or the previous ones after a failed trial), whether the loader counts trial starts, what the last push was, whether `update.try` is still there, and whether a complete previous set is kept (checked against `update.old`).
+@ *confirm*
+    This start works: delete `update.try`. The new files are the installed system from now on. Refused on a start that fell back to the previous files (confirming would install the files that failed) on a start that is not the trial start (nothing has proved the files yet) and on a start that has itself received a push since it began (the files on the ESP are not the ones it runs; `status` says so); *--anyway* overrides any of them.
+@ *rollback*
+    Put the previous kernel and initrd (and command line, if the update changed it) back as the installed files and end the trial. The kept set is checked against `update.old` first. Restart afterwards.
+@ *watchdog*
+    Started by init(8) on a trial start: waits _SECONDS_ (default 300) for `update confirm` and restarts the machine if it does not come.
+
+# OPTIONS
+@ *--reboot*[=_SECONDS_]
+    Restart the machine _SECONDS_ (default 3) after a successful update, after the answer has reached the PC.
+@ *--loader*
+    Allow the push to replace the loader.
+@ *--no-trial*
+    Not on trial: the new files are the installed system at once and the previous set is only kept. For a first push to a machine that is within reach. Refused while an earlier push is still on trial.
+@ *--replace-trial*
+    An earlier push is still on trial: put this one over it. The kept previous set stays the one from before the earlier push (it must be complete).
+@ *--force*
+    Mount the ESP although it was not cleanly unmounted (a power cut).
+
+# FILES
+@ EFI/BOOT/BOOTX64.EFI, kernel.elf, initrd.img, cmdline.txt
+    What a push may carry, on the ESP.
+@ kernel.old, initrd.old, cmdline.old, EFI/BOOT/BOOTX64.old
+    The files kept before the last update. `cmdline.old` exists only if that update changed the command line.
+@ update.try
+    The trial marker: its presence means the new files are not confirmed yet.
+@ update.mf
+    What the last push installed (version, time, hashes).
+@ update.old
+    The previous set that is kept (names, sizes, SHA-256), written by the push that kept it.
+
+# SEE ALSO
+espgrant(1), sshd(8), init(8), sudoers(5)

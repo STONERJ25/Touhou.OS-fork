@@ -1,0 +1,51 @@
+.page browser 1 browse web pages and files
+
+# SYNOPSIS
+*browser* [*--trace*] [_URL_ | _PATH_]
+
+# DESCRIPTION
+Kyouko's browser shows web pages in a window: HTML with CSS (there is no JavaScript yet), plain text and pictures. Kyouko Kasodani is the yamabiko, the mountain echo: you shout an address into the valley and what answers comes back. Given an address or the path of a file it opens that; with nothing it opens the start page (*about:home*).
+
+Pages are fetched on threads, so the window stays alive while they arrive, and a page is shown while it is still coming in. Every fetch is limited: a page may be 8 MiB, a stylesheet or picture 6 MiB, a page may ask for 400 resources, the server may be silent for 20 seconds and one download may take 90 seconds. When a limit is reached the page says so in the status line or as an error page.
+
+Secure addresses (*https://*) are checked against the root certificates in */etc/ssl/cacert.pem* (or the file named by *$SSL_CERT_FILE*): name, dates and chain. A certificate that fails gives an error page with the exact reason and no way to continue anyway. The lock beside the address field means a verified certificate; a warning triangle means plain *http*.
+
+Errors are pages: the plain fact (which address, which sentence from the library that found the fault) with a remark from Kyouko next to it.
+
+# ADDRESSES
+@ http://... and https://...
+    Web pages. Redirects are followed (at most ten), compressed answers are unpacked, the character set of the answer is used.
+@ file:///path, /path, ./path, ~/path
+    Files on this computer; a folder is shown as an index of its entries.
+@ data:...
+    The data in the address itself (pictures inside pages).
+@ about:home, about:browser, about:blank
+    The start page, the keys and limits, an empty page.
+@ example.org, localhost:8080/x
+    Typed without a scheme: *https://* for names with a dot, *http://* for localhost, addresses and plain host names.
+
+# KEYS
+@ Ctrl+L, F6
+    Go to the address field. Enter opens what is typed there.
+@ Alt+Left, Alt+Right, F5 or Ctrl+R, Esc
+    Back, forward, reload, stop. The scroll position of a page is remembered when you go back.
+@ Ctrl+F, F3, Shift+F3
+    Find in the page; Enter and F3 go to the next match, Shift+F3 to the previous one, Esc closes the bar.
+@ Ctrl+A, Ctrl+C
+    Select all, copy. Drag with the mouse to select text, double-click a word, triple-click a paragraph. The clipboard holds the first 1000 bytes.
+@ Space, Shift+Space, PageUp, PageDown, Home, End, arrows, the wheel
+    Scroll. The wheel scrolls the scroll box under the pointer first, then the page.
+@ Tab, Shift+Tab, Enter, Space
+    Walk the links and form controls; Enter follows a link, Space or Enter presses a button or toggles a box.
+@ Ctrl+O, Ctrl+Q
+    Open a file with the file dialog; quit.
+
+# FORMS
+Text fields, text areas, check boxes, radio buttons and selects work; a form with *method=get* is submitted by its button or by Enter in a text field. Forms that post their data are not supported yet (the status line says so).
+
+# OPTIONS
+@ --trace
+    Print a line to standard output for every navigation, every finished load and every few seconds of painting statistics (the tests read them).
+
+# SEE ALSO
+https_get(1), gallery(1), explorer(1)

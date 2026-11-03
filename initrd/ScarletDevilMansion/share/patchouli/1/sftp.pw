@@ -1,0 +1,36 @@
+.page sftp 1 transfer files interactively over SSH
+
+# SYNOPSIS
+*sftp* [*-Bqv*] [*-b* _BATCHFILE_] [*-F* _FILE_] [*-i* _FILE_] [*-o* _OPTION_] [*-P* _PORT_] [_USER_@]_HOST_[:_PATH_]
+
+# DESCRIPTION
+`sftp` opens an encrypted SSH connection and gives a prompt at which files can be listed, fetched and sent, and the far side's files renamed or removed, with the rights of the account you logged in to. The login works as in ssh(1). Names typed to a command are quoted with double quotes when they contain blanks. A remote name that is not absolute starts at the directory `cd` last went to (the home directory at first).
+
+With *-b* the commands are read from a file (`-` for standard input) without prompts, and the first command that fails ends the run with status 1, unless the line starts with `-`.
+
+# COMMANDS
+@ *ls* [-la] [_PATH_]
+    List a remote directory (`-l` long, `-a` with names that begin with a dot).
+@ *cd* [_PATH_], *pwd*, *lcd* [_PATH_], *lpwd*, *lls* [_ARGS_]
+    Change and show the remote and the local directory; list a local one.
+@ *get* [-rp] _REMOTE_ [_LOCAL_]
+    Fetch a file (or, with `-r`, a directory; `-p` keeps times and modes). A pattern with `*` or `?` fetches several files into a local directory.
+@ *put* [-rp] _LOCAL_ [_REMOTE_]
+    Send a file or, with `-r`, a directory.
+@ *mkdir* _PATH_, *rmdir* _PATH_, *rm* _PATH_, *rename* _OLD_ _NEW_, *chmod* _MODE_ _PATH_, *ln* -s _TARGET_ _PATH_
+    Change the remote file system.
+@ !_COMMAND_
+    Run a command on this machine.
+@ *help*, *bye*, *exit*, *quit*
+    The list of commands; leave.
+
+# EXIT STATUS
+0; 1 when a command of a batch failed (or the connection was lost); 255 if the connection could not be made.
+
+# EXAMPLES
+    sftp marisa@gensokyo
+    sftp -b upload.txt marisa@gensokyo
+    sftp marisa@gensokyo:/tmp
+
+# SEE ALSO
+scp(1), ssh(1), sftp-server(8)

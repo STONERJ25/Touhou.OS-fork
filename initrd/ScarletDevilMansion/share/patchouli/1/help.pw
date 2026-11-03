@@ -1,0 +1,10 @@
+.page help 1 a short reminder of the shell
+
+# SYNOPSIS
+*help*
+
+# DESCRIPTION
+`help` is a gapsh builtin that prints the list of builtins, the main syntax and the line editing keys on a few lines. The full story is in this library: try `patchouli gapsh`.
+
+# SEE ALSO
+gapsh(1), gapsh-builtins(7), patchouli(1)

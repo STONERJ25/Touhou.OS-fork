@@ -1,0 +1,20 @@
+.page hexdump 1 display a file in hexadecimal and ASCII
+
+# SYNOPSIS
+*hexdump* [*-C*] [_FILE_]
+
+# DESCRIPTION
+`hexdump` shows the bytes of _FILE_ (or standard input) in the canonical layout: the offset in hexadecimal, sixteen bytes as hexadecimal numbers in two groups of eight, and the same bytes as characters between bars, with unprintable bytes shown as a dot. A last line gives the total length.
+
+Runs of identical sixteen-byte lines are replaced by a single `*`.
+
+# OPTIONS
+@ *-C*
+    The canonical layout. It is the only layout there is, so the option changes nothing; it is accepted because everyone types it.
+
+# EXAMPLES
+    hexdump -C /bin/hello | head
+    echo "gensokyo" | hexdump -C
+
+# SEE ALSO
+xxd(1), od(1), strings(1)

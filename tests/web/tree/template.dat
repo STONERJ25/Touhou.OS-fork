@@ -1,0 +1,77 @@
+#data
+<template><td>a</td></template>
+#errors
+#document
+| <html>
+|   <head>
+|     <template>
+|       content
+|         <td>
+|           "a"
+|   <body>
+
+#data
+<template><tr><td>x</template>
+#errors
+#document
+| <html>
+|   <head>
+|     <template>
+|       content
+|         <tr>
+|           <td>
+|             "x"
+|   <body>
+
+#data
+<head><template><p>in head</template></head>
+#errors
+#document
+| <html>
+|   <head>
+|     <template>
+|       content
+|         <p>
+|           "in head"
+|   <body>
+
+#data
+<template><template>nested</template></template>
+#errors
+#document
+| <html>
+|   <head>
+|     <template>
+|       content
+|         <template>
+|           content
+|             "nested"
+|   <body>
+
+#data
+<template><col></template><template><caption>c</template>
+#errors
+#document
+| <html>
+|   <head>
+|     <template>
+|       content
+|         <col>
+|     <template>
+|       content
+|         <caption>
+|           "c"
+|   <body>
+
+#data
+<table><template><td>x</template></table>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <table>
+|       <template>
+|         content
+|           <td>
+|             "x"

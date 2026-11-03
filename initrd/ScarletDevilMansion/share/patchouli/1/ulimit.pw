@@ -1,0 +1,10 @@
+.page ulimit 1 show resource limits
+
+# SYNOPSIS
+*ulimit* [_OPTION_...]
+
+# DESCRIPTION
+`ulimit` is a gapsh builtin that exists so that scripts which call it do not fail. It ignores its arguments and prints `unlimited`: the kernel does not impose resource limits on processes.
+
+# SEE ALSO
+free(1)

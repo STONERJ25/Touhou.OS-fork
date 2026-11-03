@@ -1,0 +1,194 @@
+#data
+<table><tr><td>a<td>b<tr><td>c</table>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <table>
+|       <tbody>
+|         <tr>
+|           <td>
+|             "a"
+|           <td>
+|             "b"
+|         <tr>
+|           <td>
+|             "c"
+
+#data
+<table><caption>cap<td>x</table>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <table>
+|       <caption>
+|         "cap"
+|       <tbody>
+|         <tr>
+|           <td>
+|             "x"
+
+#data
+<table><col span=2><colgroup><col></colgroup><tbody><tr><th>h</table>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <table>
+|       <colgroup>
+|         <col>
+|           span="2"
+|       <colgroup>
+|         <col>
+|       <tbody>
+|         <tr>
+|           <th>
+|             "h"
+
+#data
+A<table>B<tr>C<td>D</td>E</tr>F</table>G
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     "ABCEF"
+|     <table>
+|       <tbody>
+|         <tr>
+|           <td>
+|             "D"
+|     "G"
+
+#data
+<table> <tr> <td>x</td> </tr> </table>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <table>
+|       " "
+|       <tbody>
+|         <tr>
+|           " "
+|           <td>
+|             "x"
+|           " "
+|         " "
+
+#data
+<table><input type=hidden><input type=text></table>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <input>
+|       type="text"
+|     <table>
+|       <input>
+|         type="hidden"
+
+#data
+<table><form><tr><td><input></table>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <table>
+|       <form>
+|       <tbody>
+|         <tr>
+|           <td>
+|             <input>
+
+#data
+<p><table></table>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <p>
+|       <table>
+
+#data
+<!DOCTYPE html><p><table></table>
+#errors
+#document
+| <!DOCTYPE html>
+| <html>
+|   <head>
+|   <body>
+|     <p>
+|     <table>
+
+#data
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN"><p><table></table>
+#errors
+#document
+| <!DOCTYPE html "-//W3C//DTD HTML 4.01 Transitional//EN" "">
+| <html>
+|   <head>
+|   <body>
+|     <p>
+|       <table>
+
+#data
+<table><tr><td><table><tr><td>inner</table>outer</table>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <table>
+|       <tbody>
+|         <tr>
+|           <td>
+|             <table>
+|               <tbody>
+|                 <tr>
+|                   <td>
+|                     "inner"
+|             "outer"
+
+#data
+<table><thead><tr><td>h<tbody><tr><td>b<tfoot><tr><td>f</table>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <table>
+|       <thead>
+|         <tr>
+|           <td>
+|             "h"
+|       <tbody>
+|         <tr>
+|           <td>
+|             "b"
+|       <tfoot>
+|         <tr>
+|           <td>
+|             "f"
+
+#data
+<table><td>x</td></tr></tbody></table></td>y
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <table>
+|       <tbody>
+|         <tr>
+|           <td>
+|             "x"
+|     "y"

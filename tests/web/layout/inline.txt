@@ -1,0 +1,179 @@
+# Inline layout: line breaking, white space, alignment, vertical-align. Same format as block.txt.
+
+=== lines break at the container's width
+<style>body{margin:0;width:100px}</style>
+<div id=t>aaa bbb ccc ddd eee</div>
+---
+#t lines 2
+#t frag "aaa bbb ccc" 0 0 88
+#t frag "ddd eee" 0 16 56
+
+=== white space collapses across elements
+<style>body{margin:0}</style>
+<div id=t>  a   <b> b </b>  c  </div>
+---
+#t lines 1
+#t frag "a " 0 0 16
+#t frag "b " 16 0 16
+#t frag "c" 32 0 8
+
+=== text-align center and right
+<style>body{margin:0;width:100px} #c{text-align:center} #r{text-align:right}</style>
+<div id=c>abcd</div><div id=r>abcd</div>
+---
+#c frag "abcd" 34 0 32
+#r frag "abcd" 68 16 32
+
+=== text-align: justify spreads the space, not on the last line
+<style>body{margin:0;width:100px} #j{text-align:justify}</style>
+<div id=j>aa bb cc dd ee ff</div>
+---
+#j lines 2
+#j frag "aa " 0 0 28
+#j frag "bb " 28 0 28
+#j frag "cc " 56 0 28
+#j frag "dd" 84 0 16
+#j frag "ee ff" 0 16 40
+
+=== white-space: pre keeps spaces and line feeds; nowrap does not wrap
+<style>body{margin:0;width:50px}</style>
+<div id=p style="white-space:pre">a  b
+  c</div><div id=n style="white-space:nowrap">aaa bbb ccc</div>
+---
+#p lines 2
+#p frag "a  b" 0 0 32
+#p frag "  c" 0 16 24
+#n lines 1
+#n frag "aaa bbb ccc" 0 32 88
+
+=== white-space: pre-line keeps the line feeds only
+<style>body{margin:0}</style>
+<div id=p style="white-space:pre-line">a   b
+   c</div>
+---
+#p lines 2
+#p frag "a b" 0 0 24
+#p frag "c" 0 16 8
+
+=== br makes lines, two of them an empty line
+<style>body{margin:0}</style><div id=t>a<br>b<br><br>c</div>
+---
+#t lines 4
+#t 0 0 800 64
+#t frag "c" 0 48 8
+
+=== a line of white space only takes no height
+<style>body{margin:0}</style><div id=t>   </div><div id=n>x</div>
+---
+#t 0 0 800 0
+#n 0 0 800 16
+
+=== vertical-align: middle and a tall inline-block decide the line height
+<style>body{margin:0} #t{line-height:20px} #i{display:inline-block;width:10px;height:40px}
+#m{display:inline-block;width:10px;height:10px;vertical-align:middle}</style>
+<div id=t>x<span id=i></span>y<span id=m></span></div>
+---
+#t 0 0 800 46
+#t line 0 0 46 40
+#i 8 0 10 40
+#m 26 31 10 10
+
+=== vertical-align: top and bottom
+<style>body{margin:0} #i{display:inline-block;width:10px;height:40px} #t1{display:inline-block;width:5px;height:5px;vertical-align:top}
+#b1{display:inline-block;width:5px;height:5px;vertical-align:bottom}</style>
+<div id=t>x<span id=i></span><span id=t1></span><span id=b1></span></div>
+---
+#t 0 0 800 44
+#t1 18 0 5 5
+#b1 23 39 5 5
+
+=== the baseline of an inline-block is its last line's
+<style>body{margin:0}</style><div id=t>x<span id=ib style="display:inline-block">a<br>b</span>y</div>
+---
+#ib 8 0 8 32
+#t 0 0 800 32
+#t frag "y" 16 16 8
+
+=== inline-block widths shrink to fit
+<style>body{margin:0}</style><div><span id=s style="display:inline-block;padding:2px">abc def</span></div>
+---
+#s 0 0 60 20
+
+=== inline boxes: padding and borders at their ends
+<style>body{margin:0}</style><div id=t>a<span id=s style="padding:0 5px;border-left:2px solid">bc</span>d</div>
+---
+#s 8 0 28 16
+#t frag "bc" 15 0 16
+#t frag "d" 36 0 8
+
+=== text-indent indents the first line
+<style>body{margin:0;width:100px} #t{text-indent:20px}</style><div id=t>aaa bbb ccc</div>
+---
+#t frag "aaa bbb" 20 0 56
+#t frag "ccc" 0 16 24
+
+=== overflow-wrap: anywhere breaks a long word
+<style>body{margin:0;width:40px} #t{overflow-wrap:anywhere}</style><div id=t>abcdefghij</div>
+---
+#t lines 2
+#t frag "abcde" 0 0 40
+#t frag "fghij" 0 16 40
+
+=== a long word without overflow-wrap overflows
+<style>body{margin:0;width:40px}</style><div id=t>abcdefghij k</div>
+---
+#t lines 2
+#t frag "abcdefghij" 0 0 80
+
+=== word-break: break-all
+<style>body{margin:0;width:40px} #t{word-break:break-all}</style><div id=t>abcdefg hi</div>
+---
+#t frag "abcde" 0 0 40
+#t frag "fg hi" 0 16 40
+
+=== CJK text breaks between characters, not before a full stop
+<style>body{margin:0;width:64px}</style><div id=t>日本語の文章です。</div>
+---
+#t lines 3
+#t frag "日本語の" 0 0 64
+#t frag "文章で" 0 16 48
+#t frag "す。" 0 32 32
+
+=== hyphens and zero width spaces are break opportunities
+<style>body{margin:0;width:56px}</style><div id=t>well-known</div><div id=z>aaaa&#x200B;bbbb</div>
+---
+#t frag "well-" 0 0 40
+#t frag "known" 0 16 40
+#z lines 2
+
+=== wbr is a break opportunity
+<style>body{margin:0;width:40px}</style><div id=t>abc<wbr>defg</div>
+---
+#t lines 2
+
+=== a float in the line puts the text beside it
+<style>body{margin:0;width:200px} #f{float:right;width:50px;height:20px}</style><div id=t>aaa <span id=f></span>bbb ccc ddd eee fff ggg</div>
+---
+#f 150 0 50 20
+#t frag "aaa " 0 0 32
+#t frag "bbb ccc ddd" 32 0 88
+#t frag "eee fff ggg" 0 16 88
+
+=== letter-spacing and word-spacing add to the advance
+<style>body{margin:0} #t{letter-spacing:2px} #w{word-spacing:10px}</style><div id=t>ab</div><div id=w>a b</div>
+---
+#t frag "ab" 0 0 20
+#w frag "a b" 0 16 34
+
+=== text-transform
+<style>body{margin:0}</style><div id=u style="text-transform:uppercase">abc é</div><div id=c style="text-transform:capitalize">hello big world</div>
+---
+#u frag "ABC É" 0 0 40
+#c frag "Hello Big World" 0 16 120
+
+=== font-size and line-height from the style
+<style>body{margin:0} #t{font-size:32px;line-height:40px}</style><div id=t>ab</div>
+---
+#t 0 0 800 40
+#t line 0 0 40 28
+#t frag "ab" 0 4 32

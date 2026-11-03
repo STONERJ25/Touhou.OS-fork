@@ -1,0 +1,29 @@
+.page cat 1 concatenate files and print them
+
+# SYNOPSIS
+*cat* [*-nEu*] [_FILE_...]
+
+# DESCRIPTION
+`cat` copies each _FILE_ to standard output in order. With no file, or for the name `-`, it copies standard input. A file that cannot be opened is reported and the rest are still copied.
+
+# OPTIONS
+@ *-n*
+    Number all output lines, starting at 1 and continuing across files. The number is right-aligned in six columns and followed by a tab.
+@ *-E*
+    Put a `$` at the end of each line, so trailing white space shows.
+@ *-u*
+    Accepted and ignored.
+
+Options can be combined (`-nE`) and must come first.
+
+# EXIT STATUS
+0, 1 if a file could not be read, 2 for an unknown option.
+
+# EXAMPLES
+    cat /Hakurei/etc/hostname
+    cat -n script.sh
+    cat a.txt - b.txt > all.txt
+    cat > note.txt
+
+# SEE ALSO
+tac(1), head(1), tail(1), patchouli-pager(1), pnote(1)

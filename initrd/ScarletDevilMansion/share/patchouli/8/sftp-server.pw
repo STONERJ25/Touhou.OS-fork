@@ -1,0 +1,14 @@
+.page sftp-server 8 the SFTP subsystem of sshd
+
+# SYNOPSIS
+*sftp-server*
+
+# DESCRIPTION
+`sftp-server` speaks the SFTP protocol (version 3, the one OpenSSH uses) on its standard input and output. sshd(8) starts it, as the logged-in resident, when a client asks for the `sftp` subsystem; it is not run by hand. With it `sftp`, `scp` (OpenSSH 9 and later carry their files over SFTP) and graphical clients such as WinSCP work against this machine.
+
+Everything it does is done with the rights of the resident, so the file permissions of the system apply: `/etc/shadow` stays unreadable, a file written is owned by the resident. Relative paths start in the home directory.
+
+Supported: open, read, write, close, stat, lstat, fstat, setstat (size, mode, times, owner), opendir, readdir, remove, mkdir, rmdir, rename, realpath, readlink, symlink. No protocol extensions are announced, so a client uses plain operations (a rename onto an existing file replaces it). It ends when the client closes the channel.
+
+# SEE ALSO
+sshd(8), accounts(7)

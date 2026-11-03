@@ -1,0 +1,14 @@
+.page factor 1 print the prime factors of numbers
+
+# SYNOPSIS
+*factor* _NUMBER_...
+
+# DESCRIPTION
+`factor` prints each _NUMBER_ followed by a colon and its prime factors, in ascending order, with repeated factors repeated. Numbers up to 2^64 are accepted, but large ones with big prime factors take a long time because the method is trial division.
+
+# EXAMPLES
+    factor 360
+    factor 9 97 1001
+
+# SEE ALSO
+seq(1), expr(1)

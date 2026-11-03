@@ -1,0 +1,19 @@
+.page alias 1 define or show command aliases
+.alias unalias
+
+# SYNOPSIS
+*alias* [_NAME_[=_VALUE_]]...
+*unalias* _NAME_...
+
+# DESCRIPTION
+`alias` is a gapsh builtin. `alias NAME=VALUE` makes the word _NAME_ stand for _VALUE_ when it is the first word of a command; the remaining words of the command are appended. Without arguments all aliases are listed; with just a name that alias is shown. `unalias` removes aliases.
+
+The login profile defines `ll`, `la`, `l`, `..`, `grep`, `cls`, `shutdown`, `exorcise`, `spellcards` and `netherworld` (see profile(5)).
+
+# EXAMPLES
+    alias ll='ls -l'
+    alias
+    unalias ll
+
+# SEE ALSO
+type(1), command(1), profile(5)

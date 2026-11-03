@@ -1,0 +1,86 @@
+.page sed 1 stream editor for filtering and transforming text
+
+# SYNOPSIS
+*sed* [*-nrEs*] [*-i*[_SUFFIX_]] *-e* _SCRIPT_ ... [*-f* _SCRIPTFILE_] [_FILE_...]
+*sed* [_OPTION_...] _SCRIPT_ [_FILE_...]
+
+# DESCRIPTION
+`sed` reads its input one line at a time, runs the script on each line and prints the result. The script is a list of commands, separated by newlines or semicolons, each optionally preceded by an address that says which lines it applies to. Without `-e` or `-f` the first operand is the script.
+
+Regular expressions are basic ones unless `-E` or `-r` is given; see regex(7).
+
+# OPTIONS
+@ *-n*, *--quiet*, *--silent*
+    Do not print the pattern space at the end of each cycle; only `p` and similar commands print.
+@ *-e* _SCRIPT_, *--expression*=_SCRIPT_
+    Add commands to the script. May be repeated.
+@ *-f* _FILE_, *--file*=_FILE_
+    Add the commands in _FILE_. If its first line is `#n`, it behaves like `-n`.
+@ *-E*, *-r*, *--regexp-extended*
+    Use extended regular expressions.
+@ *-i*[_SUFFIX_], *--in-place*[=_SUFFIX_]
+    Edit the files in place (each file is a separate stream). With a _SUFFIX_ the original is kept under that name added to its own.
+@ *-s*, *--separate*
+    Treat the files as separate streams: line numbers restart and `$` is the last line of each.
+@ *-z*
+    Accepted and ignored.
+
+# ADDRESSES
+    N               line number N
+    $               the last line
+    /RE/            lines matching RE (a trailing I ignores case;
+                    \cREc uses the character c as the delimiter)
+    FIRST~STEP      line FIRST, FIRST+STEP, ...
+    A,B             from A to B, either being any address above
+    A,+N            from A and the N lines after it
+    0,/RE/          from the start up to the first line matching RE
+    ADDR!           all the lines ADDR does not select
+
+An empty regular expression repeats the last one used.
+
+# COMMANDS
+@ *s*/_RE_/_REPLACEMENT_/_FLAGS_
+    Substitute. In the replacement `&` is the whole match, `\1` to `\9` are the groups, and `\n` and `\t` are newline and tab. Any character can be the delimiter. The flags: `g` replace every match, a number _N_ replace only the _N_th (with `g`, from the _N_th on), `p` print the line if a replacement was made, `i` or `I` ignore case, `w` _FILE_ also write the line to _FILE_.
+@ *y*/_SOURCE_/_DEST_/
+    Replace each character of _SOURCE_ by the character at the same place in _DEST_.
+@ *d*
+    Delete the pattern space and start the next cycle.
+@ *D*
+    Delete up to the first newline and restart the cycle without reading input.
+@ *p*, *P*
+    Print the pattern space / its first line.
+@ *n*, *N*
+    Replace the pattern space by the next line (printing the old one) / append the next line to it after a newline.
+@ *h*, *H*, *g*, *G*, *x*
+    Copy / append the pattern space to the hold space; copy / append the hold space to the pattern space; exchange the two.
+@ *z*
+    Empty the pattern space.
+@ *a* _TEXT_, *i* _TEXT_, *c* _TEXT_
+    Append text after the line / insert it before / replace the line (or the whole range) with it. Both `a\` followed by a newline and the one-line form `a text` work; a backslash at the end of a line continues the text.
+@ *=*
+    Print the current line number.
+@ *l*
+    Print the pattern space unambiguously: escapes for tabs, backslashes and non-printable bytes, a `$` at the end, long lines folded with a backslash.
+@ *r* _FILE_, *w* _FILE_
+    Queue the contents of _FILE_ for output at the end of the cycle / write the pattern space to _FILE_ (`/dev/stdout` is standard output).
+@ *q*[_CODE_], *Q*[_CODE_]
+    Quit, printing the pattern space (`q`) or not (`Q`). The optional number becomes the exit status.
+@ *{* ... *}*
+    Group commands under one address.
+@ *:*_LABEL_, *b* _LABEL_, *t* _LABEL_, *T* _LABEL_
+    A label; jump to it unconditionally / if a substitution succeeded since the last input line or the last `t` / if none did. Without a label they jump to the end of the script.
+
+# EXAMPLES
+    echo hello world | sed 's/world/gensokyo/'
+    sed -n '2,3p' file
+    sed '/^#/d;/^$/d' config
+    sed -E 's/([a-z]+) ([a-z]+)/\2 \1/' file
+    sed -i.bak 's/colour/color/g' notes.txt
+    sed '$!N;s/\n/ /' file
+    sed -n '$=' file
+
+# EXIT STATUS
+0, 1 for a bad script or usage, 2 if an input file could not be read, 4 if an in-place temporary file could not be created, or the code given to `q` or `Q`.
+
+# SEE ALSO
+grep(1), tr(1), regex(7)

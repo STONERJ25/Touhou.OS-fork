@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Residents of Gensokyo</title>
+<style>
+  body { margin: 0; font-family: sans-serif; background: #223; color: #eee; }
+  h1 { text-align: center; margin: 16px 0; }
+  .cards { display: flex; flex-wrap: wrap; gap: 16px; padding: 16px; justify-content: center; }
+  .card { width: 220px; background: #335; border-radius: 8px; padding: 12px; display: flex; flex-direction: column;
+          box-shadow: 2px 2px 6px black; }
+  .card h2 { margin: 0 0 8px; font-size: 20px; }
+  .card p { flex-grow: 1; margin: 0 0 8px; }
+  .card .more { align-self: flex-end; background: #c33; color: white; padding: 2px 8px; border-radius: 4px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; padding: 16px; }
+  .grid div { background: #446; padding: 8px; text-align: center; }
+  .badge { position: absolute; top: 4px; right: 4px; background: gold; color: black; padding: 0 4px; }
+  .rel { position: relative; }
+</style>
+</head>
+<body>
+<h1>Residents</h1>
+<div class="cards">
+  <div class="card rel" id="card1"><span class="badge">new</span><h2>Reimu</h2><p>Shrine maiden of the Hakurei Shrine. Lazy, lucky, and very good at her job when she does it.</p><span class="more">More</span></div>
+  <div class="card" id="card2"><h2>Marisa</h2><p>An ordinary magician who borrows books.</p><span class="more">More</span></div>
+  <div class="card" id="card3"><h2>Sakuya</h2><p>Head maid of the Scarlet Devil Mansion; time is on her side.</p><span class="more">More</span></div>
+  <div class="card" id="card4"><h2>Aya</h2><p>Crow tengu and the fastest reporter there is.</p><span class="more">More</span></div>
+</div>
+<div class="grid">
+  <div>Spring</div><div>Summer</div><div>Autumn</div><div>Winter</div><div>Fog</div><div>Snow</div><div>Moon</div>
+</div>
+</body>
+</html>

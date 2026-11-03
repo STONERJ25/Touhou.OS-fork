@@ -1,0 +1,45 @@
+sort 1,2,3,4,5 5-4-3-2-1
+map/filter/reduce 10,2,8,4,6 5,1,3 15
+splice 1,a,b,c,4,5|2,3
+indexOf 2 true -1 true -1
+flat 1,2,3,4 3
+from a,b,c 0,1,4 7,8
+find 5 0 2 -1
+misc 3,2,1 1,0,0 4,5,3,4,5
+toSorted 1,2,3,4,5 5,1,4,2,3 9,1,4,2,3 5,3 3,2,4,1,5
+iter 0,1;1,2 0,1 5
+cycle 1,2,
+keys 0,1,b,a 1,2 false
+assign  p,1;q,2
+frozen true true false
+create 1 2 1 true false
+descriptor false true 0,1,length
+tostring [object Array] [object Null] [object Object] 1,2,3
+groupBy odd,even
+string 12 HELLO, WORLD hello, world 4 8 World Hello, 
+split 4 a|b|c Hello
+replace baa aaaaaa x[1]y
+pad 005 5ab ababab x| x |
+unicode STRASSE 2 όσος 2 true
+codepoints 2 128512 true c 98
+compare -1 1 -1 a,b,C
+raw a\nb1c true true false
+html <b>x</b> <a name="a&quot;b">x</a> b
+number ff 0.10000000000000000555 1234.57 1.23e+2 0.00001
+number2 31 12 1000 0 NaN 8 3.14
+number3 true false 9007199254740991 true true
+locale 1,234,567.891 -0.5
+math 3 Infinity -2 3 -1 -4 5
+math2 1.4142135623730951 3 5 -1 1 31 -12 5.5
+math3 1 -1 0.7853981633974483 2.718281828459045 1 1.4142135623730951 3
+random true
+symbol Symbol(desc) desc true k symbol
+symkeys 1 0
+map 4 one string one nan zero false 1,1,NaN,0
+map2 3 1,NaN,0 undefined
+set 3 1,2,3 true 1,1;2,2;3,3
+set-iter 3,4
+set-ops 1,2,3,4 2,3 true
+weakmap 5 false true false
+map-groupBy 1,3 2
+map-forEach 1,NaN,0

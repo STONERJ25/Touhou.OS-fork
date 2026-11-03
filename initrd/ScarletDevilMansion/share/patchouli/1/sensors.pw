@@ -1,0 +1,30 @@
+.page sensors 1 CPU temperature, frequency and power on one screen
+
+# SYNOPSIS
+*sensors*
+*sensors* *-r*
+*sensors* *--probe-lpc*
+
+# DESCRIPTION
+`sensors` reads the processor's own registers through the kernel (`/proc/thermal`) and prints the temperature of core 0 and of the package, the limit at which the CPU throttles itself (TjMax) and how far below it each reading is, the frequency (the multiplier times the reference clock) and the package power. The power is the energy the package used between two looks half a second apart, so `sensors` takes two.
+
+Only the boot processor runs this kernel, so there is one core to report: the other cores' sensors are in registers of cores that never run. Where the CPU has no digital thermal sensor (QEMU's does not; neither do AMD processors, whose temperature is behind another interface), `sensors` says `no thermal sensor`, why, and exits with status 1.
+
+**The fan is not in the CPU.** Its speed is read by a separate chip on the LPC bus (a Super I/O chip such as a Nuvoton NCT67xx or an ITE IT87xx) or by the embedded controller, and `sensors` does not read it. The last line says so. `--probe-lpc` is the first step towards it: it finds out which chip the machine has.
+
+# OPTIONS
+@ *-r*
+    Print `/proc/thermal` as the kernel writes it: one `key: value` line per reading, followed by the raw value of every register that was read. This is what to send when a reading looks wrong.
+@ *--probe-lpc*
+    Root only. Look for the Super I/O chip: the kernel writes the unlock key of each chip family to the index port of the configuration pair (0x2E and 0x4E), reads the two identification registers, leaves configuration mode again, and, for a chip it knows, reads where its hardware monitor lives. The result is printed (and kept in `/proc/superio`). It writes nothing else; the exact bytes are listed in docs/SENSORS.md. It runs only when asked, never at boot, because a machine's firmware can have its own ideas about those ports; the first time on a machine, ask the owner.
+
+# EXAMPLES
+    sensors
+    sensors -r | grep -E '^(tjmax|core0|package)'
+    sudo sensors --probe-lpc
+
+# EXIT STATUS
+0 when the readings were printed, 1 when there is no sensor or no `/proc/thermal`, 2 for a usage error.
+
+# SEE ALSO
+proc(5), lspci(1), dmesg(1)

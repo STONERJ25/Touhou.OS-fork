@@ -1,0 +1,22 @@
+.page kappasay 1 let a kappa say something
+
+# SYNOPSIS
+*kappasay* [*-nt*] [*-W* _COLUMNS_] [_TEXT_...]
+
+# DESCRIPTION
+`kappasay` is reimusay(1) with a different speaker: a kappa from the workshop of Nitori's toolbox, dish on her head and cucumber at hand. The options are the same: text from the arguments or standard input, wrapped to 40 columns.
+
+# OPTIONS
+@ *-W* _COLUMNS_
+    Wrap the text at _COLUMNS_ instead of 40.
+@ *-n*
+    Keep the input lines unwrapped.
+@ *-t*
+    A thought bubble.
+
+# EXAMPLES
+    kappasay "Have you tried turning it off and on again?"
+    uname -a | kappasay -n
+
+# SEE ALSO
+reimusay(1), kappabox(1)

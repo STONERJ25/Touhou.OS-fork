@@ -1,0 +1,18 @@
+.page hakurei-greeter 8 the login screen
+
+# SYNOPSIS
+*hakurei-greeter*
+
+# DESCRIPTION
+The login screen. `init`(8) starts it, as root, inside a window server of its own (`hakurei-session --greeter`). It shows the moonlit wallpaper, a card with an avatar for every resident who has a seat (see group(5)) and a password field. Click an avatar, or press Tab or the arrow keys, to choose who is at the gate; an account without a password just needs Enter.
+
+A wrong password makes the card shake its head and shuts the gate for a moment; the attempt is written to the log. A right one makes the program write the resident's name to the pipe `init` handed it (`GREETER_FD`) and exit; `init` then takes the window server down and opens that resident's own session.
+
+# BUTTONS
+@ Text console
+    Exit with status 10: `init` opens the text prompt login(1) once, and the login screen returns when that shell ends.
+@ Shut down, Restart
+    As they say. The power button of the machine also shuts down from here.
+
+# SEE ALSO
+init(8), login(1), accounts(7), hakurei-lock(1)

@@ -1,0 +1,26 @@
+p=(3,4) sum=7
+rect (1,2)-(30,40) area=1102
+max.x=35
+small=Z size=1
+three=6 size=3
+big=198 tag=bigtag size=40
+fl2=3.5 dbl2=0.75
+mixed=7.50 mixed2=17.50
+f3=7.5 size=12
+many=38
+after modify p.x=3 out.x=1000
+copy=(3,99) orig=(3,4)
+arr[1].y=4 ap[2].x=5
+arr[0]=(5,6)
+compound literal=(7,8)
+is equal: 1
+designated: 4 0 0 9
+ia: 0 5 9 11 0
+union float=1.0 bytes=00 00 80 3f size=4
+flags: a=5 b=17 c=-3 d=1 e=123456789a size=8
+flags: a=1 b=4 c=-4 d=1
+flags: d=0 cc=4 c=4
+anon: 1 77 3 4 size=24
+offsets: 8 16 8
+tail: 3 xy size=4
+sizes: 16 16 16 3 40

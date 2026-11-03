@@ -1,0 +1,16 @@
+.page exec 1 replace the shell by a program
+
+# SYNOPSIS
+*exec* _COMMAND_ [_ARGUMENT_...]
+
+# DESCRIPTION
+`exec` is a gapsh builtin. It starts _COMMAND_ in place of the shell: nothing comes back and the shell's process becomes the program. The program is looked up in `PATH`. Without a command `exec` does nothing.
+
+# EXIT STATUS
+127 if the program cannot be found, 126 if it cannot be run.
+
+# EXAMPLES
+    exec pnote /tmp/note.txt
+
+# SEE ALSO
+eval(1), command(1)

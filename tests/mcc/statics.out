@@ -1,0 +1,21 @@
+tentative=0 counter=5
+table sum=54 count=8
+alpha,beta,gamma,delta
+message[28]: 104.101.108.108.111.44.32.34.119.111.114.108.100.34.10.9.116.97.98.92.32.65.66.0.101.110.100.0.
+fixed=abc last=0
+shorts=1 -2 3 doubles=1.50 -2.25 1.0e+10 floats=0.5 1.5 0.0
+big=9223372036854775807 bytes=255 128 127 255
+twice(1)=14 square(2)=49 null(3)=-1 
+list=123
+ptr_to_table_elem=3 msg_ptr="worl row_ptr[1][2]=6 vptr==&counter:1 addr_arith=8
+nested_str: ab cdefg
+union: ABCD
+bits: 3 12 7
+wa: 5 name 1 2 3 4
+ids: 102 101 100
+static storage: 7 80 9
+counter_user: 7 6
+tls: 15 120
+static local 13
+__func__=main
+__LINE__=114

@@ -1,0 +1,15 @@
+objects 20 v7 20 190
+string 30 ABCDE
+map 14 14 k0,k1,k2
+set abrcd
+json {"a":[1,"two",{"three":3}],"b":null,"c":"é"} 3
+generator 0:0 1:1 2:4 3:9 4:16 5:25
+class Rex makes a sound and knows sit+roll
+destructure 1 2 3,4 z,w
+caught true string
+sort 1,2,3,5,7,8,9
+tagged a|b|c1,2
+weakmap kept
+normalize 1 fi
+rejection handled
+async 10&11

@@ -1,0 +1,57 @@
+.page vncd 8 the VNC server (Hatate's remote window on the desktop)
+
+# SYNOPSIS
+*vncd* [*--port* _N_] [*--listen-all*] [*--allow-resize*] [*--verbose*]
+*vncd* *-passwd*
+*vncd* *-nopasswd*
+
+# DESCRIPTION
+`vncd` shows the desktop to a VNC viewer on another computer (TigerVNC, RealVNC, TightVNC, `vncviewer`, Remmina and the like) and takes the viewer's keyboard and mouse. It speaks RFB, the protocol of VNC, in version 3.8 (and 3.7 and 3.3 for old viewers). `init` starts it when `vnc` is on the kernel command line (`cmdline.txt`); without that word it does not run. It starts again by itself if it ever ends.
+
+By default it listens on **127.0.0.1 port 5900 only**: nothing on the network can reach it. The way in from another computer is an ssh tunnel, which also encrypts the pictures and the keys:
+
+    ssh -L 5900:127.0.0.1:5900 marisa@gensokyo
+    vncviewer localhost:5900
+
+(the second command runs on the other computer, while the ssh connection is open)
+
+Every viewer sees the same desktop; keys and clicks from any of them go to the desktop as if typed and clicked at the machine. A viewer that asks for the desktop alone (the "shared" setting off) closes the others.
+
+# PASSWORD
+`sudo vncd -passwd` asks for a password (1 to 8 characters: VNC uses no more) and keeps it in `/Hakurei/etc/vnc.passwd` (root's, 0600) and in `/HumanVillage/.system/etc/vnc.passwd`, so it survives a restart. `sudo vncd -nopasswd` removes both.
+
+Without a password, a viewer on 127.0.0.1 (that is, through the ssh tunnel, or a program on this machine) gets in without one. With a password, every viewer must give it. A password file that others may read, or that is damaged, is not used and every viewer is turned away until it is fixed.
+
+A wrong password is answered only after a second, and three wrong passwords from one address within a minute turn that address away for the next minute (one line in the log).
+
+VNC's password check is old and weak: a DES key of at most 8 characters, and somebody who records a session can try passwords on it at leisure. Keep it behind ssh.
+
+# OPTIONS
+@ *--port* _N_
+    Listen on port _N_ instead of 5900 (also `vnc.port=N` on the kernel command line).
+@ *--listen-all*
+    Listen on every interface, not only 127.0.0.1 (also `vnc.listen=all`). The log warns about it; a password is then required, and without one every viewer is turned away. The pictures and keys travel unencrypted.
+@ *--allow-resize*
+    Viewers may change the size of the desktop ("resize remote session" in TigerVNC; also `vnc.resize`). The desktop then uses part of the screen and the rest stays black. Off by default, because a viewer's window size would otherwise decide the size of the machine's own desktop.
+@ *--verbose*
+    One log line per connection, also for the ones that never get in, and the encodings and pixel format each viewer asks for (also `vnc.verbose`): for finding out why a viewer misbehaves.
+
+More words for the kernel command line: `vnc.throttle=N` (wrong passwords per minute before an address waits; 0: never), `vnc.peraddr=N` (viewers at once from one address, default 4; 0: no limit), `vnc.maxclients=N` (default 8), `vnc.stall=SECONDS` (how long a viewer may stop reading before it is dropped, default 60). When a word is given twice the last one counts; an option given to `vncd` itself beats the kernel command line.
+
+# WHAT A VIEWER GETS
+Encodings Raw, CopyRect (windows that move, and a terminal that scrolls, are copied in the viewer, not sent again), Hextile and ZRLE; the pointer's shape (the viewer draws the pointer itself, without delay); changes of the desktop size; any true-colour pixel format and an 8-bit colour map; the clipboard as text both ways (Latin-1, as RFB has it). Keys are taken as the US keyboard has them: a character the US layout cannot type does not arrive.
+
+Updates only cost something while a viewer asks for them: when nobody watches, the window server does no extra work.
+
+# FILES
+@ /dev/vinput
+    The virtual input device vncd writes keys and pointer events to (root only).
+@ /Hakurei/etc/vnc.passwd
+    The password, root's, 0600.
+@ /HumanVillage/.system/etc/vnc.passwd
+    The copy kept on the volume; vncd puts it back into /etc when it starts.
+
+Everything is logged under the name `vncd` (dmesg(1), and `TOUHOU.LOG` on the volume): who connected, who got in, wrong passwords, viewers that went away and why. No password is ever logged.
+
+# SEE ALSO
+sshd(8), init(8), dmesg(1)

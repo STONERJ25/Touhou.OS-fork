@@ -1,0 +1,9 @@
+add_asm=42 swap32=44332211 mul3=42
+memcpy/memset: ..defgh........
+backward_copy: 0120123789
+loop_sum(10)=55 max_cmov=9,9 is_zero=1,0
+xadd: old=40 cell=42
+shl_cl=3298534883328
+bsf/bsr: 4 7
+imm_operand=1005
+cpuid ok=1 tsc monotonic=1

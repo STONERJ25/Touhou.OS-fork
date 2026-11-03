@@ -1,0 +1,18 @@
+.page chown 1 change the owner and group of files
+
+# SYNOPSIS
+*chown* _OWNER_[:_GROUP_] _FILE_...
+*chown* :_GROUP_ _FILE_...
+
+# DESCRIPTION
+`chown` changes who owns each _FILE_. _OWNER_ and _GROUP_ are names (from `/Hakurei/etc/passwd` and `/Hakurei/etc/group`) or numbers. With only `:`_GROUP_ the owner is left alone. Only root (Yukari) may change ownership; for everyone else the kernel answers `Operation not permitted`, and Eiki makes a note of it.
+
+# EXIT STATUS
+0, or 1 if a name was unknown or a change was refused.
+
+# EXAMPLES
+    chown marisa notes.txt
+    chown reimu:shrine /tmp/shared
+
+# SEE ALSO
+chmod(1), ls(1), id(1), passwd(5)

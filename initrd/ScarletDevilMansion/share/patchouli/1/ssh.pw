@@ -1,0 +1,58 @@
+.page ssh 1 log in to another machine, or run a command there
+
+# SYNOPSIS
+*ssh* [*-4NnqsTtVv*] [*-D* [_BIND_:]_PORT_] [*-e* _CHAR_] [*-F* _FILE_] [*-i* _FILE_] [*-L* [_BIND_:]_PORT_:_HOST_:_HOSTPORT_] [*-l* _USER_] [*-o* _OPTION_] [*-p* _PORT_] [*-R* [_BIND_:]_PORT_:_HOST_:_HOSTPORT_] [_USER_@]_HOST_ [_COMMAND_ ...]
+
+# DESCRIPTION
+`ssh` connects to the SSH server on _HOST_ (a name or an address; IPv4 only), proves who you are, and gives you a shell there, or runs _COMMAND_ and shows what it prints. Everything that crosses the network is encrypted and the machine you reached is checked against the keys you trust (see known_hosts(5)), so it is the safe way to use another machine from this one.
+
+It speaks the same SSH-2 as the OpenSSH client, with one set of algorithms: key exchange `curve25519-sha256`, host key `ssh-ed25519`, cipher `chacha20-poly1305@openssh.com`. That is the first choice of every current OpenSSH server and of this system's own sshd(8); a server that offers none of them is told so and left (the message lists what it did offer). Login is by public key (an ed25519 key from `~/.ssh/id_ed25519` or `-i`), keyboard-interactive, or password, tried in that order, as the server allows.
+
+Without a command, and when standard input is a terminal, you get a login shell on a pseudo-terminal: the local terminal is put in raw mode for the session (every key goes to the far side, Ctrl+C included), the window size is passed on and kept up to date, and the terminal is put back when the session ends, however it ends. With a command there is no terminal, so the command's output can be piped; standard input is sent to it, and end of file on standard input ends its input. _COMMAND_ and its arguments are joined with spaces and read by the remote shell as one line.
+
+# OPTIONS
+@ *-i* _FILE_
+    Use this private key (OpenSSH format, ed25519, with or without a passphrase). It may be given more than once. Without it `~/.ssh/id_ed25519` is tried. The file must not be readable by others; one that is, is ignored with a warning.
+@ *-l* _USER_
+    The user name on the remote machine (also _USER_`@`_HOST_). The default is your name here.
+@ *-p* _PORT_
+    The port (default 22).
+@ *-o* _KEYWORD_=_VALUE_
+    Any ssh_config(5) keyword; the first value given for a keyword is the one that counts, so the command line beats the files.
+@ *-F* _FILE_
+    Read this configuration instead of `~/.ssh/config` and `/etc/ssh/ssh_config` (`-F /dev/null` reads none).
+@ *-t*, *-tt*, *-T*
+    Ask for a terminal, ask for one even if standard input is not a terminal, or never ask for one.
+@ *-N*
+    Run no command: only forward ports (see below). *-n* reads no standard input; *-s* names a subsystem instead of a command.
+@ *-e* _CHAR_
+    The escape character: `^X` for a control character, `none` to switch the escapes off (default `~`).
+@ *-q*, *-v*
+    Say less (no warnings, no banners), or more (`-vv`, `-vvv` for much more).
+@ *-L* [_BIND_:]_PORT_:_HOST_:_HOSTPORT_
+    Listen on a port of this machine (the loopback address unless _BIND_ is given); every connection made to it is carried through the server to _HOST_:_HOSTPORT_, an address as the server sees it.
+@ *-R* [_BIND_:]_PORT_:_HOST_:_HOSTPORT_
+    The other way round: the server listens on _PORT_ and every connection it gets is carried back and made to _HOST_:_HOSTPORT_ from here. The server must allow it.
+@ *-D* [_BIND_:]_PORT_
+    Listen on a port of this machine as a SOCKS server (versions 4, 4a and 5; CONNECT); programs that use it as their proxy reach any address through the server.
+@ *-4*
+    IPv4 only (it is the only kind there is). *-6* is refused. *-V* prints the version.
+
+# THE ESCAPE CHARACTER
+At the start of a line, the escape character (`~`) is taken by ssh itself and the next key says what to do: `~.` ends the session at once, `~?` lists the escapes, `~~` sends one `~`, `~R` asks for new keys, `~V` and `~v` say less or more about the connection, `~#` lists the forwarded connections. Anything else is sent on, `~` included. The escapes are only recognised on a terminal session.
+
+# HOST KEYS
+The first time a machine is reached, its key's fingerprint is shown and you are asked whether to go on (`yes`, `no`, or the fingerprint itself); a yes writes the key to `~/.ssh/known_hosts`. When there is no terminal to ask on (a script, `-o BatchMode=yes`) an unknown host is refused. `StrictHostKeyChecking` changes that: `yes` never adds a key, `accept-new` adds new keys without asking, `no` adds them and goes on. A key that differs from the one on record is ALWAYS refused, whatever the setting, with a warning that says where the old key is; after checking that the machine really was reinstalled, `ssh-keygen -R` HOST removes the old entry.
+
+# EXIT STATUS
+The exit status of the remote command, or 255 if ssh itself failed (no connection, a refused host key, a refused login, a lost connection, `~.`), or 255 when the command was killed by a signal.
+
+# EXAMPLES
+    ssh marisa@gensokyo
+    ssh -i ~/.ssh/work_key git@server.example.net 'ls repos'
+    cat notes.txt | ssh marisa@gensokyo 'cat > notes.txt'
+    ssh -L 5900:127.0.0.1:5900 marisa@gensokyo
+    ssh -o BatchMode=yes gensokyo uptime
+
+# SEE ALSO
+ssh_config(5), known_hosts(5), ssh-keygen(1), ssh-keyscan(1), scp(1), sftp(1), sshd(8)

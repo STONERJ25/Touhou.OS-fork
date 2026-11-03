@@ -1,0 +1,27 @@
+.page audio 7 the sound system
+
+# DESCRIPTION
+Sound belongs to the Kappa engineers. The kernel drives the sound card (Intel High Definition Audio, or AC'97 as a fallback), mixes every program that plays into one stream, and offers it as the device `/dev/audio`. Programs open it, say what format their samples are in, and write them; they never have to agree with each other.
+
+Where there is no sound hardware (or the kernel was started with `noaudio`) the device does not exist, opening it fails with "No such file or directory", and the tools say "this machine has no sound device". Programs are expected to cope with that.
+
+# THE DEVICE
+Each open of `/dev/audio` is a stream with its own format, volume and queue. The format is one of 8-bit unsigned, 16, 24 or 32-bit signed little endian samples, mono or stereo, at any rate from 4000 to 192000 Hz; the kernel converts to 48 kHz stereo 16-bit, adds all streams, applies the master volume and a soft limiter (so two loud programs never wrap around into noise), and hands the result to the hardware. A write waits for room in the queue, or with `O_NONBLOCK` returns what fits (`poll` says when there is room again). When a stream has nothing to play the output is silence, never a repeat of old sound. Closing the device does not cut off what was already written.
+
+The device belongs to group `shrine`, like the display: those who sit at the machine may use it.
+
+# CONTROLS
+The master volume is shown and set by `volume(1)`. It is software, in the kernel mixer, and lasts until the next boot. The hardware amplifiers are left at their 0 dB setting.
+
+When headphones are plugged into a jack that can sense them, the speaker and the rear line out are silenced, like Linux's auto-mute; jacks that cannot be sensed stay on.
+
+# FILES
+@ /dev/audio
+    The device.
+@ /proc/audio
+    The sound card, the path from the converter to the jack, the master volume, counters (frames mixed, underruns) and one line per stream.
+@ /etc/hakurei/sounds
+    The system sounds (the login chime, the dialog bell, the error sound and the shutdown tune) are on unless this file says `off`. The environment variable `HAKUREI_SOUNDS` (`on` or `off`) overrides it, and `nosounds` on the kernel command line turns them off.
+
+# SEE ALSO
+beep(1), play(1), volume(1), dmesg(1)

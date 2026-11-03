@@ -1,0 +1,46 @@
+.page gzip 1 compress files
+.alias gunzip
+
+# SYNOPSIS
+*gzip* [*-cdfklnNqrtv1-9*] [_FILE_...]
+*gunzip* [*-cfklnqrtv*] [_FILE_...]
+
+# DESCRIPTION
+`gzip` replaces each _FILE_ with a compressed copy named _FILE_.gz that keeps the owner's permissions and the modification time, and removes the original. `gunzip` (or *gzip -d*) does the opposite: _FILE_.gz becomes _FILE_ again, with the time stored inside the archive. Files that end in .tgz come back as .tar.
+
+The compression is DEFLATE from libz: LZ77 with hash chains, Huffman coding, and stored blocks for data that does not compress. Several gzip members glued together are read as one stream. With no _FILE_ (or with *-*) the data comes from standard input and goes to standard output.
+
+# OPTIONS
+@ *-c*
+    Write to standard output and keep the original files.
+@ *-d*
+    Decompress.
+@ *-f*
+    Overwrite an existing output file, and compress even when the output is a terminal.
+@ *-k*
+    Keep the original file.
+@ *-l*
+    List the compressed size, the uncompressed size, the ratio and the CRC-32 of each file.
+@ *-n*, *-N*
+    Do not store (*-n*) or do store (*-N*, the default) the original name and time.
+@ *-q*
+    Say nothing about warnings.
+@ *-r*
+    Walk directories and treat every file below them.
+@ *-t*
+    Test: decompress and check the checksums, write nothing.
+@ *-v*
+    Say what was done to each file.
+@ *-1* ... *-9*
+    Speed against size. *-1* is the fastest, *-9* the smallest, *-6* is the default.
+
+# EXIT STATUS
+0 on success, 1 for an error (a damaged or truncated file is an error), 2 for a warning such as a file that was ignored.
+
+# EXAMPLES
+    gzip notes.txt
+    gunzip -c notes.txt.gz | head
+    tar -cf - docs | gzip -9 > docs.tar.gz
+
+# SEE ALSO
+zcat(1), crc32(1)

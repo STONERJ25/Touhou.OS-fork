@@ -1,0 +1,35 @@
+.page zip 1 package files into a zip archive
+
+# SYNOPSIS
+*zip* [*-rjqv0-9*] _ARCHIVE_[.zip] _FILE_... [*-x* _PATTERN_...]
+
+# DESCRIPTION
+`zip` creates a PKZIP archive that every other system can open. Each file is deflated with libz unless that would not make it smaller, in which case it is stored as it is. Directories are stored as entries of their own, symbolic links are stored as links, and permissions and modification times are kept (both the DOS time that old tools read and the UTC timestamp extension).
+
+A name without an extension gets *.zip* appended. The archive must not exist yet: adding to an existing archive is not supported, and an existing file is never overwritten. The archive is written under a temporary name and moved into place when it is complete, so a failure leaves nothing behind.
+
+Limits: no zip64 (so no archive or member of 4 GiB or more), no encryption, no spanning.
+
+# OPTIONS
+@ *-r*
+    Walk directories and add everything below them.
+@ *-j*
+    Junk the paths: store only the file names.
+@ *-q*
+    Quiet: do not list the files as they are added.
+@ *-v*
+    Verbose.
+@ *-0* ... *-9*
+    Compression level; *-0* stores everything, *-6* is the default.
+@ *-x* _PATTERN_...
+    Everything after it is a glob pattern for names to leave out.
+
+# EXIT STATUS
+0, 1 for an unreadable file or write error, 2 for bad usage or an existing archive, 12 when there was nothing to add.
+
+# EXAMPLES
+    zip -r photos.zip Pictures
+    zip -9 notes.zip a.txt b.txt -x '*.bak'
+
+# SEE ALSO
+unzip(1), tar(1), gzip(1)

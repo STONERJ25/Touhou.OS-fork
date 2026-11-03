@@ -1,0 +1,176 @@
+# Block layout (CSS 2.1 chapters 8-10): widths, margins and their collapsing, floats, positioning.
+# Every case is a page laid out in a viewport of 800x600 (unless [w=...]) with the built-in fixed-width font: at 16px each
+# character is 8px wide, line-height normal is 16px with the baseline 12px below the top. After "---" come lines the
+# layout must print (tests/host/webtool.c "layout"): "#id X Y W H" border boxes in page coordinates, "#id lines N",
+# "#id line K Y H BASELINE", '#id frag "TEXT" X Y W'. The values were worked out by hand from the specification.
+
+=== width, auto margins, padding and border
+<style>body{margin:0} #a{width:200px;margin:0 auto;height:10px} #b{width:50%;margin-left:auto;height:10px}
+#c{width:100px;padding:10px;border:5px solid;height:20px}</style>
+<div id=a></div><div id=b></div><div id=c></div>
+---
+#a 300 0 200 10
+#b 400 10 400 10
+#c 0 20 130 50
+
+=== box-sizing: border-box
+<style>body{margin:0} #a{box-sizing:border-box;width:100px;height:50px;padding:10px;border:2px solid}</style>
+<div id=a><div id=b>x</div></div>
+---
+#a 0 0 100 50
+#b 12 12 76 16
+
+=== min and max sizes
+<style>body{margin:0} #a{width:50px;min-width:80px;height:10px} #b{max-width:100px;height:10px}
+#c{height:5px;min-height:30px} #d{height:500px;max-height:40px}</style>
+<div id=a></div><div id=b></div><div id=c></div><div id=d></div>
+---
+#a 0 0 80 10
+#b 0 10 100 10
+#c 0 20 800 30
+#d 0 50 800 40
+
+=== adjoining sibling margins collapse, negative ones add
+<style>body{margin:0} div{height:10px} #a{margin-bottom:20px} #b{margin-top:30px;margin-bottom:-5px} #c{margin-top:10px}</style>
+<div id=a></div><div id=b></div><div id=c></div>
+---
+#a 0 0 800 10
+#b 0 40 800 10
+#c 0 55 800 10
+
+=== a parent's margins collapse with its first and last child's
+<style>body{margin:0} #p{margin:10px 0} #c{margin:20px 0;height:10px} #n{height:10px}</style>
+<div id=p><div id=c></div></div><div id=n></div>
+---
+#p 0 20 800 10
+#c 0 20 800 10
+#n 0 50 800 10
+
+=== padding separates the parent's margin from the child's
+<style>body{margin:0} #p{margin:10px 0;padding-top:1px} #c{margin:20px 0;height:10px}</style>
+<div id=p><div id=c></div></div>
+---
+#p 0 10 800 31
+#c 0 31 800 10
+
+=== an empty block lets the margins collapse through it
+<style>body{margin:0} #a{height:10px;margin-bottom:10px} #e{margin:15px 0} #b{height:10px;margin-top:5px}</style>
+<div id=a></div><div id=e></div><div id=b></div>
+---
+#a 0 0 800 10
+#b 0 25 800 10
+
+=== the body's margin collapses with its first child's, the root's does not
+<p id=p style="margin:20px 0">x</p>
+---
+#p 8 20 784 16
+
+=== percentage heights through html and body
+<style>html,body{height:100%;margin:0} #a{height:50%}</style><div id=a></div>
+---
+#a 0 0 800 300
+
+=== text flows around a left float
+<style>body{margin:0;width:200px} #f{float:left;width:80px;height:40px}</style>
+<div id=t><div id=f></div>aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj</div>
+---
+#f 0 0 80 40
+#t 0 0 200 64
+#t lines 4
+#t frag "aaaa bbbb cccc" 80 0 112
+#t frag "dddd eeee ffff" 80 16 112
+#t frag "gggg hhhh iiii" 80 32 112
+#t frag "jjjj" 0 48 32
+
+=== right float, left float, clear: both
+<style>body{margin:0;width:300px} #r{float:right;width:100px;height:30px} #l{float:left;width:50px;height:50px}
+#c{clear:both;height:10px}</style>
+<div id=r></div><div id=l></div><div id=c></div>
+---
+#r 200 0 100 30
+#l 0 0 50 50
+#c 0 50 300 10
+
+=== floats line up and wrap to the next row
+<style>body{margin:0;width:250px} .f{float:left;width:100px;height:20px}</style>
+<div id=a class=f></div><div id=b class=f></div><div id=c class=f></div>
+---
+#a 0 0 100 20
+#b 100 0 100 20
+#c 0 20 100 20
+
+=== a new formatting context goes beside a float
+<style>body{margin:0;width:300px} #f{float:left;width:100px;height:50px} #o{overflow:hidden;height:20px}</style>
+<div id=f></div><div id=o></div>
+---
+#o 100 0 200 20
+
+=== formatting context roots contain their floats
+<style>body{margin:0} #c{overflow:hidden} #d{display:flow-root} .f{float:left;width:10px;height:50px}</style>
+<div id=c><div class=f></div></div><div id=d><div class=f></div></div>
+---
+#c 0 0 800 50
+#d 0 50 800 50
+
+=== relative positioning moves the box, not the flow
+<style>body{margin:0} #r{position:relative;left:10px;top:5px;height:10px} #n{height:10px}</style>
+<div id=r></div><div id=n></div>
+---
+#r 10 5 800 10
+#n 0 10 800 10
+
+=== absolute boxes in a relative container's padding box
+<style>body{margin:0} #c{position:relative;width:200px;height:100px;margin-left:50px;border:2px solid}
+#a{position:absolute;right:10px;bottom:10px;width:30px;height:20px} #b{position:absolute;left:0;right:0;top:0;height:5px}</style>
+<div id=c><div id=a></div><div id=b></div></div>
+---
+#a 212 72 30 20
+#b 52 2 200 5
+
+=== the static position and the shrink-to-fit width of an absolute box
+<style>body{margin:0} #c{position:relative} #a{position:absolute}</style>
+<div id=c><div style="height:30px"></div><div id=a>abc def</div></div>
+---
+#a 0 30 56 16
+
+=== a fixed box is placed in the viewport
+<style>body{margin:0;height:2000px} #f{position:fixed;bottom:0;left:0;width:100px;height:20px}</style>
+<div id=f></div>
+---
+#f 0 580 100 20
+
+=== auto margins of an absolute box with a width center it
+<style>body{margin:0} #c{position:relative;width:300px;height:100px} #a{position:absolute;left:0;right:0;width:100px;margin:auto;top:0;bottom:0;height:20px}</style>
+<div id=c><div id=a></div></div>
+---
+#a 100 40 100 20
+
+=== lists: the markers are outside, the items start after the padding
+<style>body{margin:0}</style><ul style="margin:0"><li id=a>x</li><li id=b>y</li></ul>
+---
+#a 40 0 760 16
+#b 40 16 760 16
+
+=== an image's size from its attributes, sitting on the baseline
+<style>body{margin:0}</style><div id=d><img id=i width=50 height=40></div>
+---
+#i 0 0 50 40
+#d 0 0 800 44
+
+=== a block image keeps the ratio of its attributes
+<style>body{margin:0} img{display:block;width:100px;height:auto}</style><img id=i width=200 height=100>
+---
+#i 0 0 100 50
+
+=== -webkit-center (center element) centers the blocks inside
+<style>body{margin:0}</style><center><div id=a style="width:100px;height:10px"></div></center>
+---
+#a 350 0 100 10
+
+=== floated and absolutely positioned images
+<style>body{margin:0;width:300px} #f{float:right} #a{position:absolute;left:5px;top:100px}</style>
+<div id=t><img id=f width=50 height=20>aaa<img id=a width=10 height=10></div>
+---
+#f 250 0 50 20
+#a 5 100 10 10
+#t frag "aaa" 0 0 24

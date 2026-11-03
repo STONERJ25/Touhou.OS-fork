@@ -1,0 +1,18 @@
+fetch_add: 5 5
+fetch_sub: 100 100
+add_fetch: 10 8
+sub_fetch: 9
+fetch_and/or/xor: 9 8 73 now 73
+and_fetch/or_fetch/xor_fetch: 176 181 181
+nand: 176
+exchange: -1 now -1
+load/store: 77 1234
+cas: 1 0 i=4321 expected=4321
+short: 7 7
+uchar wraps: 250 250
+ulong: 1 1
+sync: 4322 4322 4321
+sync bool cas: 0 0 i=4323
+test_and_set: 4323 released: 0
+flag: 1 0 0
+pointer exchange: 1 1

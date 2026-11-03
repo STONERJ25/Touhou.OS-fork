@@ -1,0 +1,31 @@
+.page cut 1 select parts of each line
+
+# SYNOPSIS
+*cut* *-f* _LIST_ [*-d* _DELIM_] [*-s*] [*--output-delimiter*=_STR_] [_FILE_...]
+*cut* *-c* _LIST_ [_FILE_...]
+
+# DESCRIPTION
+`cut` writes the selected parts of every line of its input (standard input if no file is named).
+
+A _LIST_ is made of numbers and ranges separated by commas: `3`, `2-5`, `4-` (from 4 to the end), `-3` (up to 3), `1,5-7`. Positions start at 1.
+
+# OPTIONS
+@ *-f* _LIST_
+    Select fields. The default field separator is the tab character. A line without the separator is passed through unchanged, unless `-s` is used.
+@ *-d* _DELIM_
+    Use the first character of _DELIM_ as the field separator.
+@ *-s*
+    With `-f`, drop lines that do not contain the separator.
+@ *--output-delimiter*=_STR_
+    Put _STR_ between the selected fields instead of the input separator.
+@ *-c* _LIST_, *-b* _LIST_
+    Select byte positions. (Characters are not distinguished from bytes: a multibyte UTF-8 character occupies several positions.)
+
+# EXAMPLES
+    cut -d: -f1,6 /Hakurei/etc/passwd
+    cut -c1-8 listing.txt
+    echo "a,b,c" | cut -d, -f2-
+    cut -d: -f1 --output-delimiter=' / ' /Hakurei/etc/group
+
+# SEE ALSO
+paste(1), sort(1), tr(1)

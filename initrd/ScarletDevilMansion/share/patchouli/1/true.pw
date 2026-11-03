@@ -1,0 +1,16 @@
+.page true 1 do nothing, successfully
+.alias :
+
+# SYNOPSIS
+*true*
+*:*
+
+# DESCRIPTION
+`true` ignores its arguments and exits with status 0. gapsh also has `true` and `:` as builtins that do the same; `:` is handy as an empty command in loops (`while :; do ...; done`).
+
+# EXAMPLES
+    while true; do date; sleep 1; done
+    if true; then echo yes; fi
+
+# SEE ALSO
+false(1), gapsh(1)

@@ -1,0 +1,19 @@
+.page printf 1 write formatted text
+
+# SYNOPSIS
+*printf* _FORMAT_ [_ARGUMENT_...]
+
+# DESCRIPTION
+`printf` is a gapsh builtin. It writes _FORMAT_ to standard output, replacing the conversions in it by the arguments. If there are more arguments than the format uses, the format is used again until all are consumed; missing arguments count as empty or zero. No newline is added: put `\n` in the format.
+
+Conversions: `%d` and `%i` signed integer, `%u` unsigned, `%x` and `%X` hexadecimal, `%o` octal, `%f`, `%e`, `%g` (and the upper case forms) floating point, `%c` the first character, `%s` a string, `%b` a string in which `\n` and `\t` are interpreted, and `%%`. A flag, width and precision may follow the percent sign as in C (`%5d`, `%-8s`, `%.2f`, `%05d`).
+
+Escapes in the format: `\n`, `\t`, `\r`, `\a`, `\e` (escape), `\\` and `\0NNN` (octal).
+
+# EXAMPLES
+    printf '%s is %d years old\n' Reimu 17
+    printf '%05.1f|%-6s|%x\n' 3.14159 ab 255
+    printf 'line %d\n' 1 2 3
+
+# SEE ALSO
+echo(1), seq(1), expr(1)

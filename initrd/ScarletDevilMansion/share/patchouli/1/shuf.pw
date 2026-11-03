@@ -1,0 +1,14 @@
+.page shuf 1 shuffle lines randomly
+
+# SYNOPSIS
+*shuf* [_FILE_]
+
+# DESCRIPTION
+`shuf` reads all the lines of _FILE_ (or standard input) and writes them in random order, using the kernel's random number generator.
+
+# EXAMPLES
+    seq 1 10 | shuf
+    shuf names.txt | head -1
+
+# SEE ALSO
+sort(1), omikuji(1)

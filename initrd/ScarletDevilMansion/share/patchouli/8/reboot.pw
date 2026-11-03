@@ -1,0 +1,16 @@
+.page reboot 8 restart the machine
+
+# SYNOPSIS
+*reboot* [_WAY_]
+
+# DESCRIPTION
+`reboot` flushes the filesystems, says `The Hakurei barrier is resetting...` and asks the kernel to restart the machine.
+
+The kernel has several ways to do that and tries them one after the other until the machine goes: the FADT's reset register (`acpi`), the PCI reset port 0xCF9 (`pci`), the keyboard controller (`kbd`), and, only when named, the firmware's own `ResetSystem` service (`efi`) and a deliberate triple fault (`triple`). A machine can ignore some of them or be hurt by one: the Dell OptiPlex this was built for names the SMI command port as its ACPI reset register (a software interrupt into firmware that never comes back, so the register is left out of the default order there: `cat /proc/acpi` says what a plain restart tries), its firmware's `ResetSystem` faults when the kernel calls it, and the PCI reset port is what restarts it. A _WAY_ names the one to try first (`auto` is the default order); the others follow it. While it works the screen shows each way, and the PC speaker beeps N times before way N, so that a machine that hangs can be told how far it got. When none of the ways restarts the machine it is switched off instead, with a message.
+
+# FILES
+@ reboot= on the kernel command line
+    The order of the ways, for instance `reboot=efi,pci` (names as above, `cf9` is `pci`). The ones not named follow in the default order: acpi (unless it is the SMI command port), pci, kbd. `reboot=none` tries nothing and switches the machine off (a test hook).
+
+# SEE ALSO
+poweroff(8), shutdown(8), sync(1), update(8)

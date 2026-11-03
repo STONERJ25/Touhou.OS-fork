@@ -1,0 +1,18 @@
+.page cd 1 change the working directory
+
+# SYNOPSIS
+*cd* [_DIRECTORY_ | *-*]
+
+# DESCRIPTION
+`cd` is a gapsh builtin. It changes the current directory to _DIRECTORY_, or to the home directory (`$HOME`) if none is given. `cd -` goes back to the previous directory (`$OLDPWD`) and prints its name. `PWD` and `OLDPWD` are updated.
+
+# EXIT STATUS
+0, or 1 if the directory does not exist, is not a directory or is not accessible, or `HOME` or `OLDPWD` is not set.
+
+# EXAMPLES
+    cd /Hakurei/etc
+    cd
+    cd -
+
+# SEE ALSO
+pwd(1), pushd(1), gapsh-builtins(7)

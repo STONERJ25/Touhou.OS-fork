@@ -1,0 +1,44 @@
+.page sort 1 sort lines of text
+
+# SYNOPSIS
+*sort* [*-rnfubsc*] [*-k* _KEY_] [*-t* _SEP_] [*-o* _FILE_] [_FILE_...]
+
+# DESCRIPTION
+`sort` reads all the lines of its input (standard input if no file is named), sorts them and writes the result. The sort is stable when `-s` or `-u` is given; otherwise lines that compare equal on the key are put in order by comparing the whole lines, so the output does not depend on the input order.
+
+# OPTIONS
+@ *-r*
+    Reverse the result.
+@ *-n*
+    Compare keys as numbers. Leading blanks are skipped and the text is read as a decimal number, so 10 comes after 9.
+@ *-f*
+    Ignore case when comparing.
+@ *-u*
+    Write only the first of each run of lines whose keys are equal.
+@ *-b*
+    Ignore leading blanks in the key.
+@ *-s*
+    Stable: lines with equal keys keep their input order.
+@ *-c*
+    Do not sort; check whether the input is already sorted. If not, print `disorder at line N` and exit 1.
+@ *-k* _START_[,_END_]
+    Sort on the fields from _START_ to _END_ (counted from 1) instead of the whole line. A field ends at white space, or at _SEP_ when `-t` is used. After a field number the letters `n`, `f`, `r` and `b` apply that option to this key alone; a `.`_CHAR_ offset is accepted and ignored.
+@ *-t* _SEP_
+    Use the single character _SEP_ to separate fields.
+@ *-o* _FILE_
+    Write the result to _FILE_ instead of standard output.
+
+The options `-g` and `-h` are treated like `-n`; `-M`, `-d`, `-i` and `-z` are accepted and ignored.
+
+# EXAMPLES
+    sort names.txt
+    sort -rn scores.txt | head -3
+    sort -t: -k3 -n /Hakurei/etc/passwd
+    sort -u list.txt
+    ls -l /bin | sort -k5 -n
+
+# EXIT STATUS
+0; with `-c` 1 when the input is out of order; 2 for a bad option.
+
+# SEE ALSO
+uniq(1), comm(1), cut(1)

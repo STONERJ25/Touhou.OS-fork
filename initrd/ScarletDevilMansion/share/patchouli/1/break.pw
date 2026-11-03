@@ -1,0 +1,16 @@
+.page break 1 leave or restart a loop
+.alias continue
+
+# SYNOPSIS
+*break* [_N_]
+*continue* [_N_]
+
+# DESCRIPTION
+These gapsh builtins work inside `for`, `while` and `until` loops. `break` ends the loop; `continue` skips to the next round. With _N_ they act on the _N_th enclosing loop.
+
+# EXAMPLES
+    for f in *; do [ -d "$f" ] && continue; echo "$f"; done
+    while :; do read line || break; echo "got $line"; done
+
+# SEE ALSO
+gapsh-language(7), true(1)

@@ -1,0 +1,5 @@
+global=42 array=3 counter=8
+strlen via pointer=8 via call=6
+names: alpha beta
+environ set: 1, argc=3
+has argv[0]

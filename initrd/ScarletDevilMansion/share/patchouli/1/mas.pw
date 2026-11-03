@@ -1,0 +1,28 @@
+.page mas 1 Marisa's assembler
+
+# SYNOPSIS
+*mas* [*-f* elf64] [*-I* _DIR_]... [*-MD* _DEPFILE_] [*-o* _OUT.o_] [*-g*] [*-F* dwarf] _SOURCE.asm_
+*mas* *--version* | *--help*
+
+# DESCRIPTION
+`mas` assembles x86-64 source written in NASM syntax into an ELF64 relocatable object that `mld` (or any linker) can use. It exists so that the system can assemble its own start-up code and interrupt stubs: the nine `.asm` files of the kernel and the C library come out of `mas` as the very same bytes NASM writes for them (headers, sections, symbol table, string table, relocations), which the test suite checks on every run.
+
+What it understands: `bits 64`, `default rel`, `section NAME [progbits|nobits] [alloc|noalloc] [exec|noexec] [write|nowrite] [align=N]`, `global`, `extern`, labels and `.local` labels, `equ`, `db dw dd dq`, `resb resw resd resq`, `incbin`, `align`, `alignb`, `times`, expressions with `+ - * / % << >> & | ^ ~ ! == != < > <= >= && ||`, `$` and `$$`, and a preprocessor with `%define`, `%assign`, `%macro` (numbered parameters, `%+`, `%%labels`), `%rep`, `%if`/`%elif`/`%else`/`%endif`, `%ifdef`, `%include`. The instructions are the integer ones a kernel's assembly uses: `mov lea add or adc sbb and sub xor cmp test inc dec not neg mul imul div idiv shifts and rotates push pop call jmp jcc ret iretq int syscall sysret cli sti hlt cpuid rdmsr wrmsr xchg xadd cmpxchg bswap bt* bsf bsr popcnt movzx movsx movsxd cmovcc setcc in out`, the string instructions with `rep`, and `lock`, in all operand sizes, with the encodings NASM chooses (short branches whenever the target is close, `83 /r` for small immediates, the accumulator forms, `mov r32, imm32` for a 64-bit load of a small positive number).
+
+It leaves out: floating point, SSE and AVX, segment registers and control registers, 16- and 32-bit modes (`bits 16`, `bits 32`), `org`, debugging information (`-g` and `-F` are accepted and ignored), other object formats, macros with default parameters. An instruction it does not know is an error that names the line.
+
+# OPTIONS
+*-f* elf64  The only format. May be left out.
+*-I* _DIR_  Look for `%include` and `incbin` files in _DIR_ as well (the directory name and the file name are joined as written, as NASM does).
+*-MD* _FILE_  Write a make-style dependency line (the object, the source, the included files) to _FILE_.
+*-o* _FILE_  Name of the object (default: the source's name with `.o`).
+
+# EXIT STATUS
+0 on success, 1 for any error (`file:line: error: text`).
+
+# EXAMPLES
+    mas -o crt0.o /ScarletDevilMansion/src/libc/crt0.asm
+    mas -I gen/ -MD ksyms.d -o ksyms.o ksyms.asm
+
+# SEE ALSO
+mcc(1), mld(1), mar(1), mmake(1)

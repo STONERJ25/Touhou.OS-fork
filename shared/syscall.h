@@ -1,0 +1,153 @@
+/*
+ * System call numbers. Calling convention (x86-64 `syscall`): number in rax, arguments in rdi, rsi, rdx, r10, r8, r9;
+ * result in rax (negative errno on failure); rcx and r11 are clobbered.
+ *
+ * Storage-related calls: mount(source, target, fstype, flags[, options]) - when flags has MNT_OPTS (abi.h) the fifth
+ * argument (r8) is a pointer to an option string; sync() flushes every writable filesystem to its device;
+ * statfs(path, struct gstatfs *) is number 67.
+ */
+#ifndef SHARED_SYSCALL_H
+#define SHARED_SYSCALL_H
+
+/* Gensokyo extensions registered by their own subsystems (kernel/fs/socket.c, kernel/drivers/pty.c) */
+#define SYS_socket        70      /* (domain, type, protocol) -> fd; AF_UNIX streams and AF_INET streams / datagrams */
+#define SYS_bind          71      /* (fd, sockaddr*, len) */
+#define SYS_listen        72      /* (fd, backlog) */
+#define SYS_accept        73      /* (fd, sockaddr*, len*) -> new fd; the address is only filled in for AF_INET */
+#define SYS_connect       74      /* (fd, sockaddr*, len) */
+#define SYS_shutdown      75      /* (fd, how) */
+#define SYS_socketpair    76      /* (type, int sv[2]) */
+#define SYS_getgroups     77      /* (n, gid_t list[]) -> count; n == 0 only counts */
+#define SYS_setgroups     78      /* (n, gid_t list[]); root only */
+#define SYS_geteuid       79
+#define SYS_getegid       80      /* getuid/getgid return the real ids, these the effective ones */
+#define SYS_settime       81      /* (ms since the epoch, rtc epoch or 0): set the wall clock, and the clock chip if the second is not 0; root only */
+#define SYS_utimes        82      /* (path, struct gtimespec times[2] or NULL, flags): access and modification time; flags & 1 = do not follow a final symlink */
+#define UTIME_NOW         0x3fffffff     /* tv_nsec values with a meaning, as in utimensat() */
+#define UTIME_OMIT        0x3ffffffe
+
+#define SYS_exit          0
+#define SYS_read          1
+#define SYS_write         2
+#define SYS_open          3
+#define SYS_close         4
+#define SYS_lseek         5
+#define SYS_stat          6
+#define SYS_fstat         7
+#define SYS_lstat         8
+#define SYS_readdir       9
+#define SYS_mkdir         10
+#define SYS_unlink        11
+#define SYS_rmdir         12
+#define SYS_rename        13
+#define SYS_chdir         14
+#define SYS_getcwd        15
+#define SYS_dup           16
+#define SYS_dup2          17
+#define SYS_pipe          18
+#define SYS_fork          19
+#define SYS_execve        20
+#define SYS_waitpid       21
+#define SYS_getpid        22
+#define SYS_getppid       23
+#define SYS_kill          24
+#define SYS_brk           25
+#define SYS_mmap          26
+#define SYS_munmap        27
+#define SYS_yield         28
+#define SYS_nanosleep     29
+#define SYS_clock_gettime 30
+#define SYS_ioctl         31
+#define SYS_uname         32
+#define SYS_sysinfo       33
+#define SYS_reboot        34
+#define SYS_mount         35
+#define SYS_umount        36
+#define SYS_sync          37
+#define SYS_ftruncate     38
+#define SYS_getrandom     39
+#define SYS_symlink       40
+#define SYS_readlink      41
+#define SYS_chmod         42
+#define SYS_chown         43
+#define SYS_getuid        44
+#define SYS_getgid        45
+#define SYS_setuid        46
+#define SYS_setgid        47
+#define SYS_umask         48
+#define SYS_fcntl         49
+#define SYS_poll          50
+#define SYS_setpgid       51
+#define SYS_getpgid       52
+#define SYS_sigaction     53
+#define SYS_sigreturn     54
+#define SYS_sigprocmask   55
+#define SYS_truncate      56
+#define SYS_access        57
+#define SYS_setsid        58
+#define SYS_mprotect      59
+#define SYS_pause         60
+#define SYS_alarm         61
+#define SYS_setname       62      /* set the process name shown by ps */
+#define SYS_debuglog      63      /* write a line to the kernel log */
+#define SYS_ptyopen       64      /* open a pseudo-terminal pair: returns master fd, slave path in buf */
+#define SYS_gettime_ms    65      /* wall clock, milliseconds since the epoch */
+#define SYS_tcsetpgrp     66
+#define SYS_statfs        67      /* statfs(path, struct gstatfs *buf): size and free space of the filesystem holding path (abi.h) */
+/* Networking (kernel/net/sock.c): the AF_INET side of the socket calls. 70-76 above also serve AF_INET sockets. */
+#define SYS_sendto        90      /* (fd, buf, len, flags, sockaddr*, addrlen) */
+#define SYS_recvfrom      91      /* (fd, buf, len, flags, sockaddr*, addrlen*) */
+#define SYS_getsockname   92      /* (fd, sockaddr*, addrlen*) */
+#define SYS_getpeername   93      /* (fd, sockaddr*, addrlen*) */
+#define SYS_setsockopt    94      /* (fd, level, name, value*, len) */
+#define SYS_getsockopt    95      /* (fd, level, name, value*, len*) */
+#define SYS_netctl        96      /* (cmd, arg*): interfaces, routes, neighbours; see netabi.h */
+/* Number ranges for subsystems that register their own calls: networking 90-99, audio 100-105, threads 106-115, free 116-127. */
+/* Threads (kernel/sys/thread.c, kernel/sys/futex.c); see docs/THREADS.md */
+#define SYS_thread_create 106     /* (flags, stack_top, tls_base, tid_addr, entry, arg) -> new tid; the thread starts in entry(arg) on stack_top */
+#define SYS_thread_exit   107     /* (status): ends the calling thread only; zeroes *tid_addr and wakes it; the last thread out ends the process */
+#define SYS_gettid        108
+#define SYS_futex         109     /* (uaddr, op, val, timeout, uaddr2, val3) */
+#define SYS_tgkill        110     /* (pid, tid, sig): signal one thread */
+#define SYS_exit_group    111     /* (status): ends every thread (SYS_exit does the same) */
+#define SYS_set_tls       112     /* (base): sets the calling thread's FS base */
+#define SYS_sigsuspend    113     /* (mask): replace the thread's mask and sleep until a handler has run; returns -EINTR */
+#define SYS_sigtimedwait  114     /* (set, timeout): accept one pending signal of set without a handler; returns its number, -EAGAIN on timeout */
+#define SYS_sigpending    115     /* (u32 *set): signals pending and blocked */
+/* Process control (kernel/sys/priority.c, kernel/fs/vfs.c): 116-118 */
+#define SYS_getpriority   116     /* (which, who) -> 20 - nice, i.e. 1 (polite) .. 40 (greedy); -ESRCH if nobody matches */
+#define SYS_setpriority   117     /* (which, who, nice): PRIO_PROCESS / PRIO_PGRP / PRIO_USER; only root may lower a nice value */
+#define SYS_link          118     /* (oldpath, newpath): a hard link; tmpfs only */
+#define SYS_nsyscalls     128
+
+#define FUTEX_WAIT        0       /* sleep while *uaddr == val; timeout is a struct gtimespec* (relative) or NULL */
+#define FUTEX_WAKE        1       /* wake up to val waiters */
+#define FUTEX_CMP_REQUEUE 4       /* if *uaddr == val3: wake val waiters, move up to (long)timeout waiters to uaddr2 */
+#define FUTEX_CANCELLABLE 0x100   /* or-ed into op: this wait is a cancellation point (a pending pthread_cancel ends it with -ECANCELED) */
+#define THREADS_PER_PROC_MAX 256
+#define THREADS_TOTAL_MAX    1024
+
+struct gpollfd {
+    int   fd;
+    short events;
+    short revents;
+};
+#define POLLIN   1
+#define POLLOUT  4
+#define POLLERR  8
+#define POLLHUP  16
+#define POLLNVAL 32
+
+struct gsigaction {
+    unsigned long handler;      /* 0 = default, 1 = ignore, else user function */
+    unsigned long flags;
+    unsigned long mask;
+    unsigned long restorer;     /* user-space trampoline that calls sigreturn */
+};
+#define SIG_DFL 0UL
+#define SIG_IGN 1UL
+#define SIG_BLOCK   0
+#define SIG_UNBLOCK 1
+#define SIG_SETMASK 2
+
+#endif

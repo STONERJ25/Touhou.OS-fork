@@ -1,0 +1,126 @@
+# The cascade and computed values: "=== name [options]" (options: w=WIDTH h=HEIGHT dark print), a document, then lines
+# "selector | properties => values" with one value per property, separated by " ; ", for each matching element in tree
+# order (elements separated by " || "). Values are the engine's serialization of computed values: rgb(...) colours,
+# lengths in px, keywords.
+
+=== specificity and order
+<style>p { color: red } .c { color: green } #t { color: blue } p.c { color: purple }</style><p id=t class=c>x</p><p class=c>y</p><p>z</p>
+p | color => rgb(0, 0, 255) || rgb(128, 0, 128) || rgb(255, 0, 0)
+
+=== later rules win at equal specificity
+<style>.a { color: red } .b { color: green }</style><p class="b a">x</p>
+p | color => rgb(0, 128, 0)
+
+=== important and the style attribute
+<style>#t { color: red !important } p { color: blue !important } #u { color: green }</style><p id=t style="color: yellow">x</p><p id=u style="color: yellow">y</p><p id=v style="color: yellow !important">z</p>
+p | color => rgb(255, 0, 0) || rgb(0, 0, 255) || rgb(255, 255, 0)
+
+=== user agent sheet
+<!DOCTYPE html><h1>a</h1><p>b</p><ul><li>c</li></ul><b>d</b><head></head>
+h1 | font-size font-weight display margin-top => 32px ; 700 ; block ; 21.44px
+p | margin-top margin-bottom => 16px ; 16px
+li | display => list-item
+ul | padding-left => 40px
+b | font-weight => 700
+head | display => none
+
+=== inheritance and the wide keywords
+<style>div { color: red; border: 2px solid blue } .i { border-color: inherit } .n { color: initial } .u { color: unset; border-width: unset }</style><div><p id=p>x</p><p class=i>y</p><p class=n>z</p><p class=u>w</p></div>
+#p | color border-top-width border-top-style => rgb(255, 0, 0) ; 0px ; none
+.i | border-top-color => rgb(0, 0, 255)
+.n | color => rgb(0, 0, 0)
+.u | color border-top-width => rgb(255, 0, 0) ; 0px
+
+=== font sizes
+<!DOCTYPE html><style>html { font-size: 20px } div { font-size: 1.5em } p { font-size: 50% } span { font-size: 2rem } i { font-size: larger } small { font-size: x-small }</style><div><p><span>a</span><i>b</i></p></div><small>c</small>
+div | font-size => 30px
+p | font-size => 15px
+span | font-size => 40px
+i | font-size => 18px
+small | font-size => 10px
+
+=== em lengths use the element's own font size
+<!DOCTYPE html><style>p { font-size: 20px; margin-left: 2em; padding-top: 0.5rem; text-indent: 1em }</style><p>x</p>
+p | margin-left padding-top => 40px ; 8px
+
+=== line-height
+<!DOCTYPE html><style>.n { line-height: 1.5 } .l { line-height: 24px } .p { font-size: 10px; line-height: 150% } .p span { font-size: 20px }</style><div class=n>a</div><div class=l>b</div><div class=p><span>c</span></div><div>d</div>
+.n | line-height => 1.5
+.l | line-height => 24px
+.p span | line-height => 15px
+body > div:last-child | line-height => normal
+
+=== shorthands
+<!DOCTYPE html><style>#a { margin: 1px 2px 3px } #b { padding: 5px 6px } #c { border: 3px dashed red } #d { font: italic bold 12px/30px Georgia, "Times New Roman", serif } #e { flex: 1 } #f { flex: none } #g { background: url(bg.png) no-repeat #123456 } #h { list-style: square inside } #i { border-width: 1px 2px; border-style: solid }</style><p id=a></p><p id=b></p><p id=c></p><p id=d></p><p id=e></p><p id=f></p><p id=g></p><ul id=h></ul><p id=i></p>
+#a | margin-top margin-right margin-bottom margin-left => 1px ; 2px ; 3px ; 2px
+#b | padding-top padding-right padding-bottom padding-left => 5px ; 6px ; 5px ; 6px
+#c | border-left-width border-left-style border-left-color => 3px ; dashed ; rgb(255, 0, 0)
+#d | font-style font-weight font-size line-height font-family => italic ; 700 ; 12px ; 30px ; Georgia, Times New Roman, serif
+#e | flex-grow flex-shrink flex-basis => 1 ; 1 ; 0px
+#f | flex-grow flex-shrink flex-basis => 0 ; 0 ; auto
+#g | background-color => rgb(18, 52, 86)
+#i | border-top-width border-right-width border-bottom-width border-left-width => 1px ; 2px ; 1px ; 2px
+
+=== custom properties
+<!DOCTYPE html><style>:root { --main: #00ff00; --pad: 4px } div { color: var(--main); padding-top: calc(var(--pad) * 2) } .f { color: var(--missing, rgb(1, 2, 3)) } .bad { color: var(--missing) } .over { --main: #0000ff } .cyc { --a: var(--b); --b: var(--a); color: var(--a, red) }</style><div id=a>a</div><div class=f>b</div><div class=bad>c</div><section class=over><div id=d>d</div></section><div class=cyc>e</div>
+#a | color padding-top => rgb(0, 255, 0) ; 8px
+.f | color => rgb(1, 2, 3)
+.bad | color => rgb(0, 0, 0)
+#d | color => rgb(0, 0, 255)
+.cyc | color => rgb(255, 0, 0)
+
+=== calc and units
+<!DOCTYPE html><style>#a { width: calc(100% - 20px) } #b { width: calc(2 * 10px + 1em) } #c { margin-left: 1in } #d { width: 50vw; height: 10vh } #e { width: min(100%, 300px) }</style><div id=a></div><div id=b></div><div id=c></div><div id=d></div><div id=e></div>
+#a | width => calc(100% + -20px)
+#b | width => 36px
+#c | margin-left => 96px
+#d | width height => 400px ; 60px
+
+=== media queries [w=800 h=600]
+<style>p { color: red } @media (min-width: 600px) { p { color: green } } @media (max-width: 599px) { p { color: blue } } @media print { p { color: black } } @media screen and (orientation: landscape) { b { color: green } } @media (width >= 900px) { i { color: red } }</style><p>x</p><b>y</b><i>z</i>
+p | color => rgb(0, 128, 0)
+b | color => rgb(0, 128, 0)
+i | color => rgb(0, 0, 0)
+
+=== media queries narrow [w=400 h=600]
+<style>p { color: red } @media (min-width: 600px) { p { color: green } } @media (max-width: 599px) { p { color: blue } } @media (orientation: portrait) { b { color: green } } @media not all and (min-width: 500px) { i { color: green } }</style><p>x</p><b>y</b><i>z</i>
+p | color => rgb(0, 0, 255)
+b | color => rgb(0, 128, 0)
+i | color => rgb(0, 128, 0)
+
+=== prefers-color-scheme [dark]
+<style>body { color: black } @media (prefers-color-scheme: dark) { body { color: white } }</style><p>x</p>
+p | color => rgb(255, 255, 255)
+
+=== @supports
+<style>@supports (display: grid) { .a { color: green } } @supports (display: nosuch) { .b { color: red } } @supports not (color: nosuch) { .c { color: green } } @supports (color: red) and (selector(:has(a))) { .d { color: green } }</style><p class=a>1</p><p class=b>2</p><p class=c>3</p><p class=d>4</p>
+p | color => rgb(0, 128, 0) || rgb(0, 0, 0) || rgb(0, 128, 0) || rgb(0, 128, 0)
+
+=== invalid declarations are dropped
+<style>p { color: green; color: nosuch; width: 10px; width: -5px; margin: 1px 2px 3px 4px 5px }</style><p>x</p>
+p | color width margin-top => rgb(0, 128, 0) ; 10px ; 16px
+
+=== display fixups
+<!DOCTYPE html><style>html { display: inline } .f { float: left } .a { position: absolute; float: right } .flex { display: flex } .flex > span { display: inline-table }</style><span class=f>a</span><span class=a>b</span><div class=flex><span id=s>c</span></div>
+html | display => block
+.f | display float => block ; left
+.a | display float => block ; none
+#s | display => table
+
+=== presentational hints
+<body text=green bgcolor=#ffe><font color=red size=5 face="Verdana, sans-serif">a</font><table cellpadding=7 cellspacing=3 border=1 width=50%><tr><td bgcolor=chucknorris align=center valign=top width=40>b</td></tr></table><img width=100 height=50% hspace=3><hr size=4 noshade><div align=center>c</div><p style="color: blue" align=right>d</p></body>
+body | color background-color => rgb(0, 128, 0) ; rgb(255, 255, 238)
+font | color font-size font-family => rgb(255, 0, 0) ; 24px ; Verdana, sans-serif
+table | width border-top-width border-top-style => 50% ; 1px ; outset
+td | background-color text-align vertical-align width padding-left border-left-width border-left-style => rgb(192, 0, 0) ; center ; top ; 40px ; 7px ; 1px ; inset
+img | width height margin-left => 100px ; 50% ; 3px
+div | text-align => center
+p | color text-align => rgb(0, 0, 255) ; right
+
+=== revert
+<!DOCTYPE html><style>p { color: red; display: inline; margin-top: 0 } p.r { color: revert; display: revert; margin-top: revert }</style><div style="color: blue"><p class=r>x</p></div>
+p | color display margin-top => rgb(0, 0, 255) ; block ; 16px
+
+=== pseudo-elements
+<!DOCTYPE html><style>p::before { content: "[" attr(id) "]"; color: red } p::after { content: none } q { quotes: "<" ">" }</style><p id=x>a</p><q>b</q>
+p | before:content before:color after:content => '['+attr(id)+']' ; rgb(255, 0, 0) ; -

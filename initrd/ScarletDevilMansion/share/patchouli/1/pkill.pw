@@ -1,0 +1,17 @@
+.page pkill 1 signal processes by name
+
+# SYNOPSIS
+*pkill* [*-*_SIGNAL_] _NAME_
+
+# DESCRIPTION
+`pkill` sends a signal (SIGTERM unless one is given, by name or number) to every process whose name contains _NAME_. It never signals itself.
+
+# EXIT STATUS
+0 if some process was signalled, 1 if none matched, 2 for bad usage.
+
+# EXAMPLES
+    pkill sleep
+    pkill -9 spell
+
+# SEE ALSO
+kill(1), pidof(1), ps(1)

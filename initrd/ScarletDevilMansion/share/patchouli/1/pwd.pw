@@ -1,0 +1,10 @@
+.page pwd 1 print the working directory
+
+# SYNOPSIS
+*pwd*
+
+# DESCRIPTION
+`pwd` is a gapsh builtin that prints the absolute name of the current directory.
+
+# SEE ALSO
+cd(1), realpath(1)

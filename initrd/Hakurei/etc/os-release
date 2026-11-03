@@ -1,0 +1,5 @@
+NAME="TouhouOS"
+VERSION="0.1.0 (Story of Eastern Wonderland)"
+ID=touhouos
+PRETTY_NAME="TouhouOS 0.1 - Gensokyo kernel"
+HOME_URL="https://touhou-project.news/guidelines_en/"

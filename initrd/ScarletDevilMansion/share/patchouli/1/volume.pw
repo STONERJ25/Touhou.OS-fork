@@ -1,0 +1,31 @@
+.page volume 1 show or set the master volume
+
+# SYNOPSIS
+*volume* [_PERCENT_ | *+*_PERCENT_ | *-*_PERCENT_ | *mute* | *unmute* | *toggle* | _LEFT_ _RIGHT_]
+
+# DESCRIPTION
+`volume` shows or changes the master volume of the machine: the level applied to everything that plays through `/dev/audio`, after the mixer has added the programs together. Without arguments it prints the current setting. The scale is 0 to 100 and follows the ear (50 is a quarter of the amplitude of 100, not half), so it feels even all the way down.
+
+The setting lives in the kernel and lasts until the machine is restarted; it starts at 60. Muting keeps the volume and silences the output until `unmute`.
+
+# OPTIONS
+@ _PERCENT_
+    Set both channels to this volume.
+@ *+*_PERCENT_, *-*_PERCENT_
+    Raise or lower both channels, within 0 to 100.
+@ _LEFT_ _RIGHT_
+    Set the channels separately.
+@ *mute*, *unmute*, *toggle*
+    Silence the output, bring it back, or flip between the two.
+
+# EXIT STATUS
+0 on success; 1 if there is no sound device or it is not allowed; 2 for a usage error.
+
+# EXAMPLES
+    volume
+    volume 35
+    volume -10
+    volume toggle
+
+# SEE ALSO
+beep(1), play(1), audio(7)

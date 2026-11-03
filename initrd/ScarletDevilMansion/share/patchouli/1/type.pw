@@ -1,0 +1,16 @@
+.page type 1 say how a name would be understood
+
+# SYNOPSIS
+*type* _NAME_...
+
+# DESCRIPTION
+`type` is a gapsh builtin. For each _NAME_ it says whether it is an alias, a function, a shell builtin or a program (with its path), in that order of precedence. The options `-p` and `-v` are accepted and ignored.
+
+# EXIT STATUS
+0, or 1 if some name was not found.
+
+# EXAMPLES
+    type ls cd ll
+
+# SEE ALSO
+command(1), which(1), alias(1)

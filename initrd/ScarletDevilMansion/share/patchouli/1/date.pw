@@ -1,0 +1,44 @@
+.page date 1 print or set the date and time
+
+# SYNOPSIS
+*date* [*-u*] [*-d* _WHEN_] [*-s* _WHEN_] [*-R* | *-I*] [*+*_FORMAT_]
+
+# DESCRIPTION
+`date` prints the current date and time in the time zone of the system (see timezone(5)), or in UTC with *-u*. The default format looks like `Fri Oct 23 14:05:09 EDT 2026`. Root can set the system clock with *-s*; the battery-backed chip is handled by hwclock(8).
+
+# OPTIONS
+@ *-d* _WHEN_
+    Show _WHEN_ instead of the current time: `@`_SECONDS_ for seconds since 1970, or a date like `2026-10-23` or `2026-10-23 14:05:09`, taken in the system's zone (in UTC with *-u*).
+@ *-s* _WHEN_
+    Set the system clock to _WHEN_ (same forms) and print it. Needs root.
+@ *-u*
+    Work in UTC.
+@ *-R*
+    RFC 2822 format.
+@ *-I*
+    Just the date, as `2026-10-23`. `--iso-8601=seconds` gives the date and time with the offset.
+@ *+*_FORMAT_
+    Print using _FORMAT_. These conversions are understood:
+
+        %Y  year                    %y  two-digit year
+        %m  month (01-12)           %d  day of the month (01-31)
+        %e  day, space padded       %j  day of the year (001-366)
+        %H  hour (00-23)            %I  hour (01-12)
+        %M  minute                  %S  second
+        %p  AM or PM                %a  short weekday name
+        %A  weekday name            %b  short month name
+        %B  month name              %F  the same as %Y-%m-%d
+        %T  the same as %H:%M:%S    %R  the same as %H:%M
+        %D  the same as %m/%d/%y    %c  date and time
+        %s  seconds since 1970      %Z  zone name (EDT, JST, UTC)
+        %z  offset (-0400)          %%  a percent sign
+
+# EXAMPLES
+    date
+    date +%Y-%m-%d
+    TZ=JST-9 date '+%H:%M %Z'
+    date -d @86400
+    sudo date -s '2026-10-23 14:05:09'
+
+# SEE ALSO
+cal(1), hwclock(8), timezone(5), clock(7), uptime(1), sleep(1)

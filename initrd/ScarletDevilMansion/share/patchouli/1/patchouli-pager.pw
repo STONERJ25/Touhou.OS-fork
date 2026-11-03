@@ -1,0 +1,90 @@
+.page patchouli-pager 1 look at a text one screen at a time
+.alias less more
+
+# SYNOPSIS
+*patchouli-pager* [*-NSRFIe*] [*-p* _PATTERN_] [*--title* _TEXT_] [*+*_LINE_ | *+/*_PATTERN_] [_FILE_...]
+*less* ...
+*more* ...
+
+# DESCRIPTION
+The pager shows the _FILE_s, or standard input if there are none, a screen at a time. It is what `patchouli` hands the manual pages to, what `PAGER` names in the login profile, and what `less` and `more` start. The three names are the same program; run as `more` it quits when you scroll past the end and the status line reads `--More--(NN%)`.
+
+If standard output is not a terminal the pager behaves like `cat` (with `-N` it numbers the lines). When the text comes from a pipe, the keys are read from the terminal.
+
+The bottom line shows the name, the lines on the screen, how far into the text you are, and `(END)` at the end. The input is read as it is needed, so `yes | patchouli-pager` starts at once. Searches are extended regular expressions (see regex(7)); a pattern that is not valid is searched for as plain text. Case is ignored unless the pattern has an upper case letter.
+
+# OPTIONS
+@ *-N*
+    Number the lines.
+@ *-S*
+    Chop long lines instead of wrapping them; the left and right arrows scroll sideways.
+@ *-R*
+    Pass ANSI colour and attribute sequences through (otherwise they are shown as visible escape characters). The manual viewer uses this.
+@ *-F*
+    Quit at once, printing the text, if it fits on one screen.
+@ *-e*
+    Quit when the end of the text is reached and a further forward command is given.
+@ *-I*
+    Always ignore case in searches.
+@ *-p* _PATTERN_, *+/*_PATTERN_
+    Start at the first line that matches.
+@ *+*_LINE_
+    Start at that line.
+@ *--title* _TEXT_
+    Show _TEXT_ instead of the file name in the status line.
+@ *-V*, *-h*
+    Version; usage.
+
+Options are also read from the environment variable `LESS`. Many of the other options of `less` are accepted and ignored.
+
+# KEYS
+Most commands take a count typed first: `10j`, `50g`, `5f`.
+
+@ SPACE, f, ^F, PgDn
+    Forward one screen.
+@ b, ^B, PgUp
+    Back one screen.
+@ ENTER, j, e, ^N, Down; y, k, ^P, Up
+    Forward / back one line.
+@ d, ^D; u, ^U
+    Forward / back half a screen.
+@ g, <, Home; G, >, End
+    The beginning / the end of the text. With a count, line number _N_.
+@ p, %
+    Go to a percentage of the text (`50p`).
+@ /_PATTERN_, ?_PATTERN_
+    Search forward / backward. A count finds the _N_th match.
+@ n, N
+    Repeat the search in the same / the opposite direction.
+@ Right, Left
+    Scroll sideways (with `-S`).
+@ -N, -S, -I, -R
+    Type a dash and the letter to switch that option on or off.
+@ =, ^G
+    Show the file name and the position.
+@ :n, :p
+    The next and the previous file.
+@ r, ^L
+    Repaint the screen.
+@ h, H
+    Show the keys.
+@ q, Q, ZZ, :q
+    Quit. ^C quits too.
+
+# EXIT STATUS
+0, or 1 if a file could not be read.
+
+# ENVIRONMENT
+@ LESS
+    Default options.
+@ LINES, COLUMNS
+    Override the screen size reported by the console.
+
+# EXAMPLES
+    patchouli-pager /Hakurei/etc/motd
+    dmesg | less
+    grep -rn TODO . | more
+    less +/gapsh /Hakurei/etc/profile
+
+# SEE ALSO
+patchouli(1), cat(1), head(1), tail(1), regex(7), keys(7)

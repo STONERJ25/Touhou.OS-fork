@@ -1,0 +1,35 @@
+.page tail 1 write the last part of files
+
+# SYNOPSIS
+*tail* [*-qvfF*] [*-n* _N_ | *-n* *+*_N_ | *-c* _N_ | *-*_N_] [_FILE_...]
+
+# DESCRIPTION
+`tail` writes the last ten lines of each _FILE_ (standard input if there is none, or for `-`). With several files each is introduced by a `==> NAME <==` line.
+
+# OPTIONS
+@ *-n* _N_
+    Write the last _N_ lines.
+@ *-n* *+*_N_
+    Start at line _N_ and write everything from there to the end.
+@ *-c* _N_
+    Count bytes instead of lines; `-c +`_N_ starts at byte _N_.
+@ *-*_N_
+    A shorthand for `-n` _N_.
+@ *-q*, *-v*
+    Never / always write the `==> NAME <==` headers.
+@ *-f*, *-F*
+    After writing the end of the last file, keep it open and write what is appended to it, checking five times a second. `tail` never stops by itself in this mode; interrupt it with ^C.
+
+Counts take the same suffixes as in head(1).
+
+# EXAMPLES
+    tail -n 5 /Hakurei/etc/passwd
+    tail -n +2 table.txt
+    dmesg | tail -20
+    tail -f build.log
+
+# EXIT STATUS
+0, or 1 for a bad option or count.
+
+# SEE ALSO
+head(1), cat(1), dmesg(1)

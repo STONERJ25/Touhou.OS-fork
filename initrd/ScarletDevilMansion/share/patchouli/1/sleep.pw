@@ -1,0 +1,18 @@
+.page sleep 1 pause for a while
+
+# SYNOPSIS
+*sleep* _NUMBER_[*m*|*h*|*d*]...
+
+# DESCRIPTION
+`sleep` pauses for the given time. Each argument is a number, which may have a fraction, optionally followed by `m` (minutes), `h` (hours) or `d` (days); without a suffix it means seconds. Several arguments are added together.
+
+# EXAMPLES
+    sleep 1.5
+    sleep 2m 30
+    sleep 0.2; echo woke
+
+# EXIT STATUS
+0, or 1 for a missing or unreadable time.
+
+# SEE ALSO
+usleep(1), date(1)

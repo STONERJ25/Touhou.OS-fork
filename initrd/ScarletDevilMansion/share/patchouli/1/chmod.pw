@@ -1,0 +1,29 @@
+.page chmod 1 change file permissions
+
+# SYNOPSIS
+*chmod* [*-R*] _MODE_ _FILE_...
+
+# DESCRIPTION
+`chmod` changes the permission bits of each _FILE_. _MODE_ is either an octal number (`644`) or a comma separated list of symbolic changes of the form _WHO_ _OP_ _PERMS_:
+
+    WHO     u (owner), g (group), o (others), a (all); empty means all
+    OP      + add the permissions, - remove them, = set exactly these
+    PERMS   r (read), w (write), x (execute)
+
+For example `u+x`, `go-w`, `a=r` or `u=rwx,go=rx`. The letters `s` and `t` are accepted but set no bits. Only the owner of a file, or root, may change its permissions.
+
+# OPTIONS
+@ *-R*
+    Accepted, but directories are not descended into; combine `chmod` with find(1) for that.
+
+# EXIT STATUS
+0, or 1 if a file or mode was bad.
+
+# EXAMPLES
+    chmod 600 secret.txt
+    chmod +x script.sh
+    chmod u=rw,go= private.txt
+    find . -type f -exec chmod 644 {} +
+
+# SEE ALSO
+chown(1), ls(1), stat(1), find(1)

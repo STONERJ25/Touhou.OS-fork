@@ -1,0 +1,14 @@
+.page fgrep 1 grep for fixed strings
+
+# SYNOPSIS
+*fgrep* [_OPTION_...] _STRING_ [_FILE_...]
+
+# DESCRIPTION
+`fgrep` is `grep -F`: the pattern is taken literally, with no special characters. All the options of grep(1) are accepted.
+
+# EXAMPLES
+    fgrep '*.c' Makefile
+    fgrep -f words.txt text.txt
+
+# SEE ALSO
+grep(1), egrep(1)

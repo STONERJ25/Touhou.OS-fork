@@ -1,0 +1,14 @@
+.page groups 1 print the groups a user belongs to
+
+# SYNOPSIS
+*groups* [_USER_]
+
+# DESCRIPTION
+`groups` prints the names of the groups of _USER_ (the current user by default), the primary group first.
+
+# EXAMPLES
+    groups
+    groups sakuya
+
+# SEE ALSO
+id(1), group(5)

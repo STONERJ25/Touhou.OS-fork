@@ -1,0 +1,8 @@
+raw write system call
+wrote 22 bytes
+getpid matches libc: 1
+four
+sc4 with a register variable: 5
+thread pointer is its own address: 1
+xyz..... 3
+run-rc=0

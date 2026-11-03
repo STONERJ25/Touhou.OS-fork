@@ -1,0 +1,42 @@
+.page beep 1 play a tone, noise or a system sound
+
+# SYNOPSIS
+*beep* [*-f* _HZ_] [*-l* _MS_] [*-a* _PERCENT_] [*-w* _WAVE_] [*-r* _RATE_] [*-c* _1|2_] [*-b* _BITS_] [*-o* _FILE_] [*-n*]
+*beep* *-e* _NAME_ [*-o* _FILE_]
+
+# DESCRIPTION
+`beep` makes a sound with the sound card: a pure tone by default, 440 Hz for half a second at half volume. It writes to `/dev/audio` like any other program, so it can play at the same time as `play(1)` or anything else, and the master volume of `volume(1)` applies. If the machine has no sound device it says so and exits with status 1.
+
+With `-o` the sound is written to a WAV file instead of being played, which works on machines without sound hardware too.
+
+# OPTIONS
+@ *-f* _HZ_
+    The frequency of the tone (440).
+@ *-l* _MS_
+    How long it lasts, in milliseconds (500, at most 60000).
+@ *-a* _PERCENT_
+    The amplitude of the wave, 0 to 100 (50). This is the loudness inside the sound, before any volume setting.
+@ *-w* _WAVE_
+    The shape: `sine` (the default), `square`, `triangle`, `saw` or `noise`.
+@ *-r* _RATE_, *-c* _CHANNELS_, *-b* _BITS_
+    Send the sound to the device in another format: any rate from 4000 to 192000, 1 or 2 channels, 8, 16, 24 or 32 bits. The kernel converts it, so a mono 22050 Hz 8-bit beep sounds the same pitch as the default one. This is mostly useful for testing.
+@ *-e* _NAME_
+    Play one of the system sounds instead: `login`, `dialog`, `error` or `shutdown`. It plays even when the system sounds are switched off (see audio(7)).
+@ *-o* _FILE_
+    Write a WAV file instead of playing.
+@ *-n*
+    Do not wait until the sound has been heard before exiting.
+
+# EXIT STATUS
+0 on success; 1 if there is no sound device, it is not allowed or a write failed; 2 for a usage error.
+
+# EXAMPLES
+    beep
+    beep -f 880 -l 200 -w square -a 30
+    beep -w noise -l 1000 -a 20
+    beep -r 22050 -c 1 -b 8 -f 440
+    beep -e login
+    beep -f 523 -l 2000 -o /tmp/c5.wav
+
+# SEE ALSO
+play(1), volume(1), audio(7)

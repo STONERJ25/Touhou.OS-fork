@@ -1,0 +1,17 @@
+.page printenv 1 print environment variables
+
+# SYNOPSIS
+*printenv* [_NAME_...]
+
+# DESCRIPTION
+Without arguments `printenv` prints the whole environment. With names it prints just their values, one per line.
+
+# EXIT STATUS
+0, or 1 if any of the names is not set.
+
+# EXAMPLES
+    printenv HOME
+    printenv PATH EDITOR PAGER
+
+# SEE ALSO
+env(1), export(1)

@@ -1,0 +1,20 @@
+.page strings 1 print the printable strings in a file
+
+# SYNOPSIS
+*strings* [*-n* _MIN_] [*-a*] [_FILE_]
+
+# DESCRIPTION
+`strings` scans _FILE_ (or standard input) and prints every run of printable ASCII characters (tabs included) that is at least four characters long, one per line. It is the quick way to find the readable parts of a binary.
+
+# OPTIONS
+@ *-n* _MIN_
+    Print runs of at least _MIN_ characters instead of four.
+@ *-a*
+    Accepted for compatibility; the whole file is always scanned.
+
+# EXAMPLES
+    strings /bin/hello | head
+    strings -n 8 /bin/gapsh | grep -i gap
+
+# SEE ALSO
+hexdump(1), grep(1), od(1)

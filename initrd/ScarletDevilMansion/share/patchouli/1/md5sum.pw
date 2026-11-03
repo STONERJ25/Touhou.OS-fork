@@ -1,0 +1,25 @@
+.page md5sum 1 compute and check MD5 message digests
+
+# SYNOPSIS
+*md5sum* [*-b*] [_FILE_...]
+*md5sum* *-c* [_LISTFILE_]
+
+# DESCRIPTION
+`md5sum` prints the MD5 digest of each _FILE_ as 32 hexadecimal digits, two spaces and the file name. With no file it reads standard input and prints `-` as the name. MD5 is good for spotting accidental changes and bad against someone who wants to fool you; for that use sha256sum(1).
+
+# OPTIONS
+@ *-c*
+    Check: read lines of the form written by `md5sum` from _LISTFILE_ (or standard input) and verify each named file. Each file is reported as `NAME: OK` or `NAME: FAILED`; a file that cannot be opened is `FAILED open or read`.
+@ *-b*
+    Accepted for compatibility; there is no difference.
+
+# EXIT STATUS
+0 if all went well, 1 if a file was unreadable or a check failed.
+
+# EXAMPLES
+    echo -n abc | md5sum
+    md5sum /bin/gapsh > /tmp/sums
+    md5sum -c /tmp/sums
+
+# SEE ALSO
+sha256sum(1), crc32(1), cmp(1)

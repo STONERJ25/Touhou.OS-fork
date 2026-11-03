@@ -1,0 +1,32 @@
+# Build output
+build/
+*.o
+*.obj
+*.img
+*.efi
+*.elf
+*.pdb
+*.d
+__pycache__/
+*.pyc
+
+# Agent-process notes stay local (same convention as the upstream repo)
+CLAUDE.md
+AGENTS.md
+docs/AI_SUMMARY.md
+
+# Editor / OS cruft
+.vs/
+*.user
+Thumbs.db
+.DS_Store
+
+# Local, user-supplied files (never committed)
+assets/local/
+
+# agent worktrees and local tool state
+.claude/
+
+# Update signing keys (tools/serve-update.py keygen writes to ~/.touhou-os/ by default): never committed
+*update-signing-key*
+.touhou-os/

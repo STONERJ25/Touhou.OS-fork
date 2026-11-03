@@ -1,0 +1,26 @@
+.page resolv.conf 5 the name servers to ask
+
+# DESCRIPTION
+`/etc/resolv.conf` tells the resolver in the C library (the code behind `getaddrinfo`, `gethostbyname`, `ping`, `fetch`, `nc` and friends) which DNS servers to ask. The DHCP client writes the file by itself when it gets a lease, and rewrites it at the next one; edit it by hand (as root) only on a machine whose network is set up by hand, because the next lease replaces your edit.
+
+Lines are made of a keyword and its arguments; `#` or `;` at the start of a word begins a comment.
+
+@ nameserver ADDRESS
+    A server to ask, as a dotted IPv4 address. Up to three are used, in the order given; the next one is tried when a server does not answer. Gensokyo allows ADDRESS#PORT for a server on another port (`nameserver 10.0.2.2#5353`), which is handy for testing.
+@ search DOMAIN ...
+    Domains appended to a name that has too few dots (see `ndots`): with `search gensokyo` the name `kappa` is looked for as `kappa.gensokyo`. At most four.
+@ domain DOMAIN
+    The same as a `search` list of one.
+@ options ndots:N timeout:SECONDS attempts:N
+    A name with at least N dots (default 1) is tried as it is first and with the search domains after; with fewer, the other way round. Each server gets `timeout` seconds (default 3) per attempt.
+
+A name is looked up in `/etc/hosts` first, then in a small cache of earlier answers, then in the DNS. Only IPv4 (`A`) records are used, and `CNAME` chains are followed.
+
+# FILES
+@ /etc/resolv.conf
+    This file.
+@ /etc/hosts
+    Names known without asking.
+
+# SEE ALSO
+hosts(5), nslookup(1), host(1), network(7)

@@ -1,0 +1,16 @@
+.page poweroff 8 switch the machine off
+
+# SYNOPSIS
+*poweroff*
+
+# DESCRIPTION
+`poweroff` flushes the filesystems, says `The shrine maiden is closing up for the night. Goodbye!` and asks the kernel to switch the machine off. Other arguments are ignored. The login profile defines the alias `shutdown` for it.
+
+Before the power goes, the kernel arms the network card to wake the machine for a *magic packet* (Wake on LAN: six bytes of FF, then the card's Ethernet address sixteen times, in any UDP datagram sent to the broadcast address, for instance by `tools/wol.py` on another PC) and enables the chipset's event for it; the BIOS must have Wake on LAN switched on, and Deep Sleep off, for a machine to answer. What was set, and what the card said when asked, is in the kernel log of that start (`wake-up` lines). `e1000.wol=off` on the kernel command line leaves the card alone.
+
+# FILES
+@ e1000.wol=off on the kernel command line
+    No Wake on LAN arming at power-off (the card stays as it was).
+
+# SEE ALSO
+halt(8), shutdown(8), reboot(8)

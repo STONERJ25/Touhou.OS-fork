@@ -1,0 +1,39 @@
+.page mmake 1 Marisa's make
+.alias make
+
+# SYNOPSIS
+*mmake* [*-f* _FILE_] [*-C* _DIR_] [*-nskiB*] [*-j* _N_] [_VAR_=_VALUE_]... [_TARGET_]...
+*mmake* *--version* | *--help*
+
+# DESCRIPTION
+`mmake` reads a Makefile and brings the targets you name up to date: a target is built again when it does not exist, when a prerequisite is newer than it, or when a prerequisite was just built; the recipe lines of its rule are run one at a time by `/bin/sh`. With no target the first rule of the file is used. `make` is the same program under its usual name. It is what the system uses to rebuild itself without a host (see /ScarletDevilMansion/src/Makefile and docs/SELFHOST.md).
+
+It speaks the part of GNU make that Makefiles lean on: variables (`=`, `:=`, `::=`, `?=`, `+=`, `!=`, `define`/`endef`, `export`, `override`, values from the environment and the command line), `$(...)` references with the substitution form `$(SRC:.c=.o)`, the text functions (`subst patsubst strip findstring filter filter-out sort word wordlist words firstword lastword dir notdir suffix basename addsuffix addprefix join wildcard abspath realpath shell if or and foreach call error warning info origin flavor value`), `ifeq ifneq ifdef ifndef else endif`, `include` and `-include`, rules with several targets, `.PHONY`, order-only prerequisites after `|`, pattern rules with `%`, static pattern rules, the built-in rule `%.o: %.c` (with `CC`, `CFLAGS`, `CPPFLAGS`), and the automatic variables `$@ $< $^ $+ $? $*` with their `D` and `F` forms. Messages follow GNU make's wording.
+
+It leaves out: parallel jobs (`-j` is accepted and ignored: one recipe runs at a time), suffix rules such as `.c.o:`, target-specific variables, `vpath`, `$(eval)`, secondary expansion, `.ONESHELL`, archive members, and the deletion of intermediate files. A Makefile that needs one of these gets an error or a warning, not a different behaviour.
+
+# OPTIONS
+*-f* _FILE_  Read _FILE_ instead of `GNUmakefile`, `makefile` or `Makefile`. May be repeated.
+*-C* _DIR_  Change to _DIR_ first.
+*-n*  Print the recipe lines, run none (targets are treated as made, so the lines of their dependents show too).
+*-s*  Do not print recipe lines before running them.
+*-k*  Keep going: after a failure, work on the targets that do not depend on it.
+*-i*  Ignore failures of recipe lines (a line starting with `-` is always ignored).
+*-B*  Make every target even if it is up to date.
+*-j* _N_  Accepted, ignored.
+_VAR_=_VALUE_  Set a variable; it beats the same variable in the Makefile and is exported to the recipes.
+
+# FILE TIMES
+Out-of-date checks compare modification times in whole seconds, and a prerequisite counts as newer only when its time is greater than the target's. A file edited within the same second in which its target was built therefore looks unchanged (as with GNU make on any file system with one-second times); `touch -t` gives a file a later time. A volume on FAT stores even seconds only. Targets built in the same run are always taken to be newer than what they were built from, whatever the clock says.
+
+# EXIT STATUS
+0 when everything asked for is up to date or was built, 2 when a recipe failed or the Makefile is wrong.
+
+# EXAMPLES
+    mmake                      build the first target of ./Makefile
+    mmake -n clean             show what `clean` would run
+    mmake CC=mcc CFLAGS=-O2    override variables
+    mmake -C /ScarletDevilMansion/src OUT=/tmp/build all
+
+# SEE ALSO
+mcc(1), mld(1), mar(1)

@@ -1,0 +1,19 @@
+.page source 1 run the commands of a file in this shell
+.alias .
+
+# SYNOPSIS
+*source* _FILE_ [_ARGUMENT_...]
+*.* _FILE_ [_ARGUMENT_...]
+
+# DESCRIPTION
+`source` (also spelled `.`) is a gapsh builtin. It reads _FILE_ and runs its commands in the current shell, so assignments, functions and aliases it defines stay. A _FILE_ without a slash is looked for in the directories of `PATH`. The arguments become the positional parameters while the file runs.
+
+# EXIT STATUS
+The status of the last command, 127 if the file cannot be read, 2 if no file is named.
+
+# EXAMPLES
+    . ~/.gaprc
+    source /Hakurei/etc/profile
+
+# SEE ALSO
+eval(1), gapsh(1)

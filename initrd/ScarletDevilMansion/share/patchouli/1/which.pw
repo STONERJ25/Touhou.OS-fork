@@ -1,0 +1,17 @@
+.page which 1 locate a command
+
+# SYNOPSIS
+*which* _NAME_...
+
+# DESCRIPTION
+`which` prints the full path of the program that would run for each _NAME_, searching the directories of `PATH` for an executable file. A name containing a slash is checked as it stands. Shell builtins and aliases are not known to `which`; use the `type` builtin of gapsh for those.
+
+# EXIT STATUS
+0 if every name was found, 1 otherwise.
+
+# EXAMPLES
+    which ls
+    which kappabox omikuji
+
+# SEE ALSO
+type(1), env(1)

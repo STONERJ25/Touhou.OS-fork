@@ -1,0 +1,14 @@
+.page basename 1 strip the directory and a suffix from a path
+
+# SYNOPSIS
+*basename* _PATH_ [_SUFFIX_]
+
+# DESCRIPTION
+`basename` prints the last component of _PATH_. If _SUFFIX_ is given and the name ends with it (and is longer), the suffix is removed too.
+
+# EXAMPLES
+    basename /ScarletDevilMansion/share/patchouli/1/ls.pw
+    basename /bin/ls.pw .pw
+
+# SEE ALSO
+dirname(1), realpath(1)

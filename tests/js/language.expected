@@ -1,0 +1,21 @@
+counter 3
+per-iteration 0 1 2
+caught 42
+finally runs
+try
+loop-finally 0ff2ff
+object 1 two 11 6
+delete undefined 4 false true
+array 6 2 undefined 6
+one two or three other
+labels 2 0
+number string object object undefined function undefined
+1 -1 1024 Infinity -Infinity NaN 2 -3 -6 -2147483648
+true true true false false true
+0.30000000000000004 1e+21 123456789012345680000 1.5e-7 0 100 3.14159
+class 4 7 5
+destructure 1 5 2 1 9 2 3
+defaults 3 5
+spread Math 3
+hello Kosuzu, 2 books
+undefined default two undefined

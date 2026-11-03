@@ -1,0 +1,30 @@
+.page rm 1 remove files or directories
+
+# SYNOPSIS
+*rm* [*-rRfv*] [*--*] _FILE_...
+
+# DESCRIPTION
+`rm` deletes each _FILE_ for good: nothing is kept. If you may want it back, send it to the Netherworld with trash(1) instead. Without `-r` a directory is refused with `Is a directory`.
+
+# OPTIONS
+@ *-r*, *-R*
+    Remove directories and everything below them.
+@ *-f*
+    Force: ignore files that do not exist, never complain, and do not insist on a file operand.
+@ *-v*
+    Say what is removed.
+@ *-i*
+    Accepted and ignored: `rm` never asks.
+@ *--*
+    End of options, for files whose names start with a dash.
+
+# EXIT STATUS
+0, 1 when something could not be removed or the operand is missing, 2 for an unknown option.
+
+# EXAMPLES
+    rm old.txt
+    rm -rf /tmp/build
+    rm -- -strange-name
+
+# SEE ALSO
+trash(1), rmdir(1), find(1)

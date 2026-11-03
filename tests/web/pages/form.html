@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Visitor registration</title>
+<style>
+  body { font-family: sans-serif; margin: 16px; }
+  fieldset { width: 420px; }
+  label { display: inline-block; width: 120px; }
+  .row { margin: 6px 0; }
+  button { padding: 4px 12px; }
+</style>
+</head>
+<body>
+<form action="/register" method="post">
+  <fieldset>
+    <legend>Visitor registration</legend>
+    <div class="row"><label for="name">Name</label><input id="name" name="name" value="Aya"></div>
+    <div class="row"><label for="pw">Password</label><input id="pw" type="password" name="pw" value="secret"></div>
+    <div class="row"><label for="mail">Mail</label><input id="mail" type="email" placeholder="you@example.org"></div>
+    <div class="row"><label for="kind">Kind</label><select id="kind" name="kind"><option>Human</option><option selected>Tengu</option><option>Youkai</option></select></div>
+    <div class="row"><label>Newsletter</label><input type="checkbox" id="news" checked> <input type="radio" name="r" id="r1"> <input type="radio" name="r" id="r2" checked></div>
+    <div class="row"><label for="msg">Message</label><textarea id="msg" rows="3" cols="30">Hello from the mountain.</textarea></div>
+    <div class="row"><input type="submit" id="send" value="Send"> <button type="reset" id="reset">Reset</button> <progress value="0.4"></progress></div>
+  </fieldset>
+</form>
+</body>
+</html>

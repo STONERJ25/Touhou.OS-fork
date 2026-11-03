@@ -1,0 +1,43 @@
+.page omikuji 1 draw today's shrine fortune slip
+
+# SYNOPSIS
+*omikuji* [*-rak*]
+
+# DESCRIPTION
+At a shrine you shake a box until a numbered stick falls out and the maiden hands you the matching slip. `omikuji` does it for you: it names a rank, from *Dai-kichi* (great blessing) down to *Kyo* (misfortune), and gives a line each for your wish, travel, business, health, lost items and love.
+
+The slip is the same all day: it is drawn from the user id and the (UTC) date, so asking again at lunch does not improve it. Different users get different slips. Use `-r` to draw again, if you must.
+
+The ranks, from best to worst, and how often they come up:
+
+    Dai-kichi   great blessing    10%
+    Chu-kichi   middle blessing   22%
+    Sho-kichi   small blessing    20%
+    Kichi       blessing          24%
+    Sue-kichi   future blessing   14%
+    Kyo         misfortune        10%
+
+On a terminal the slip is drawn in a box with colours. When output goes to a pipe or a file it is plain text, ready for further processing. The kanji for the rank and the headings are only added with `-k`, because the font of the system console has none.
+
+# OPTIONS
+@ *-r*
+    Draw a fresh slip at random instead of today's.
+@ *-a*
+    Plain ASCII: no box-drawing characters.
+@ *-k*
+    Add the kanji for the rank and for the headings. Use it on a terminal whose font has them, for example a terminal emulator on the serial line.
+
+# FILES
+@ /Hakurei/etc/motd
+    Invites new arrivals to try it.
+
+# NOTES
+Tradition says that a bad slip should be tied to a pine branch at the shrine, so that the misfortune stays there. Tying it to the shell prompt does not work as well.
+
+# EXAMPLES
+    omikuji
+    omikuji | head -3
+    omikuji -r -a
+
+# SEE ALSO
+fortune(1), saisen(1), reimusay(1)

@@ -1,0 +1,21 @@
+byte=255 a3=123 op=7
+sizes: byte=1 arr3_t=12 op_t=8 node_t=16 size_t2=8 color_t=4
+enum: 0 5 6 16 | 1 2 4
+shape=6
+col=7
+select_op: 11 1
+apply_n=32
+func_table=42
+sizes: 24 16 8 24
+buf dims: 12 4 2
+const: 7 8 const 1
+S: 1 2 6 4 8 size=24
+list: 1 2
+x=6
+(*pa)[1]=2
+a
+200 -300 4000000000 -5000000000 8
+local typedef 9
+anon 3
+1099511627776 18446744073709551615
+multi 1 3 1

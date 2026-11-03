@@ -1,0 +1,47 @@
+.page expr 1 evaluate an expression
+
+# SYNOPSIS
+*expr* _EXPRESSION_
+
+# DESCRIPTION
+`expr` evaluates _EXPRESSION_, which is given as separate arguments, and prints the result. Operators and operands must therefore be separate words, and the characters that gapsh treats specially (`*`, `<`, `>`, `|`, `&`, parentheses) must be quoted.
+
+# OPERATORS
+From the lowest precedence to the highest:
+
+@ _A_ | _B_
+    _A_ if it is neither empty nor 0, otherwise _B_.
+@ _A_ & _B_
+    _A_ if neither _A_ nor _B_ is empty or 0, otherwise 0.
+@ _A_ = _B_, == != < <= > >=
+    1 or 0. Numbers are compared as numbers, anything else as text.
+@ _A_ + _B_, _A_ - _B_
+    Integer addition and subtraction.
+@ _A_ * _B_, / %
+    Integer multiplication, division and remainder.
+@ _STRING_ : _REGEX_
+    Match _REGEX_ (a basic regular expression, see regex(7)) at the start of _STRING_. The result is the text matched by `\(` `\)` if the pattern has a group, otherwise the number of characters matched.
+@ ( _A_ )
+    Grouping.
+
+Besides the operators there are three words, each taking its arguments from the words that follow:
+
+@ length _STRING_
+    The number of bytes in _STRING_.
+@ substr _STRING_ _POS_ _LEN_
+    _LEN_ bytes of _STRING_, starting at position _POS_ (counting from 1).
+@ index _STRING_ _CHARS_
+    The position of the first character of _STRING_ that is found in _CHARS_, or 0.
+
+# EXIT STATUS
+0 if the result is neither empty nor 0, 1 if it is empty or 0, and 1 together with a message on standard error for a syntax error, division by zero or a non-integer operand.
+
+# EXAMPLES
+    expr 6 '*' 7
+    expr length hello
+    expr substr hello 2 3
+    expr abc : 'a\(.\)c'
+    x=$(expr $x + 1)
+
+# SEE ALSO
+test(1), seq(1), regex(7)

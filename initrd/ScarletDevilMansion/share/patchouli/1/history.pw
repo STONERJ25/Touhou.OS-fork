@@ -1,0 +1,10 @@
+.page history 1 list the commands typed so far
+
+# SYNOPSIS
+*history*
+
+# DESCRIPTION
+`history` is a gapsh builtin that prints the numbered command history of the interactive session. The Up and Down keys and ^R search it. At most 1000 lines are kept; the last 500 are saved in `~/.gapsh_history` when the shell exits.
+
+# SEE ALSO
+gapsh(1)

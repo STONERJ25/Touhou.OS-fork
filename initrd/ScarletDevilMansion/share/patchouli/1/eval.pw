@@ -1,0 +1,13 @@
+.page eval 1 run a constructed command line
+
+# SYNOPSIS
+*eval* [_ARGUMENT_...]
+
+# DESCRIPTION
+`eval` is a gapsh builtin. It joins its arguments with spaces and runs the result as a command line, after the shell has already expanded them once.
+
+# EXAMPLES
+    cmd='echo $HOME'; eval "$cmd"
+
+# SEE ALSO
+source(1), exec(1)

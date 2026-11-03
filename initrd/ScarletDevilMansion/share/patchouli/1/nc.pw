@@ -1,0 +1,36 @@
+.page nc 1 connect to a TCP or UDP port, or listen on one
+
+# SYNOPSIS
+*nc* [*-uvz*] [*-w* _SECONDS_] _HOST_ _PORT_
+*nc* *-l* [*-u*] [*-v*] [*-w* _SECONDS_] [*-p* _PORT_ | _PORT_] [_ADDRESS_]
+
+# DESCRIPTION
+`nc` ("netcat") connects standard input and standard output to a network connection. In the first form it connects to _HOST_ (a name or dotted address) and _PORT_ and copies in both directions: what you type or pipe in is sent, what arrives is printed. When standard input ends, the sending direction of the connection is closed (a TCP half-close) and `nc` keeps printing until the other side hangs up; with `-w` it also gives up after that many silent seconds. This is enough to talk to a web server by hand or to send a file through a pipe.
+
+With `-l` it waits for one incoming connection (or, with `-u`, for the first datagram, whose sender becomes the peer), then relays in the same way and exits. Ports below 1024 need root.
+
+# OPTIONS
+@ *-u*
+    UDP instead of TCP.
+@ *-l*
+    Listen instead of connecting.
+@ *-p* _PORT_
+    The port to listen on (or give it as the last argument).
+@ *-z*
+    Only check whether the port accepts a connection; send nothing. Exit 0 if it does.
+@ *-v*
+    Say what happens (listening, connected, who connected).
+@ *-w* _SECONDS_
+    For connecting: give up after this long. For relaying: leave after this many silent seconds once standard input has ended.
+
+# EXAMPLES
+    printf 'GET / HTTP/1.0\r\n\r\n' | nc 10.0.2.2 8000
+    nc -l -p 9000 > received.bin
+    nc -z -v 10.0.2.2 80
+    nc -u -l 5353
+
+# EXIT STATUS
+0 when the connection (or the check) worked and ended normally, 1 on errors and refusals, 2 for a usage error.
+
+# SEE ALSO
+fetch(1), httpd(1), network(7)

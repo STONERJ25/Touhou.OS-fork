@@ -1,0 +1,23 @@
+.page base64 1 encode or decode base64 data
+
+# SYNOPSIS
+*base64* [*-d*] [*-w* _COLS_] [_FILE_]
+
+# DESCRIPTION
+`base64` encodes _FILE_ (or standard input) as base64 text and writes it in lines of 76 characters. With `-d` it decodes: every character that is not part of the base64 alphabet is ignored, which also makes it forgiving about line breaks.
+
+# OPTIONS
+@ *-d*
+    Decode.
+@ *-w* _COLS_
+    Wrap encoded lines after _COLS_ characters. 0 turns wrapping off. The default is 76.
+@ *-i*
+    Accepted and ignored.
+
+# EXAMPLES
+    echo -n hi | base64
+    echo aGk= | base64 -d
+    base64 -w 0 /Hakurei/etc/hostname
+
+# SEE ALSO
+xxd(1), md5sum(1)
