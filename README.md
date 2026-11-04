@@ -2,7 +2,7 @@
 
 A Touhou-themed operating system for x86-64 PCs, written from scratch in C and a little assembly: UEFI loader, kernel, C library, shell, window system, desktop, a web browser, and its own TLS, TrueType and JavaScript engines. Every part was written for this project from public specifications (RFCs, the Intel manuals, the ELF and TrueType specifications, the WHATWG and ECMA standards).
 
-> **Status, November 2026: almost ready to play TH01 to TH05.** The PC-98 emulator now runs all five original games on its 386 model: **TH01's first stage plays** (the orb bounces, the score counts), TH02, TH04 and TH05 reach their first stage, TH03 reaches its versus screen, and the games' FM music is synthesized by an OPNA model. What is left is the desktop application that puts the emulator in a window, with keys, sound and saved changes. **No game data is included or ever will be**: you bring your own copies of the disk images ([docs/PC98.md](docs/PC98.md)).
+> **Status, November 2026: almost ready to play TH01 to TH05.** The PC-98 emulator now runs all five original games on its 386 model: **TH01's first stage plays** (the orb bounces, the score counts), TH02, TH04 and TH05 reach their first stage, TH03 reaches its versus screen, and the games' FM music is synthesized by an OPNA model. The emulator also runs as a desktop application, *Yukari's Gap to PC-98* (a window with keys and sound, and changes saved only when you ask; tested in QEMU, not yet on real hardware: [docs/PC98_APP.md](docs/PC98_APP.md)). **No game data is included or ever will be**: you bring your own copies of the disk images ([docs/PC98.md](docs/PC98.md)).
 
 <p>
 <img src="docs/images/desktop-start-menu.png" width="49%" alt="The HakureiDE desktop with the start menu open">
@@ -22,13 +22,13 @@ Screenshots of the real thing, taken from a Dell OptiPlex (Core i5-7500) over th
 | **Userland** | Its own C library (`libgap`), shell (`gapsh`), about 140 command-line tools in one multicall binary (`kappabox`) with manual pages, `vi`, `awk`, `diff`, `bc`, and its own C compiler, linker, archiver, assembler and `make` (it can rebuild its own userland on itself). |
 | **Desktop** | The Fairies window server, the Kappa toolkit, the HakureiDE desktop, a login screen, and applications: Explorer, Notebook, Sketchbook, Gallery, Calculator, Pocket Watch, Spell Manager (task manager), Control Panel, a terminal, and a few games. Text is set in a TrueType rasteriser written for the project. |
 | **Web** | **Kyouko's browser** over *Hatate*, a from-scratch HTML5/CSS engine (block, inline, flex, grid and table layout, forms, images) and *Kosuzu*, a from-scratch JavaScript engine (ES2024 without modules so far; not yet connected to the browser). It loads real HTTPS pages and refuses bad certificates with no "continue anyway". |
-| **PC-98 emulation** | A freestanding 386/486 model checked against 1.76 million single-step test vectors, a high-level BIOS, the graphics display, an FM sound model; the five games run as described above. |
+| **PC-98 emulation** | A freestanding 386/486 model checked against 1.76 million single-step test vectors, a high-level BIOS, the graphics display, an FM sound model; the five games run as described above, and the emulator is a desktop application. |
 
 Tested by about 400 scripted QEMU tests and several hundred host-side tests. It boots to the desktop on real hardware too; what was checked on the first machine, and what that showed, is in [docs/HARDWARE_AUDIT.md](docs/HARDWARE_AUDIT.md).
 
 ## Where it is going
 
-Run Linux programs natively (a syscall layer written from the specifications, then Windows programs, benchmarked on Windows-era games: [docs/COMPAT.md](docs/COMPAT.md)), a compressed boot image, bigger hardware coverage (more drivers, a bootable ISO that runs from memory and touches nothing: [docs/HARDWARE_BREADTH.md](docs/HARDWARE_BREADTH.md)), and the browser's JavaScript. [docs/ROADMAP.md](docs/ROADMAP.md) and [docs/STATUS.md](docs/STATUS.md) have the detail.
+Run Linux programs natively: **static x86-64 Linux executables, including ones linked with glibc, already run** (`linux PROGRAM`, with files and directories, signals, threads and futexes; a syscall layer written from the specifications and checked against a real Linux line by line), dynamically linked executables come next, then Windows programs, benchmarked on Windows-era games ([docs/COMPAT.md](docs/COMPAT.md)); bigger hardware coverage (more drivers, the bootable ISO tested on real machines: [docs/HARDWARE_BREADTH.md](docs/HARDWARE_BREADTH.md)), and the browser's JavaScript. [docs/ROADMAP.md](docs/ROADMAP.md) and [docs/STATUS.md](docs/STATUS.md) have the detail.
 
 ## Using it
 
@@ -60,7 +60,7 @@ python tools/mkdisk.py build/disk.img --size 300M --no-esp
 
 ## Running it on a real PC
 
-Read [docs/REAL_HARDWARE.md](docs/REAL_HARDWARE.md) first. `python tools/mkimage.py --zip` builds a GPT disk image with a small boot partition and a FAT32 partition labelled `HUMANVILLAGE` that holds the home folders, to be written to a USB stick. Secure Boot has to be off. **The OS never writes to a disk it was not told to**: its default command line makes every SATA and NVMe disk read-only. A bootable ISO is planned.
+Read [docs/REAL_HARDWARE.md](docs/REAL_HARDWARE.md) first. `python tools/mkimage.py --zip` builds a GPT disk image with a small boot partition and a FAT32 partition labelled `HUMANVILLAGE` that holds the home folders, to be written to a USB stick. Secure Boot has to be off. **The OS never writes to a disk it was not told to**: its default command line makes every SATA and NVMe disk read-only. A **bootable ISO** (`python tools/mkiso.py`, [docs/ISO.md](docs/ISO.md)) runs from memory and touches no disk; it is tested in QEMU as a CD and as a USB disk, not yet on real firmware. `hwreport` writes a hardware report with serial numbers and addresses redacted, to send along when something does not work ([docs/HARDWARE_DB.md](docs/HARDWARE_DB.md)).
 
 ## Tests
 

@@ -3,6 +3,7 @@
 #include "kernel.h"
 #include "cpu.h"
 #include "elf.h"
+#include "linux.h"
 
 #define AT_NULL   0
 #define AT_PAGESZ 6
@@ -19,7 +20,8 @@ static int read_exact(File *f, u64 off, void *buf, size_t n) {
     return 0;
 }
 
-static int load_elf(File *f, AddrSpace *as, u64 *entry_out) {
+/* img (may be NULL) gets what the Linux personality's auxiliary vector needs: where the program headers ended up in memory, their size and count. */
+static int load_elf(File *f, AddrSpace *as, u64 *entry_out, LinuxImage *img) {
     Elf64_Ehdr eh;
     if (read_exact(f, 0, &eh, sizeof eh)) return -ENOEXEC;
     if (!elf64_check(&eh) || eh.e_type != ET_EXEC || eh.e_phnum == 0 || eh.e_phnum > 32) return -ENOEXEC;
@@ -36,6 +38,8 @@ static int load_elf(File *f, AddrSpace *as, u64 *entry_out) {
         u32 prot = ((ph[i].p_flags & PF_R) ? PROT_READ : 0) | ((ph[i].p_flags & PF_W) ? PROT_WRITE : 0) |
                    ((ph[i].p_flags & PF_X) ? PROT_EXEC : 0);
         if (!prot) prot = PROT_READ;
+        if (img && ph[i].p_offset <= eh.e_phoff && eh.e_phoff + (u64)eh.e_phnum * eh.e_phentsize <= ph[i].p_offset + filesz)
+            img->phdr = vaddr + (eh.e_phoff - ph[i].p_offset);          /* the segment that holds the program headers maps them too */
         rc = uvm_map(as, start, end - start, prot, 0);
         if (rc) { rc = rc == -EEXIST ? -ENOEXEC : rc; break; }
         rc = uvm_populate(as, start, end - start);
@@ -56,6 +60,11 @@ static int load_elf(File *f, AddrSpace *as, u64 *entry_out) {
     if (eh.e_entry < 0x1000 || eh.e_entry >= USER_TOP) return -ENOEXEC;
     as->brk_start = as->brk = hi;
     *entry_out = eh.e_entry;
+    if (img) {
+        img->entry = eh.e_entry;
+        img->phent = eh.e_phentsize;
+        img->phnum = eh.e_phnum;
+    }
     return 0;
 }
 
@@ -162,8 +171,12 @@ int process_exec(Process *p, const char *path, char *const argv[], char *const e
     u64 entry, sp, argv_u, envp_u;
     int argc;
     u32 fmode = f->vn->mode, fuid = f->vn->uid, fgid = f->vn->gid;      /* for setuid/setgid programs */
-    rc = load_elf(f, &nas, &entry);
-    if (!rc) rc = build_stack(&nas, argv, envp, &sp, &argc, &argv_u, &envp_u);
+    u8 abi = p->exec_abi ? (u8)(p->exec_abi - 1) : p->abi;              /* SYS_setabi asked for a personality, or the process keeps its own */
+    LinuxImage img = { .secure = (fmode & (S_ISUID | S_ISGID)) != 0,
+                       .euid = (fmode & S_ISUID) ? fuid : p->cred.uid, .egid = (fmode & S_ISGID) ? fgid : p->cred.gid };
+    rc = load_elf(f, &nas, &entry, &img);
+    if (!rc) rc = abi == ABI_LINUX ? linux_build_stack(&nas, &img, argv, envp, path, &sp)
+                                   : build_stack(&nas, argv, envp, &sp, &argc, &argv_u, &envp_u);
     file_put(f);
     if (rc) { uvm_destroy(&nas); return rc; }
 
@@ -176,6 +189,7 @@ int process_exec(Process *p, const char *path, char *const argv[], char *const e
     if (fmode & S_ISGID) p->cred.gid = fgid;
     AddrSpace old = p->as;
     p->as = nas;
+    p->abi = abi;
     current->pml4 = nas.pml4;
     vmm_switch(nas.pml4);
     uvm_destroy(&old);
@@ -204,8 +218,10 @@ int process_exec(Process *p, const char *path, char *const argv[], char *const e
     tf->cs = USER_CS;
     tf->ss = USER_DS;
     tf->rflags = RFLAGS_IF | 2;
-    tf->rdi = (u64)argc;
-    tf->rsi = argv_u;
-    tf->rdx = envp_u;
+    if (abi != ABI_LINUX) {                 /* native programs get argc, argv, envp in registers; a Linux program finds them on the stack, and rdx must be 0 (no atexit hook) */
+        tf->rdi = (u64)argc;
+        tf->rsi = argv_u;
+        tf->rdx = envp_u;
+    }
     return 0;
 }

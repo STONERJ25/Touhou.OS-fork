@@ -1,0 +1,90 @@
+write to a bad descriptor: -9
+write from a bad pointer: -14
+unknown system call 9999: -38
+system call number -1: -38
+close a bad descriptor: -9
+dup a bad descriptor: -9
+lseek a bad descriptor: -9
+read a bad descriptor: -9
+brk(0) is stable: 1
+brk grows by three pages: 1
+the new heap is writable: 1
+brk(0) returns the new break: 1
+brk below the start is refused: 1
+brk shrinks back: 1
+mmap anonymous succeeds: 1
+anonymous memory is zero: 1
+anonymous memory is writable: 1
+mprotect read-only: 0
+mprotect at an unaligned address: -22
+munmap at an unaligned address: -22
+munmap: 0
+mmap of length 0: -22
+mmap of a bad descriptor: -9
+mmap fixed at an unaligned address: -22
+arch_prctl ARCH_SET_FS: 0
+arch_prctl ARCH_GET_FS: 0
+the FS base reads back: 1
+arch_prctl with an unknown code: -22
+ARCH_SET_FS with a kernel address: -1
+getpid is positive: 1
+gettid equals getpid in a one-thread program: 1
+set_tid_address returns the thread id: 1
+getppid is positive: 1
+getuid equals geteuid: 1
+getgid equals getegid: 1
+kill with signal 0 on itself: 0
+kill of a process that does not exist: -3
+uname: 0
+uname sysname: Linux
+uname machine: x86_64
+uname into a bad pointer: -14
+getrlimit NOFILE: 0
+the NOFILE soft limit is at least 64: 1
+getrlimit STACK: 0
+the STACK soft limit is at least 1 MiB: 1
+getrlimit of a resource that does not exist: -22
+prlimit64 of ourselves: 0
+prlimit64 of a process that does not exist: -3
+stat of /: 0
+/ is a directory: 1
+the old stat call: 0
+stat of a missing path: -2
+stat of an empty path: -2
+stat of stdout by descriptor: 0
+stat with unknown flags: -22
+stat into a bad pointer: -14
+fstat of a bad descriptor: -9
+open a directory for reading: 1
+read from a directory: -21
+close it: 0
+close it again: -9
+open a missing file: -2
+open with a bad pointer: -14
+access of /: 0
+access of a missing path: -2
+pipe: 0
+lseek on a pipe: -29
+poll of an empty pipe without waiting: 0
+write into the pipe: 5
+poll of a pipe with data: 1
+revents is POLLIN: 1
+read it back: 5
+the bytes are hello: 1
+writev
+writev returned: 7
+dup2 onto 20: 20
+close 20: 0
+getrandom: 16
+getrandom is not all zero: 1
+clock_gettime MONOTONIC: 0
+clock_gettime REALTIME: 0
+the real time is after 2020: 1
+clock_gettime with a bad clock: -22
+clock_gettime into a bad pointer: -14
+nanosleep for 2 ms: 0
+wait4 returns the child: 1
+the child's status word: 1792
+wait4 with no children left: -10
+probe done
+exit status: 0

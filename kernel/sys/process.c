@@ -72,6 +72,19 @@ void process_for_each(void (*fn)(Process *p, void *ctx), void *ctx) {
 
 int process_count(void) { return g_nprocs; }
 
+int g_alarms_armed;
+
+static void alarm_cb(Process *p, void *ctx) {
+    u64 now = *(u64 *)ctx;
+    if (p->alarm_at && now >= p->alarm_at && p->state == PROC_RUNNING) {
+        p->alarm_at = 0;
+        g_alarms_armed--;
+        signal_send(p, SIGALRM);
+    }
+}
+
+void alarm_tick(u64 now) { process_for_each(alarm_cb, &now); }
+
 /* ------------------------------------------------------------------ descriptors */
 
 /* The descriptor table is shared by every thread: scans and updates run with interrupts disabled (its lock). */
@@ -145,7 +158,9 @@ void path_normalize(const char *base, const char *path, char *out, size_t n) {
 
 /* ------------------------------------------------------------------ fork / exit / wait */
 
-int process_fork(TrapFrame *tf) {
+/* fork with the two extras of Linux's clone(2): settid_addr (CLONE_CHILD_SETTID) is a word in the child's copy of memory that receives its thread id, and cleartid_addr
+ * (CLONE_CHILD_CLEARTID) the word that is zeroed and futex-woken when the child exits. Either may be 0. The child is given both before it can run. */
+int process_fork_ex(TrapFrame *tf, u64 settid_addr, u64 cleartid_addr) {
     Process *par = current->proc;
     Process *c = process_alloc();
     if (!c) return -EAGAIN;
@@ -158,6 +173,7 @@ int process_fork(TrapFrame *tf) {
     c->ruid = par->ruid;
     c->rgid = par->rgid;
     c->umask = par->umask;
+    c->abi = par->abi;                              /* a child makes its system calls the way its parent does */
     strlcpy(c->name, par->name, sizeof c->name);
     strlcpy(c->cwd_path, par->cwd_path, sizeof c->cwd_path);
     strlcpy(c->cmdline, par->cmdline, sizeof c->cmdline);
@@ -197,7 +213,11 @@ int process_fork(TrapFrame *tf) {
     irq_restore(f);
 
     /* Only the calling thread survives in the child: it keeps its TLS base and signal mask, and becomes the child's first thread. */
-    ThreadInit ti = { .utid = c->pid, .fs_base = current->fs_base, .clear_tid = 0, .sig_blocked = current->sig_blocked };
+    ThreadInit ti = { .utid = c->pid, .fs_base = current->fs_base, .clear_tid = cleartid_addr, .sig_blocked = current->sig_blocked };
+    if (settid_addr) {
+        u32 tid = (u32)c->pid;
+        uvm_write(&c->as, settid_addr, &tid, sizeof tid);
+    }
     c->task = task_create_thread(c->name, tf, c, &ti);
     if (!c->task) {                                 /* unwind: the child never ran */
         u64 g = irq_save();
@@ -212,10 +232,15 @@ int process_fork(TrapFrame *tf) {
     return c->pid;
 }
 
+int process_fork(TrapFrame *tf) { return process_fork_ex(tf, 0, 0); }
+
 /* The last thread out: releases everything the process owned and turns it into a zombie for the parent. */
 static NORETURN void process_finalize(Process *p, int status) {
     if (p == g_init_proc) panic("init (pid 1) exited with status %#x: the shrine has no maiden", status);
 
+    u64 af = irq_save();
+    if (p->alarm_at) { p->alarm_at = 0; g_alarms_armed--; }                  /* a dead process gets no SIGALRM */
+    irq_restore(af);
     for (int i = 0; i < MAX_FD; i++) if (p->fds[i]) fd_close(p, i);
     if (p->cwd) { vnode_put(p->cwd); p->cwd = NULL; }
     for (unsigned i = 0; i < ARRAY_SIZE(p->old_cwd); i++) if (p->old_cwd[i]) { vnode_put(p->old_cwd[i]); p->old_cwd[i] = NULL; }
@@ -456,6 +481,16 @@ static bool process_user_fault(TrapFrame *tf, u64 cr2) {
     else
         klog("Eiki", "incident: '%s' (pid %d) %s (vector %lu, rip %#lx) -- signal %d", p->name, p->pid, what,
              (unsigned long)tf->vector, (unsigned long)tf->rip, sig);
+    current->fault_addr = tf->vector == 14 ? cr2 : tf->rip;       /* siginfo's si_addr, for a handler of the Linux personality */
+    switch (tf->vector) {
+    case 14: current->fault_code = (tf->error & 1) ? 2 : 1; break;        /* SEGV_ACCERR : SEGV_MAPERR */
+    case 0:  current->fault_code = 1; break;                              /* FPE_INTDIV */
+    case 16: case 19: current->fault_code = 7; break;                     /* FPE_FLTINV */
+    case 6:  current->fault_code = 2; break;                              /* ILL_ILLOPN */
+    case 3:  current->fault_code = 1; break;                              /* TRAP_BRKPT */
+    case 17: current->fault_code = 1; break;                              /* BUS_ADRALN */
+    default: current->fault_code = 0x80; break;                           /* SI_KERNEL */
+    }
     signal_force(p, sig);
     return true;
 }

@@ -365,7 +365,7 @@ int usleep(useconds_t us) {
     return nanosleep(&ts, NULL);
 }
 
-unsigned alarm(unsigned sec) { (void)sec; return 0; }
+unsigned alarm(unsigned sec) { return (unsigned)__sc1(SYS_alarm, (long)sec); }
 int pause(void) { return (int)__ret(__sc0(SYS_pause)); }
 
 /* ---------------------------------------------------------------- signals */
@@ -591,6 +591,7 @@ int gap_mount(const char *src, const char *target, const char *fstype, unsigned 
 }
 int gap_umount(const char *target) { return (int)__ret(__sc1(SYS_umount, (long)target)); }
 void gap_setname(const char *name) { __sc1(SYS_setname, (long)name); }
+int gap_setabi(int abi) { return (int)__ret(__sc1(SYS_setabi, abi)); }
 void gap_log(const char *msg) { __sc1(SYS_debuglog, (long)msg); }
 long gap_time_ms(void) { return __sc0(SYS_gettime_ms); }
 int gap_settime(long ms, long rtc_epoch) { return (int)__ret(__sc2(SYS_settime, ms, rtc_epoch)); }

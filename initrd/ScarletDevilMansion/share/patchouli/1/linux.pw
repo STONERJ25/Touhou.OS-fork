@@ -1,0 +1,23 @@
+.page linux 1 run a program built for Linux
+
+# SYNOPSIS
+*linux* _PROGRAM_ [_ARGUMENT_...]
+
+*native* _PROGRAM_ [_ARGUMENT_...]
+
+# DESCRIPTION
+`linux` starts _PROGRAM_ under the Linux personality of the kernel: the program makes its system calls with the numbers and structures of x86-64 Linux instead of the ones native TouhouOS programs use, and it starts with the stack a Linux program expects (arguments, environment, auxiliary vector). _PROGRAM_ is a path (nothing is searched for through `PATH`); it must be a static x86-64 ELF executable, the only kind the loader takes so far. Programs that need a dynamic linker, threads, signal handlers or sockets do not work yet; a system call the personality does not implement fails with `ENOSYS` and is named once in the kernel log (`dmesg`, tag `Outside World`).
+
+The personality is inherited by `fork` and kept by `execve`: a Linux program that starts another program makes that one a Linux program too. `native` is the way back: it starts _PROGRAM_ (searched for through `PATH`) under the native personality, for a native tool started from inside a Linux program.
+
+Add `linux.trace` to the kernel command line to log every Linux system call with its result.
+
+# EXIT STATUS
+The exit status of the program. 2 for a missing operand, 126 if the program could not be run, 127 if it was not found.
+
+# EXAMPLES
+    linux /ScarletDevilMansion/share/linux-tests/lnx_hello
+    linux ./hello-static a b c
+
+# SEE ALSO
+dmesg(1), gensokyo(7)

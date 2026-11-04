@@ -70,8 +70,13 @@ void  kt_text_in(KCanvas *c, KTtf *t, float size, KRect r, const char *utf8, uin
  *
  * What the font lacks (Latin-1 letters with accents, box drawing, arrows other than left and right ...) is drawn with the bitmap font, one 8 px cell
  * per code point, in the same pass, so a string never shows a missing-glyph box that the bitmap font could have drawn.
+ *
+ * Bold text (kc_text_bold, headings) is set in Gensokyo Sans Bold, a real weight with advances of its own (about 7% wider than the Regular's: measure it with
+ * kc_text_width_bold, not kc_text_width); the file is read the first time bold text is drawn. Without the file (a host test, a build without the fonts) bold text
+ * is the Regular drawn twice, half a pixel apart, and one pixel wider, as before.
  */
 #define KT_UI_FONT_PATH "/ScarletDevilMansion/share/fonts/GensokyoSans-Regular.ttf"
+#define KT_UI_BOLD_FONT_PATH "/ScarletDevilMansion/share/fonts/GensokyoSans-Bold.ttf"
 #define KT_UI_SIZE      13.0f           /* em size in logical pixels */
 #define KT_UI_BASELINE  13              /* pixels from the top of the 16 px line box to the baseline */
 
@@ -79,8 +84,8 @@ void  kt_text_in(KCanvas *c, KTtf *t, float size, KRect r, const char *utf8, uin
  * program called kc_text_use_bitmap, before it sends text this way. */
 int   kt_ui_ready(void);
 /* One walk over UTF-8 text (bytes long, (size_t)-1 = up to the NUL): draws it with its pen starting at logical x (fractional allowed) and the top of
- * the line box at y, when c is not NULL, and returns the advance in logical pixels (not rounded). `bold` draws a second, half a pixel shifted copy
- * and adds a pixel of advance. */
+ * the line box at y, when c is not NULL, and returns the advance in logical pixels (not rounded). `bold` sets the text in the Bold face, or, when there is none, draws a second, half a pixel
+ * shifted copy and adds a pixel of advance. */
 float kt_ui_walk(KCanvas *c, float x, int y, const char *s, size_t bytes, uint32_t fg, int bold);
 
 #endif /* KAPPA_TTF */

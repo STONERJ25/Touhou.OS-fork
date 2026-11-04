@@ -26,6 +26,9 @@ __attribute__((noreturn)) void pc_reset(void);   /* about six seconds from now: 
 void  nic_quiesce(void);                                            /* the receiver and transmitter of the Intel Ethernet controllers switched off, right before the firmware lets go */
 void  netdiag_run(UINT64 *report_phys, UINT64 *report_len);     /* the firmware's own network driver, for a moment; the text report goes to the screen and to the kernel log */
 
+/* fwinfo.c: what the firmware says about itself (SMBIOS table, vendor, Secure Boot, graphics modes) for the hardware report; boot services still alive */
+void  fwinfo_collect(BootInfo *bi);
+
 /* bootentry.c */
 void  bootentry_register(EFI_HANDLE device, const BootPartition *bp);   /* "bootentry": a Boot#### variable for this system at the end of BootOrder, once */
 void  bootentry_find_installed(EFI_HANDLE booted);                      /* "findinstalled": the same for a TouhouOS installed on an internal disk, found from the stick */

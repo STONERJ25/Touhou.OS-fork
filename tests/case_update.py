@@ -7,6 +7,7 @@ system" is made on the host: the kernel with trailing bytes (an ELF with trailin
 
   python tests/run_all.py update_
 """
+import gzip
 import hashlib
 import importlib.util
 import io
@@ -35,8 +36,9 @@ push_update = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(push_update)
 
 
-def new_system(tag, hang=False):
-    """A directory with the kernel.elf and initrd.img of a pretend next version. hang: the kernel's first instruction is a jump to itself."""
+def new_system(tag, hang=False, gz=False):
+    """A directory with the kernel.elf and initrd.img of a pretend next version. hang: the kernel's first instruction is a jump to itself. gz: the initrd as a gzip
+    member, like the build's own (docs/UPDATE.md, "The compressed initrd"); otherwise a plain tar (several tests append bytes to it: only a plain tar stays valid)."""
     out = BUILD / "update-src" / tag
     out.mkdir(parents=True, exist_ok=True)
     kernel = bytearray((BUILD / "esp" / "kernel.elf").read_bytes())
@@ -63,7 +65,7 @@ def new_system(tag, hang=False):
         info.size, info.mode = len(marker), 0o644
         dst.addfile(info, io.BytesIO(marker))
     (out / "kernel.elf").write_bytes(bytes(kernel))
-    (out / "initrd.img").write_bytes(buf.getvalue())
+    (out / "initrd.img").write_bytes(gzip.compress(buf.getvalue(), 6, mtime=0) if gz else buf.getvalue())
     return out
 
 
@@ -125,7 +127,9 @@ class UpdateGuest:
         return subprocess.run(args, input=input, capture_output=True, timeout=scaled(timeout))
 
     def push(self, src, version, *extra, wait=300, timeout=900):
-        cmd = [sys.executable, str(PUSH), "--host", "127.0.0.1", "--port", str(self.port), "--key", str(make_key("main")[0]),
+        # (--no-key-check: the tool's guard wants the image to authorize the key it logs in with (commit 8c43292); here the key is the test's own and lives on the volume's
+        # ~marisa/.ssh, put there by __enter__, not in the initrd)
+        cmd = [sys.executable, str(PUSH), "--host", "127.0.0.1", "--port", str(self.port), "--key", str(make_key("main")[0]), "--no-key-check",
                "--ssh-option", f"UserKnownHostsFile={self.known.as_posix()}", "--src", str(src), "--version", version, "--wait", str(int(scaled(wait))), *extra]
         return subprocess.run(cmd, capture_output=True, text=True, timeout=scaled(timeout))
 
@@ -140,8 +144,10 @@ def kernel_bytes_in_log(g):
 @test
 def update_push_and_confirm():
     """push-update.py sends a new kernel and initrd through ssh; the machine writes them to the ESP, keeps the old pair, restarts on trial with the
-    new files, answers ssh again, and `update confirm` ends the trial: update.try is gone, kernel.old and initrd.old hold the old pair"""
-    src = new_system("v2")
+    new files, answers ssh again, and `update confirm` ends the trial: update.try is gone, kernel.old and initrd.old hold the old pair. The pushed initrd is a gzip
+    member (so is the installed one, the build's own): the machine accepts it, the loader loads it, the kernel inflates it, and /etc/update-marker comes out of it"""
+    src = new_system("v2", gz=True)
+    assert (src / "initrd.img").read_bytes()[:2] == b"\x1f\x8b"
     with UpdateGuest("update-push") as g:
         old_len = kernel_bytes_in_log(g)[-1]
         out = g.run("update status")[0]
@@ -247,14 +253,27 @@ def update_refusals_and_rules():
     junk_kernel = bytes(range(256)) * 40
     junk_initrd = bytes(range(256)) * 8
     badcmd = b"text blk.ro \x01\x02\n"
+    gz = gzip.compress(i, 6, mtime=0)                                            # a good compressed initrd, and the ways it can be wrong (the machine inflates it to see: docs/UPDATE.md)
+    gz_crc = bytearray(gz)
+    gz_crc[-8] ^= 1
+    gz_flip = bytearray(gz)
+    gz_flip[len(gz) // 2] ^= 0x40
+
+    def with_initrd(data, version):
+        return push_update.build_stream([("kernel.elf", k), ("initrd.img", data)], version)
     cases = [
+        ("gzip initrd cut short", with_initrd(gz[:-3000], "refuse-g1"), "", "is a gzip stream that ends too early"),
+        ("gzip initrd with a wrong CRC-32", with_initrd(bytes(gz_crc), "refuse-g2"), "", "is a damaged gzip stream"),
+        ("gzip initrd with a bit flipped", with_initrd(bytes(gz_flip), "refuse-g3"), "", "is a damaged gzip stream"),
+        ("gzip initrd followed by bytes", with_initrd(gz + bytes(100), "refuse-g4"), "", "has bytes after the end of its gzip stream"),
+        ("gzip initrd that holds no tar", with_initrd(gzip.compress(bytes(range(256)) * 100, 6, mtime=0), "refuse-g5"), "", "does not hold a tar archive"),
         ("damaged in transit", bytes(flipped), "", "arrived damaged"),
         ("cut short", stream[:-1000], "", "the input ended after"),
         ("kernel without initrd", push_update.build_stream([("kernel.elf", k)], "refuse-2"), "", "go together"),
         ("loader without --loader", push_update.build_stream([("kernel.elf", k), ("initrd.img", i), ("EFI/BOOT/BOOTX64.EFI", b"MZ" + bytes(2000))], "refuse-3"),
          "", "only replaced with --loader"),
         ("kernel that is not an ELF file", push_update.build_stream([("kernel.elf", junk_kernel), ("initrd.img", i)], "refuse-4"), "", "is not an x86-64 ELF file"),
-        ("initrd that is not an archive", push_update.build_stream([("kernel.elf", k), ("initrd.img", junk_initrd)], "refuse-5"), "", "is not a tar archive"),
+        ("initrd that is not an archive", push_update.build_stream([("kernel.elf", k), ("initrd.img", junk_initrd)], "refuse-5"), "", "is not a tar archive and not a gzip stream"),
         ("command line with control characters", push_update.build_stream([("kernel.elf", k), ("initrd.img", i), ("cmdline.txt", badcmd)], "refuse-6"), "",
          "characters that do not belong"),
         ("a file an update may not carry", b"touhou-push 1\nversion refuse-7\nfile etc/passwd 3 " + hashlib.sha256(b"abc").hexdigest().encode() + b"\nend\nabc",

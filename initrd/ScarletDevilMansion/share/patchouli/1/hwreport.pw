@@ -1,0 +1,33 @@
+.page hwreport 1 report what hardware this system runs on
+
+# SYNOPSIS
+*hwreport* [*--full*] [*-o* [_FILE_] | _FILE_]
+
+# DESCRIPTION
+`hwreport` writes one plain-text report of the machine: the firmware's own description (SMBIOS: vendor, product, BIOS), the processor, the memory map, the UEFI firmware and the graphics modes it offered, the ACPI tables, every PCI function with the driver that took it (or `none`), the storage controllers and disks, USB host controllers and devices, network cards, audio codecs, keyboards and mice, how interrupts are handled, temperature sensors, and the kernel log lines that mention a warning, error, failure, timeout or something that was `no`t found.
+
+It is the way to tell whoever is making TouhouOS run on more machines what your computer is made of, and above all which of its parts the system does not drive yet. The report has stable section headers (`[system]`, `[cpu]`, `[pci]` ...) and `key: value` lines, so that `tools/hwreport.py` can read many of them at once. A part that cannot be asked is a line that says so (`acpi: not available`), never an empty section.
+
+Without arguments the report goes to the screen. `-o` with no name writes `/HumanVillage/hwreport.txt` when the stick's volume is mounted (read it on another computer after `poweroff`; if you may not write the top of the volume, which belongs to root, the file goes to your home directory on the stick instead) and `/tmp/hwreport.txt` otherwise, where it is gone at power-off; a file name writes that file. The last line it prints says where the report went.
+
+# PRIVACY
+A report is meant to be pasted into public places, so unless `--full` is given it replaces the serial numbers (system, board, chassis, memory modules, disks), every UUID and a host name other than the default with a placeholder, and cuts the last three bytes off every MAC address (`52:54:00:xx:xx:xx`), in the fields that carry them and in the kernel log lines. A private IP address of a network card loses its last byte (`192.168.1.x`), a public one is not shown. The report says on its fourth line whether this was done. `--full` keeps everything, for the owner of the machine; do not post that file.
+
+# OPTIONS
+@ *--full*
+    Keep serial numbers, UUIDs, MAC addresses and the host name.
+@ *-o* [_FILE_]
+    Write to _FILE_, or to the default place described above.
+@ *-h*, *--help*
+    A short summary.
+
+# FILES
+`/proc/dmi`, `/proc/hwinfo`, `/proc/pcicaps`, `/proc/pci`, `/proc/acpi`, `/proc/ahci`, `/proc/nvme`, `/proc/partitions`, `/proc/usb`, `/proc/audio`, `/proc/thermal`, `/dev/kmsg` and the network control call are read; nothing is written except the report. `firstlook` appends the report to its file.
+
+# EXAMPLES
+    hwreport | less
+    hwreport -o
+    hwreport /HumanVillage/my-machine.txt
+
+# SEE ALSO
+lspci(1), lsusb(1), lsblk(1), dmesg(1), firstlook(1)

@@ -28,6 +28,7 @@ void nvme_init(void);
 void usb_init(void);
 bool usb_wait_settled(u32 max_ms);
 void storage_mount_boot_volumes(void);
+void hwinfo_early(void);
 
 u64 g_hhdm;
 u64 g_kernel_phys, g_kernel_virt;
@@ -155,6 +156,7 @@ NORETURN void kmain(BootInfo *bi) {
     klog("Boundary", "paging online: %lu MiB RAM, %lu MiB free", (unsigned long)(pmm_total_pages() >> 8),
          (unsigned long)(pmm_free_pages_count() >> 8));
     acpi_init();
+    hwinfo_early();                     /* SMBIOS strings, the ACPI table list, firmware facts: /proc/dmi and /proc/hwinfo, read before the loader's memory is reclaimed */
 
     sched_init();
     pic_init();

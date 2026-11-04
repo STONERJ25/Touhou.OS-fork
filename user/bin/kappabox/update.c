@@ -30,6 +30,7 @@
 #include <abi.h>
 #include <crypto.h>
 #include <stdarg.h>
+#include <z.h>
 
 #define TRY_NAME   "update.try"
 #define MF_NAME    "update.mf"
@@ -130,12 +131,64 @@ static int read_line(char *buf, size_t cap) {
     return (int)n;
 }
 
+#define INITRD_UNPACKED_MAX ((uint64_t)256 << 20)       /* the kernel's ceiling for what a gzip initrd may unpack to (kernel/fs/initrd.c) */
+
+/* The initrd is a ustar archive or one gzip member holding one (docs/UPDATE.md, "The compressed initrd"; the kernel unpacks either at boot). A gzip one is inflated here as well,
+ * into a buffer that is thrown away, and refused for what the kernel would refuse it for: damaged, cut short, followed by anything, not holding an archive, unpacking to more
+ * than the ceiling. Otherwise such a push would be installed and the kernel would panic over it at boot (on a start under trial the machine restarts 30 seconds later); only after
+ * the second such start would the loader bring the previous files back. The rules are the kernel's (a single member, its CRC-32 and length), checked here with libz. */
+static const char *initrd_problem(const uint8_t *d, size_t size) {
+    static char why[100];
+    if (size < 2 || d[0] != 0x1F || d[1] != 0x8B) {
+        if (size < 1024 || memcmp(d + 257, "ustar", 5)) return "is not a tar archive and not a gzip stream";
+        return NULL;
+    }
+    ZStream zs;
+    memset(&zs, 0, sizeof zs);
+    if (z_inflate_init(&zs, Z_GZIP) != Z_OK) return "cannot be checked (out of memory)";
+    uint8_t *buf = malloc(65536);
+    if (!buf) { z_inflate_end(&zs); return "cannot be checked (out of memory)"; }
+    const char *bad = NULL;
+    uint64_t total = 0;
+    int first = 1;
+    zs.next_in = d;
+    zs.avail_in = size;
+    for (;;) {
+        zs.next_out = buf;
+        zs.avail_out = 65536;
+        int rc = z_inflate(&zs);
+        size_t got = 65536 - zs.avail_out;
+        if (first && got) {
+            first = 0;
+            if (got < 512 || memcmp(buf + 257, "ustar", 5)) { bad = "is a gzip stream that does not hold a tar archive"; break; }
+        }
+        total += got;
+        if (total > INITRD_UNPACKED_MAX) { bad = "is a gzip stream that unpacks to more than 256 MiB, which the kernel refuses"; break; }
+        if (rc == Z_STREAM_END) {
+            if (zs.avail_in) bad = "has bytes after the end of its gzip stream (a single gzip member is the format; the kernel refuses anything after it)";
+            else if (first) bad = "is a gzip stream that holds nothing";
+            break;
+        }
+        if (rc < 0 && rc != Z_BUF_ERROR) {
+            snprintf(why, sizeof why, "is a damaged gzip stream (%s)", z_strerror(rc));
+            bad = why;
+            break;
+        }
+        if (zs.avail_out == 0) continue;
+        if (zs.avail_in == 0) { bad = "is a gzip stream that ends too early"; break; }
+        if (rc == Z_BUF_ERROR) { bad = "is a damaged gzip stream"; break; }
+    }
+    free(buf);
+    z_inflate_end(&zs);
+    return bad;
+}
+
 /* Why a file cannot be what its name says, or NULL. (The kept copies are looked at too: what a rollback installs must be as sound as what a push brings.) */
 static const char *looks_wrong(const char *name, const uint8_t *d, size_t size) {
     if (!strcmp(name, "kernel.elf") || !strcmp(name, "kernel.old")) {
         if (size < 4096 || memcmp(d, "\x7f" "ELF", 4) || d[4] != 2 || d[5] != 1 || d[18] != 62) return "is not an x86-64 ELF file";
     } else if (!strcmp(name, "initrd.img") || !strcmp(name, "initrd.old")) {
-        if (size < 1024 || memcmp(d + 257, "ustar", 5)) return "is not a tar archive";
+        return initrd_problem(d, size);
     } else if (!strcmp(name, "EFI/BOOT/BOOTX64.EFI")) {
         if (size < 1024 || d[0] != 'M' || d[1] != 'Z') return "is not a PE/COFF (EFI) program";
     } else if (!strcmp(name, "cmdline.txt") || !strcmp(name, "cmdline.old")) {

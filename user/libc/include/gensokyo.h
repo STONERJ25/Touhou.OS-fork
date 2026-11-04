@@ -11,6 +11,7 @@ int  gap_mount(const char *src, const char *target, const char *fstype, unsigned
 int  gap_mount_opts(const char *src, const char *target, const char *fstype, unsigned long flags, const char *opts);
 int  gap_umount(const char *target);
 void gap_setname(const char *name);
+int  gap_setabi(int abi);                 /* ABI_NATIVE or ABI_LINUX: the personality of the NEXT successful execve (docs/COMPAT.md) */
 void gap_log(const char *msg);
 long gap_time_ms(void);
 int  gap_settime(long ms, long rtc_epoch);   /* root only: set the wall clock; rtc_epoch != 0 also rewrites the clock chip */

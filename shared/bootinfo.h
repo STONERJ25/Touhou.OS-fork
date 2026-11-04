@@ -9,7 +9,7 @@
 #include <stdint.h>
 
 #define BOOTINFO_MAGIC      0x4F4B59534E474F54ULL
-#define BOOTINFO_VERSION    5u      /* 2: boot_part; 3: report_phys, report_len; 4: efi_reset_system; 5: persist_*, wdt_* */
+#define BOOTINFO_VERSION    6u      /* 2: boot_part; 3: report_phys, report_len; 4: efi_reset_system; 5: persist_*, wdt_*; 6: smbios_*, fw_*, gop_* (the hardware report) */
 
 /* Virtual address layout the loader sets up before jumping to the kernel. */
 #define HHDM_BASE           0xFFFF800000000000ULL   /* phys 0 is mapped here, RAM only is guaranteed */
@@ -69,6 +69,12 @@ typedef struct {
     uint8_t  reserved[6];
 } BootPartition;
 
+#define BOOT_SMBIOS_MAX     (128u * 1024u)  /* the largest structure table the loader copies */
+#define BOOT_SMBIOS_BADSUM  0x01u           /* smbios_flags: the entry point's checksum did not add up (the table is used anyway, like Linux does for a bad ACPI sum) */
+#define BOOT_SMBIOS_CUT     0x02u           /* smbios_flags: the table was longer than BOOT_SMBIOS_MAX and was cut */
+#define BOOT_GOP_MAX        64              /* graphics modes listed in BootInfo.gop[] */
+enum { BOOT_SB_UNKNOWN = 0, BOOT_SB_OFF, BOOT_SB_ON };      /* the "SecureBoot" variable; UNKNOWN: the variable does not exist or could not be read */
+
 typedef struct {
     uint64_t magic;
     uint32_t version;
@@ -110,6 +116,24 @@ typedef struct {
     uint32_t wdt_state;         /* BOOT_WDT_*: what the loader did with the TCO watchdog */
     uint32_t wdt_seconds;       /* the timeout it armed it with (seconds from now to the restart), 0 if it did not arm it */
     uint32_t wdt_tcobase;       /* the TCO I/O base it found, 0 if none */
+
+    /* version >= 6 (docs/HARDWARE_BREADTH.md, the hardware report): what the firmware says about itself. Written by boot/fwinfo.c; the table is
+     * loader memory (BOOTMEM_BOOT_RECLAIMABLE), so the kernel parses it before pmm_reclaim_boot_memory(). */
+    uint64_t smbios_phys;       /* a copy of the SMBIOS structure table, 0 = the firmware gave none */
+    uint32_t smbios_len;        /* bytes copied (at most BOOT_SMBIOS_MAX) */
+    uint16_t smbios_ver;        /* the entry point's version, major << 8 | minor: 0x0203 = 2.3, 0x0307 = 3.7 */
+    uint8_t  smbios_kind;       /* 0 none, 2 the 32-bit "_SM_" entry point, 3 the 64-bit "_SM3_" one */
+    uint8_t  smbios_flags;      /* BOOT_SMBIOS_* */
+    uint32_t smbios_count;      /* structures the 2.x entry point announces (0 for 3.x: the table ends with a type 127 structure) */
+    uint32_t uefi_revision;     /* EFI_SYSTEM_TABLE.Hdr.Revision: major << 16 | minor */
+    uint32_t fw_revision;       /* EFI_SYSTEM_TABLE.FirmwareRevision (the vendor's own number) */
+    uint8_t  secure_boot;       /* BOOT_SB_* */
+    uint8_t  setup_mode;        /* the "SetupMode" variable: 1 = no platform key is enrolled yet, 0xFF = could not be read */
+    uint16_t gop_count;         /* MaxMode: the modes the firmware offered */
+    uint16_t gop_current;       /* the mode in use when the loader jumped */
+    uint16_t gop_listed;        /* how many entries of gop[] are filled: the first BOOT_GOP_MAX modes */
+    char     fw_vendor[48];     /* EFI_SYSTEM_TABLE.FirmwareVendor, narrowed to ASCII */
+    struct { uint16_t w, h, index; uint8_t format, reserved; } gop[BOOT_GOP_MAX];    /* format: the UEFI pixel format (0 RGB, 1 BGR, 2 bit mask, 3 blit only) */
 } BootInfo;
 
 /* The panic record region: where the loader puts it unless "persist=0xADDR" (page aligned, below 4 GiB) or "persist=off" says otherwise. Low

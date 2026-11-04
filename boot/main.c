@@ -685,6 +685,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st) {
     bi->boot_part   = boot_part;
     bi->report_phys = report_phys;
     bi->report_len  = report_len;
+    fwinfo_collect(bi);                                 /* SMBIOS, firmware vendor, Secure Boot, graphics modes: for the hardware report (fwinfo.c) */
     recovery_reserve(bi, cmdline);                      /* the panic record region: RAM that a warm reset leaves as it was (recovery.c) */
 
     if (g_usbdisc) { disconnect_usb_hosts(); exit_mark(&fb, 7, 0); }

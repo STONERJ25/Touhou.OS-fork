@@ -1,0 +1,2 @@
+hello from a Linux program
+exit status: 0

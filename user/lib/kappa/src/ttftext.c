@@ -188,29 +188,54 @@ void kt_text_in(KCanvas *c, KTtf *t, float size, KRect r, const char *utf8, uint
 
 static KTtf *g_ui;                                              /* this process's copy of Gensokyo Sans */
 static int g_ui_state;                                          /* 0 not tried yet, 1 loaded, -1 could not be loaded */
+static KTtf *g_ui_bold;                                         /* and of Gensokyo Sans Bold, read the first time bold text is drawn */
+static int g_bold_state;                                        /* the same: 0, 1, -1 (then bold text is the regular face drawn twice, half a pixel apart) */
+
+/* The environment variable of the UI font (for tests and for trying another face; not in a setuid program), or NULL. */
+static const char *env_font(const char *name) {
+    const char *v = getuid() == geteuid() && getgid() == getegid() ? getenv(name) : NULL;
+    return v && v[0] ? v : NULL;
+}
+
+/* Reads one face and sets the blend. Plain alpha blending (gamma 0) with a little contrast: the amount of ink per character then equals the bitmap font's
+ * within 3% for dark text on paper and for light text on red or night blue (measured, docs/TTF.md); the default (50, 30) is 11% lighter than the bitmap font
+ * for dark text and 15% heavier for light text. The Bold is blended the same way. */
+static KTtf *load_ui_face(const char *path) {
+    KTtf *t = kt_new();
+    if (t && kt_add_file(t, path, 0) == TTF_OK) {
+        kt_set_blend(t, 0, 30);
+        return t;
+    }
+    kt_free(t);
+    return NULL;
+}
 
 int kt_ui_ready(void) {
     if (g_ui_state == 0) {
-        const char *path = getuid() == geteuid() && getgid() == getegid() ? getenv("KAPPA_UI_FONT") : NULL;      /* for tests and for trying another face (not in a setuid program) */
-        KTtf *t = kt_new();
-        if (t && kt_add_file(t, path && path[0] ? path : KT_UI_FONT_PATH, 0) == TTF_OK) {
-            /* Plain alpha blending (gamma 0) with a little contrast: the amount of ink per character then equals the bitmap font's within 3% for dark text
-             * on paper and for light text on red or night blue (measured, docs/TTF.md); the default (50, 30) is 11% lighter than the bitmap font for dark
-             * text and 15% heavier for light text. */
-            kt_set_blend(t, 0, 30);
-            g_ui = t;
-            g_ui_state = 1;
-        } else { kt_free(t); g_ui_state = -1; }
+        const char *path = env_font("KAPPA_UI_FONT");
+        g_ui = load_ui_face(path ? path : KT_UI_FONT_PATH);
+        g_ui_state = g_ui ? 1 : -1;
     }
     return g_ui_state > 0;
+}
+
+/* The Bold face, when there is one: $KAPPA_UI_BOLD_FONT names it; with $KAPPA_UI_FONT set and no bold named the face in use is another one and the system's Bold
+ * would not match it, so bold text stays the double strike. */
+static int bold_ready(void) {
+    if (g_bold_state == 0) {
+        const char *path = env_font("KAPPA_UI_BOLD_FONT");
+        if (!path && !env_font("KAPPA_UI_FONT")) path = KT_UI_BOLD_FONT_PATH;
+        g_ui_bold = path ? load_ui_face(path) : NULL;
+        g_bold_state = g_ui_bold ? 1 : -1;
+    }
+    return g_bold_state > 0;
 }
 
 /* Does the bitmap font have a picture for cp (it answers an unknown code point with its hollow box)? */
 static int bitmap_has(uint32_t cp) { return font8x16_glyph(cp) != font8x16_glyph(0x10FFFFu); }
 
 /* Draws (c != NULL) and measures one run of text that the UI font has, starting at logical pen x. Returns the run's advance in logical pixels. */
-static float ui_run(KCanvas *c, float x, int y, const char *run, size_t len, uint32_t fg) {
-    KTtf *t = g_ui;
+static float ui_run(KTtf *t, KCanvas *c, float x, int y, const char *run, size_t len, uint32_t fg) {
     int s = c ? kc_scale(c) : 1;
     float psize = KT_UI_SIZE * (float)s;                         /* glyphs are rendered at the physical size, positions come from the logical pen */
     if (!c) return ttf_text_width(&t->set, psize, run, len, TTF_LAYOUT_DEFAULT) / (float)s;
@@ -234,7 +259,8 @@ static float ui_run(KCanvas *c, float x, int y, const char *run, size_t len, uin
 
 float kt_ui_walk(KCanvas *c, float x, int y, const char *s, size_t bytes, uint32_t fg, int bold) {
     if (!s || !kt_ui_ready()) return 0;
-    KTtf *t = g_ui;
+    int real_bold = bold && bold_ready();                        /* a real weight: its own advances, nothing is drawn twice */
+    KTtf *t = real_bold ? g_ui_bold : g_ui;
     const TtfFont *font = t->set.fonts[0];
     bytes = strnlen(s, bytes);                                   /* never past the NUL, whatever length the caller has in mind ((size_t)-1: all of it) */
     const char *p = s, *end = s + bytes, *run = NULL;
@@ -251,8 +277,8 @@ float kt_ui_walk(KCanvas *c, float x, int y, const char *s, size_t bytes, uint32
             continue;
         }
         if (run) {                                               /* the run before this character */
-            float w = ui_run(c, x + pen, y, run, (size_t)(p - run), fg);
-            if (bold && c) ui_run(c, x + pen + 0.5f, y, run, (size_t)(p - run), fg);
+            float w = ui_run(t, c, x + pen, y, run, (size_t)(p - run), fg);
+            if (bold && !real_bold && c) ui_run(t, c, x + pen + 0.5f, y, run, (size_t)(p - run), fg);
             pen += w;
             run = NULL;
         }
@@ -269,11 +295,11 @@ float kt_ui_walk(KCanvas *c, float x, int y, const char *s, size_t bytes, uint32
         p = q;
     }
     if (run) {
-        float w = ui_run(c, x + pen, y, run, (size_t)(end - run), fg);
-        if (bold && c) ui_run(c, x + pen + 0.5f, y, run, (size_t)(end - run), fg);
+        float w = ui_run(t, c, x + pen, y, run, (size_t)(end - run), fg);
+        if (bold && !real_bold && c) ui_run(t, c, x + pen + 0.5f, y, run, (size_t)(end - run), fg);
         pen += w;
     }
-    return bold ? pen + 1.0f : pen;
+    return bold && !real_bold ? pen + 1.0f : pen;
 }
 
 #endif /* KAPPA_TTF */

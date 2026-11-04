@@ -31,7 +31,7 @@ Known-answer vectors that are committed are facts, not code from another project
 ## Not included, and never will be
 
 * **Game data.** The PC-98 emulator runs programs from disk images the user provides. No game, ROM, BIOS or font ROM of any machine is in the repository, in an image built from it, or in the tests.
-* **Linux programs and libraries.** The planned Linux compatibility layer ([docs/COMPAT.md](docs/COMPAT.md)) runs programs and shared libraries that the user installs; none are shipped. Programs used as test inputs are built or fetched at test time.
+* **Linux programs and libraries.** The Linux compatibility layer ([docs/COMPAT.md](docs/COMPAT.md)) runs programs and shared libraries that the user installs; none are shipped. The test programs in `tests/linux/src` are our own sources; the tests build them on the developer's Linux (in WSL) with the compiler and C library found there, so the resulting static binaries contain that C library's code under its own license (the LGPL for glibc). They live in `build/linux-inputs` (git-ignored), are downloaded into a test guest from the host, and are never committed or put into an image.
 * **The Gensokyo typefaces** (`assets/fonts/Gensokyo*.ttf`, drawn for this project) are not part of the public repository until their license is chosen ([docs/LICENSING.md](docs/LICENSING.md)).
 
 ## Names and characters

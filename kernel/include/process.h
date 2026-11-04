@@ -86,6 +86,10 @@ typedef struct Process {
     u64 start_ms;
     char cmdline[128];
     char exe[128];                  /* absolute path of the running program (/proc/<pid>/exe) */
+
+    u8 abi;                         /* system call personality: ABI_NATIVE or ABI_LINUX (docs/COMPAT.md); fork copies it, execve keeps it unless exec_abi asks for the other */
+    u8 exec_abi;                    /* SYS_setabi: the personality of the next successful execve, plus one (0 = no request) */
+    u64 alarm_at;                   /* alarm(): the uptime in ms at which SIGALRM is sent (0 = no alarm); kept across execve, not inherited by fork */
 } Process;
 
 extern Process *g_init_proc;
@@ -96,9 +100,12 @@ Process *process_by_pid(int pid);
 int      process_spawn_init(const char *path, char *const argv[]);      /* kernel: start PID 1 */
 NORETURN void process_exit(int status);                                  /* status is a wait() word */
 int      process_fork(TrapFrame *tf);                                    /* child pid or -errno */
+int      process_fork_ex(TrapFrame *tf, u64 settid_addr, u64 cleartid_addr);   /* + the child's id stored in its memory / the word its exit clears (Linux clone) */
 int      process_exec(Process *p, const char *path, char *const argv[], char *const envp[], TrapFrame *tf);
 long     process_wait(int pid, int *status, int options);
 void     process_for_each(void (*fn)(Process *p, void *ctx), void *ctx);
+extern int g_alarms_armed;                                               /* processes with an alarm pending: the scheduler tick looks only while there are any */
+void     alarm_tick(u64 now);                                            /* sends SIGALRM to the processes whose alarm is due (called from the timer interrupt) */
 int      process_count(void);
 
 /* descriptors */

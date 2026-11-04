@@ -1,0 +1,18 @@
+SIGUSR1 delivered: hits 1, signo 10, blocked inside the handler 1
+blocked: hits 1, pending 1
+unblocked: hits 2
+ignored: hits 2
+SA_RESETHAND: hits 3, the handler is default again: 1
+sigsuspend: -1, errno 4, hits 1, signo 12
+pause after alarm: -1, errno 4, hits 1, signo 14
+SIGSEGV: signo 11, code 1 (1 = unmapped), address 0x10
+the mask was restored by siglongjmp: 1
+sigaltstack: 0
+handler ran on the alternate stack: 1 (hits 1)
+xmm0 survived the handler: 1
+SA_RESTART read: 1, handler ran 1 times
+read without SA_RESTART: -1, errno 4 (EINTR 1), handler ran 1 times
+child raised SIGTERM: signaled 1, signal 15
+child called abort: signaled 1, signal 6
+SIGCHLD: hits 1, signo 17
+exit status: 0

@@ -196,6 +196,7 @@ void task_interrupt(Task *t) {
 
 void sched_tick(void) {
     u64 now = uptime_ms();
+    if (g_alarms_armed) alarm_tick(now);
     Task *t = g_list;
     if (t) {
         do {

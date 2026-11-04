@@ -1,0 +1,16 @@
+.page native 1 run a program under the native system call personality
+
+# SYNOPSIS
+*native* _PROGRAM_ [_ARGUMENT_...]
+
+# DESCRIPTION
+`native` starts _PROGRAM_ (searched for through `PATH`) as a native TouhouOS program. Every process normally is one; the command exists for the opposite case: a program started with `linux(1)` keeps the Linux personality across `execve`, so it cannot start a native tool with a plain exec. `native` selects the native personality for the next exec and runs the program.
+
+# EXIT STATUS
+The exit status of the program. 2 for a missing operand, 126 if the program could not be run, 127 if it was not found.
+
+# EXAMPLES
+    native ls /
+
+# SEE ALSO
+linux(1)

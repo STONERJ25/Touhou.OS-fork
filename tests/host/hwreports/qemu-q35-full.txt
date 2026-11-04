@@ -1,0 +1,218 @@
+format: hwreport 1
+build: Gensokyo version 0.1.0 "Story of Eastern Wonderland" (clang, x86_64) #1; hwreport compiled Nov  3 2026 18:44:55; commit not recorded by this build
+date: 2026-11-03T23:45:01Z
+redaction: on (the last three bytes of MAC addresses, serial numbers, UUIDs, a non-default host name and the last byte of a private IP address are replaced; hwreport --full keeps them)
+# Bunbunmaru Shimbun, hardware edition: Aya's reporters looked into every corner of this machine. Plain facts follow; "key: value" lines are for scripts.
+
+[system]
+smbios: 2.8 (32-bit entry point), 10 structures, 459 bytes
+bios.vendor: EDK II
+bios.version: edk2-stable202408-prebuilt.qemu.org
+bios.date: 08/13/2024
+bios.release: 0.0
+system.manufacturer: Touhou Test
+system.product: Reimu Box 9
+system.version: 1.0
+system.serial: <redacted>
+system.uuid: <uuid>
+system.sku: RB9-SKU
+system.family: Shrine
+baseboard.manufacturer: Touhou Test
+baseboard.product: Hakurei Board
+baseboard.version: 2.0
+baseboard.serial: <redacted>
+chassis.type: 1 (Other)
+chassis.manufacturer: QEMU
+chassis.version: pc-q35-11.1
+
+[cpu]
+vendor: AuthenticAMD
+brand: QEMU TCG CPU version 2.5+
+signature: family 6 model 0x6 stepping 3
+microarchitecture: unknown (a guess from the family and model; "unknown" is normal for parts newer than this table)
+features: tsc apic pat sse sse2 sse3 ssse3 sse4.1 sse4.2 aes pclmul xsave avx fma rdrand x2apic avx2 smep smap rdseed nx 1gb-pages lm svm
+invariant_tsc: no
+hypervisor: yes (TCGTCGTCGTCG)
+logical_processors: 1 (from the ACPI MADT; only the boot processor is used)
+tsc_mhz: 3693
+dmi.processor.count: 1
+dmi.processor.0.socket: CPU 0
+dmi.processor.0.manufacturer: QEMU
+dmi.processor.0.version: pc-q35-11.1
+dmi.processor.0.max_mhz: 2000
+dmi.processor.0.current_mhz: 2000
+dmi.processor.0.cores: 1
+dmi.processor.0.threads: 1
+
+[memory]
+memory.map.usable: 451236 KiB in 10 regions
+memory.map.loader: 47124 KiB in 10 regions
+memory.map.acpi-reclaim: 72 KiB in 1 region
+memory.map.acpi-nvs: 2056 KiB in 6 regions
+memory.map.reserved: 12848996 KiB in 7 regions
+memory.map.device: 4096 KiB in 1 region
+memory.map.kernel: 2104 KiB in 1 region
+memory.map.initrd: 17372 KiB in 1 region
+memory.regions: 37 (as the loader handed them over)
+memory.ram_top: 0x1fef4000
+memory.managed: 513048 KiB (what the kernel's allocator owns now)
+dmi.memory.slots: 1 (1 filled)
+dmi.memory.0.locator: DIMM 0
+dmi.memory.0.size_mib: 512
+dmi.memory.0.type: RAM
+dmi.memory.0.manufacturer: QEMU
+
+[firmware]
+firmware.vendor: EDK II
+firmware.revision: 0x10000
+firmware.uefi: 2.7.0
+firmware.secureboot: unknown
+gop.in_use: 1024x768, bgrx, pitch 4096, at 0x80000000
+gop.modes: 30 offered, 30 listed
+gop.mode.0: 1280x800 bgr
+gop.mode.1: 640x480 bgr
+gop.mode.2: 800x480 bgr
+gop.mode.3: 800x600 bgr
+gop.mode.4: 832x624 bgr
+gop.mode.5: 960x640 bgr
+gop.mode.6: 1024x600 bgr
+gop.mode.7: 1024x768 bgr (current)
+gop.mode.8: 1152x864 bgr
+gop.mode.9: 1152x870 bgr
+gop.mode.10: 1280x720 bgr
+gop.mode.11: 1280x760 bgr
+gop.mode.12: 1280x768 bgr
+gop.mode.13: 1280x960 bgr
+gop.mode.14: 1280x1024 bgr
+gop.mode.15: 1360x768 bgr
+gop.mode.16: 1366x768 bgr
+gop.mode.17: 1400x1050 bgr
+gop.mode.18: 1440x900 bgr
+gop.mode.19: 1600x900 bgr
+gop.mode.20: 1600x1200 bgr
+gop.mode.21: 1680x1050 bgr
+gop.mode.22: 1920x1080 bgr
+gop.mode.23: 1920x1200 bgr
+gop.mode.24: 1920x1440 bgr
+gop.mode.25: 2000x2000 bgr
+gop.mode.26: 2048x1536 bgr
+gop.mode.27: 2048x2048 bgr
+gop.mode.28: 2560x1440 bgr
+gop.mode.29: 2560x1600 bgr
+
+[acpi]
+acpi.rsdp: revision 0, oem BOCHS, root table RSDT
+acpi.tables: 8
+acpi.table.0: RSDT rev 1 oem BOCHS oemtable BXPC oemrev 0x1 len 60
+acpi.table.1: FACP rev 3 oem BOCHS oemtable BXPC oemrev 0x1 len 244
+acpi.table.2: DSDT rev 1 oem BOCHS oemtable BXPC oemrev 0x1 len 8496
+acpi.table.3: APIC rev 3 oem BOCHS oemtable BXPC oemrev 0x1 len 120
+acpi.table.4: HPET rev 1 oem BOCHS oemtable BXPC oemrev 0x1 len 56
+acpi.table.5: MCFG rev 1 oem BOCHS oemtable BXPC oemrev 0x1 len 60
+acpi.table.6: WAET rev 1 oem BOCHS oemtable BXPC oemrev 0x1 len 40
+acpi.table.7: BGRT rev 1 oem INTEL oemtable EDK2 oemrev 0x2 len 56
+acpi.madt.lapic_address: 0xfee00000
+acpi.madt.pcat_compat: yes (dual 8259 present)
+acpi.madt.lapics: 1 (1 enabled)
+acpi.madt.nmi: 1
+acpi.madt.ioapics: 1
+acpi.madt.ioapic.0: id 0 at 0xfec00000, interrupts from 0
+acpi.madt.overrides: 5
+acpi.madt.override.0: bus 0 irq 0 -> gsi 2 flags 0
+acpi.madt.override.1: bus 0 irq 5 -> gsi 5 flags 0xd
+acpi.madt.override.2: bus 0 irq 9 -> gsi 9 flags 0xd
+acpi.madt.override.3: bus 0 irq 10 -> gsi 10 flags 0xd
+acpi.madt.override.4: bus 0 irq 11 -> gsi 11 flags 0xd
+acpi.aml.devices: ps2-keyboard ps2-mouse
+acpi.aml.note: found by reading the bytes of 1 DSDT/SSDT tables, not by running them (this kernel has no AML interpreter): a hint that a device is described
+proc.poweroff: S5 (acpi)
+proc.reset: acpi register io 0xcf9 = 0xf; restart order: acpi, pci, kbd, then power off (`reboot WAY` and "reboot=" on the command line choose; efi and triple only when named)
+proc.button: polled (fixed hardware)
+
+[pci]
+count: 9 functions, 4 without a driver
+pci.00:00.0: 8086:29c0 class=0600:00 driver=none msi=no msix=no pcie=no link=- max=- bars=- name=host bridge
+pci.00:01.0: 1234:1111 class=0300:00 driver=none msi=no msix=no pcie=no link=- max=- bars=- name=VGA compatible controller
+pci.00:02.0: 8086:10d3 class=0200:00 driver=e1000 msi=yes msix=yes pcie=yes link=2.5GT/s:x1 max=2.5GT/s:x1 bars=0:mem:0x20000,1:mem:0x20000,2:io:0x20,3:mem:0x4000 name=Ethernet controller
+pci.00:03.0: 8086:2668 class=0403:00 driver=hda msi=yes msix=no pcie=no link=- max=- bars=0:mem:0x4000 name=audio device
+pci.00:04.0: 1b36:0010 class=0108:02 driver=nvme msi=no msix=yes pcie=yes link=2.5GT/s:x1 max=2.5GT/s:x1 bars=0:mem:0x4000 name=NVMe controller
+pci.00:05.0: 1b36:000d class=0c03:30 driver=xhci msi=no msix=yes pcie=yes link=2.5GT/s:x1 max=2.5GT/s:x1 bars=0:mem:0x4000 name=USB controller (xHCI)
+pci.00:1f.0: 8086:2918 class=0601:00 driver=none msi=no msix=no pcie=no link=- max=- bars=- name=ISA bridge
+pci.00:1f.2: 8086:2922 class=0106:01 driver=ahci msi=yes msix=no pcie=no link=- max=- bars=4:io:0x20,5:mem:0x1000 name=SATA controller (AHCI)
+pci.00:1f.3: 8086:2930 class=0c05:00 driver=none msi=no msix=no pcie=no link=- max=- bars=4:io:0x40 name=SMBus
+
+[storage]
+controller.0: 00:04.0 1b36:0010 NVMe driver=nvme
+controller.1: 00:1f.2 8086:2922 AHCI (SATA) driver=ahci
+controllers: 2
+disks: 3
+disk.0: sda driver=ahci size=528482304 (504M) sector=512 read_only=yes model=QEMU HARDDISK
+disk.0.serial: <redacted>
+disk.1: sdb driver=ahci size=67108864 (64M) sector=512 read_only=yes model=QEMU HARDDISK
+disk.1.serial: <redacted>
+disk.2: nvme0n1 driver=nvme size=67108864 (64M) sector=512 read_only=yes model=QEMU NVMe Ctrl
+disk.2.serial: <redacted>
+usbstorage.0: no USB mass storage devices
+
+[usb]
+host.0: 00:05.0 1b36:000d xHCI driver=xhci
+hosts: 1
+bus.0: Bus 1: xHCI 1b36:000d at 00:05.0, v1.00, 8 ports (4 usb2, 4 usb3), 64 slots, 32-byte contexts
+device.0: Bus 1 Port 5: ID 0627:0001 QEMU QEMU USB Keyboard, high-speed, class 00, driver hid-keyboard
+device.1: Bus 1 Port 6: ID 0627:0001 QEMU QEMU USB Mouse, high-speed, class 00, driver hid-mouse
+devices: 2
+
+[network]
+interface.0: eth0 driver=e1000e mac=52:54:00:xx:xx:xx link=up speed=1000 Mb/s mtu=1500 address=10.0.2.x
+interfaces: 1
+pci_network_controllers: 1, 0 without a driver
+
+[audio]
+controller.0: 00:03.0 8086:2668 audio device driver=hda
+controllers: 1
+proc.device: Intel HD Audio
+proc.path: codec 1af4:0012 at address 0; output line out(0x03<-0x02)
+proc.state: idle
+proc.codec: address 0, vendor/device 1af40012, function group 0x01, widgets 0x02..0x03
+proc.pin.0x03: line out, config 00004010, no jack sensing, on; path 0x03 0x02
+codec_id: 1af40012
+pin_config: usable (1 pins listed, 1 with a connection)
+
+[input]
+keyboard.usb.0: Bus 1 Port 5: ID 0627:0001 QEMU QEMU USB Keyboard, high-speed, class 00, driver hid-keyboard
+mouse.usb.0: Bus 1 Port 6: ID 0627:0001 QEMU QEMU USB Mouse, high-speed, class 00, driver hid-mouse
+keyboard.ps2: found
+mouse.ps2: found
+keyboards: 1 usb, 1 ps/2
+mice: 1 usb, 1 ps/2
+
+[interrupts]
+interrupts.controller: 8259 PIC through the local APIC virtual wire (LINT0 ExtINT)
+interrupts.ioapics: 1 found, every input masked, none routed
+interrupts.msi: not used (devices are polled)
+interrupts.processors: 1 in the MADT, only the boot processor is used
+irq.count.0: 1613
+irq.count.1: 1
+irq.count.4: 3
+irq.count.12: 1
+
+[sensors]
+thermal: no thermal sensor
+reason: this is not an Intel CPU (AMD reports its temperature through another interface, which is not supported)
+vendor: AuthenticAMD
+
+[log]
+lines: 5 matching of 77 in the whole log
+log: [Kappa] ahci0: probed in 515 ms: 2 disks, no device on port 1 2 3 4
+log: [Kappa] nvme0: 1b36:0010 at 00:04.0, NVMe 1.4, up to 2048 queue entries, doorbell stride 4, ready timeout 7500 ms
+log: [Keine] no HUMANVILLAGE volume found: homes stay in RAM (tmpfs)
+log: [Utsuho] thermal: no thermal sensor (this is not an Intel CPU (AMD reports its temperature through another interface, which is not supported))
+log: [Akyuu] the record region at 0x3f00000 holds no record of the previous start (the first start with it, a power cut, or firmware that clears memory at a restart)
+
+[cmdline]
+cmdline: text blk.ro nosounds nosshd ntp=off update.loader=1
+
+[quirks]
+quirks: none recorded (this kernel keeps no table of machine-specific workarounds yet; the options on the command line above and the log lines are all there is)
+
+end: hwreport 1

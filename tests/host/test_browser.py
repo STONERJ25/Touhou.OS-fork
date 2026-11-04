@@ -284,21 +284,49 @@ class Fonts(unittest.TestCase):
         for fam in ("sans-serif", "serif", "Arial", "system-ui", "Georgia", "cursive"):
             self.assertEqual(self.measure(fam, 400, 0, 16, "x")["file"], "GensokyoSans-Regular.ttf", fam)
         m = self.measure("monospace", 400, 0, 16, "abcdefgh")
-        self.assertEqual((m["kind"], m["mono"], m["width"]), ("1", "1", str(8 * 8 * 64)))      # no mono file: whole cells of the bitmap font
+        self.assertEqual((m["kind"], m["mono"], m["file"]), ("0", "0", "GensokyoMono-Regular.ttf"))      # Gensokyo Mono, since 0.6
+        self.assertEqual(int(m["width"]), int(8 * 615 * 16 / 1000 * 64 + 0.5))                          # 8 cells of 0.615 em
 
-    def test_monospace_is_a_whole_number_of_cells(self):
-        for size, cell in ((13, 8), (16, 8), (20, 8), (24, 16), (33, 16), (48, 24)):
-            m = self.measure("Courier New", 400, 0, size, "0123456789")
-            self.assertEqual(int(m["width"]), 10 * cell * 64, "size %s" % size)
+    def test_monospace_is_gensokyo_mono_one_cell_to_a_character_at_every_size(self):
+        for fam in ("monospace", "Courier New", "Consolas", "ui-monospace", "Gensokyo Mono"):
+            for size in (13, 16, 20, 24, 33, 48):
+                m = self.measure(fam, 400, 0, size, "0123456789 mmmm iiii")
+                self.assertEqual(int(m["width"]), int(round(20 * 615 * size / 1000.0 * 64)), "%s at %s" % (fam, size))
+        # at 13 px a cell is 8 pixels, the cell of the 8x16 bitmap font
+        self.assertEqual(int(self.measure("monospace", 400, 0, 13, "0123456789")["width"]), int(round(10 * 615 * 13 / 1000.0 * 64)))
+        self.assertAlmostEqual(int(self.measure("monospace", 400, 0, 13, "0123456789")["width"]) / 64.0, 80.0, delta=0.1)
 
-    def test_bold_and_italic_are_made_up_when_the_file_lacks_them(self):
+    def test_monospace_without_the_mono_file_is_a_whole_number_of_cells_of_the_bitmap_font(self):
+        import shutil
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            shutil.copy(FONTS / "GensokyoSans-Regular.ttf", d)
+            for size, cell in ((13, 8), (16, 8), (20, 8), (24, 16), (33, 16), (48, 24)):
+                m = kv(tool("measure", "Courier New", 400, 0, size, "0123456789", BROWSER_FONT_DIR=d).stdout)
+                self.assertEqual(int(m["width"]), 10 * cell * 64, "size %s" % size)
+                self.assertEqual((m["kind"], m["mono"]), ("1", "1"))
+
+    def test_bold_is_the_bold_face_and_italic_is_made_up(self):
+        """GensokyoSans-Bold.ttf exists since 0.6 (assets/fonts): font-weight bold is that file, not a made-up weight; there is no italic file, so italic is the
+        Regular slanted (the width is the Regular's)."""
         reg = self.measure("sans-serif", 400, 0, 16, "Echoes")
         bold = self.measure("sans-serif", 700, 0, 16, "Echoes")
         ital = self.measure("sans-serif", 400, 1, 16, "Echoes")
-        self.assertEqual((bold["bold"], bold["italic"]), ("1", "0"))
+        self.assertEqual((bold["bold"], bold["italic"], bold["file"]), ("0", "0", "GensokyoSans-Bold.ttf"))
         self.assertEqual((ital["bold"], ital["italic"]), ("0", "1"))
         self.assertGreater(int(bold["width"]), int(reg["width"]))
         self.assertEqual(ital["width"], reg["width"])
+
+    def test_bold_is_made_up_when_the_file_lacks_it(self):
+        """With the Regular alone in the font folder (a build without the Bold) the weight is made up: wider, flagged, set in the Regular file."""
+        import shutil
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            shutil.copy(FONTS / "GensokyoSans-Regular.ttf", d)
+            reg = kv(tool("measure", "sans-serif", 400, 0, 16, "Echoes", BROWSER_FONT_DIR=d).stdout)
+            bold = kv(tool("measure", "sans-serif", 700, 0, 16, "Echoes", BROWSER_FONT_DIR=d).stdout)
+        self.assertEqual((bold["bold"], bold["italic"], bold["file"]), ("1", "0", "GensokyoSans-Regular.ttf"))
+        self.assertGreater(int(bold["width"]), int(reg["width"]))
 
     def test_metrics_are_sane(self):
         m = self.measure("sans-serif", 400, 0, 16, "x")

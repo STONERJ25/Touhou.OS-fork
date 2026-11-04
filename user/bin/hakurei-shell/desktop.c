@@ -23,6 +23,7 @@ static void init_icons(void) {
         { "Home", KI_HOME, "explorer", "" }, { "Netherworld", KI_TRASH, "explorer", "/Netherworld" },
         { "Terminal", KI_TERMINAL, "gapterm", "" }, { "Explorer", KI_FOLDER, "explorer", "/" },
         { "Notebook", KI_NOTEBOOK, "notebook", "" }, { "Spell Manager", KI_SPELLCARD, "spellmgr", "" }, { "Browser", KI_TORII, "browser", "" },
+        { "PC-98", KI_MONITOR, "pc98app", "" },
     };
     snprintf(defs[0].args, sizeof defs[0].args, "%s", home);
     for (unsigned i = 0; i < sizeof defs / sizeof defs[0] && g_nicons < 8; i++) {

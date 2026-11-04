@@ -141,17 +141,35 @@ static long futex_wake(u64 uaddr, int n) {
     return futex_wake_key(key, n);
 }
 
-static long futex_cmp_requeue(u64 uaddr, int nwake, u64 nrequeue, u64 uaddr2, u32 expected) {
+static long futex_requeue(u64 uaddr, int nwake, u64 nrequeue, u64 uaddr2, bool check, u32 expected) {
     u64 k1, k2;
     int rc = futex_key(uaddr, true, &k1);
     if (rc < 0) return rc;
     rc = futex_key(uaddr2, true, &k2);
     if (rc < 0) return rc;
     u64 f = irq_save();
-    if (*(volatile u32 *)phys_to_virt(k1) != expected) { irq_restore(f); return -EAGAIN; }
+    if (check && *(volatile u32 *)phys_to_virt(k1) != expected) { irq_restore(f); return -EAGAIN; }
     int woken = wake_locked(k1, nwake < 0 ? 0x7FFFFFFF : nwake, k2, (int)(nrequeue > 0x7FFFFFFF ? 0x7FFFFFFF : nrequeue));
     irq_restore(f);
     return woken;
+}
+
+static long futex_cmp_requeue(u64 uaddr, int nwake, u64 nrequeue, u64 uaddr2, u32 expected) {
+    return futex_requeue(uaddr, nwake, nrequeue, uaddr2, true, expected);
+}
+
+/* For the Linux personality (kernel/linux/syscall.c): the same operations with the timeout already worked out, and the requeue also without the comparison. */
+long futex_wait_deadline(u64 uaddr, u32 val, u64 deadline) {         /* deadline: an absolute uptime in ms, or ~0 for none */
+    u64 key;
+    int rc = futex_key(uaddr, true, &key);
+    if (rc < 0) return rc;
+    return futex_wait_key(key, val, deadline);
+}
+
+long futex_wake_addr(u64 uaddr, int n) { return futex_wake(uaddr, n); }
+
+long futex_requeue_addr(u64 uaddr, int nwake, u64 nrequeue, u64 uaddr2, bool check, u32 expected) {
+    return futex_requeue(uaddr, nwake, nrequeue, uaddr2, check, expected);
 }
 
 /* Thread exit: every waiter on the (already zeroed) tid word wakes. */

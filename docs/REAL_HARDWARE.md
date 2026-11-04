@@ -28,6 +28,9 @@ Write it to a USB stick (everything on the stick is replaced; double-check the d
 
 Disk tools may offer to "repair" the backup GPT header because the image is smaller than the stick; that is harmless.
 
+A smaller alternative for trying it out is `python tools/mkiso.py`: one ISO file (about 18 MiB) that boots as a virtual CD and, written the same way to a stick, as a disk, with no `HUMANVILLAGE`
+volume (nothing is saved); see [ISO.md](ISO.md).
+
 ## 2. Firmware settings (Dell UEFI setup, F2 at power-on)
 
 | Setting | Value | Why |
@@ -62,6 +65,8 @@ cat /proc/partitions   disks the kernel sees      cat /proc/ahci /proc/nvme /pro
 cat /proc/ntp          network time: did the clock get set, from whom      cat /proc/thermal, sensors   CPU temperature, frequency, power (SENSORS.md)
 ```
 
+`hwreport -o` collects all of this (the SMBIOS strings, the CPU, every PCI function with its driver, disks, USB, network, audio, the warnings in the log) into one text file to send
+([HARDWARE_DB.md](HARDWARE_DB.md)); `firstlook` appends it to its own file.
 Photograph the screen if the machine dies before a shell exists; the last lines of the log say where. The log has one-line answers to
 "what machine is this": the CPU features, the memory map summary, the framebuffer mapping and its measured write speed, the ACPI tables
 read, how the TSC was calibrated, what the PS/2 controller and the USB ports hold. [HARDWARE_AUDIT.md](HARDWARE_AUDIT.md) lists them,

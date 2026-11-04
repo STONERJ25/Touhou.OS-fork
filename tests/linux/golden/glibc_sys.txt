@@ -1,0 +1,18 @@
+statx of /: 0
+mask has the basic fields: 1
+/ is a directory: 1, nlink positive: 1
+statx of a missing path: -1, errno 2
+statx with unknown flags: -1, errno 22
+statx of stdout by descriptor: 0
+sysinfo: 0, memory known: 1, free <= total: 1, unit positive: 1, processes: 1, uptime positive: 1
+sched_getaffinity: 0, at least one processor: 1
+online processors: 1
+prctl name: 0, lnx-sys-test
+prctl with an unknown option: -1, errno 22
+uname: Linux x86_64
+page size 4096, clock tick 100
+open files limit positive: 1
+gmtime: 1971-01-01 01:01:01 Fri
+getrandom: 8
+getrandom with unknown flags: -1, errno 22
+exit status: 0

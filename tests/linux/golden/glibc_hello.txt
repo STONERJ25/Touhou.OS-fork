@@ -1,0 +1,2 @@
+hello from glibc
+exit status: 0

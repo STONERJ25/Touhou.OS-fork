@@ -1,0 +1,26 @@
+stack pointer is 16-byte aligned: 1
+argc: 3
+argv[0] is this program: 1
+argv ends with a null: 1
+argv: alpha
+argv: beta
+environment has FOO=bar: 1
+auxv ends with AT_NULL: 1
+AT_PAGESZ: 4096
+AT_PHENT: 56
+AT_PHNUM is at least 1: 1
+AT_PHDR follows an ELF header: 1
+AT_BASE is 0 for a static program: 1
+AT_ENTRY is _start: 1
+AT_UID is getuid: 1
+AT_EUID is geteuid: 1
+AT_GID is getgid: 1
+AT_EGID is getegid: 1
+AT_PLATFORM: 0
+AT_PLATFORM string: x86_64
+AT_HWCAP is not 0: 1
+AT_CLKTCK: 100
+AT_SECURE: 0
+AT_RANDOM points at 16 random bytes: 1
+AT_EXECFN names this program: 1
+exit status: 0

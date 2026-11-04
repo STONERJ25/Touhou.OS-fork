@@ -86,7 +86,7 @@ machine for a restart (a watcher script, a monitor) must prove it the same way, 
 
    Names may only be `kernel.elf`, `initrd.img`, `cmdline.txt` and `EFI/BOOT/BOOTX64.EFI`; the loader only with `--loader` on both sides.
 2. **Everything is checked before the ESP is touched**: each file against its hash, the kernel for the ELF header (x86-64), the initrd for
-   the tar mark, the loader for `MZ`, the command line for printable ASCII. The kernel and the initrd always go as a pair, because a
+   the tar mark (a gzip initrd is inflated, to nowhere, to see that the kernel will accept it: [The compressed initrd](#the-compressed-initrd)), the loader for `MZ`, the command line for printable ASCII. The kernel and the initrd always go as a pair, because a
    kernel only runs with the initrd of its own build; a push with one of them is refused. A push whose files are all installed already
    changes nothing. An update still on trial (below) blocks the next one unless `--replace-trial` says to put the new one over it, and a push
    that is not on trial (`--no-trial`) is refused while one is: it would end the trial of the other without anything having proved it. Either
@@ -167,8 +167,75 @@ against 44187 KiB free when a 24 MB set was pushed over a 20 MB one (it was refu
 `tools/build.py` prints the size at the end of the build ("a push to the installed 64 MiB ESP needs three sets to fit") and says when it is close or too big.
 
 What brought the image to the limit that day: the library archives of the system root carried their debug sections (11.8 MB of the initrd for 3.4 MB of code; `tools/mccroot.py` now strips them on their way into the image, the guest only links with them), and the
-web and JavaScript engines ship in the initrd although no program uses them yet. Way out if it comes to it: compress the initrd (the kernel needs an inflate; the userland has one in libz), leave out sources or fonts, or enlarge the partition (a GPT change on the
+web and JavaScript engines ship in the initrd although no program uses them yet. **Since 2026-11-03 the initrd is compressed** ([below](#the-compressed-initrd)): the set
+that was 17.9 MiB (kernel 0.76 MiB + initrd 17.1 MiB) is 8.1 MiB (initrd 7.3 MiB), so a set may grow by about 13 MiB of what compresses like the present image (executables, libraries,
+fonts: 43%) before the limit is near again, or about 30 MiB of archive. Further ways out, if they are ever needed: leave out sources or fonts, or enlarge the partition (a GPT change on the
 Dell's disk: not without the owner, and never on Windows' side).
+
+### The compressed initrd
+
+`initrd.img` on the ESP is **one gzip member** (RFC 1952) holding the ustar archive, unless the image was built with `TOUHOU_INITRD=plain`. Nothing but the two ends know: the loader
+reads the file whole into pages and hands the kernel its address and size (`boot/main.c`, `read_file()`: it looks at neither the size nor the content, so it did not change), and
+the kernel looks at the first two bytes: `1f 8b` is gzip, anything else must be a plain archive (its first header must say `ustar`, or the kernel panics: "initrd.img is not a tar archive").
+
+**Making it.** `python tools/build.py` writes `build/initrd.tar` (the archive, as before) and `build/initrd.img` = that archive through zlib level 9 in a gzip member with a fixed header (modification time 0,
+no file name, OS byte 255, the same on every platform: `tools/initrdpack.py`), so the same archive always gives the same bytes on a given zlib; it is compressed again only when the archive or `TOUHOU_INITRD`
+changed, which takes about 3 seconds. `build/esp/initrd.img` is a copy of that. `TOUHOU_INITRD=plain python tools/build.py` makes `build/initrd.img` the plain archive instead (the build says so). The note at the end of the build shows the set and the ratio:
+
+```
+  GZIP build/initrd.img (17280 KiB -> 7344 KiB, 42.5%)
+  size kernel.elf + initrd.img = 7.9 MiB (initrd.img is gzip: 7.2 MiB for a 16.9 MiB archive, 42.5%); a push to the installed 64 MiB ESP needs three sets to fit: fine
+```
+
+| 2026-11-03 | plain | gzip |
+|---|---|---|
+| `initrd.img`, the lead's build (fonts, keys) | 17,930,240 bytes | 7,650,316 bytes (42.7%) |
+| `initrd.img`, a worktree build | 17,694,720 bytes | 7,519,932 bytes (42.5%) |
+| the set (kernel.elf + initrd.img), the lead's build | 17.9 MiB | 8.1 MiB |
+| unpacking at boot, QEMU (TCG, this PC) | 390-420 ms | 550-590 ms when the PC is idle (the inflate with its CRC-32 about 190 ms, the tar reader and the files about 365 ms), 0.9-1.5 s when it is busy |
+| the inflate alone, native, gcc -O2 (`tests/host/inflatetool`) | | 0.105 s for the 17.9 MB (170 MB/s of output; Python's zlib: 0.083 s) |
+
+**On the Dell** the kernel logs the time of every start, in the log (`dmesg`, `TOUHOU.LOG`, the netconsole): `[Keine] initrd.img was gzip-compressed: 7343 KiB -> 17280 KiB (42%), unpacked in
+N ms: the inflate with its CRC-32 A ms, the files B ms`, and for a plain image `[Keine] initrd.img is a plain tar archive (17280 KiB), unpacked in N ms`. The milliseconds come from the TSC (the uptime clock
+counts timer interrupts and falls behind in a virtual machine under load). Compare N between a gzip and a plain start of the same build to see what the compression costs on that machine; what it
+saves is the loader's read of 10 MiB less from the disk (the loader's `initrd.img N bytes` line).
+
+**What the kernel does** (`kernel/fs/initrd.c`, `kernel/lib/inflate.c`, `kernel/include/inflate.h`). The decoder is written from RFC 1951 and 1952 and shares no code with libz (that one streams in
+small pieces and allocates; this one decodes from memory and allocates nothing). It writes into a window of the caller's work area (128 KiB from `kmalloc`, freed afterwards): DEFLATE looks back at
+most 32 KiB, so when the window is full its content is handed to a callback, the last 32 KiB move to the start, and decoding goes on. The callback is a tar reader that takes bytes in pieces of any size and
+writes each regular file to the file system as its bytes arrive (`vfs_open` once, `vfs_write` per piece); a plain archive goes through the same reader in one piece. So **nothing the size of the unpacked
+archive is ever held**: the page allocator's largest block is 16 MiB (`PMM_MAX_ORDER`) and the archive is bigger than that, so "inflate into one run of pages" (the first idea) could not have worked, and
+would only have got worse as the image grows. The compressed file is the one large buffer; `main.c` gives its pages back to the allocator after the unpack, as it always did.
+
+What is checked, and what happens to a stream that fails: the header (magic, method 8, no reserved flag, the optional fields and their CRC-16 if the flag says so), every Huffman code set (an
+over-subscribed or incomplete one is refused, as zlib does), every symbol and distance, the CRC-32 and the length in the trailer, and that **nothing follows the trailer** (one member is the format; a second member is
+refused too), and the output may not exceed **256 MiB** (`INITRD_MAX_UNPACKED`; a few kilobytes of input per gigabyte of output are possible, so this is the only defence against a bomb, and since the output is
+streamed it costs time, about 7 seconds in QEMU for the test bomb, and never memory). A failure is a `panic()` whose first line says why, for example `initrd.img is damaged: CRC-32 mismatch (the data is damaged) (a gzip
+stream of 7519932 bytes, unusable at byte 7519932, after 17694720 bytes of output)`. The files that were unpacked until then are in the file system but no process has run. A panic is screen, serial, netconsole and the
+record in RAM ([RELIABILITY.md](RELIABILITY.md)); **on a start under trial the machine restarts 30 seconds later by itself, the loader counts that start, and after the second one it brings the previous
+kernel and initrd back** (the same road as any other failed trial). Only the CRC-32 and length are checked after the last byte, so the answer to a damaged stream comes after the files are written; that is
+the reason it cannot be anything gentler than a halt.
+
+**Pushing it.** `update recv` accepts a plain archive (the `ustar` mark at byte 257) or a gzip stream, which it inflates into a buffer it throws away (libz, 64 KiB at a time) and refuses for what the kernel would
+refuse it for: damaged or cut short, bytes after the end, not holding a tar archive, unpacking to more than 256 MiB ("initrd.img is a gzip stream that ends too early", "...is a damaged gzip stream (checksum
+mismatch ...)"). The same applies to the kept `initrd.old` (a rollback is as sound as a push). `push-update.py` looks into the initrd before it sends anything (the key guard needs the archive anyway):
+it unpacks a gzip one with the same rules and refuses a damaged one with exit status 2, "Nothing was sent". The Python tools and tests that read the archive of a build with `tarfile.open(...)` (which
+reads both forms) are `tests/mcc_util.py` (it now reads `build/initrd.tar`), `tests/case_media.py`, `tests/case_update.py`; what they write is a plain tar, which the kernel reads as before.
+
+**The first push after this change has to be a plain archive.** The `update` applet that is installed on the Dell today does not know gzip: it refuses an initrd without the `ustar` mark ("is not a tar archive").
+So the push that brings the new kernel (which can read both) is built with `TOUHOU_INITRD=plain python tools/build.py` in the main checkout and pushed as usual; from then on the installed `update` accepts
+gzip, and the next builds (the default) are pushed compressed. A kernel from before this change cannot read a gzip initrd, and kernel and initrd always travel as a pair, so the kept previous pair
+(`kernel.old` + `initrd.old`) is consistent whichever form it has.
+
+**Tests.** `python tools/hosttest.py discover -s tests/host -p "test_inflate*.py" -v` (22 + 16 cases, about 60 s; the first file builds `tests/host/inflatetool.c` + `kernel/lib/inflate.c` with AddressSanitizer
+and UBSan): zlib streams of every level and strategy, with flushes that make many small blocks, at five window sizes; an own encoder with random code sets up to 15 bits, the repeat codes, a lone
+distance code, no distance codes, mixed stored/fixed/dynamic blocks; hand-made malformed streams with the reason expected for each (and zlib refusing the same streams); every prefix of six small streams; every bit
+of five small streams flipped and some thousands of random multi-bit changes, compared with zlib's verdict and output; every header flag combination, the header and trailer faults, every bit of the trailer;
+a bomb of 512 MiB in half a megabyte against an 8 MiB limit; a sink that fails; the real initrd of the build. `python tools/qemu-slot.py -- python tests/run_all.py initrd_` (5 tests): the default image and a plain one
+boot with every file md5-checked in the guest; nine kinds of damaged stream (a flipped bit, cut short, wrong CRC, wrong length, bytes after the end, a second member, a gzip that holds no tar, neither gzip nor tar) each give the
+panic line and a restart without a triple fault; the same damage in an update on trial panics at both starts, and the third start is the previous kernel and initrd, which report the panic; a 300 MiB bomb stops at the ceiling. The update tests: `update_push_and_confirm` pushes a gzip initrd with the real tool through ssh and the new system starts from it;
+`update_refusals_and_rules` refuses five kinds of bad gzip initrd. A one-off differential fuzz that is not part of the suite (150 s, 512,000 mutated streams of the kinds above, 275,000 of which zlib still accepted) found no
+case where the C code and zlib disagreed about a stream or about the bytes it decodes to, and no sanitizer report.
 
 ### Tests
 
@@ -176,10 +243,10 @@ Dell's disk: not without the owner, and never on Windows' side).
 
 | Test | What it shows |
 |---|---|
-| `update_push_and_confirm` | the whole way with the real tool: push, restart on trial, ssh again, confirm; the new kernel runs (size in the loader's line, `/etc/update-marker`), the ESP holds the new pair, `kernel.old` / `initrd.old` the old one, no `update.try`, clean file system |
+| `update_push_and_confirm` | the whole way with the real tool, the pushed initrd a gzip member: push, restart on trial, ssh again, confirm; the new kernel runs (size in the loader's line, `/etc/update-marker`), the ESP holds the new pair, `kernel.old` / `initrd.old` the old one, no `update.try`, clean file system |
 | `update_unconfirmed_falls_back` | a pushed command line too (`update.watchdog=20`): the watchdog restarts twice, the third start is the previous kernel, initrd **and command line**; `update status` says so; `update rollback` makes it permanent and the next start is plain |
 | `update_hung_kernel_falls_back` | a kernel that hangs in its first instruction: the reset button (QMP `system_reset`) twice and the previous system returns |
-| `update_refusals_and_rules` | nine kinds of bad push change nothing; an identical push does nothing; an update on trial blocks the next, `--no-trial` cannot end it, `confirm` without a restart is refused, `--replace-trial` puts a newer build over it and keeps the original previous set; the pair kept as `.old` is always the pair installed before |
+| `update_refusals_and_rules` | nine kinds of bad push (and five of bad gzip initrd: cut short, wrong CRC, a bit flipped, bytes after it, no tar inside) change nothing; an identical push does nothing; an update on trial blocks the next, `--no-trial` cannot end it, `confirm` without a restart is refused, `--replace-trial` puts a newer build over it and keeps the original previous set; the pair kept as `.old` is always the pair installed before |
 
 The power-cut behaviour of the ESP sequence itself is `espgrant_power_cut` (`tests/case_espgrant.py`).
 

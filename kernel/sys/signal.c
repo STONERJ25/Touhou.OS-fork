@@ -5,6 +5,7 @@
 #include "process.h"
 #include "kernel.h"
 #include "cpu.h"
+#include "linux.h"
 
 typedef struct SigFrame {
     u64 restorer;           /* return address of the handler: user trampoline that issues SYS_sigreturn */
@@ -172,7 +173,8 @@ void signal_send_thread(Task *t, int sig) {
 void signal_force(Process *p, int sig) {
     if (sig <= 0 || sig >= NSIG) return;
     Task *t = current;
-    p->sigact[sig].handler = SIG_DFL;
+    /* A native program's fault always takes the default action. A Linux program keeps a handler it installed, unless the signal is blocked or ignored, as Linux does. */
+    if (p->abi != ABI_LINUX || (t->sig_blocked & (1U << sig)) || p->sigact[sig].handler == SIG_IGN) p->sigact[sig].handler = SIG_DFL;
     t->sig_blocked &= ~(1U << sig);
     u64 f = irq_save();
     t->sig_pending |= 1U << sig;
@@ -255,6 +257,16 @@ void signal_deliver(TrapFrame *tf) {
         if (act->handler == SIG_DFL) {
             klog("Eiki", "'%s' (pid %d) was exorcised by signal %d", p->name, p->pid, sig);
             process_exit(sig);                              /* the default action ends the whole process, not one thread */
+        }
+
+        if (p->abi == ABI_LINUX) {                          /* the frame of x86-64 Linux: kernel/linux/signal.c */
+            u32 old = t->saved_mask_valid ? t->saved_mask : t->sig_blocked;
+            t->saved_mask_valid = false;
+            if (linux_signal_frame(tf, sig, act, old) < 0) {
+                klog("Eiki", "'%s' (pid %d): signal frame is unreachable -- exorcised", p->name, p->pid);
+                process_exit(SIGSEGV);
+            }
+            return;
         }
 
         /* Build the handler frame below the user's stack pointer (skipping the 128-byte red zone). */

@@ -1,0 +1,27 @@
+mkdir: 0
+mkdir again: -1, errno 17
+mkdir sub: 0
+dot entries: 2
+entry alpha: file
+entry beta: file
+entry gamma.txt: file
+entry sub: dir
+entries: 4
+again: 4
+stat gamma.txt: 0, size 30, regular 1
+stat sub: 0, directory 1
+chdir: 0
+getcwd: /tmp/lnx_dir_test
+access alpha: 0
+rename: 0
+access alpha: -1, delta: 0
+read delta: 10 bytes
+chdir back: 0
+rmdir of a directory with files: -1, errno 39
+opendir of a missing path: 1, errno 2
+opendir of a file: 1, errno 20
+listing after the changes: 4
+rmdir sub: 0
+rmdir: 0
+stat after rmdir: -1, errno 2
+exit status: 0

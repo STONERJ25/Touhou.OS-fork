@@ -23,7 +23,11 @@ SHRINE_RED = (0xB5, 0x12, 0x2B)
 PAPER = (0xEC, 0xE6, 0xD6)
 GRASS = (0x66, 0xB0, 0x5A)
 LABEL_1X = (63, 14, 263)          # the start button's "Gensokyo" in the 8x16 bitmap font: width, height and number of lit pixels at scale 1
-LABEL_1X_TTF = (56, 12, 177)      # the same in Gensokyo Sans (bold, 13 px) with the toolkit built with KAPPA_TTF (the default)
+# The same in Gensokyo Sans Bold (13 px times the scale) with the toolkit built with KAPPA_TTF (the default): width, height and lit pixels per scale. These are the
+# numbers of the real Bold file (0.6); before it the Regular was drawn twice (56 x 12 with 177 lit pixels at 1x, 112 x 24 with 708 at 2x). The Bold is wider (heavier
+# letters, sidebearings of its own) and its strokes are 2 px thick at 13 px, so at 2x many more edge pixels pass the "light" threshold than s*s times the 1x count:
+# the lit pixels do not scale with the square of the scale, which is why each scale has its own number.
+LABEL_TTF = {1: (62, 11, 179), 2: (125, 24, 918)}
 
 
 class ScreenGui(Gui):
@@ -91,9 +95,9 @@ def check_label(a, s, logical_h):
                 by, bx = (y + y0) // s * s - y0, (x + x0) // s * s - x0
                 assert light[by:by + s, bx:bx + s].all(), f"glyph pixel at {x + x0},{y + y0} is not part of a full {s}x{s} block"
         return
-    tw, th, tn = LABEL_1X_TTF
-    assert abs(w - tw * s) <= s and abs(h - th * s) <= s and tn * s * s * 0.75 <= n <= tn * s * s * 1.25, \
-        f"the start button label should be about {tw * s}x{th * s} with about {tn * s * s} lit pixels at scale {s} (Gensokyo Sans) or {LABEL_1X[0] * s}x{LABEL_1X[1] * s} " \
+    tw, th, tn = LABEL_TTF.get(s) or (LABEL_TTF[1][0] * s, LABEL_TTF[1][1] * s, LABEL_TTF[1][2] * s * s)
+    assert abs(w - tw) <= s and abs(h - th) <= s and tn * 0.75 <= n <= tn * 1.25, \
+        f"the start button label should be about {tw}x{th} with about {tn} lit pixels at scale {s} (Gensokyo Sans Bold) or {LABEL_1X[0] * s}x{LABEL_1X[1] * s} " \
         f"with {LABEL_1X[2] * s * s} (the bitmap font), found {w}x{h} with {n}"
     if s > 1:                         # drawn at the finer resolution: not an enlarged 1x picture, so some lit pixels are not part of a full s x s block
         x0, y0 = 36 * s, (logical_h - 28) * s

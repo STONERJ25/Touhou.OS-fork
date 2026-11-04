@@ -535,6 +535,13 @@ int kc_text_width_n(const char *s, size_t bytes) {
 
 int kc_text_width(const char *s) { return kc_text_width_n(s, (size_t)-1); }
 
+int kc_text_width_bold(const char *s) {
+#if KAPPA_TTF
+    if (ui_font_on()) return ceil_px(kt_ui_walk(NULL, 0, 0, s, (size_t)-1, 0, 1));
+#endif
+    return kc_text_width(s) + 1;                                     /* the bitmap font's bold is two copies one pixel apart */
+}
+
 size_t kc_text_hit(const char *s, int x) {
     size_t i = 0, best = 0;
     int bestd = 1 << 30;

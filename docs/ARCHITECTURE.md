@@ -3,13 +3,19 @@
 ## Boot flow
 
 1. OVMF (UEFI) starts `\EFI\BOOT\BOOTX64.EFI` from the FAT volume (`build/esp`).
-2. The loader (`boot/`, PE/COFF, MS ABI) reads `kernel.elf`, `initrd.img` and `cmdline.txt`, selects a GOP mode
+2. The loader (`boot/`, PE/COFF, MS ABI) reads `kernel.elf`, `initrd.img` (a ustar archive, normally compressed as one gzip member: the loader loads the file as it is, and the
+   kernel inflates it while it unpacks it, step 3) and `cmdline.txt`, selects a GOP mode
    (default 1024x768; `video=WxH`, `video=native` (keep the firmware's mode) or `video=max` on the command line), copies the ELF's PT_LOAD segments into one
    physically contiguous block, exits boot services, converts the UEFI memory map to `BootMemRegion[]`, builds boot page
    tables and jumps to the kernel with a `BootInfo*` (see `shared/bootinfo.h`). Boot services and loader memory are passed on as
    `BOOTMEM_BOOT_RECLAIMABLE`: the kernel adds it to its allocator only after every PCI DMA master has been silenced. `cmdline.txt` is
    normalised to plain ASCII words by the loader (a missing file means `video=native blk.ro`).
-3. The kernel (`kernel/`, ELF64, SysV ABI, `-mcmodel=kernel`, linked at `0xFFFFFFFF80000000`) takes over.
+3. The kernel (`kernel/`, ELF64, SysV ABI, `-mcmodel=kernel`, linked at `0xFFFFFFFF80000000`) takes over. Late in `kmain` (after the drivers, before the first
+   process) `initrd_unpack()` (`kernel/fs/initrd.c`) writes the initrd's files into the tmpfs root, and `kmain` then gives the initrd's pages back to the page allocator. The archive
+   is read as a stream: a gzip initrd goes through `gunzip()` (`kernel/lib/inflate.c`, RFC 1951/1952; a 128 KiB work area, 32 KiB of history, the CRC-32 and length checked,
+   at most 256 MiB out) and each piece of output is handed to a tar reader that writes the files as they come, so the unpacked archive is never held whole in memory (the
+   allocator's largest block is 16 MiB; the archive is bigger). A stream that is damaged ends in `panic()` with one line saying what is wrong. A plain tar goes through
+   the same reader in one piece. Details, sizes and the tools: [UPDATE.md](UPDATE.md#the-compressed-initrd).
 
 ## Where things are documented
 

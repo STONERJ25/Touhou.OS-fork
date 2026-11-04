@@ -18,6 +18,10 @@ come up), 4 it did not restart or did not come back in time.
 Ctrl+C here does not interrupt the update on the machine: the part that writes the ESP runs there in a session of its own and finishes.
 
 The login uses the key ~/.ssh/touhou_ed25519 by default (docs/SSH.md). Only the standard library and the ssh client are needed.
+
+initrd.img is a gzip member by default now (docs/UPDATE.md, "The compressed initrd"): this tool unpacks it to look at the key list and refuses one that the kernel would refuse (damaged, cut
+short, bytes after the end, more than 256 MiB unpacked) before it sends anything. A machine whose `update` applet predates that change refuses a gzip initrd ("is not a tar archive"): the push
+that brings it the new kernel has to be built with TOUHOU_INITRD=plain python tools/build.py.
 """
 import argparse
 import hashlib
@@ -137,13 +141,37 @@ def look_at_token(rc, out, token):
     return "same" if token in text else "new"
 
 
+UNPACKED_MAX = 256 << 20                         # what the kernel accepts a gzip initrd to unpack to (kernel/fs/initrd.c)
+
+
+def initrd_tar(initrd):
+    """The ustar archive inside an initrd.img: the bytes themselves, or what they unpack to when they are a gzip stream (docs/UPDATE.md, "The compressed initrd"). A gzip stream is
+    held to what the kernel holds it to: one member, CRC-32 and length right, nothing after it, at most 256 MiB unpacked. Raises ValueError (with the reason) when it is not."""
+    import zlib
+    if initrd[:2] != b"\x1f\x8b":
+        return initrd
+    d = zlib.decompressobj(wbits=31)
+    try:
+        out = d.decompress(initrd, UNPACKED_MAX + 1)
+    except zlib.error as e:
+        raise ValueError(f"the gzip stream is damaged ({e})") from None
+    if len(out) > UNPACKED_MAX:
+        raise ValueError("the gzip stream unpacks to more than 256 MiB, which the kernel refuses")
+    if not d.eof:
+        raise ValueError("the gzip stream ends too early")
+    if d.unused_data:
+        raise ValueError(f"{len(d.unused_data)} bytes follow the end of the gzip stream (a single member is the format; the kernel refuses anything after it)")
+    return out
+
+
 def authorized_blobs(initrd):
-    """The key blobs (the base64 field of each line) that the image's /etc/ssh/authorized_keys files let in; None if the initrd is not a tar archive that can be read."""
+    """The key blobs (the base64 field of each line) that the image's /etc/ssh/authorized_keys files let in; None if the initrd is not a tar archive that can be read
+    (a gzip one is unpacked first)."""
     import io
     import tarfile
     try:
         out = set()
-        with tarfile.open(fileobj=io.BytesIO(initrd)) as t:
+        with tarfile.open(fileobj=io.BytesIO(initrd_tar(initrd))) as t:
             for m in t:
                 if m.isfile() and m.name.startswith("Hakurei/etc/ssh/authorized_keys/"):
                     for line in t.extractfile(m).read().decode("utf-8", "replace").splitlines():
@@ -151,7 +179,7 @@ def authorized_blobs(initrd):
                         if len(f) >= 2 and not line.lstrip().startswith("#"):
                             out.add(f[1])
         return out
-    except (tarfile.TarError, EOFError, OSError):
+    except (tarfile.TarError, EOFError, OSError, ValueError):
         return None
 
 
@@ -223,9 +251,14 @@ def run(argv=None):
             print(f"push-update: {p} is missing", file=sys.stderr)
             return 2
         files.append(("EFI/BOOT/BOOTX64.EFI", p.read_bytes()))
+    try:
+        tar = initrd_tar(dict(files)["initrd.img"])
+    except ValueError as e:                       # (the machine would refuse it too, after receiving all of it; the kernel would panic over it if it ever got that far)
+        print(f"push-update: initrd.img is unusable: {e}. Nothing was sent.", file=sys.stderr)
+        return 2
     if not args.no_key_check:
         mine = public_blob(Path(args.key).expanduser())
-        have = authorized_blobs(dict(files)["initrd.img"])
+        have = authorized_blobs(tar)
         if mine and have is not None and mine not in have:
             print(f"push-update: the initrd authorizes none of the keys this tool logs in with ({args.key}): a machine started with it could not be logged into again, so the update could not\n"
                   f"be confirmed and the machine would fall back after two unconfirmed starts. The image was probably built in a checkout without assets/local/ssh/*.pub (a git worktree has none):\n"
@@ -239,7 +272,8 @@ def run(argv=None):
         return 2
     print(f"push-update: version {version}, {len(files)} files, {len(stream)} bytes for {args.user}@{args.host}")
     for name, data in files:
-        print(f"  {name:22} {len(data):>10} bytes  {hashlib.sha256(data).hexdigest()[:16]}")
+        note = f"  (gzip, unpacks to {len(tar)} bytes: {100 * len(data) / max(1, len(tar)):.1f}%)" if name == "initrd.img" and tar is not data else ""
+        print(f"  {name:22} {len(data):>10} bytes  {hashlib.sha256(data).hexdigest()[:16]}{note}")
     if args.dry_run:
         return 0
 

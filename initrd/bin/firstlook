@@ -29,6 +29,7 @@ section() { echo; echo "===== $* ====="; }
     section /proc/net/tune;              cat /proc/net/tune
     section /proc/net/udp;               cat /proc/net/udp
     section "the whole kernel log";      dmesg
+    section "hwreport (the hardware report; serial numbers, UUIDs and the end of MAC addresses are replaced, docs/HARDWARE_DB.md)"; hwreport
 } > "$out" 2>&1
 
 echo "firstlook: written to $out ($(wc -l < "$out") lines)"

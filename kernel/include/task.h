@@ -56,6 +56,10 @@ typedef struct Task {
     u32  saved_mask;            /* sigsuspend: the mask to bring back once a handler has run */
     bool saved_mask_valid;
     bool ignore_cancel;         /* inside a futex wait that is not a cancellation point: a pending cancel does not interrupt it */
+    /* Linux personality signals (kernel/linux/signal.c): the alternate signal stack, and what the synchronous fault that raised a signal looked like (siginfo) */
+    u64  alt_sp, alt_size;
+    u64  fault_addr;
+    int  fault_code;            /* si_code of the signal a fault raised (SEGV_MAPERR, ...), 0 when the signal was sent */
 } Task;
 
 /* Start-up state of a user thread, set before the Task can first run. */

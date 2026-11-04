@@ -36,7 +36,7 @@ the door:
 - With `text` (or `nogui`) in `cmdline.txt`, or on a machine without a usable screen, you get a **text console** with a shell instead of the desktop.
 
 How to make a stick and which firmware settings a PC needs is in [REAL_HARDWARE.md](REAL_HARDWARE.md). Running it in QEMU is in the
-[README](../README.md).
+[README](../README.md). To try it without installing anything, from one ISO file that also boots as a virtual CD, see [ISO.md](ISO.md).
 
 ## The desktop
 
@@ -323,7 +323,8 @@ More words, for diagnosing a PC that does not boot, are in [REAL_HARDWARE.md](RE
 - The desktop panel's clock is always 24-hour; the 12/24 hour setting only applies to the Pocket Watch.
 - A HUMANVILLAGE volume that was not shut down cleanly is mounted read-only until it is checked on another computer.
 - On real hardware only the owner's Dell has been tried: its screen, USB keyboard and mouse, the boot stick and sound worked; its network card
-  has not had a link yet, and its internal disks are hidden by the firmware's RAID mode.
+  has not had a link yet, and its internal disks are hidden by the firmware's RAID mode. **Tried it on your own PC? Run `hwreport -o` and send the file**
+  (it leaves out serial numbers and the end of MAC addresses): [HARDWARE_DB.md](HARDWARE_DB.md) says how and keeps the list of machines.
 
 ## Not merged yet
 

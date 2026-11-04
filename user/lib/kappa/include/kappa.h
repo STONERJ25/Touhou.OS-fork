@@ -114,6 +114,7 @@ int  kc_text_shadow(KCanvas *c, int x, int y, const char *s, uint32_t fg, uint32
 void kc_text_in(KCanvas *c, KRect r, const char *s, uint32_t fg, KAlign align);       /* vertically centred, clipped with "..." */
 int  kc_text_width(const char *s);                                                     /* advance in pixels (rounded up) */
 int  kc_text_width_n(const char *s, size_t bytes);                                     /* the same for the first `bytes` bytes ((size_t)-1: all) */
+int  kc_text_width_bold(const char *s);                                                /* the advance of text set with kc_text_bold: the Bold face is wider than the Regular */
 size_t kc_text_hit(const char *s, int x);                                              /* byte offset of the character boundary nearest to x pixels from the start */
 bool kc_text_is_proportional(void);                                                    /* true when text is set in Gensokyo Sans (so widths are not 8 px per character) */
 void kc_text_use_bitmap(bool on);                                                      /* a program that wants the 8x16 bitmap font for all its text calls this first */

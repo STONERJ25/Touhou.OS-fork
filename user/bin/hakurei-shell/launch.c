@@ -22,6 +22,7 @@ const AppEntry g_apps[] = {
     { "Danmaku",               "Dodge the bullets",              KI_STAR,      "danmaku",       "Games" },
     { "Minesweeper",           "Find the fairies",               KI_GAME,      "minesweeper",   "Games" },
     { "Snake",                 "Eat the dango",                  KI_GAME,      "snake",         "Games" },
+    { "Yukari's Gap to PC-98", "Play PC-98 games (the Hakurei emulator)", KI_MONITOR, "pc98app",   "Games" },
 };
 const int g_napps = (int)(sizeof g_apps / sizeof g_apps[0]);
 

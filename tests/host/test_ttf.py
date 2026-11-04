@@ -3221,6 +3221,8 @@ class OwnerFonts(RealFontChecks, ToolCase):
     draws with the bitmap font)."""
 
     SANS = "GensokyoSans-Regular.ttf"
+    BOLD = "GensokyoSans-Bold.ttf"
+    FACES = (SANS, BOLD)
     NAMES = sorted(p.name for p in ASSET_FONTS.glob("Gensokyo*.ttf"))
 
     def setUp(self):
@@ -3230,7 +3232,7 @@ class OwnerFonts(RealFontChecks, ToolCase):
     def specs(self, *names):
         return [(n, str(ASSET_FONTS / n), 0) for n in (names or self.NAMES)]
 
-    def test_eight_fonts_and_their_checksums(self):
+    def test_the_fonts_and_their_checksums(self):
         import hashlib
         sums = {}
         for line in (ASSET_FONTS / "SHA256SUMS").read_text().splitlines():
@@ -3238,7 +3240,7 @@ class OwnerFonts(RealFontChecks, ToolCase):
                 digest, path = line.split("  ", 1)
                 sums[path] = digest
         self.assertEqual(sorted(Path(p).name for p in sums), self.NAMES)
-        self.assertEqual(len(self.NAMES), 8)
+        self.assertGreaterEqual(len(self.NAMES), 8)                              # (Gensokyo Sans, the seven display faces, and what has been drawn since)
         for path, digest in sums.items():
             self.assertEqual(hashlib.sha256((REPO / path).read_bytes()).hexdigest(), digest, "%s differs from SHA256SUMS: update the file when a font is rebuilt" % path)
 
@@ -3258,17 +3260,18 @@ class OwnerFonts(RealFontChecks, ToolCase):
         self.check_cmap(self.specs())
         self.check_metrics(self.specs())
 
-    def sans(self):
-        tt = self.ft(str(ASSET_FONTS / self.SANS))
+    def sans(self, name=None):
+        tt = self.ft(str(ASSET_FONTS / (name or self.SANS)))
         return tt, tt.getBestCmap(), tt["kern"].kernTables[0].kernTable
 
     def test_sans_kern_table_is_read_exactly(self):
-        """All 98 pairs of the 'kern' table (format 0, the only kerning the font has), and pairs that are not in it (kerning 0), as fontTools reads them."""
+        """Every pair of the 'kern' table (format 0, the only kerning the font has: the 98 pairs of the plain letters and the pairs their accented variants
+        inherit), and pairs that are not in it (kerning 0), as fontTools reads them."""
         if not HAVE_FONTTOOLS:
             self.skipTest("fontTools not installed")
         tt, cmap, table = self.sans()
         ids = tt.getGlyphID
-        self.assertEqual(len(table), 98)
+        self.assertGreaterEqual(len(table), 98)
         rng = random.Random(5)
         letters = [cmap[c] for c in range(0x21, 0x7F)]
         extra = [(rng.choice(letters), rng.choice(letters)) for _ in range(400)]
@@ -3319,30 +3322,477 @@ class OwnerFonts(RealFontChecks, ToolCase):
         self.assertGreater(off(12, xh), 0.3)                       # (12 px: 6.44) and (14 px: 7.52) would blur the x-height edge
         self.assertGreater(off(14, xh), 0.4)
 
+    SANS_SPACES = [0x20, 0xA0, 0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200A, 0x202F, 0x205F, 0x3000]
+    SANS_EXTRA = "ȷˆˇ˘˙˚˛˜˝†‡‰′″‹›€™№⁄‚‛„‟‒―‐‑↑↓↔↕✓▲▼▪▾▸◦◆◇●○★☆■□△▽≠≤≥≈∞⁰⁴⁵⁶⁷⁸⁹₀₁₂₃₄₅₆₇₈₉"
+
+    def sans_codepoints(self):
+        """Every code point Gensokyo Sans must have: printable ASCII, the 13 signs of 0.3, all of Latin-1 and of Latin Extended-A, the extra signs, the spaces."""
+        return (list(range(0x20, 0x7F)) + [ord(c) for c in " –—•…→←−’‘”“"] + list(range(0xA0, 0x180)) + [0x218, 0x219, 0x21A, 0x21B] + [ord(c) for c in self.SANS_EXTRA] + self.SANS_SPACES)
+
+    def sans_chars(self):
+        """The characters with ink: everything above except the spaces (and the soft hyphen, which layout skips)."""
+        cps = sorted(set(self.sans_codepoints()) - set(self.SANS_SPACES) - {0xAD})
+        return [chr(c) for c in cps if c > 0x20]
+
+    def test_sans_covers_latin_1_and_latin_extended_a(self):
+        """All 96 + 128 code points of the two blocks, the extra signs and the spaces are mapped by libttf to a glyph, in the Regular and in the Bold; every one but
+        the spaces has ink, the spaces have none, and the typographic spaces have the standard fractions of an em as advances (the same in both)."""
+        if not HAVE_FONTTOOLS:
+            self.skipTest("fontTools not installed")
+        for face_name in self.FACES:
+            with self.subTest(face_name):
+                self.check_coverage(face_name)
+
+    def check_coverage(self, face_name):
+        tt, cmap, table = self.sans(face_name)
+        cps = sorted(set(self.sans_codepoints()))
+        res = batch(['load a "%s" 0' % (ASSET_FONTS / face_name), "glyph a " + " ".join(str(c) for c in cps)])[1]
+        got = {int(kv(l)["cp"]): kv(l) for l in res}
+        glyf = tt["glyf"]
+        for cp in cps:
+            self.assertNotEqual(int(got[cp]["gid"]), 0, "U+%04X" % cp)
+            spacing = cp in self.SANS_SPACES
+            self.assertEqual(glyf[cmap[cp]].numberOfContours == 0, spacing, "U+%04X %s ink" % (cp, "has" if spacing else "lacks"))
+            self.assertGreater(int(got[cp]["adv"]), 0, "U+%04X" % cp)
+        em = {0x2000: 500, 0x2001: 1000, 0x2002: 500, 0x2003: 1000, 0x2004: 333, 0x2005: 250, 0x2006: 167, 0x2009: 200, 0x200A: 100}
+        for cp, adv in em.items():
+            self.assertEqual(int(got[cp]["adv"]), adv, "U+%04X" % cp)
+        digit = {int(got[c]["adv"]) for c in range(0x30, 0x3A)}
+        self.assertEqual(len(digit), 1, "tabular figures")
+        self.assertEqual(int(got[0x2007]["adv"]), digit.pop(), "the figure space is as wide as a digit")
+        self.assertEqual(int(got[0x2008]["adv"]), int(got[0x2E]["adv"]), "the punctuation space is as wide as a period")
+        self.assertEqual(int(got[0x20]["adv"]), 264)                                  # the owner's decision (the font specification)
+        self.assertEqual(int(got[0xA0]["adv"]), 264)
+
+    def test_sans_new_glyphs_have_sane_shapes_and_bearings(self):
+        """Every glyph that is not one of the original 107 lies inside the toolkit's line box (1000 units above the baseline: the top row of a 16 px box with the
+        baseline 13 px down; 230 below), has a left bearing equal to its xMin (so that renderers that trust either agree), is not absurdly wide, and does not
+        hang more than 160 units out of its advance (the cedilla and the accents may overhang a little). The same for the Bold."""
+        if not HAVE_FONTTOOLS:
+            self.skipTest("fontTools not installed")
+        for face_name in self.FACES:
+            with self.subTest(face_name):
+                self.check_shapes(face_name)
+
+    def check_shapes(self, face_name):
+        tt, cmap, table = self.sans(face_name)
+        glyf, hmtx = tt["glyf"], tt["hmtx"]
+        order = tt.getGlyphOrder()
+        mapped = set(cmap.values())
+        for name in order[107:]:
+            g = glyf[name]
+            if g.numberOfContours == 0:
+                continue
+            adv, lsb = hmtx[name]
+            self.assertEqual(lsb, g.xMin, name)
+            self.assertGreaterEqual(g.yMin, -230, name)
+            self.assertLessEqual(g.yMax, 1000, name)
+            self.assertLess(g.xMax - g.xMin, 1200, name)
+            if name in mapped:                                                     # (the helper glyphs the composites are made of are not mapped)
+                self.assertGreater(adv, 150, name)
+                self.assertGreaterEqual(g.xMin, -160, name)
+                self.assertLessEqual(g.xMax, adv + 160, name)
+
+    CYRILLIC = sorted(set(range(0x400, 0x460)) | {0x490, 0x491, 0x4C0})
+    GREEK = sorted(set(range(0x384, 0x38B)) | {0x38C, 0x38E, 0x38F, 0x390, 0x37E} | (set(range(0x391, 0x3CF)) - {0x3A2}))
+    # the letters that are the same picture in two alphabets share one glyph (one outline, one set of kerning pairs): Cyrillic or Greek code point -> the code point whose glyph it is
+    SHARED = {0x410: 0x41, 0x412: 0x42, 0x415: 0x45, 0x41A: 0x4B, 0x41C: 0x4D, 0x41D: 0x48, 0x41E: 0x4F, 0x420: 0x50, 0x421: 0x43, 0x422: 0x54, 0x425: 0x58, 0x405: 0x53,
+              0x406: 0x49, 0x408: 0x4A, 0x430: 0x61, 0x435: 0x65, 0x43E: 0x6F, 0x440: 0x70, 0x441: 0x63, 0x443: 0x79, 0x445: 0x78, 0x455: 0x73, 0x456: 0x69, 0x458: 0x6A,
+              0x401: 0xCB, 0x451: 0xEB, 0x407: 0xCF, 0x457: 0xEF, 0x43A: 0x138,
+              0x391: 0x41, 0x392: 0x42, 0x395: 0x45, 0x396: 0x5A, 0x397: 0x48, 0x399: 0x49, 0x39A: 0x4B, 0x39C: 0x4D, 0x39D: 0x4E, 0x39F: 0x4F, 0x3A1: 0x50, 0x3A4: 0x54,
+              0x3A5: 0x59, 0x3A7: 0x58, 0x3BF: 0x6F, 0x3BD: 0x76, 0x3C1: 0x70, 0x3B9: 0x131, 0x3BA: 0x138, 0x3BC: 0xB5, 0x3B7: 0x14B, 0x3B3: 0x79,
+              0x393: 0x413, 0x3A0: 0x41F, 0x3A6: 0x424, 0x3C6: 0x444, 0x3C4: 0x442,
+              0x4C0: 0x49, 0x400: 0xC8, 0x450: 0xE8, 0x45B: 0x127, 0x384: 0xB4, 0x37E: 0x3B, 0x387: 0xB7}
+
+    def test_sans_covers_cyrillic_and_greek(self):
+        """The Slavic Cyrillic of U+0400 to U+045F (Russian, Ukrainian, Belarusian, Serbian, Macedonian, Bulgarian; with the palochka and the Ukrainian Ґ ґ) and modern
+        Greek with its tonos and dialytika (U+0384 to U+03CE, the Greek question mark and the raised dot): every code point is mapped by libttf to a glyph with ink
+        and an advance, in the Regular, in the Bold and in the Mono."""
+        if not HAVE_FONTTOOLS:
+            self.skipTest("fontTools not installed")
+        cps = self.CYRILLIC + self.GREEK
+        self.assertEqual(len(self.CYRILLIC), 99)
+        for face_name in self.FACES + (self.MONO,):
+            with self.subTest(face_name):
+                tt = self.ft(str(ASSET_FONTS / face_name))
+                cmap, glyf = tt.getBestCmap(), tt["glyf"]
+                res = batch(['load a "%s" 0' % (ASSET_FONTS / face_name), "glyph a " + " ".join(str(c) for c in cps)])[1]
+                got = {int(kv(l)["cp"]): kv(l) for l in res}
+                for cp in cps:
+                    self.assertNotEqual(int(got[cp]["gid"]), 0, "U+%04X" % cp)
+                    self.assertGreater(int(got[cp]["adv"]), 150, "U+%04X" % cp)
+                    self.assertNotEqual(glyf[cmap[cp]].numberOfContours, 0, "U+%04X has no ink" % cp)
+
+    def test_cyrillic_and_greek_letters_that_look_like_latin_ones_are_those_glyphs(self):
+        """A and А, B and В, o and ο ... are one glyph (so one outline and one set of kerning pairs; ι is the dotless i, κ the kra, μ the micro sign, η the eng), in
+        all three faces; the letters that are not like any other are glyphs of their own (and different from each other)."""
+        if not HAVE_FONTTOOLS:
+            self.skipTest("fontTools not installed")
+        for face_name in self.FACES + (self.MONO,):
+            with self.subTest(face_name):
+                cmap = self.ft(str(ASSET_FONTS / face_name)).getBestCmap()
+                for cp, src in self.SHARED.items():
+                    self.assertEqual(cmap[cp], cmap[src], "U+%04X and U+%04X" % (cp, src))
+                own = [cp for cp in self.CYRILLIC + self.GREEK if cp not in self.SHARED]
+                names = [cmap[cp] for cp in own]
+                self.assertEqual(len(names), len(set(names)), "two letters share a glyph that are not the same letter")
+                self.assertGreater(len(own), 80)
+
+    def test_cyrillic_and_greek_words_are_set_with_the_advances_and_the_inherited_kerning(self):
+        """Text in the new alphabets is advances plus kerning as for Latin text, and the pairs that the Latin letters have are those of the letters that share their
+        glyphs: Т before о is kerned like T before o, and Г (which has the top bar of the F) and the Greek Γ before small letters are kerned, so that
+        'То', 'Та' and 'Го' are tighter than the sum of their advances. Regular and Bold."""
+        if not HAVE_FONTTOOLS:
+            self.skipTest("fontTools not installed")
+        texts = ["Привет, мир!", "Тоже Тут", "Гора Река", "Москва Санкт-Петербург", "Ελληνικά Αθήνα", "Ωραία Γάτα"]
+        for face_name in self.FACES:
+            with self.subTest(face_name):
+                tt, cmap, table = self.sans(face_name)
+                hm = tt["hmtx"]
+                res = batch(['load a "%s" 0' % (ASSET_FONTS / face_name), "set a"] + ["width 13 3 hex:%s" % t.encode().hex() for t in texts])[2:]
+                for t, r in zip(texts, res):
+                    g = [cmap[ord(c)] for c in t]
+                    units = sum(hm[x][0] for x in g) + sum(table.get(p, 0) for p in zip(g, g[1:]))
+                    self.assertAlmostEqual(float(r[0].split()[1]), units * 13 / 1000, places=3, msg=t)
+                for pair in ("То", "Та", "Го", "Га", "ТА", "АТ"):
+                    self.assertLess(table.get((cmap[ord(pair[0])], cmap[ord(pair[1])]), 0), 0, pair)
+
+    def test_cyrillic_and_greek_letters_stand_on_the_baseline_and_keep_the_heights_of_the_latin_ones(self):
+        """The capitals reach 700 (the round ones 712) and stand on 0 (round ones -12), the small letters reach 537 (round ones 549, the tall ones 740, б and the
+        Serbian ђ), and nothing hangs below -230 or rises above 1000, in the Regular and in the Bold (the same flat tops and bottoms: the pen puts them back)."""
+        if not HAVE_FONTTOOLS:
+            self.skipTest("fontTools not installed")
+        capitals = [cp for cp in self.CYRILLIC + self.GREEK if chr(cp).isupper() and cp not in (0x490, 0x4C0, 0x3AA, 0x3AB)
+                    and not any(0x300 <= ord(c) <= 0x36F for c in __import__("unicodedata").normalize("NFD", chr(cp)))]
+        for face_name in self.FACES:
+            with self.subTest(face_name):
+                tt = self.ft(str(ASSET_FONTS / face_name))
+                cmap, glyf = tt.getBestCmap(), tt["glyf"]
+                for cp in capitals:
+                    g = glyf[cmap[cp]]
+                    self.assertIn(g.yMax, (700, 712), "U+%04X top %d" % (cp, g.yMax))
+                    self.assertGreaterEqual(g.yMin, -230, "U+%04X" % cp)
+                for cp in (0x410, 0x411, 0x412, 0x413, 0x415, 0x41F, 0x422, 0x391, 0x394, 0x39B, 0x3A3, 0x39E):               # capitals without a tail
+                    g = glyf[cmap[cp]]
+                    self.assertIn(g.yMin, (0, -12), "U+%04X bottom %d" % (cp, g.yMin))
+                for cp in (0x430, 0x432, 0x433, 0x438, 0x43D, 0x43F, 0x442, 0x43C, 0x3B1, 0x3BD, 0x3C0, 0x3BF):                # small letters of the x-height
+                    g = glyf[cmap[cp]]
+                    self.assertIn(g.yMax, (537, 549, 550), "U+%04X top %d" % (cp, g.yMax))                  # (the a of the original design reaches 550)
+                    self.assertIn(g.yMin, (0, -12), "U+%04X bottom %d" % (cp, g.yMin))
+
+    def test_sans_accents_stand_clear_above_the_letter_and_over_its_middle(self):
+        """An accented letter is the plain letter (unchanged, at the origin) with a mark above it: the mark's lowest point is at least 30 units over the highest
+        point of the letter, and the mark is centred over the letter or its stem (within 120 units). Regular and Bold."""
+        if not HAVE_FONTTOOLS:
+            self.skipTest("fontTools not installed")
+        for face_name in self.FACES:
+            with self.subTest(face_name):
+                self.check_accents(face_name)
+
+    def check_accents(self, face_name):
+        import unicodedata
+        tt, cmap, table = self.sans(face_name)
+        glyf = tt["glyf"]
+        above = {0x300, 0x301, 0x302, 0x303, 0x304, 0x306, 0x307, 0x308, 0x30A, 0x30B, 0x30C}
+        checked = 0
+        for cp in list(range(0xC0, 0x100)) + list(range(0x100, 0x180)) + list(range(0x370, 0x460)) + [0x490, 0x491]:
+            d = unicodedata.normalize("NFD", chr(cp))
+            if len(d) != 2 or ord(d[1]) not in above or cp not in cmap:                # (the Greek and Cyrillic blocks have code points the font does not draw)
+                continue
+            g = glyf[cmap[cp]]
+            if g.numberOfContours != -1 or g.components[1].y < 600:
+                continue                                                          # (the tick of d, l, t and L is drawn beside the letter: tested below)
+            self.assertEqual(len(g.components), 2, "U+%04X" % cp)
+            base, mark = g.components
+            base_g, mark_g = glyf[base.glyphName], glyf[mark.glyphName]
+            self.assertEqual((base.x, base.y), (0, 0))
+            plain = {"i": cmap[0x131], "j": cmap[0x237], "\u0456": cmap[0x131], "\u0458": cmap[0x237]}.get(d[0], cmap[ord(d[0])])      # (the Cyrillic і and ј too)
+            self.assertEqual(base.glyphName, plain, "U+%04X" % cp)
+            self.assertGreaterEqual(mark.y + mark_g.yMin - base_g.yMax, 30, "U+%04X: the mark touches the letter" % cp)
+            mid_mark, mid_base = mark.x + (mark_g.xMin + mark_g.xMax) / 2, (base_g.xMin + base_g.xMax) / 2
+            if d[0] not in "lLjJ":
+                self.assertLessEqual(abs(mid_mark - mid_base), 120, "U+%04X" % cp)
+            checked += 1
+        self.assertGreater(checked, 100)
+        for cp in (0x10F, 0x13E, 0x165, 0x13D):                                   # d' l' t' L': the caron of these four is an apostrophe beside the letter
+            g = glyf[cmap[cp]]
+            self.assertEqual(g.numberOfContours, -1)
+            base, mark = g.components
+            self.assertGreaterEqual(mark.y, 500, "U+%04X: the tick stands high, clear of the foot and the crossbar" % cp)
+            self.assertGreaterEqual(mark.x + glyf[mark.glyphName].xMin, glyf[base.glyphName].xMin + 90, "U+%04X: right of the stem" % cp)
+
+    def test_sans_variants_inherit_the_kerning_of_their_letter(self):
+        """T before o is kerned; so is every T (with a cedilla, a bar) before every o with a mark or a stroke: the accented variants take the pairs of
+        their base in both positions. Regular and Bold."""
+        if not HAVE_FONTTOOLS:
+            self.skipTest("fontTools not installed")
+        for face_name in self.FACES:
+            with self.subTest(face_name):
+                self.check_inherited_kerning(face_name)
+
+    def check_inherited_kerning(self, face_name):
+        tt, cmap, table = self.sans(face_name)
+        k = lambda a, b: table.get((cmap[ord(a)], cmap[ord(b)]), 0)               # noqa: E731
+        lefts = {"T": "TŢŤŦ", "A": "AÀÁÂÃÄÅĀĂĄ", "Y": "YÝŶŸ", "r": "rŕŗř", "W": "WŴ", "L": "LĹĻĽŁ"}
+        rights = {"o": "oòóôõöøōŏő", "V": "V", "a": "aàáâãäåāăą", ".": ".", "e": "eèéêëēĕėęě", "y": "yýÿŷ"}
+        for left, right in (("T", "o"), ("A", "V"), ("Y", "a"), ("r", "."), ("T", "e"), ("W", "a"), ("L", "y")):
+            want = k(left, right)
+            self.assertLess(want, 0, left + right)
+            for l2 in lefts[left]:
+                for r2 in rights[right]:
+                    self.assertEqual(k(l2, r2), want, (l2, r2))
+
+    def test_sans_text_in_the_languages_of_western_europe_measures_as_advances_plus_kerning(self):
+        """Lines of French, German, Spanish, Polish, Czech, Turkish, Icelandic, Hungarian and Danish are laid out by libttf with the width fontTools' tables give
+        (the advances plus the kerning), which also proves that none of them falls back to another face or to the missing-glyph box. Regular and Bold."""
+        if not HAVE_FONTTOOLS:
+            self.skipTest("fontTools not installed")
+        for face_name in self.FACES:
+            with self.subTest(face_name):
+                self.check_western_text(face_name)
+
+    def check_western_text(self, face_name):
+        tt, cmap, table = self.sans(face_name)
+        hm = tt["hmtx"]
+        texts = ["Où est la crêche? J'ai déjà mangé à l'hôtel, ça m'étonne.", "Größe, Fußgängerübergänge, schön, zählen, Mädchen, Ärger.",
+                 "¿Cómo está usted? ¡Qué sorpresa! El niño comió piñas.", "Zażółć gęślą jaźń, Łódź, świeża woda, pięć ćwiartek.",
+                 "Příliš žluťoučký kůň úpěl ďábelské ódy. Dvořák, Řeka.", "İstanbul'da şeker, çay, ığdır, öğretmen, ışık, Ğ ğ Ş ş.",
+                 "Þetta er ðó, æðri skóli, Ísland. Magyar: őrült, tűz.", "Blåbærgrød med fløde, Ærø, Øresund. Åsa, älg, öl. Œuvre, œil."]
+        res = batch(['load a "%s" 0' % (ASSET_FONTS / face_name), "set a"] + ["width 13 3 hex:%s" % t.encode().hex() for t in texts])[2:]
+        for t, r in zip(texts, res):
+            g = [cmap[ord(c)] for c in t]
+            units = sum(hm[x][0] for x in g) + sum(table.get(p, 0) for p in zip(g, g[1:]))
+            self.assertAlmostEqual(float(r[0].split()[1]), units * 13 / 1000, places=3, msg=t)
+
+    def ink_run(self, tt, name, point, direction, limit=400):
+        """The length of the stretch of ink that starts at `point` and runs in `direction` (fontTools' own point-in-glyph test)."""
+        from fontTools.pens.pointInsidePen import PointInsidePen
+        gs = tt.getGlyphSet()
+        n = 0
+        while n < limit:
+            pen = PointInsidePen(gs, (point[0] + direction[0] * n + 0.5, point[1] + direction[1] * n + 0.5))
+            gs[name].draw(pen)
+            if not pen.getResult():
+                break
+            n += 1
+        return n
+
+    def stem_of(self, tt, cmap):
+        left = 0
+        while self.ink_run(tt, cmap[ord("l")], (left, 300), (1, 0), 1) == 0 and left < 300:
+            left += 1
+        return self.ink_run(tt, cmap[ord("l")], (left, 300), (1, 0))
+
+    def test_bold_is_a_real_weight_with_the_regulars_heights_and_metrics(self):
+        """Docs/FONT_SPEC.md section 6: stems of 150 to 160 units and horizontals of 128 to 138 for the Bold (96 and 82 in the Regular, measured here too); the
+        flat tops and bottoms are where they are in the Regular (x-height 537, capitals 700, ascender 740, descender -210), so that the toolkit's line box and every
+        layout fit the Bold as they fit the Regular; the same code points, the same vertical metrics, the same space, tabular figures, the right weight flags."""
+        if not HAVE_FONTTOOLS:
+            self.skipTest("fontTools not installed")
+        reg, cr = self.sans(self.SANS)[:2]
+        bold, cb = self.sans(self.BOLD)[:2]
+        self.assertEqual(set(cr), set(cb))
+        self.assertEqual(self.stem_of(reg, cr), 96)
+        self.assertTrue(150 <= self.stem_of(bold, cb) <= 160, self.stem_of(bold, cb))
+        for tt, cmap, lo, hi, lo2 in ((reg, cr, 78, 84, 78), (bold, cb, 128, 138, 126)):
+            self.assertTrue(lo <= self.ink_run(tt, cmap[ord("E")], (350, 699), (0, -1)) <= hi)
+            self.assertTrue(lo2 <= self.ink_run(tt, cmap[ord("z")], (250, 536), (0, -1)) <= hi)
+        for ch, top in (("x", 537), ("z", 537), ("v", 537), ("H", 700), ("E", 700), ("T", 700), ("l", 740), ("k", 740)):
+            self.assertEqual(bold["glyf"][cb[ord(ch)]].yMax, top, ch)
+            self.assertEqual(reg["glyf"][cr[ord(ch)]].yMax, top, ch)
+        for ch in "pqy":
+            self.assertEqual(bold["glyf"][cb[ord(ch)]].yMin, -210, ch)
+        for tag, field in (("hhea", "ascent"), ("hhea", "descent"), ("hhea", "lineGap"), ("OS/2", "sTypoAscender"), ("OS/2", "sTypoDescender"), ("OS/2", "sTypoLineGap"),
+                           ("OS/2", "usWinAscent"), ("OS/2", "usWinDescent"), ("OS/2", "sxHeight"), ("OS/2", "sCapHeight"), ("head", "unitsPerEm")):
+            self.assertEqual(getattr(bold[tag], field), getattr(reg[tag], field), "%s.%s" % (tag, field))
+        self.assertEqual((bold["OS/2"].usWeightClass, reg["OS/2"].usWeightClass), (700, 400))
+        self.assertEqual((bold["head"].macStyle & 1, bold["OS/2"].fsSelection & 0x21), (1, 0x20))
+        self.assertEqual(bold["hmtx"][cb[32]][0], 264)
+        self.assertEqual(len({bold["hmtx"][cb[c]][0] for c in range(48, 58)}), 1)
+        self.assertGreater(bold["hmtx"][cb[ord("n")]][0], reg["hmtx"][cr[ord("n")]][0])
+
+    def test_bold_sidebearings_follow_the_specification_and_it_is_kerned_like_the_regular(self):
+        """Straight-stem letters have 45 to 70 units of sidebearing in the Bold (the specification asks 45 to 65 on straight stems, against 55 to 75 in the Regular);
+        the Bold kerns the same pairs as the Regular (by code point; the values are measured on its own outlines), and the pairs that matter are negative."""
+        if not HAVE_FONTTOOLS:
+            self.skipTest("fontTools not installed")
+        reg, cr, kr = self.sans(self.SANS)
+        bold, cb, kb = self.sans(self.BOLD)
+        for ch in "nhmuiHIEFKNMrl":
+            g = bold["glyf"][cb[ord(ch)]]
+            adv = bold["hmtx"][cb[ord(ch)]][0]
+            lsb, rsb = g.xMin, adv - g.xMax
+            self.assertTrue(40 <= lsb <= 72, "%s: left %d" % (ch, lsb))
+            if ch in "nhmuiHINM":                                                                                   # (the others end in a foot, an arm or a leg, not in a stem)
+                self.assertTrue(36 <= rsb <= 90, "%s: right %d" % (ch, rsb))
+        inv_r = {name: cp for cp, name in cr.items()}
+        inv_b = {name: cp for cp, name in cb.items()}
+        pr = {(inv_r[a], inv_r[b]) for (a, b) in kr}
+        pb = {(inv_b[a], inv_b[b]) for (a, b) in kb}
+        self.assertEqual(pr, pb)
+        for pair in ("AV", "To", "Yo", "Wa", "r.", "LY"):
+            self.assertLess(kb[cb[ord(pair[0])], cb[ord(pair[1])]], 0, pair)
+        for pair in ("rn", "cl"):
+            self.assertGreater(kb[cb[ord(pair[0])], cb[ord(pair[1])]], 0, pair)
+
+    MONO = "GensokyoMono-Regular.ttf"
+
+    def test_mono_is_fixed_width_with_a_cell_of_eight_pixels_at_13(self):
+        """Gensokyo Mono: one advance of 615 units for every character (two cells for the em spaces), which is 8.0 pixels at the toolkit's 13 px (the cell of the 8x16
+        bitmap font), the flags of a monospaced face, no kerning; libttf lays a line of 80 characters out at 639.6 pixels and gives ten different characters the same
+        width. The vertical metrics are the Sans's, so that text in the two faces sits on one line."""
+        if not HAVE_FONTTOOLS:
+            self.skipTest("fontTools not installed")
+        mono = self.ft(str(ASSET_FONTS / self.MONO))
+        cm = mono.getBestCmap()
+        sans = self.sans(self.SANS)[0]
+        self.assertNotIn("kern", mono.reader.keys())
+        self.assertEqual(mono["post"].isFixedPitch, 1)
+        self.assertEqual(mono["OS/2"].panose.bProportion, 9)
+        for code, name in cm.items():
+            self.assertIn(mono["hmtx"][name][0], (615, 1230), "U+%04X" % code)
+        for tag, field in (("hhea", "ascent"), ("hhea", "descent"), ("OS/2", "sTypoAscender"), ("OS/2", "sxHeight"), ("OS/2", "sCapHeight"), ("head", "unitsPerEm")):
+            self.assertEqual(getattr(mono[tag], field), getattr(sans[tag], field), "%s.%s" % (tag, field))
+        text = "".join(chr(0x21 + (i * 7) % 90) for i in range(80))
+        r = batch(['load a "%s" 0' % (ASSET_FONTS / self.MONO), "set a", "width 13 3 hex:%s" % text.encode().hex(), "width 13 3 hex:%s" % ("mi" * 40).encode().hex(),
+                   "width 13 3 hex:%s" % ("W." * 40).encode().hex()])
+        for line in r[2:]:
+            self.assertAlmostEqual(float(line[0].split()[1]), 80 * 615 * 13 / 1000.0, places=3)
+        self.assertAlmostEqual(80 * 615 * 13 / 1000.0, 639.6, places=3)
+
+    def test_mono_covers_latin_1_latin_extended_a_box_drawing_and_blocks(self):
+        """Every code point of the Sans' two Latin blocks (but the three that are two letters: IJ, ij, n with an apostrophe), all 160 of box drawing and block
+        elements, the signs; and the six look-alike characters 0 O 1 l I | are six different pictures (the zero has a dot)."""
+        if not HAVE_FONTTOOLS:
+            self.skipTest("fontTools not installed")
+        tt = self.ft(str(ASSET_FONTS / self.MONO))
+        cm = tt.getBestCmap()
+        want = (set(range(0x20, 0x7F)) | set(range(0xA0, 0x180)) | {0x218, 0x219, 0x21A, 0x21B} | set(range(0x2500, 0x25A0))) - {0x132, 0x133, 0x149}
+        self.assertEqual(sorted(want - set(cm)), [])
+        glyf = tt["glyf"]
+        pictures = set()
+        for ch in "0O1lI|":
+            coords = glyf[cm[ord(ch)]].getCoordinates(glyf)
+            pictures.add(repr((list(coords[0]), list(coords[1]))))
+        self.assertEqual(len(pictures), 6)
+        self.assertEqual(len(glyf[cm[ord("0")]].endPtsOfContours), 3)                  # the ring, its counter, and the dot in it
+        res = batch(['load a "%s" 0' % (ASSET_FONTS / self.MONO), "glyph a " + " ".join(str(c) for c in sorted(want))])[1]
+        for line in res:
+            self.assertNotEqual(int(kv(line)["gid"]), 0, line)
+
+    def test_mono_box_drawing_fills_the_row_exactly_and_frames_join(self):
+        """Box drawing and block elements are 615 units wide and run from 230 below the baseline to 1000 above it, which at 13 px with the baseline 13 pixels down is
+        the 8x16 pixel row of the toolkit: drawn side by side and one above the other there is no seam. Checked by the outlines (exact units) and by pictures at 13 px:
+        a vertical line in two rows has ink in every pixel row of both and a horizontal one in every pixel column of two cells; a full block fills all 8x16 pixels."""
+        if not HAVE_FONTTOOLS:
+            self.skipTest("fontTools not installed")
+        tt = self.ft(str(ASSET_FONTS / self.MONO))
+        cm, glyf = tt.getBestCmap(), tt["glyf"]
+        for code, box in {0x2500: (0, 347, 615, 423), 0x2502: (269, -230, 346, 1000), 0x2588: (0, -230, 615, 1000), 0x253C: (0, -230, 615, 1000),
+                          0x2501: (0, 308, 615, 462), 0x2503: (230, -230, 385, 1000), 0x2550: (0, 270, 615, 500), 0x256C: (0, -230, 615, 1000)}.items():
+            g = glyf[cm[code]]
+            self.assertEqual((g.xMin, g.yMin, g.xMax, g.yMax), box, "U+%04X" % code)
+        for code in range(0x2500, 0x25A0):
+            g = glyf[cm[code]]
+            self.assertTrue(g.xMin >= 0 and g.xMax <= 615 and g.yMin >= -230 and g.yMax <= 1000, "U+%04X" % code)
+        WORK.mkdir(parents=True, exist_ok=True)
+        font = str(ASSET_FONTS / self.MONO)
+        draws = []
+        for i, ch in enumerate("│─█"):
+            draws.append("kui draw %s 1 24 32 0 0 000000 ffffff 0 hex:%s" % (WORK / ("mb%d.ppm" % i), ch.encode().hex()))            # (x = 0: the cell starts at the pen)
+            draws.append("kui draw %s 1 24 32 0 16 000000 ffffff 0 hex:%s" % (WORK / ("mc%d.ppm" % i), ch.encode().hex()))
+        draws.append("kui draw %s 1 24 32 8 0 000000 ffffff 0 hex:%s" % (WORK / "md1.ppm", "─".encode().hex()))
+        batch(draws, kappa=True, env={"KAPPA_UI_FONT": font})
+
+        def ink(path, x, y):
+            w, h, px = read_ppm(str(path))
+            return 255 - px[y][x][0]
+
+        for y in range(32):                                                    # │ in two rows: the middle pixel columns (3 and 4) are inked in all 32 rows
+            both = [max(ink(WORK / "mb0.ppm", x, y), ink(WORK / "mc0.ppm", x, y)) for x in (3, 4)]
+            self.assertGreater(sum(both), 60, "gap in the vertical line at row %d: %s" % (y, both))
+        rows = [y for y in range(32) if max(ink(WORK / "mb1.ppm", x, y) for x in range(8)) > 20]
+        self.assertTrue(rows and max(rows) - min(rows) <= 1)                                  # the horizontal line is one or two pixel rows high
+        for x in range(16):                                                   # ─ in two cells: every pixel column of both is inked in the line's rows
+            col = max(ink(WORK / "mb1.ppm", x, y) if x < 8 else ink(WORK / "md1.ppm", x, y) for y in rows)
+            self.assertGreater(col, 60, "gap in the horizontal line at column %d" % x)
+        for y in range(32):                                                    # the full block, in two rows: all 8 x 32 pixels are black
+            for x in range(8):
+                self.assertGreater(max(ink(WORK / "mb2.ppm", x, y), ink(WORK / "mc2.ppm", x, y)), 250, "hole in the full block at (%d, %d)" % (x, y))
+
+    def test_mono_ink_stays_inside_the_16_pixel_row_of_the_toolkit(self):
+        """Every character of Gensokyo Mono, drawn at 13 px with the baseline 13 pixels down, lies in the pixel rows 0 to 15 (the terminal's row)."""
+        if not HAVE_FONTTOOLS:
+            self.skipTest("fontTools not installed")
+        tt = self.ft(str(ASSET_FONTS / self.MONO))
+        chars = [chr(c) for c in sorted(tt.getBestCmap()) if c > 0x20 and c not in (0xA0, 0xAD) and not 0x2000 <= c <= 0x200A and c not in (0x202F, 0x205F, 0x3000)]
+        WORK.mkdir(parents=True, exist_ok=True)
+        cmds = ["kui draw %s 1 24 24 4 4 000000 ffffff 0 hex:%s" % (WORK / ("mx%d.ppm" % i), c.encode().hex()) for i, c in enumerate(chars)]
+        batch(cmds, kappa=True, env={"KAPPA_UI_FONT": str(ASSET_FONTS / self.MONO)})
+        top, bottom = 99, -1
+        for i, c in enumerate(chars):
+            w, h, px = read_ppm(str(WORK / ("mx%d.ppm" % i)))
+            rows = [y for y in range(h) if any(p != (255, 255, 255) for p in px[y])]
+            self.assertTrue(rows, "no ink for %r" % c)
+            top, bottom = min(top, rows[0]), max(bottom, rows[-1])
+        self.assertGreaterEqual(top, 4)
+        self.assertLessEqual(bottom, 4 + 16 - 1)
+
+    def test_the_toolkit_sets_bold_text_in_the_bold_face(self):
+        """kc_text_bold (and so the headings, the window titles, every bold label) is Gensokyo Sans Bold when the file is there: the same pixels as libttf's own
+        drawing with the Bold at 13 px, the advance and kc_text_width_bold equal to the Bold's width (wider than the Regular's, by 3 to 12%), and without the Bold the
+        old double strike (the Regular twice, half a pixel apart; one pixel wider)."""
+        reg, bold = str(ASSET_FONTS / self.SANS), str(ASSET_FONTS / self.BOLD)
+        WORK.mkdir(parents=True, exist_ok=True)
+        fg, bg = 0x1A1A24, 0xECE6D6
+        texts = ["Notebook", "Places Volumes", "Größe Fußgänger ÀÉÎÕÜ", "Ran's Calculator", "AVATAR To Wa"]
+        env_both = {"KAPPA_UI_FONT": reg, "KAPPA_UI_BOLD_FONT": bold}
+        for i, text in enumerate(texts):
+            out, ref = str(WORK / ("bold%d.ppm" % i)), str(WORK / ("boldref%d.ppm" % i))
+            r = batch(["kui draw %s 1 220 40 6 5 %06x %06x 1 hex:%s" % (out, fg, bg, text.encode().hex()), "kui measure hex:%s" % text.encode().hex()], kappa=True, env=env_both)
+            d, m = kv(r[0][0].replace("kui draw ", "")), kv(r[1][0].replace("kui ", ""))
+            ref_r = batch(["load a %s" % bold, "set a", "drawx %s 13 220 40 6 18 %06x %06x 0 3 0 30 hex:%s" % (ref, fg, bg, text.encode().hex())])[2]
+            self.assertTrue(ref_r[0].startswith("drew"), ref_r)
+            adv = float(ref_r[0].split("advance=")[1])
+            self.assertEqual(read_ppm(out), read_ppm(ref), text)
+            self.assertEqual(int(d["advance"]), int(math.ceil(adv - 1e-3)), text)
+            self.assertEqual(int(m["boldwidth"]), int(math.ceil(adv - 1e-3)), text)
+            self.assertGreater(int(m["boldwidth"]), int(m["width"]), text)
+            self.assertLess(int(m["boldwidth"]), int(m["width"]) * 1.12 + 2, text)
+        # without a Bold face (another face is in use, none named): the old double strike
+        text = "Notebook"
+        r = batch(["kui draw %s 1 220 40 6 5 %06x %06x 1 hex:%s" % (WORK / "bold_none.ppm", fg, bg, text.encode().hex()),
+                   "kui measure hex:%s" % text.encode().hex()], kappa=True, env={"KAPPA_UI_FONT": reg})
+        d, m = kv(r[0][0].replace("kui draw ", "")), kv(r[1][0].replace("kui ", ""))
+        self.assertEqual(int(m["boldwidth"]), int(m["width"]) + 1)
+        self.assertEqual(int(d["advance"]), int(m["width"]) + 1)
+
     def test_sans_ink_stays_inside_the_16_pixel_line_box_of_the_toolkit(self):
         """Layouts made for the bitmap font (menu rows, tooltips: tooltip.h's TIP_LINE_H, buttons, list rows) assume a 16 px line box. With the baseline 13 px below
         its top, every glyph of Gensokyo Sans at 13 px (the highest reaches 9.8 px above the baseline, the lowest 2.7 below) lies between rows 0 and 15, on a
         1x canvas and on a scale-2 one, so a one-line box stays whole and nothing is clipped at the edge of a text rectangle."""
-        font = str(ASSET_FONTS / self.SANS)
-        chars = [chr(c) for c in range(0x21, 0x7F)] + ["–", "—", "‘", "“", "•", "…", "←", "→", "−"]
+        chars = self.sans_chars()
         WORK.mkdir(parents=True, exist_ok=True)
-        for scale in (1, 2):
-            cmds = ["kui draw %s %d 40 24 4 4 000000 ffffff 0 hex:%s" % (WORK / ("box%d.ppm" % i), scale, c.encode().hex()) for i, c in enumerate(chars)]
-            batch(cmds, kappa=True, env={"KAPPA_UI_FONT": font})
-            top, bottom = 99, -1
-            for i, c in enumerate(chars):
-                w, h, px = read_ppm(str(WORK / ("box%d.ppm" % i)))
-                rows = [y for y in range(h) if any(p != (255, 255, 255) for p in px[y])]
-                self.assertTrue(rows, "no ink for %r" % c)
-                top, bottom = min(top, rows[0]), max(bottom, rows[-1])
-            first_row, last_row = 4 * scale, (4 + 16) * scale - 1                   # the line box of text drawn at y = 4
-            self.assertGreaterEqual(top, first_row, "ink above the line box (scale %d)" % scale)
-            self.assertLessEqual(bottom, last_row, "ink below the 16 px line box (scale %d)" % scale)
+        for face_name in self.FACES:
+            font = str(ASSET_FONTS / face_name)
+            for scale in (1, 2):
+                cmds = ["kui draw %s %d 40 24 4 4 000000 ffffff 0 hex:%s" % (WORK / ("box%d.ppm" % i), scale, c.encode().hex()) for i, c in enumerate(chars)]
+                batch(cmds, kappa=True, env={"KAPPA_UI_FONT": font})
+                top, bottom = 99, -1
+                for i, c in enumerate(chars):
+                    w, h, px = read_ppm(str(WORK / ("box%d.ppm" % i)))
+                    rows = [y for y in range(h) if any(p != (255, 255, 255) for p in px[y])]
+                    self.assertTrue(rows, "no ink for %r in %s" % (c, face_name))
+                    top, bottom = min(top, rows[0]), max(bottom, rows[-1])
+                first_row, last_row = 4 * scale, (4 + 16) * scale - 1                   # the line box of text drawn at y = 4
+                self.assertGreaterEqual(top, first_row, "ink above the line box (%s, scale %d)" % (face_name, scale))
+                self.assertLessEqual(bottom, last_row, "ink below the 16 px line box (%s, scale %d)" % (face_name, scale))
 
     def test_sans_covers_ascii_and_what_it_lacks_is_documented(self):
-        """Printable ASCII and a few UI marks; accented letters, box drawing and CJK are not there, so the toolkit shows them with the bitmap font (user/lib/kappa)."""
-        have = [0x20, 0xA0, 0x2013, 0x2014, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2026, 0x2190, 0x2192, 0x2212] + list(range(0x21, 0x7F))
-        lack = [0xE9, 0xC0, 0xF1, 0xFC, 0x2500, 0x2193, 0x25A0, 0x4E16, 0x3042, 0xA9]
+        """Printable ASCII, Latin-1 and Latin Extended-A (the next test has them all) and the marks of the UI; box drawing, Greek, Cyrillic and CJK are not
+        there yet, so the toolkit shows them with the bitmap font (user/lib/kappa)."""
+        have = [0x20, 0xA0, 0x2013, 0x2014, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2026, 0x2190, 0x2192, 0x2212, 0xE9, 0xC0, 0xF1, 0xFC, 0x2193, 0x25A0, 0xA9] + list(range(0x21, 0x7F))
+        lack = [0x2500, 0x4E16, 0x3042, 0x2588, 0x1F600]
         res = batch(['load a "%s" 0' % (ASSET_FONTS / self.SANS), "glyph a " + " ".join(str(c) for c in have + lack)])[1]
         gids = {int(kv(l)["cp"]): int(kv(l)["gid"]) for l in res}
         for c in have:
@@ -3352,7 +3802,7 @@ class OwnerFonts(RealFontChecks, ToolCase):
 
     def test_display_fonts_map_lower_case_to_capitals(self):
         for name in self.NAMES:
-            if name == self.SANS:
+            if name.startswith(("GensokyoSans", "GensokyoMono")):
                 continue
             res = batch(['load a "%s" 0' % (ASSET_FONTS / name), "glyph a " + " ".join(str(ord(c)) for c in "aAzZ")])[1]
             g = {int(kv(l)["cp"]): int(kv(l)["gid"]) for l in res}

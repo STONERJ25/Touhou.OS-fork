@@ -76,8 +76,12 @@ def syslibs():
 
 
 def make_initrd(extra, out):
-    """Copies build/initrd.img and adds extra files: {archive name: bytes | Path}.  Executables get mode 0755."""
-    src = BUILD / "initrd.img"
+    """Copies the build's archive and adds extra files: {archive name: bytes | Path}.  Executables get mode 0755.  The result is a plain tar (the kernel reads both
+    forms of initrd.img, docs/UPDATE.md); the source is build/initrd.tar, or, from a build before that file existed, build/initrd.img, which tarfile reads whether it is
+    a plain tar or gzip-compressed."""
+    src = BUILD / "initrd.tar"
+    if not src.exists():
+        src = BUILD / "initrd.img"
     with tarfile.open(src, "r") as tin, tarfile.open(out, "w", format=tarfile.USTAR_FORMAT) as tout:
         modes = {}
         for m in tin.getmembers():

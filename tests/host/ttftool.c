@@ -619,7 +619,7 @@ static int cmd_kui(int argc, char **argv) {
         size_t len;
         char *text = text_arg(argv[2], &len);
         size_t bytes = argc > 3 ? (size_t)atol(argv[3]) : len;
-        printf("kui width=%d prefix=%d proportional=%d hit=", kc_text_width(text), kc_text_width_n(text, bytes), kc_text_is_proportional());
+        printf("kui width=%d prefix=%d proportional=%d boldwidth=%d hit=", kc_text_width(text), kc_text_width_n(text, bytes), kc_text_is_proportional(), kc_text_width_bold(text));
         for (int i = 4; i < argc; i++) printf("%s%zu", i > 4 ? "," : "", kc_text_hit(text, atoi(argv[i])));
         printf("\n");
         free(text);

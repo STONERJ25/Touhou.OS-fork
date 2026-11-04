@@ -6,7 +6,9 @@ Builds, in order:
   kernel   kernel/**/*.{c,asm} -> build/kernel.elf         (ELF64 higher half, clang + nasm + ld.lld)
   libc     user/libc/**        -> build/lib/libgap.a, crt0.o
   user     user/bin/*          -> build/user/bin/*         (static ELF executables)
-  initrd   initrd/ + user bins -> build/initrd.img         (ustar archive)
+  initrd   initrd/ + user bins -> build/initrd.tar         (ustar archive)
+                               -> build/initrd.img         (that archive as one gzip member: what the kernel unpacks at boot; the same bytes as the tar
+                                                            with TOUHOU_INITRD=plain, see docs/UPDATE.md "The compressed initrd")
   esp      everything above    -> build/esp/               (what QEMU boots as a FAT volume)
 
 Usage: python tools/build.py [-v] [-j N] [--clean] [loader|kernel|user|initrd|esp ...]
@@ -22,6 +24,8 @@ import sys
 import tarfile
 import time
 from pathlib import Path
+
+import initrdpack
 
 ROOT = Path(__file__).resolve().parent.parent
 BUILD = ROOT / "build"
@@ -407,7 +411,8 @@ def build_user(nproc):
     outputs = []
     all_jobs = []
     progs = []
-    for kind in ("bin", "sbin"):
+    # "linuxtest": freestanding programs for the Linux personality (docs/COMPAT.md); no C library, no start-up file, installed in /ScarletDevilMansion/share/linux-tests
+    for kind in ("bin", "sbin", "linuxtest"):
         d = ROOT / "user" / kind
         if not d.exists():
             continue
@@ -429,11 +434,16 @@ def build_user(nproc):
     build_jobs(all_jobs, nproc)
     for kind, name, jobs in progs:
         out = BUILD / "user" / kind / name
-        cmd = [LD_LLD, "-nostdlib", "-static", "-z", "max-page-size=4096", "-z", "noexecstack",
-               "-T", str(script), "-o", str(out), *map(str, crt0), *[str(j.obj) for j in jobs], *map(str, userlibs)]
-        if lib:
-            cmd.append(str(lib))
-        ins = [j.obj for j in jobs] + crt0 + userlibs + ([lib] if lib else []) + [script]
+        if kind == "linuxtest":
+            cmd = [LD_LLD, "-nostdlib", "-static", "-z", "max-page-size=4096", "-z", "noexecstack", "-e", "_start", "--image-base=0x400000",
+                   "-o", str(out), *[str(j.obj) for j in jobs]]
+            ins = [j.obj for j in jobs]
+        else:
+            cmd = [LD_LLD, "-nostdlib", "-static", "-z", "max-page-size=4096", "-z", "noexecstack",
+                   "-T", str(script), "-o", str(out), *map(str, crt0), *[str(j.obj) for j in jobs], *map(str, userlibs)]
+            if lib:
+                cmd.append(str(lib))
+            ins = [j.obj for j in jobs] + crt0 + userlibs + ([lib] if lib else []) + [script]
         link(out, cmd, ins, f"link {kind}/{name}")
         outputs.append((kind, out))
     return outputs
@@ -445,12 +455,13 @@ def build_user(nproc):
 SPECIAL_MODES = {"bin/eiki": 0o4755, "bin/su": 0o4755, "bin/passwd": 0o4755, "sbin/pwcheck": 0o4755, "Hakurei/etc/shadow": 0o600}
 EXTRA_LINKS = [("bin/sudo", "eiki"), ("bin/sh", "gapsh"),       # #!/bin/sh scripts (and system()/popen() callers) find a shell
                ("bin/cc", "mcc"), ("bin/mld", "mcc"), ("bin/mar", "mcc"),   # one program, three names (docs/MCC.md)
-               ("bin/make", "mmake")]                                        # mmake under its usual name (docs/SELFHOST.md)
+               ("bin/make", "mmake"),                                        # mmake under its usual name (docs/SELFHOST.md)
+               ("bin/pc98", "pc98app")]                                      # the PC-98 emulator: `pc98 IMAGE` (docs/PC98_APP.md)
 
 
 def build_initrd(user_bins):
     print("[initrd]")
-    out = BUILD / "initrd.img"
+    out = BUILD / "initrd.tar"
     items = []   # (arcname, path)
     stripped_dir = BUILD / "user-stripped"
     for kind, b in user_bins:
@@ -458,7 +469,7 @@ def build_initrd(user_bins):
         if not sdst.exists() or sdst.stat().st_mtime < b.stat().st_mtime:
             sdst.parent.mkdir(parents=True, exist_ok=True)
             run([OBJCOPY, "--strip-all", str(b), str(sdst)], f"strip {b.name}")
-        items.append((f"{kind}/{b.name}", sdst))
+        items.append((f"ScarletDevilMansion/share/linux-tests/{b.name}" if kind == "linuxtest" else f"{kind}/{b.name}", sdst))
     root = ROOT / "initrd"
     if root.exists():
         for p in sorted(root.rglob("*")):
@@ -492,7 +503,7 @@ def build_initrd(user_bins):
     stamp = out.with_name(out.name + ".cmd")
     sig = "\n".join(f"{a}:{p.stat().st_mtime_ns}:{p.stat().st_size}" for a, p in items) + "\n" + "\n".join(f"{a}>{t}" for a, t in links)
     if out.exists() and stamp.exists() and stamp.read_text() == sig:
-        return out
+        return initrdpack.pack(out, BUILD / "initrd.img", rel=rel)
     BUILD.mkdir(parents=True, exist_ok=True)
     with tarfile.open(out, "w", format=tarfile.USTAR_FORMAT) as tf:
         for arc, p in items:
@@ -500,7 +511,7 @@ def build_initrd(user_bins):
             ti.uid = ti.gid = 0
             ti.uname = ti.gname = ""
             ti.mtime = int(p.stat().st_mtime)
-            ti.mode = SPECIAL_MODES.get(arc, 0o755 if arc.startswith(("bin/", "sbin/")) else 0o644)
+            ti.mode = SPECIAL_MODES.get(arc, 0o755 if arc.startswith(("bin/", "sbin/", "ScarletDevilMansion/share/linux-tests/")) else 0o644)
             with open(p, "rb") as f:
                 tf.addfile(ti, f)
         for arc, target in links:
@@ -512,7 +523,7 @@ def build_initrd(user_bins):
             tf.addfile(ti)
     stamp.write_text(sig)
     print(f"  TAR  {rel(out)} ({len(items)} files, {len(links)} links, {out.stat().st_size // 1024} KiB)")
-    return out
+    return initrdpack.pack(out, BUILD / "initrd.img", rel=rel)
 
 
 def copy_if_changed(src, dst):
@@ -542,7 +553,8 @@ def build_esp():
     # Dell on 2026-11-03: 44345 KiB needed against 44187 KiB free for sets of 20 and 24 MB), so a set above about 21 MiB cannot be pushed.
     total = sum((esp / n).stat().st_size for n in ("kernel.elf", "initrd.img") if (esp / n).exists())
     mib = total / 1048576
-    print(f"  size kernel.elf + initrd.img = {mib:.1f} MiB; a push to the installed 64 MiB ESP needs three sets to fit: " + ("fine" if mib <= 20 else
+    what = initrdpack.describe(esp / "initrd.img") if (esp / "initrd.img").exists() else ""
+    print(f"  size kernel.elf + initrd.img = {mib:.1f} MiB{what}; a push to the installed 64 MiB ESP needs three sets to fit: " + ("fine" if mib <= 20 else
           "CLOSE to the limit (about 21 MiB)" if mib <= 21 else "TOO BIG: the update tool will refuse it (shrink the initrd)"))
 
 

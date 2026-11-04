@@ -11,6 +11,7 @@
 #include "bootlog.h"
 #include "fb.h"
 #include "tcowdt.h"
+#include "linux.h"
 
 extern void syscall_entry(void);
 void machine_poweroff(void);
@@ -101,6 +102,7 @@ static long sys_execve(TrapFrame *tf) {
         TrapFrame ntf;
         rc = process_exec(me(), path, kargv, kenvp, &ntf);
         if (rc == 0) *tf = ntf;
+        me()->exec_abi = 0;                 /* a setabi() request is for one execve only, whether it worked or not */
     }
     for (int i = 0; kargv && i < 257 && (i < argc || kargv[i]); i++) kfree(kargv[i]);
     for (int i = 0; kenvp && i < 257 && (i < envc || kenvp[i]); i++) kfree(kenvp[i]);
@@ -108,6 +110,29 @@ static long sys_execve(TrapFrame *tf) {
     kfree(kenvp);
     kfree(path);
     return rc == 0 ? 0 : rc;
+}
+
+/* setabi(abi): the next successful execve of this process starts its program under that system call personality (docs/COMPAT.md). The request is for one
+ * execve only. Without it a program keeps the personality it already has: a Linux program that execs another one stays a Linux program. */
+static long sys_setabi(TrapFrame *tf) {
+    u64 abi = A0(tf);
+    if (abi != ABI_NATIVE && abi != ABI_LINUX) return -EINVAL;
+    me()->exec_abi = (u8)(abi + 1);
+    return 0;
+}
+
+/* alarm(seconds): SIGALRM once, that many seconds from now (0 cancels the alarm); the result is what was left of the previous alarm, in whole seconds rounded up. */
+static long sys_alarm(TrapFrame *tf) {
+    Process *p = me();
+    u64 now = uptime_ms(), secs = A0(tf);
+    u64 f = irq_save();
+    u64 prev = p->alarm_at;
+    long left = prev ? (long)(((prev > now ? prev - now : 0) + 999) / 1000) : 0;
+    p->alarm_at = secs ? now + secs * 1000 : 0;
+    if (!prev && p->alarm_at) g_alarms_armed++;
+    else if (prev && !p->alarm_at) g_alarms_armed--;
+    irq_restore(f);
+    return left;
 }
 
 static long sys_waitpid(TrapFrame *tf) {
@@ -846,20 +871,24 @@ static SyscallFn g_table[SYS_nsyscalls] = {
     [SYS_sigreturn] = sys_sigreturn, [SYS_sigprocmask] = sys_sigprocmask, [SYS_truncate] = sys_truncate,
     [SYS_access] = sys_access, [SYS_setsid] = sys_setsid, [SYS_mprotect] = sys_mprotect, [SYS_pause] = sys_pause,
     [SYS_setname] = sys_setname, [SYS_debuglog] = sys_debuglog, [SYS_gettime_ms] = sys_gettime_ms,
-    [SYS_tcsetpgrp] = sys_tcsetpgrp, [SYS_statfs] = sys_statfs,
+    [SYS_tcsetpgrp] = sys_tcsetpgrp, [SYS_statfs] = sys_statfs, [SYS_setabi] = sys_setabi, [SYS_alarm] = sys_alarm,
 };
 
 void syscall_register(int nr, SyscallFn fn) {
     if (nr >= 0 && nr < SYS_nsyscalls) g_table[nr] = fn;
 }
 
+SyscallFn syscall_native(int nr) { return nr >= 0 && nr < SYS_nsyscalls ? g_table[nr] : NULL; }
+
 void syscall_dispatch(TrapFrame *tf) {
     sti();
     u64 nr = tf->rax;
     long ret = -ENOSYS;
-    if (nr < SYS_nsyscalls && g_table[nr]) ret = g_table[nr](tf);
+    bool foreign = current->proc && current->proc->abi == ABI_LINUX;        /* the personality decides what rax means (kernel/linux/syscall.c) */
+    if (foreign) { tf->error = nr; ret = linux_syscall(tf); }          /* error is unused for a syscall frame: it keeps the call number for SA_RESTART */
+    else if (nr < SYS_nsyscalls && g_table[nr]) ret = g_table[nr](tf);
     if (ret == -EINTR && current->proc && signal_cancel_pending(current)) ret = -ECANCELED;      /* pthread_cancel: see signal.c */
-    if (nr != SYS_sigreturn) tf->rax = (u64)ret;
+    if (foreign || nr != SYS_sigreturn) tf->rax = (u64)ret;
     task_on_trap_return(tf);                /* reschedule if due, deliver signals */
     cli();
 }

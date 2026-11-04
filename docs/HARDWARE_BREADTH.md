@@ -51,3 +51,29 @@ Which drivers matter is decided by what people actually own. Plan:
 ## Suggested order
 
 1. `hwreport` and the hardware list (small; starts the data flowing), 2. MSI/MSI-X and SMP (everything gets better), 3. the ISO writer and a QEMU/VirtualBox boot test of it, 4. EHCI/OHCI/UHCI and USB networking, 5. the Realtek and Intel 2.5G cards, 6. Intel mode setting, 7. the AML interpreter and I2C-HID for laptops. Wi-Fi last.
+
+## State (branch `agent/hwbreadth`, 2026-11-03)
+
+Items 1 and 2 of "Measure first" and the "Format" and "Behaviour" bullets of "The ISO" are built; everything else on this page is still a plan (item 3 of "Measure first", asking testers for a report even when the machine fails to boot, is text in [HARDWARE_DB.md](HARDWARE_DB.md) only). A tick is for what exists **and has a test**.
+
+- [x] **`hwreport`** (`user/bin/kappabox/hwreport.c`): sections system, cpu, memory, firmware, acpi, pci, storage, usb, network, audio, input, interrupts, sensors, log, cmdline, quirks; privacy by default (`--full` keeps serial
+  numbers, UUIDs, MAC addresses); `-o` or a file name writes to the stick's volume, `/tmp` or the named file; `firstlook` appends it. Tests: `tests/case_hwreport.py` (QEMU: `python tools/qemu-slot.py -- python tests/run_all.py hwreport`).
+  Cost in the boot set: kernel +34 KB, loader +2.5 KB, initrd +70 KB (the `kappabox` binary 28 KB, the copy of its source that the initrd ships for self-hosting 46 KB, the manual page 4 KB).
+- [x] **Kernel interfaces**: `BootInfo` version 6 (`shared/bootinfo.h`, `boot/fwinfo.c`: the SMBIOS 2 or 3 table copied into loader memory, firmware vendor and revision, Secure Boot, the graphics modes the firmware offered);
+  `/proc/dmi` (`kernel/arch/x86_64/dmi.c` and `dmi_parse.c`: SMBIOS types 0, 1, 2, 3, 4, 17 from DSP0134; host tests `tests/host/test_dmi.py`, with an AddressSanitizer run over every truncation and thousands of damaged tables);
+  `/proc/hwinfo` (the memory map by type, the TSC rate, the ACPI table list with OEM ids, the MADT summary, which well-known devices the AML bytes mention, the interrupt set-up) and `/proc/pcicaps` (MSI, MSI-X, PCIe link speed and
+  width per function), both in `kernel/arch/x86_64/hwinfo.c`.
+- [x] **`tools/hwreport.py`**: reads one or many reports, prints a row for the table of [HARDWARE_DB.md](HARDWARE_DB.md) and (several reports, or `--drivers`) the PCI ids without a driver, most common first; `--check` finds an unredacted
+  MAC address, UUID or serial number. Tests: `tests/host/test_hwreport.py` against reports from five QEMU machine types (`tests/host/hwreports/`).
+- [x] **The compatibility list** [HARDWARE_DB.md](HARDWARE_DB.md): how to send a report, what is redacted, the line format, the first rows (the Dell from the audit documents; QEMU's Q35 and i440fx).
+- [x] **The ISO** (`tools/mkiso.py`, [ISO.md](ISO.md)): a hybrid file of about 18.3 MiB that boots under UEFI as a CD (El Torito entry, platform `0xEF`, naming an embedded FAT16 image) and, written byte for byte to a USB stick, as a disk (protective MBR and a GPT
+  whose ESP entry is the same image); the ISO's tree shares its bytes with the FAT image, so nothing is stored twice; reproducible with `SOURCE_DATE_EPOCH`. Checked by an independent reader (`tests/isocheck.py`), by `file`, `sgdisk`, `sfdisk` and 7-Zip,
+  and by damaging the image sixteen ways (`tests/host/test_mkiso.py`: `python tools/hosttest.py discover -s tests/host -p "test_mkiso.py"`); booted in QEMU/OVMF as a CD and as a USB disk to the desktop, and in text mode with a blank disk attached
+  (`tests/case_iso.py`: `python tools/qemu-slot.py -- python tests/run_all.py iso_`). **Unverified**: every real firmware, Rufus/`dd`/Etcher on a real stick, VirtualBox, VMware, Hyper-V (Generation 2 cannot work: no input device it has a driver for), `xorriso` and `isoinfo`.
+- [ ] Everything under "The driver backlog" (MSI/MSI-X, SMP, EHCI/OHCI/UHCI, USB networking, other NICs, mode setting, the AML interpreter): not started, as the brief said.
+
+What the first reports already show (QEMU only, so read it as what the machinery finds): no machine has a driver for its display adapter (the OS draws on the GOP framebuffer), and an i440fx machine's boot disk is a PIIX IDE
+controller that nothing drives (the system finds no disk there; on a live ISO that does not matter). Nothing is measured yet on a real machine other than the Dell.
+
+**Not verified on real hardware**: all of `hwreport` except what the Dell's earlier logs showed through the same `/proc` files. The SMBIOS walker has only seen QEMU's tables and the synthetic ones of the host tests; real firmware has odd
+tables (padded strings, a UUID of all `0xFF`, structures shorter or longer than their version says), which is why the walker checks every length. The first real report is the real test.
