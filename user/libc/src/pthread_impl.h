@@ -4,6 +4,9 @@
 
 #include <pthread.h>
 
+/* Nonzero once a second thread has been created; until then libc's internal locks need not be taken. */
+extern volatile int __libc_threaded;
+
 /* Recursive lock (stdio streams). */
 typedef struct { volatile int lock; volatile int owner; int count; } RLock;
 

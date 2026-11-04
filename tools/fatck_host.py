@@ -137,7 +137,7 @@ class Io(ctypes.Structure):
 
 
 FIX_NONE, FIX_SAFE, FIX_ALL = 0, 1, 2
-SAY_T = C.CFUNCTYPE(None, C.c_void_p, C.c_char_p)
+SAY_T = C.CFUNCTYPE(None, C.c_void_p, C.c_int, C.c_char_p)
 ASK_T = C.CFUNCTYPE(C.c_bool, C.c_void_p, C.c_int, C.c_char_p)
 
 
@@ -217,7 +217,12 @@ class ScanOutcome:
 class Session:
     """One FAT volume of an image file (or any seekable binary file) opened for the C engine."""
 
-    def __init__(self, path, offset=0, length=None, align=512, writable=False, deadline_ms=0, max_windows=64, arena=1 << 20, keep=0):
+    def __init__(self, path, offset=0, length=None, align=512, writable=False, deadline_ms=0, max_windows=64, arena=1 << 20, keep=0, write_budget=None):
+        # write_budget: a power cut. Only this many sectors reach the file, one at a time in the order the engine hands them over (a write of
+        # several sectors can be torn); then every write fails, so the file keeps what a cut at that moment would have left. None: no cut.
+        self.budget = write_budget
+        self.cut = False
+        self.sectors_written = 0
         self.f = open(path, "r+b" if writable else "rb")
         self.offset = offset
         self.f.seek(0, 2)
@@ -228,10 +233,14 @@ class Session:
         self._mem = {}
         self._ck = C.c_void_p()
         self.reads = self.writes = 0
+        self.violations = []                            # device accesses that broke the contract of FatCkIo (not a multiple of the sector size)
         L = lib()
 
         def read(_ctx, off, buf, n):
             try:
+                if off % self.align or n % self.align:
+                    self.violations.append(("read", off, n))
+                    return -22
                 self.f.seek(self.offset + off)
                 data = self.f.read(n)
                 if len(data) < n:
@@ -244,8 +253,23 @@ class Session:
 
         def write(_ctx, off, buf, n):
             try:
-                self.f.seek(self.offset + off)
-                self.f.write(C.string_at(buf, n))
+                if off % self.align or n % self.align:
+                    self.violations.append(("write", off, n))
+                    return -22
+                data = C.string_at(buf, n)
+                if self.budget is None:
+                    self.f.seek(self.offset + off)
+                    self.f.write(data)
+                    self.sectors_written += n // self.align
+                else:
+                    for i in range(0, n, self.align):
+                        if self.budget <= 0:
+                            self.cut = True
+                            return -5
+                        self.budget -= 1
+                        self.f.seek(self.offset + off + i)
+                        self.f.write(data[i:i + self.align])
+                        self.sectors_written += 1
                 self.writes += 1
                 return 0
             except Exception:                               # noqa: BLE001
@@ -298,7 +322,7 @@ class Session:
         if not self.opened:                                    # the boot sector is unusable: nothing can be repaired
             return self.rc_open, FixStats(), lines, self.scan()
 
-        def say(_ctx, text):
+        def say(_ctx, kind, text):                              # kind: 0 a repair was made, 1 one was left alone, 2 one could not be made
             lines.append(text.decode("utf-8", "replace"))
 
         say_cb = SAY_T(say)
@@ -331,6 +355,8 @@ def scan_volume(path, index=None, **kw):
     off, length = pick[0]["offset"], pick[0]["length"]
     with Session(path, off, length, align=ss, **kw) as s:
         out = s.scan() if s.opened else ScanOutcome(s.rc_open, Result(), list(s.findings), None)
+        if s.violations:
+            raise HostBuildError(f"the scanner broke the device contract: {s.violations[:3]}")
     return out
 
 
@@ -342,7 +368,23 @@ def fix_volume(path, index=None, mode=FIX_SAFE, free_lost=False, **kw):
     if not pick:
         raise HostBuildError(f"no partition {index} in {path}")
     with Session(path, pick[0]["offset"], pick[0]["length"], align=ss, writable=mode != FIX_NONE, keep=4096, **kw) as s:
-        return s.fix(mode, free_lost)
+        res = s.fix(mode, free_lost)
+        if s.violations:
+            raise HostBuildError(f"the repair broke the device contract: {s.violations[:3]}")
+        return res
+
+
+def fix_volume_cut(path, index=None, mode=FIX_SAFE, write_budget=None, free_lost=False):
+    """fix_volume with a power cut: only `write_budget` sectors reach the image (None: no cut), in the order the engine writes them, then every write fails.
+    Returns (the result of fix_volume, sectors written, whether the cut happened). The engine's own view after the cut is of no interest: the file is."""
+    import mkdisk
+    ss, parts = mkdisk.partitions(path)
+    pick = [p for p in parts if index is None or p["index"] == index]
+    if not pick:
+        raise HostBuildError(f"no partition {index} in {path}")
+    with Session(path, pick[0]["offset"], pick[0]["length"], align=ss, writable=True, keep=4096, write_budget=write_budget) as s:
+        res = s.fix(mode, free_lost)
+        return res, s.sectors_written, s.cut
 
 
 def main(argv=None):

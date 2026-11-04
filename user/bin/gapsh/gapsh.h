@@ -116,6 +116,7 @@ char  *run_capture(const char *cmd);                      /* command substitutio
 extern int g_status;
 extern int g_interactive;
 extern int g_shell_pgid;
+extern int g_tty;
 extern int g_exit_requested;
 extern int g_break, g_continue, g_return;
 int   run_node(Node *n);

@@ -377,7 +377,7 @@ with `text user=root blk.ro` (kept as `build/install/espgrant-base.img` until `b
   read-only under `blk.ro`, so the homes are read-only for that session. Add the installed disk's `blk.rw=` word to the stick's
   `cmdline.txt`, or `umount /HumanVillage` and mount the stick's volume by hand. A policy that prefers a writable volume would fix it.
 * A HUMANVILLAGE volume left dirty (power cut) mounts read-only until a file system check; on an installed disk that means the in-kernel
-  check of the `parked/usb-dirty-fsck` branch (not merged here) or the stick.
+  check of the kernel (merged on 2026-11-03: it goes through the volume before mounting, `fsck` mends it; docs/STORAGE.md) or the stick.
 * No in-place upgrade: `install` replaces the whole disk, homes included. Updating `kernel.elf`/`initrd.img` on an installed ESP is task 5
   (the update client). The installed ESP is read-only under `blk.ro` (only HUMANVILLAGE is named by `blk.rw=`); by hand, from the
   installed system itself: `sudo espgrant put /path/kernel.elf kernel.elf` (the ESP write grant above). The ESP of a disk the system did

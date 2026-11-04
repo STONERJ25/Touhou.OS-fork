@@ -32,6 +32,8 @@ void trap_handler(TrapFrame *tf);
 /* Fault reporting and diagnostics (trap.c, backtrace.c) */
 void dump_trapframe(const TrapFrame *tf);
 void dump_backtrace(u64 rip, u64 rbp);
+int  backtrace_capture(u64 *out, int n);                        /* return addresses of the callers of the caller, from the frame pointer chain */
+int  kprobe_read64(const u64 *p, u64 *out);                     /* 0, or -1 when p is not mapped (kprobe.asm) */
 NORETURN void panic_frame(const TrapFrame *tf, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 
 /* Kernel symbol table embedded by the build (ksyms.c) */

@@ -23,10 +23,12 @@
 #include "fatck.h"
 #include "fatfix.h"
 
-#define BLKFLSBUF 0x1261
+#define BLKFLSBUF 0x1261                /* flush the disk's write cache (as Linux numbers it; kernel/drivers/blk.c) */
+#define BLKSSZGET 0x1268                /* the device's logical sector size */
 
 typedef struct {
     int fd;
+    FatCk *ck;
     bool print;                         /* print findings as the scan reports them */
     bool verbose, quiet;
     bool yes_all;                       /* interactive: "a" was answered */
@@ -95,35 +97,61 @@ static void io_report(void *ctx, const FatCkFinding *f, const char *text) {
 
 /* ---------------------------------------------------------------------------------------------- questions and actions */
 
+/* Stops the run on the user's word (or when the terminal is gone): what was agreed to so far is written -- every question is asked before its repair
+ * is begun, so the cache holds only whole repairs -- and nothing more is done. */
+static void stop_asking(Ctx *c, const char *why) {
+    if (c->ck) fatck_flush(c->ck);
+    printf("%s; nothing more is changed\n", why);
+    exit(32);
+}
+
 static bool ask(void *ctx, int level, const char *question) {
     Ctx *c = ctx;
     if (c->yes_all) { printf("  %s: yes\n", question); return true; }
     printf("%s\n  %s? [y/N/a(ll)/q] ", question, level == FIX_ALL ? "repair it (it costs something)" : "repair it");
     fflush(stdout);
     char line[16];
-    if (!fgets(line, sizeof line, stdin)) { printf("\n"); exit(32); }
+    if (!fgets(line, sizeof line, stdin)) { printf("\n"); stop_asking(c, "no answer (the terminal went away)"); }
     switch (line[0]) {
     case 'y': case 'Y': return true;
     case 'a': case 'A': c->yes_all = true; return true;
-    case 'q': case 'Q': printf("stopped; nothing more is changed\n"); exit(32);
+    case 'q': case 'Q': stop_asking(c, "stopped");
     default: return false;
     }
+    return false;
 }
 
-static void say(void *ctx, const char *line) {
+static void say(void *ctx, int kind, const char *line) {
     (void)ctx;
-    if (!g.quiet) printf("  fixed: %s\n", line);
+    if (g.quiet) return;
+    printf("  %s%s\n", kind == FSAY_FIXED ? "fixed: " : "", line);       /* (a repair left alone or one that failed says so itself) */
 }
 
 /* ---------------------------------------------------------------------------------------------- "is it mounted?" */
 
 static const char *dev_name(const char *path) { return !strncmp(path, "/dev/", 5) ? path + 5 : path; }
 
+static bool all_digits(const char *s) {
+    if (!*s) return false;
+    for (; *s; s++)
+        if (*s < '0' || *s > '9') return false;
+    return true;
+}
+
+/* Is `name` a partition of the disk `disk`? "vda" has vda1, vda2, ...; "nvme0n1" (a name that ends in a digit) has nvme0n1p1, ...; but vda1 has no
+ * vda10 -- that is its neighbour. */
+static bool partition_of(const char *name, const char *disk) {
+    size_t dl = strlen(disk);
+    if (!dl || strncmp(name, disk, dl)) return false;
+    const char *rest = name + dl;
+    if (disk[dl - 1] >= '0' && disk[dl - 1] <= '9') return rest[0] == 'p' && all_digits(rest + 1);
+    return all_digits(rest);
+}
+
 /* Is the device, or a partition of it, mounted? (/proc/mounts lists what the kernel mounted from.) */
 static bool is_mounted(const char *path, char *where, size_t cap) {
     if (strchr(dev_name(path), '/')) return false;                       /* an image file: nothing to compare */
     const char *want = dev_name(path);
-    size_t wl = strlen(want);
     FILE *f = fopen("/proc/mounts", "r");
     if (!f) return false;
     char line[512];
@@ -136,9 +164,7 @@ static bool is_mounted(const char *path, char *where, size_t cap) {
         if (sp2) *sp2 = 0;
         if (strncmp(src, "/dev/", 5)) continue;
         const char *name = src + 5;
-        bool same = !strcmp(name, want);
-        bool part = !strncmp(name, want, wl) && ((name[wl] >= '0' && name[wl] <= '9') || (name[wl] == 'p' && name[wl + 1] >= '0' && name[wl + 1] <= '9'));
-        if (same || part) {
+        if (!strcmp(name, want) || partition_of(name, want) || partition_of(want, name)) {         /* (a whole disk mounted blocks its partitions too) */
             snprintf(where, cap, "%s on %s", src, target);
             mounted = true;
             break;
@@ -180,6 +206,9 @@ int main(int argc, char **argv) {
     char where[160];
     if (is_mounted(path, where, sizeof where)) {
         fprintf(stderr, "fsck: %s is mounted (%s). Unmount it first (`umount` the mount point); a volume is only checked while nothing else uses it.\n", path, where);
+        if (strstr(where, " on /HumanVillage"))
+            fprintf(stderr, "fsck: if umount says the volume is busy, something still has a file open on it (the desktop keeps the home folders there): leave the desktop and `cd /`,\n"
+                            "fsck: or start once with `nohumanvillage` added to the kernel command line (cmdline.txt), so that nothing is mounted.\n");
         return 8;
     }
     bool write = mode != FIX_NONE;
@@ -202,7 +231,9 @@ int main(int argc, char **argv) {
     io.report = io_report;
     io.ctx = &g;
     io.bytes = (uint64_t)size;
-    io.align = 512;
+    io.align = 512;                                                      /* (a regular file, an image: any multiple of 512 will do) */
+    int ss = 0;
+    if (ioctl(fd, BLKSSZGET, &ss) == 0 && ss >= 512 && ss <= 4096 && (ss & (ss - 1)) == 0) io.align = (uint32_t)ss;     /* a 4Kn disk wants whole 4 KiB sectors */
     io.max_windows = 1024;
     io.arena_bytes = 4u << 20;
     io.keep = 4096;
@@ -213,13 +244,15 @@ int main(int argc, char **argv) {
         fprintf(stderr, "fsck: %s is not a FAT volume that can be checked (%s)\n", path, rc == -22 ? "see above" : strerror(-rc));
         return 8;
     }
+    g.ck = ck;
     const FatCkGeom *geom = fatck_geom(ck);
     printf("fsck: Keine goes through the ledger of %s (FAT%d, %u clusters of %u bytes)\n", path, geom->bits, geom->nclusters, geom->cluster_bytes);
+    if (g.verbose) printf("fsck: %s holds %llu bytes in sectors of %u bytes (the volume's own sectors: %u)\n", path, (unsigned long long)size, io.align, geom->bps);
 
     rc = fatck_scan(ck);
     const FatCkResult *r = fatck_result(ck);
     if (rc) {
-        fprintf(stderr, "fsck: the check of %s could not be finished (%s)\n", path, rc == -12 ? "not enough memory" : rc == -5 ? "the device failed" : "see above");
+        fprintf(stderr, "fsck: the check of %s could not be finished (%s)\n", path, rc == -12 ? "not enough memory" : rc == -5 ? "the device failed" : rc == -62 ? "it ran out of time" : "see above");
         return 8;
     }
     uint32_t found_err = r->errors, found_leak = r->leaks, found_warn = r->warnings;
@@ -253,7 +286,8 @@ int main(int argc, char **argv) {
         rc = fatfix_run(ck, &o, &st);
         r = fatck_result(ck);
         if (rc) {
-            fprintf(stderr, "fsck: the repair of %s stopped: %s. Whatever was written is consistent (the repairs are done one at a time); run fsck again\n", path, rc == -5 ? "the device failed" : "out of memory or time");
+            fprintf(stderr, "fsck: the repair of %s stopped: %s. What was written was written one repair at a time; run fsck again\n", path,
+                    rc == -5 ? "the device failed" : rc == -12 ? "out of memory" : rc == -62 ? "out of time" : strerror(-rc));
             return 8;
         }
         uint32_t left = r->errors + r->leaks;

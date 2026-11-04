@@ -722,8 +722,9 @@ static void report_audio(void) {
     pass_through(lines, n, keys, "proc.");
     const char *codec = find_key(lines, n, "codec");
     if (codec) {
-        const char *vd = strstr(codec, "vendor/device ");
+        const char *vd = strstr(codec, "vendor/device ");                       /* the old driver's line */
         if (vd) emit("codec_id: %.8s", vd + 14);
+        else if ((vd = strstr(codec, ", id ")) != NULL) emit("codec_id: %.8s", vd + 5);      /* the path-walking driver's: "address 0, id 10ec0269, subsystem ..." */
     }
     int pins = 0, usable = 0;
     for (size_t i = 0; i < n; i++) if (starts(lines[i], "pin ")) { pins++; if (!strstr(lines[i], "config 00000000") && !strstr(lines[i], "no connection")) usable++; }

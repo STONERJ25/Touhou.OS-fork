@@ -17,18 +17,20 @@
 
 #include "../ptlib/pt_term.h"
 #include <ctype.h>
+#include <limits.h>
 #include <regex.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <time.h>
 
 #define MAXPATH 1024
 
-typedef struct { char *s; unsigned len, cap; unsigned char gm; } Line;   /* cap == 0: the bytes belong to the file image (or the line is empty); gm: :global mark */
+typedef struct { char *s; unsigned len, cap, gid; } Line;   /* cap == 0: the bytes belong to the file image (or the line is empty); gid: :global mark (0 = none) */
 typedef struct { long l; int c; } Pos;                  /* line, byte offset */
 
 /* A span of text. Charwise: [a, b) with b possibly at the end of a line (or at column 0 of a later line to take the newline);
  * linewise: lines a.l .. b.l; blockwise: lines a.l .. b.l, display columns vc1 .. vc2 (inclusive; toeol: up to the line end). */
-typedef struct { Pos a, b; int type; int vc1, vc2, toeol; } Range;
+typedef struct { Pos a, b; int type; int vc1, vc2, toeol; int reg1; } Range;   /* reg1: a delete always goes to "1 */
 
 typedef struct { char *s; size_t len; int type; } Reg;   /* type 'c', 'l' or 'b' */
 
@@ -41,23 +43,34 @@ enum { M_NORMAL, M_INSERT, M_REPLACE, M_VISUAL, M_VLINE, M_VBLOCK };
 #define K_NONE (-2)
 #define K_EOF  (-1)
 #define K_NOMAP 0x40000000                              /* flag on keys that came from a mapping (not mapped again) */
+/* Shift or Ctrl held with the sideways cursor keys (xterm sends ESC [ 1 ; 2 D and ESC [ 1 ; 5 D): a word / a WORD at a time */
+#define K_SLEFT  (PT_K_BASE + 0x80)
+#define K_SRIGHT (PT_K_BASE + 0x81)
+#define K_CLEFT  (PT_K_BASE + 0x82)
+#define K_CRIGHT (PT_K_BASE + 0x83)
 
 typedef struct {
-    int number, rnu, list, ic, scs, ws, hls, is, wrap, et, ai, ro, showmode, ruler, cursorline, magic;
+    int number, rnu, list, ic, scs, ws, hls, is, wrap, et, ai, ro, showmode, ruler, cursorline, magic, js, fixeol;
     int ts, sw, sts, tw;
 } Opts;
 
 /* ---- globals (defined in main.c) */
-extern Line *L;                                         /* the buffer: L[0..nl) */
-extern long nl, lcap;
+extern Line *L;                                         /* the buffer is a gap buffer: use LN(i) for line i, 0 <= i < nl */
+extern long nl, lcap, gap_at, gap_len;
+#define LN(i) (L[(i) < gap_at ? (i) : (i) + gap_len])
 extern char fname[MAXPATH];
-extern int noeol, buf_empty, modified, file_ro, view_mode;
+extern int noeol, buf_empty, modified, file_ro, view_mode, ff_dos;
+extern void (*line_deleted_hook)(const Line *l);        /* called for every line that leaves the buffer (used by :g) */
 extern Opts o;
 extern Pos cur;                                         /* cursor */
 extern int curswant;                                    /* desired display column for j/k; -1 = end of line */
 extern int mode;
 extern long topline;                                    /* first line shown */
+extern int topoff;                                      /* screen rows of that line scrolled off (a line taller than the window) */
 extern Pos marks[26], mark_ctx, mark_lt, mark_gt, mark_lb, mark_rb, mark_dot, mark_ins;
+#define MAXJUMPS 100
+extern Pos jumps[MAXJUMPS];                             /* the jump list, oldest first */
+extern int njumps, jumpidx;
 extern PtTerm term;
 extern char msg[512];
 extern int msg_err;
@@ -80,6 +93,7 @@ extern int in_global;
 void  buf_clear(void);
 void  buf_new_empty(void);
 int   buf_load(const char *path, int *nlines, long *nbytes);
+int   buf_load_stdin(int *nlines, long *nbytes);        /* "vi -" */
 int   buf_write(const char *path, long from, long to, int append, long *nbytes);
 Line *lineat(long i);
 const char *ls(long i);                                 /* bytes of line i */
@@ -92,9 +106,12 @@ void  text_delete(Pos a, Pos b);                        /* charwise [a, b) */
 void  undo_begin(void);                                 /* the next change starts a new undo step */
 void  undo_cursor(Pos p);
 int   undo_do(int redo);                                /* 0 if nothing to do */
+void  undo_counts_reset(void);                          /* before the undo_do calls of one u / Ctrl-R / :undo / :redo */
+void  undo_message(int redo);                           /* "1 line less; before #2  3 seconds ago" */
 void  undo_line_restore(void);                          /* "U" */
 void  undo_clear(void);
 void  undo_mark_saved(void);
+void  undo_force_modified(void);
 void  mark_modified(void);
 char *range_text(const Range *r, size_t *len);
 void  range_delete(const Range *r);
@@ -118,7 +135,13 @@ void  dot_begin(void);
 void  dot_end(int keep);
 void  dot_replay(int count);
 void  dot_push(int k);
-void  dot_nokeep_set(void);
+/* a visual-mode change that "." repeats on an area of the same size: mode, lines, width (or the end column when the area spans
+ * several lines), and whether $ was used */
+typedef struct { int valid, mode, toeol; long lines; int vcols; } VisRedo;
+void  dot_set_visual(const VisRedo *v);
+const VisRedo *dot_visual(void);
+int   dot_len(void);
+void  dot_set_len(int n);
 int   dot_set(int on);
 extern int in_dot_replay;
 extern int normal_depth;                                /* > 0 inside :normal */
@@ -126,8 +149,16 @@ void  map_add(int imode, const char *lhs, const char *rhs);
 int   map_del(int imode, const char *lhs);
 void  map_list(int imode);
 void  abbr_add(const char *lhs, const char *rhs);
+int   abbr_del(const char *lhs);
+void  abbr_clear(void);
+void  abbr_list(PtBuf *out);
 const char *abbr_find(const char *w, size_t n);
+int   getkey_plain(void);                               /* a key without repainting first */
+int   intr_check(void);                                 /* 1 if a Ctrl-C was typed while something long was running */
 extern int last_typed_key;
+extern int key_from_ta;                                 /* the last key came from the type-ahead queue (macro, ".", mapping) */
+extern int script_mode;                                 /* keys come from a -s script file */
+int   script_open(const char *path);
 
 /* ---- screen.c */
 void  redraw(void);
@@ -141,6 +172,10 @@ int   vcol_end(long l, int c);                          /* last display column t
 int   byte_at_vcol(long l, int vcol);                   /* byte offset of the glyph covering vcol (or the line end) */
 int   line_vwidth(long l);
 void  scroll_to_cursor(void);
+int   rows_of(long l);                                  /* screen rows line l takes */
+long  win_botline(void);                                /* first line below the window */
+void  scroll_halfway(void);                             /* cursor line in the middle of the window (zz) */
+void  scroll_cursor_bottom(void);                       /* cursor line at the bottom (zb) */
 void  scroll_lines(long n);                             /* ctrl-e / ctrl-y: move the window n lines */
 int   cmdline_read(const char *prompt, const char *init, PtBuf *out);   /* 1 if accepted, 0 if cancelled */
 void  force_repaint(void);
@@ -152,6 +187,7 @@ int   motion(int c, int cnt, int hascnt, int op, Motion *m);   /* 1 if c was a m
 int   textobj(int c, int inner, int cnt, Range *r);
 int   search_find(const char *pat, int dir, Pos from, Pos *out, int wrap, int accept_at);
 int   re_compile(regex_t *re, const char *pat, int ic_override);
+extern int re_multiline;
 int   re_ic(const char *pat);
 void  re_clear(void);
 int   re_exec_at(regex_t *re, const char *s, size_t len, size_t start, regmatch_t *m, size_t nm);
@@ -163,6 +199,10 @@ int   last_c(long l);                                   /* offset of the last co
 int   first_nonblank(long l);
 int   clamp_col(long l, int c, int allow_end);
 void  push_jump(void);
+int   jump_move(int count, Pos *out);
+void  motion_pushback(int k);                           /* give a key back to the motion that reads a second key */
+uint32_t cp_upper(uint32_t c);
+uint32_t cp_lower(uint32_t c);
 extern char last_find_char[8];
 extern int last_find_cmd, last_find_len;
 

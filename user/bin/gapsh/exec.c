@@ -4,6 +4,8 @@
 int g_status;
 int g_interactive;
 int g_shell_pgid;
+int g_tty;                              /* the terminal of an interactive shell: a copy of the descriptor 0 it started with. Job control goes through it, not through
+                                           descriptor 0, which a redirect of a function call or a group (`f </file`, `{ ...; } </file`) points at a file while the job runs */
 int g_exit_requested;
 int g_break, g_continue, g_return;
 int g_last_bg;
@@ -272,9 +274,9 @@ static int job_wait_fg(Job *j, int cont) {
     j->foreground = 1;
     j->notify = 0;
     if (jc) {
-        g_have_shell_tmodes = tcgetattr(0, &g_shell_tmodes) == 0;
-        if (cont && j->has_tmodes) tcsetattr(0, TCSADRAIN, &j->tmodes);
-        tcsetpgrp(0, j->pgid);
+        g_have_shell_tmodes = tcgetattr(g_tty, &g_shell_tmodes) == 0;
+        if (cont && j->has_tmodes) tcsetattr(g_tty, TCSADRAIN, &j->tmodes);
+        tcsetpgrp(g_tty, j->pgid);
     }
     if (cont) job_continue(j);
     while (j->state == J_RUNNING || (!jc && j->state == J_STOPPED)) {
@@ -287,9 +289,9 @@ static int job_wait_fg(Job *j, int cont) {
     int w = job_word(j);
     int signalled = j->state == J_DONE && WIFSIGNALED(w);
     if (jc) {
-        if (j->state == J_STOPPED) j->has_tmodes = tcgetattr(0, &j->tmodes) == 0;
-        tcsetpgrp(0, g_shell_pgid);
-        if ((j->state == J_STOPPED || signalled) && g_have_shell_tmodes) tcsetattr(0, TCSADRAIN, &g_shell_tmodes);
+        if (j->state == J_STOPPED) j->has_tmodes = tcgetattr(g_tty, &j->tmodes) == 0;
+        tcsetpgrp(g_tty, g_shell_pgid);
+        if ((j->state == J_STOPPED || signalled) && g_have_shell_tmodes) tcsetattr(g_tty, TCSADRAIN, &g_shell_tmodes);
     }
     if (j->state == J_STOPPED) {
         j->notify = 0;
@@ -644,7 +646,7 @@ static void reset_signals(void) {
 static void child_job_setup(int pgid, int foreground) {
     if (!g_interactive) return;
     setpgid(0, pgid);
-    if (foreground) tcsetpgrp(0, pgid ? pgid : getpid());
+    if (foreground) tcsetpgrp(g_tty, pgid ? pgid : getpid());
 }
 
 static void exec_external(char **argv, Assign *assigns) {
@@ -768,11 +770,11 @@ static int run_simple(Node *n) {
         Job *j = job_add(pid, 1, &pid, 1, text);
         free(text);
         if (j) return job_wait_fg(j, 0);
-        tcsetpgrp(0, pid);
+        tcsetpgrp(g_tty, pid);
     }
     int status = 0;
     while (waitpid(pid, &status, 0) < 0 && errno == EINTR) { }
-    if (g_interactive) tcsetpgrp(0, g_shell_pgid);
+    if (g_interactive) tcsetpgrp(g_tty, g_shell_pgid);
     return exit_status_of(status);
 }
 
@@ -796,11 +798,11 @@ int run_program(char *path, char **argv) {
         Job *j = job_add(pid, 1, &pid, 1, text);
         free(text);
         if (j) return job_wait_fg(j, 0);
-        tcsetpgrp(0, pid);
+        tcsetpgrp(g_tty, pid);
     }
     int status = 0;
     while (waitpid(pid, &status, 0) < 0 && errno == EINTR) { }
-    if (g_interactive) tcsetpgrp(0, g_shell_pgid);
+    if (g_interactive) tcsetpgrp(g_tty, g_shell_pgid);
     return exit_status_of(status);
 }
 
@@ -849,10 +851,10 @@ static int run_pipeline(Node *n, int background, const char *text) {
         return 0;
     }
     if (j) return job_wait_fg(j, 0);                        /* its status is that of the last stage */
-    if (g_interactive) tcsetpgrp(0, pgid);
+    if (g_interactive) tcsetpgrp(g_tty, pgid);
     int status = 0, last = 0;
     for (int i = 0; i < ns; i++) { while (waitpid(pids[i], &status, 0) < 0 && errno == EINTR) { } if (i == ns - 1) last = status; }
-    if (g_interactive) tcsetpgrp(0, g_shell_pgid);
+    if (g_interactive) tcsetpgrp(g_tty, g_shell_pgid);
     return exit_status_of(last);
 }
 
@@ -944,11 +946,11 @@ int run_node(Node *n) {
             Job *j = job_add(pid, 1, &pid, 1, text);
             free(text);
             if (j) { st = job_wait_fg(j, 0); break; }
-            tcsetpgrp(0, pid);
+            tcsetpgrp(g_tty, pid);
         }
         int status = 0;
         while (waitpid(pid, &status, 0) < 0 && errno == EINTR) { }
-        if (g_interactive) tcsetpgrp(0, g_shell_pgid);
+        if (g_interactive) tcsetpgrp(g_tty, g_shell_pgid);
         st = exit_status_of(status);
         break;
     }

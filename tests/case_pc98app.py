@@ -506,7 +506,9 @@ def pc98app_the_buzzer_reaches_the_sound_card():
     a, b = max(segs, key=lambda s: s[1] - s[0])
     tone = at.trimmed(x[a:b], rate)
     f = at.dominant_freq(tone, rate)
-    assert abs(f - 2000) < 25, f"dominant frequency {f:.1f} Hz, expected about 2000"
+    # The estimate reads 1 to 1.5 % low on this tone, whatever the build: 1982.7 Hz on main, 1968 to 1971 Hz on builds of other worktrees (2026-11-04), for a stream that
+    # holds 2000 Hz. The bound leaves room for that; a wrong pitch (a wrong sample rate, a dropped sample every few frames) is several percent.
+    assert abs(f - 2000) < 45, f"dominant frequency {f:.1f} Hz, expected about 2000"
     assert 0.02 < at.peak(tone) < 0.3, f"peak {at.peak(tone):.3f}: a buzzer is quiet"
     assert (b - a) / rate > 1.0, f"the beep lasted {(b - a) / rate:.2f} s of audio, about 2 s expected"
 

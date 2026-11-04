@@ -22,9 +22,13 @@ MAS    ?= /bin/mas
 # every library of the system root except libgap, which is rebuilt here: -lkappa -lfairy ...
 SYSLIBS := $(patsubst $(ROOT)/lib/lib%.a,-l%,$(filter-out $(ROOT)/lib/libgap.a,$(wildcard $(ROOT)/lib/lib*.a)))
 
-LIBC_SRC := $(wildcard $(SRC)/libc/*.c)
+# fpconv.c and math.c use unsigned __int128, which mcc does not have: their objects come out of the system root's libgap.a (built by the host's
+# compiler), as setjmp.o does without mas
+PREBUILT := fpconv math
+LIBC_SRC := $(filter-out $(patsubst %,$(SRC)/libc/%.c,$(PREBUILT)),$(wildcard $(SRC)/libc/*.c))
 LIBC_OBJ := $(patsubst $(SRC)/libc/%.c,$(OUT)/obj/libc/%.o,$(LIBC_SRC))
 ASM_OBJ  := $(OUT)/obj/libc/crt0.o $(OUT)/obj/libc/setjmp.o
+PRE_OBJ  := $(patsubst %,$(OUT)/obj/libc/%.o,$(PREBUILT))
 KB_SRC   := $(wildcard $(SRC)/kappabox/*.c)
 KB_OBJ   := $(patsubst $(SRC)/kappabox/%.c,$(OUT)/obj/kappabox/%.o,$(KB_SRC)) $(OUT)/obj/kappabox/applet_table.o
 
@@ -58,7 +62,11 @@ $(OUT)/obj/libc/setjmp.o: $(ROOT)/lib/libgap.a
 	cd $(@D) && $(AR) x $< setjmp.asm.o && mv setjmp.asm.o setjmp.o
 endif
 
-$(OUT)/lib/libgap.a: $(LIBC_OBJ) $(OUT)/obj/libc/setjmp.o
+$(PRE_OBJ): $(OUT)/obj/libc/%.o: $(ROOT)/lib/libgap.a
+	@mkdir -p $(@D)
+	cd $(@D) && $(AR) x $< $*.c.o && mv $*.c.o $*.o
+
+$(OUT)/lib/libgap.a: $(LIBC_OBJ) $(PRE_OBJ) $(OUT)/obj/libc/setjmp.o
 	@mkdir -p $(@D)
 	rm -f $@
 	$(AR) rcs $@ $^

@@ -88,6 +88,7 @@ struct gsockaddr_in {
 #define NETCTL_ARP_SET      7       /* arg: struct gnet_arp (.ip, .mac): root only */
 #define NETCTL_ARP_DEL      8       /* arg: struct gnet_arp (.ip): root only */
 #define NETCTL_DHCP         9       /* arg: struct gnet_if (.name): restart DHCP on that interface; root only */
+#define NETCTL_DHCP_STOP    10      /* arg: struct gnet_if (.name): stop the DHCP client on that interface (an address it set stays, as a static one); root only */
 
 #define GIFF_UP         0x1
 #define GIFF_BROADCAST  0x2

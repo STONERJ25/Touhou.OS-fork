@@ -1123,6 +1123,7 @@ static void walk_frame(FatCk *ck, Frame *f) {
         memset(&fi, 0, sizeof fi);
         fi.dir = f->first;
         fi.aux = 1;
+        fi.cluster = f->dotdot;                                          /* what ".." has to hold */
         emit(ck, FK_DOTS, -1, &fi, "%s: missing '.' / '..' entries", ck->path_len ? ck->path : "/");
     }
     (void)depth_before;

@@ -3,22 +3,24 @@
 .alias view
 
 # SYNOPSIS
-*vi* [*-R*] [*-c* _CMD_]... [*+*_N_ | *+/*_PATTERN_ | *+*_CMD_] [_FILE_...]
+*vi* [*-R*] [*-s* _SCRIPT_] [*-c* _CMD_]... [*+*_N_ | *+/*_PATTERN_ | *+*_CMD_] [_FILE_... | `-`]
 *view* [_OPTIONS_] [_FILE_...]
 *vim* [_OPTIONS_] [_FILE_...]
 
 # DESCRIPTION
 `vi` is a modal editor in the tradition of vi and Vim. `pnote(1)` stays the default `$EDITOR`; `vi` is for people who want the vi way of working. `vim` is the same program, and `view` is `vi -R`.
 
-The screen shows the text, a status line in reverse video (the mode, the file name, `[Modified]`, `[RO]`, the cursor position as line,column and how far down the file the cursor is in percent) and a message line at the bottom, which is also where `:` commands and searches are typed.
+The screen shows the text, a status line in reverse video (the mode, the file name, `[Modified]`, `[RO]`, `recording @q` while a macro is recorded, the cursor position as line,column - `3,1-8` when a tab makes the screen column differ from the byte column - and where the window is in the file: `All`, `Top`, `Bot` or the percentage of the text above it) and a message line at the bottom, which is also where `:` commands and searches are typed. A command that prints several lines shows them over the text with a prompt (see EX COMMANDS).
 
-Text is UTF-8: the cursor moves by character, a column is one character, and bytes that are not valid UTF-8 are shown as `?` and written back unchanged. A file with no newline at its end keeps that, and an empty file stays empty. Long lines wrap (or scroll sideways with `:set nowrap`). Lines are kept in an array and borrowed from the loaded file until edited, so a file of a hundred thousand lines opens at once.
+Text is UTF-8: the cursor moves by character, a column is one character, and bytes that are not valid UTF-8 are shown as `?` and written back unchanged. A file with no newline at its end gets one when it is written (`:set nofixeol` keeps it missing), and an empty file stays empty. A file whose lines all end in CR LF is edited without the CRs and written back with them (`:set ff=unix` and `:set ff=dos` change that). Long lines wrap (or scroll sideways with `:set nowrap`), and a line taller than the window is shown part by part. Lines are kept in a gap buffer and borrowed from the loaded file until edited, so a file of a hundred thousand lines opens at once.
 
-A file is saved by writing a temporary file next to it and renaming it over the original (symbolic links and special files are written in place). The terminal is restored when the editor exits and when it is stopped by SIGINT, SIGTERM or SIGHUP.
+A file is saved by writing a temporary file next to it and renaming it over the original (symbolic links and special files are written in place). The terminal is restored when the editor exits and when it is stopped by SIGINT, SIGTERM or SIGHUP. A read-only file (or `-R`) can be edited; only writing it is refused.
 
 # OPTIONS
 @ *-R*
     Read-only: changes are refused (`:w!` and `:set noro` still allow a write). Also the effect of starting as `view`.
+@ *-s* _SCRIPT_
+    Take the keys from the file _SCRIPT_ instead of the keyboard, as if they were typed (a script that ends with `:wq` saves and quits; when the keys run out vi quits with status 1). Used by the tests.
 @ *-c* _CMD_
     Run the ex command _CMD_ after the first file is loaded. May be repeated.
 @ *+*_N_
@@ -32,10 +34,10 @@ A file is saved by writing a temporary file next to it and renaming it over the 
 @ *--version*, *--help*
     Print the version, or a usage line.
 
-With several files the others are visited with `:n`, `:prev`, `:rew`.
+With several files the others are visited with `:n`, `:prev`, `:rew`. A file name of `-` reads the text from standard input (`cmd | vi -`); the buffer then has no name, so `:w` needs one.
 
 # MODES
-Normal mode is where keys are commands. `i`, `a`, `o` and friends start insert mode, `R` replace mode, `v`, `V` and Ctrl-V visual mode (characters, lines, a block) and `:` the command line. Esc (or Ctrl-C) returns to normal mode. A lone Esc is recognised after a short wait; arrow keys, Home, End, PgUp, PgDn, Delete and Insert are escape sequences and work in every mode.
+Normal mode is where keys are commands. `i`, `a`, `o` and friends start insert mode, `R` replace mode, `v`, `V` and Ctrl-V visual mode (characters, lines, a block) and `:` the command line. Esc (or Ctrl-C) returns to normal mode. A lone Esc is recognised after a short wait; arrow keys, Home, End, PgUp, PgDn, Delete and Insert are escape sequences (in the `ESC [` and the `ESC O` form, also when they arrive a byte at a time over a serial line) and work in every mode; Shift or Ctrl with Left and Right move by a word, and sequences vi does not know are ignored. Ctrl-C also stops a macro, `:g` or `:s` that is still running.
 
 Most commands take a count (`3dd`, `d2w`, `2d3w`), and many take a register (`"ayy`, `"Ap`).
 
@@ -55,7 +57,7 @@ Most commands take a count (`3dd`, `d2w`, `2d3w`), and many take a register (`"a
 @ G gg H M L + - Enter _
     Line N (last or first line without a count), top, middle and bottom of the screen, first non-blank of the next or previous line.
 @ m{a-z}, '{mark}, and the backtick key with a mark
-    Set a mark, go to its line, go to its exact position. Typing the quote or the backtick twice returns to where the last jump started. The marks [ ] are the changed or yanked text, < > the selected area and . the last change.
+    Set a mark, go to its line, go to its exact position. Typing the quote or the backtick twice returns to where the last jump started; Ctrl-O and Ctrl-I (Tab) walk back and forward through the jump list (the last hundred jumps, `:jumps` shows it). The marks [ ] are the changed or yanked text, < > the selected area and . the last change; `:marks` lists them.
 @ / ? n N * #
     Search forward and backward, repeat, search for the word under the cursor. Patterns are regular expressions (see regex(7)); `\<` `\>` `\(` `\)` `\|` `\+` `\?` `\{n,m}` `\w` `\s` `\d` work, `\c` forces ignoring case. An offset after the closing delimiter works: `/foo/e`, `/foo/+1`, `/foo/s-2`.
 @ Ctrl-D Ctrl-U Ctrl-F Ctrl-B Ctrl-E Ctrl-Y
@@ -78,7 +80,7 @@ An operator is followed by a motion or a text object; typed twice it works on wh
 
 Text objects, after an operator or in visual mode: `iw aw iW aW` words, `is as` sentences, `ip ap` paragraphs, `i( a( ib ab` `i{ a{ iB aB` `i[ a[` `i< a<` brackets, ``i" a" i' a' i` a` `` quotes, `it at` tags.
 
-Other changes: `x X D C s S Y r R ~ p P gp gP u Ctrl-R . Ctrl-A Ctrl-X &`. `.` repeats the last change (also a whole insert session) and takes a count. `u` and Ctrl-R undo and redo many levels; an insert session or a compound command is one step. `Ctrl-A` and `Ctrl-X` add to and subtract from the number at or after the cursor (decimal and 0x hex).
+Other changes: `x X D C s S Y r R ~ p P gp gP u Ctrl-R U . Ctrl-A Ctrl-X &`. `.` repeats the last change (also a whole insert session, and a visual-mode change on an area of the same size) and takes a count. `u` and Ctrl-R undo and redo many levels and say what they did (`1 line less; before #2  3 seconds ago`); an insert session, a macro, a `:g` or a compound command is one step. `U` undoes all the changes made to the last changed line, and `U` again redoes them. `Ctrl-A` and `Ctrl-X` add to and subtract from the number at or after the cursor (decimal and 0x hex).
 
 # INSERT MODE
 `i a I A o O gi gI` start inserting; a count repeats the typed text (`3ihi<Esc>`). In insert mode:
@@ -126,13 +128,13 @@ A range comes first: `N`, `.`, `$`, `%`, `'a`, `/pat/`, `?pat?`, `+N`, `-N`, joi
 @ :!cmd, :!!, :{range}!cmd
     Run a shell command (`/bin/gapsh -c`), repeat the last, or filter lines through it.
 @ :set [no|inv]opt[?], :set opt=N, :noh
-    Options: `number nu`, `relativenumber rnu`, `list`, `ts` `sw` `sts` `tw`, `expandtab et`, `autoindent ai`, `ignorecase ic`, `smartcase scs`, `wrapscan ws`, `hlsearch hls`, `incsearch is`, `wrap`, `readonly ro`, `showmode smd`, `ruler ru`, `cursorline cul`.
-@ :u, :red, :reg [x], :marks, :p, :nu, :=, :sort[!] [n] [r] [u] [i], :retab, :left :right :center, :help, :ver
-    Undo, redo, show registers, marks, print lines, sort the range.
-@ :map lhs rhs, :unmap lhs, :imap, :iunmap, :abbreviate
-    Simple (non-recursive) key mappings for normal and insert mode; `<CR> <Esc> <Space> <Tab> <BS> <Bar> <lt> <C-x>` are understood.
+    Options: `number nu`, `relativenumber rnu`, `list`, `ts` `sw` `sts` `tw`, `expandtab et`, `autoindent ai`, `ignorecase ic`, `smartcase scs`, `wrapscan ws`, `hlsearch hls`, `incsearch is`, `wrap`, `readonly ro`, `showmode smd`, `ruler ru`, `cursorline cul`, `joinspaces js` (on: J puts two spaces after a period), `fixendofline fixeol` (on: the last line always gets its newline), `fileformat ff` (`unix` or `dos`). Many other Vim options are accepted and ignored, so a pasted `:set` line does not fail.
+@ :u, :red, :reg [x], :marks, :jumps, :p, :nu, :=, :sort[!] [n] [r] [u] [i], :retab, :left :right :center, :help, :ver
+    Undo, redo, show registers, marks, the jump list, print lines, sort the range.
+@ :map lhs rhs, :unmap lhs, :imap, :iunmap, :abbreviate lhs rhs, :unabbreviate, :abclear
+    Simple (non-recursive) key mappings for normal and insert mode; `<CR> <Esc> <Space> <Tab> <BS> <Bar> <lt> <C-x>` are understood. An abbreviation is replaced by its text when a non-keyword character, Enter or Esc is typed after it in insert mode.
 
-Lines of output are shown over the text with a `-- More --` or `Press ENTER` prompt.
+Lines of output are shown over the text. A screenful or less ends with `Press ENTER or type command to continue`: Enter, Space or Esc dismisses it, any other key is used as a command. Longer output shows `-- More --`, and Enter or j (a line), Space or f (a page), d (half a page), b, k or u (back) and q scroll through it.
 
 # EXIT STATUS
 0 normally; 1 after `:cq`, when standard input ends, or when the terminal cannot be used; 2 for bad options.
@@ -144,7 +146,7 @@ Lines of output are shown over the text with a `-- More --` or `Press ENTER` pro
     Not used: commands run through `/bin/gapsh -c`.
 
 # NOTES
-Differences from Vim that are worth knowing: there are no windows, tabs, folds, syntax colours, `.swp` files or Ex mode; `.` does not repeat changes made in visual mode, and there is no `U` (line undo); matches are byte-based, so `.` in a pattern matches one byte of a multi-byte character; the jump list keeps only the last jump (`''`, Ctrl-O).
+Differences from Vim that are worth knowing: there are no windows, tabs, folds, syntax colours, `.swp` files or Ex mode; patterns are byte-based, so `.` in a pattern matches one byte of a multi-byte character, and `\v`, `\V`, `\zs`, `\%(` and non-greedy repeats are not understood; `gj` and `gk` do not follow wrapped screen lines; the registers `"=` and `"#` do not exist. Where the motions and operators differ from Vim in an obscure corner the editor is the one to fix: tests/host/vi_diff.py compares it with a real vim on random key sequences (docs/VI.md says where that stands). Limits: a `:g` that moves lines far (`:g/^/m0`) on a file of a hundred thousand lines takes about a minute, and a pattern with a repeated group such as `\(x\)*` can run out of stack on a line of tens of thousands of characters.
 
 # SEE ALSO
 pnote(1), patchouli-pager(1), regex(7), keys(7), sort(1)

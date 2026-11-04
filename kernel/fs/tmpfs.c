@@ -1,19 +1,27 @@
-/* tmpfs: RAM-backed filesystem used for the root, /BambooForest (tmp) and devfs. File data lives in 4 KiB pages. */
+/* tmpfs: RAM-backed filesystem used for the root, /BambooForest (tmp) and devfs. File data lives in 4 KiB pages.
+ *
+ * Hardening (docs/HARDENING.md): offsets and sizes are limited (TMP_MAX_SIZE), so no arithmetic on an offset can wrap and the table of
+ * page pointers cannot grow beyond a few MiB; every allocation is checked and an operation that cannot get its memory leaves the
+ * directory as it was; directory listings use stable cookies (a listing continues correctly while its entries are being removed). */
 #include "vfs.h"
 #include "kernel.h"
 #include "mm.h"
 #include "cpu.h"
 
+#define TMP_MAX_PAGES (1UL << 19)                          /* 2 GiB of offsets per file: the pointer table is 4 MiB at most */
+#define TMP_MAX_SIZE  ((u64)TMP_MAX_PAGES << PAGE_SHIFT)
+
 typedef struct TmpDirent {
     struct TmpDirent *next;
     VNode *node;
+    u64 seq;                            /* creation order within the directory: the readdir cookie, stable when other entries go */
     char name[];
 } TmpDirent;
 
 typedef struct TmpNode {
     union {
         struct { u8 **pages; u32 cap; } file;
-        struct { TmpDirent *head, *tail; u32 count; VNode *parent; } dir;
+        struct { TmpDirent *head, *tail; u32 count; VNode *parent; u64 seq; } dir;
         struct { char *target; } link;
     };
 } TmpNode;
@@ -47,20 +55,29 @@ static VNode *new_node(Mount *m, u32 mode, const VNodeOps *ops) {
     v->ino = ++fs->next_ino;
     if (ops == &tmp_ops) {
         TmpNode *t = kzalloc(sizeof *t);
-        if (!t) { kfree(v); return NULL; }
+        if (!t) { vnode_put(v); return NULL; }       /* nobody else knows the node: this frees it (and the release hook sees no TmpNode) */
         v->priv = t;
     }
     if (S_ISDIR(mode)) v->nlink = 2;
     return v;
 }
 
-static void add_dirent(VNode *dir, const char *name, VNode *node) {
-    TmpNode *d = dir->priv;
+/* A directory entry is allocated before the operation that needs it changes anything, so running out of memory leaves no half-made file. */
+static TmpDirent *dirent_alloc(const char *name) {
     size_t len = strlen(name);
     TmpDirent *e = kmalloc(sizeof *e + len + 1);
+    if (!e) return NULL;
     e->next = NULL;
-    e->node = node;                     /* the directory entry owns the node's initial reference */
+    e->node = NULL;
     memcpy(e->name, name, len + 1);
+    return e;
+}
+
+static void dirent_attach(VNode *dir, TmpDirent *e, VNode *node) {
+    TmpNode *d = dir->priv;
+    e->node = node;                     /* the directory entry owns the node's initial reference */
+    e->seq = ++d->dir.seq;
+    e->next = NULL;
     if (d->dir.tail) d->dir.tail->next = e;
     else d->dir.head = e;
     d->dir.tail = e;
@@ -119,9 +136,10 @@ static int tmp_create(VNode *dir, const char *name, u32 mode, VNode **out) {
     mutex_lock(&fs->lock);
     int rc = check_new_name(dir, name);
     if (rc) { mutex_unlock(&fs->lock); return rc; }
-    VNode *v = new_node(dir->mount, (mode & S_IFMT) ? mode : (S_IFREG | mode), &tmp_ops);
-    if (!v) { mutex_unlock(&fs->lock); return -ENOMEM; }
-    add_dirent(dir, name, v);
+    TmpDirent *e = dirent_alloc(name);
+    VNode *v = e ? new_node(dir->mount, (mode & S_IFMT) ? mode : (S_IFREG | mode), &tmp_ops) : NULL;
+    if (!v) { kfree(e); mutex_unlock(&fs->lock); return -ENOMEM; }
+    dirent_attach(dir, e, v);
     vnode_get(v);
     mutex_unlock(&fs->lock);
     *out = v;
@@ -133,11 +151,12 @@ static int tmp_mkdir(VNode *dir, const char *name, u32 mode, VNode **out) {
     mutex_lock(&fs->lock);
     int rc = check_new_name(dir, name);
     if (rc) { mutex_unlock(&fs->lock); return rc; }
-    VNode *v = new_node(dir->mount, S_IFDIR | (mode & 07777), &tmp_ops);
-    if (!v) { mutex_unlock(&fs->lock); return -ENOMEM; }
+    TmpDirent *e = dirent_alloc(name);
+    VNode *v = e ? new_node(dir->mount, S_IFDIR | (mode & 07777), &tmp_ops) : NULL;
+    if (!v) { kfree(e); mutex_unlock(&fs->lock); return -ENOMEM; }
     ((TmpNode *)v->priv)->dir.parent = dir;
     dir->nlink++;
-    add_dirent(dir, name, v);
+    dirent_attach(dir, e, v);
     vnode_get(v);
     mutex_unlock(&fs->lock);
     *out = v;
@@ -149,14 +168,15 @@ static int tmp_symlink(VNode *dir, const char *name, const char *target, VNode *
     mutex_lock(&fs->lock);
     int rc = check_new_name(dir, name);
     if (rc) { mutex_unlock(&fs->lock); return rc; }
-    VNode *v = new_node(dir->mount, S_IFLNK | 0777, &tmp_ops);
-    if (!v) { mutex_unlock(&fs->lock); return -ENOMEM; }
     size_t len = strlen(target);
-    char *t = kmalloc(len + 1);
+    TmpDirent *e = dirent_alloc(name);
+    char *t = e ? kmalloc(len + 1) : NULL;
+    VNode *v = t ? new_node(dir->mount, S_IFLNK | 0777, &tmp_ops) : NULL;
+    if (!v) { kfree(t); kfree(e); mutex_unlock(&fs->lock); return -ENOMEM; }
     memcpy(t, target, len + 1);
     ((TmpNode *)v->priv)->link.target = t;
     v->size = len;
-    add_dirent(dir, name, v);
+    dirent_attach(dir, e, v);
     vnode_get(v);
     mutex_unlock(&fs->lock);
     *out = v;
@@ -171,9 +191,11 @@ static int tmp_link(VNode *dir, const char *name, VNode *node) {
     if (rc) { mutex_unlock(&fs->lock); return rc; }
     if (S_ISDIR(node->mode)) { mutex_unlock(&fs->lock); return -EPERM; }
     if (node->nlink >= 65000) { mutex_unlock(&fs->lock); return -EMLINK; }
+    TmpDirent *e = dirent_alloc(name);
+    if (!e) { mutex_unlock(&fs->lock); return -ENOMEM; }
     vnode_get(node);
     node->nlink++;
-    add_dirent(dir, name, node);
+    dirent_attach(dir, e, node);
     mutex_unlock(&fs->lock);
     return 0;
 }
@@ -238,22 +260,32 @@ static int tmp_rename(VNode *od, const char *on, VNode *nd, const char *nn) {
         if (S_ISDIR(dst->mode)) {
             if (!S_ISDIR(src->mode)) { mutex_unlock(&fs->lock); return -EISDIR; }
             if (((TmpNode *)dst->priv)->dir.count) { mutex_unlock(&fs->lock); return -ENOTEMPTY; }
+        } else if (S_ISDIR(src->mode)) {
+            mutex_unlock(&fs->lock);
+            return -ENOTDIR;
+        }
+    }
+    TmpDirent *fresh = dirent_alloc(nn);                    /* the entry for the new name, made before anything is changed */
+    if (!fresh) { mutex_unlock(&fs->lock); return -ENOMEM; }
+
+    if (ne) {
+        VNode *dst = ne->node;
+        if (S_ISDIR(dst->mode)) {
             if (nd->nlink > 2) nd->nlink--;
             ((TmpNode *)dst->priv)->dir.parent = dst;
             dst->nlink = 0;
-        } else {
-            if (S_ISDIR(src->mode)) { mutex_unlock(&fs->lock); return -ENOTDIR; }
-            if (dst->nlink) dst->nlink--;
+        } else if (dst->nlink) {
+            dst->nlink--;
         }
         unlink_dirent(nd, ne, nprev);
         kfree(ne);
         vnode_put(dst);
-        if (find_dirent(od, on, &oprev) != oe) { mutex_unlock(&fs->lock); return -EIO; }
+        if (find_dirent(od, on, &oprev) != oe) { kfree(fresh); mutex_unlock(&fs->lock); return -EIO; }
     }
 
     unlink_dirent(od, oe, oprev);
     kfree(oe);
-    add_dirent(nd, nn, src);            /* the entry keeps the node's reference */
+    dirent_attach(nd, fresh, src);      /* the entry keeps the node's reference */
     if (S_ISDIR(src->mode)) {
         ((TmpNode *)src->priv)->dir.parent = nd;
         if (od != nd) {
@@ -269,9 +301,10 @@ static int tmp_readdir(VNode *dir, u64 cookie, DirEntry *out) {
     TmpFs *fs = fs_of(dir);
     mutex_lock(&fs->lock);
     TmpDirent *e = ((TmpNode *)dir->priv)->dir.head;
-    for (u64 i = 0; e && i < cookie; i++) e = e->next;
+    while (e && e->seq <= cookie) e = e->next;      /* the list is in creation order: skip what the caller has seen */
     int rc = 0;
     if (e) {
+        out->next = e->seq;
         out->ino = e->node->ino;
         out->type = dt_from_mode(e->node->mode);
         strlcpy(out->name, e->name, sizeof out->name);
@@ -287,7 +320,7 @@ static ssize_t tmp_read(VNode *v, File *f, void *buf, size_t n, u64 off) {
     TmpFs *fs = fs_of(v);
     mutex_lock(&fs->lock);
     if (off >= v->size) { mutex_unlock(&fs->lock); return 0; }
-    if (off + n > v->size) n = (size_t)(v->size - off);
+    if (n > v->size - off) n = (size_t)(v->size - off);
     size_t done = 0;
     while (done < n) {
         u64 pos = off + done;
@@ -303,22 +336,30 @@ static ssize_t tmp_read(VNode *v, File *f, void *buf, size_t n, u64 off) {
     return (ssize_t)done;
 }
 
+/* Grows the pointer table to hold `need` pages (need <= TMP_MAX_PAGES). fs->lock held. */
+static int grow_table(TmpNode *t, u64 need) {
+    if (need <= t->file.cap) return 0;
+    u64 ncap = MAX(need, (u64)t->file.cap * 2);
+    if (ncap > TMP_MAX_PAGES) ncap = TMP_MAX_PAGES;
+    u8 **np = krealloc(t->file.pages, (size_t)ncap * sizeof(u8 *));
+    if (!np) return -ENOMEM;
+    memset(np + t->file.cap, 0, (size_t)(ncap - t->file.cap) * sizeof(u8 *));
+    t->file.pages = np;
+    t->file.cap = (u32)ncap;
+    return 0;
+}
+
 static ssize_t tmp_write(VNode *v, File *f, const void *buf, size_t n, u64 off) {
     (void)f;
     TmpNode *t = v->priv;
     TmpFs *fs = fs_of(v);
     if (!n) return 0;
+    if (off >= TMP_MAX_SIZE) return -EFBIG;
+    if (n > TMP_MAX_SIZE - off) n = (size_t)(TMP_MAX_SIZE - off);          /* what fits below the limit is written, as with a full disk */
     mutex_lock(&fs->lock);
     u64 end = off + n;
-    u64 need = (end + PAGE_SIZE - 1) >> PAGE_SHIFT;
-    if (need > t->file.cap) {
-        u32 ncap = (u32)MAX(need, (u64)t->file.cap * 2);
-        u8 **np = krealloc(t->file.pages, ncap * sizeof(u8 *));
-        if (!np) { mutex_unlock(&fs->lock); return -ENOMEM; }
-        memset(np + t->file.cap, 0, (ncap - t->file.cap) * sizeof(u8 *));
-        t->file.pages = np;
-        t->file.cap = ncap;
-    }
+    int rc = grow_table(t, (end + PAGE_SIZE - 1) >> PAGE_SHIFT);
+    if (rc) { mutex_unlock(&fs->lock); return rc; }
     size_t done = 0;
     while (done < n) {
         u64 pos = off + done;
@@ -344,6 +385,7 @@ static ssize_t tmp_write(VNode *v, File *f, const void *buf, size_t n, u64 off) 
 static int tmp_truncate(VNode *v, u64 size) {
     TmpNode *t = v->priv;
     TmpFs *fs = fs_of(v);
+    if (size > TMP_MAX_SIZE) return -EFBIG;
     mutex_lock(&fs->lock);
     if (size < v->size) {
         u64 keep = (size + PAGE_SIZE - 1) >> PAGE_SHIFT;
@@ -372,18 +414,9 @@ static int tmp_mmap_phys(VNode *v, u64 off, paddr_t *phys) {
     int rc = 0;
     mutex_lock(&fs->lock);
     u64 idx = off >> PAGE_SHIFT;
-    if (off >= ALIGN_UP(v->size, PAGE_SIZE)) rc = -EINVAL;
+    if (off >= ALIGN_UP(v->size, PAGE_SIZE) || idx >= TMP_MAX_PAGES) rc = -EINVAL;
     else {
-        if (idx >= t->file.cap) {
-            u32 ncap = (u32)MAX(idx + 1, (u64)t->file.cap * 2);
-            u8 **np = krealloc(t->file.pages, ncap * sizeof(u8 *));
-            if (!np) rc = -ENOMEM;
-            else {
-                memset(np + t->file.cap, 0, (ncap - t->file.cap) * sizeof(u8 *));
-                t->file.pages = np;
-                t->file.cap = ncap;
-            }
-        }
+        rc = grow_table(t, idx + 1);
         if (!rc && !t->file.pages[idx]) {
             paddr_t p = g_pages_used > pmm_total_pages() / 2 ? 0 : pmm_alloc_page_zeroed();
             if (!p) rc = -ENOMEM;
@@ -427,11 +460,12 @@ int tmpfs_add_special(VNode *dir, const char *name, u32 mode, const VNodeOps *op
     mutex_lock(&fs->lock);
     int rc = check_new_name(dir, name);
     if (rc) { mutex_unlock(&fs->lock); return rc; }
-    VNode *v = new_node(dir->mount, mode, ops);
-    if (!v) { mutex_unlock(&fs->lock); return -ENOMEM; }
+    TmpDirent *e = dirent_alloc(name);
+    VNode *v = e ? new_node(dir->mount, mode, ops) : NULL;
+    if (!v) { kfree(e); mutex_unlock(&fs->lock); return -ENOMEM; }
     v->priv = priv;
     v->rdev = rdev;
-    add_dirent(dir, name, v);
+    dirent_attach(dir, e, v);
     if (out) { vnode_get(v); *out = v; }
     mutex_unlock(&fs->lock);
     return 0;

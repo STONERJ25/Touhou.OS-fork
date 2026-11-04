@@ -77,12 +77,13 @@ APPLET(ifconfig) {
     if (!cur) { kb_error("%s: no such interface", name); return 1; }
     if (i >= argc) { show_ifconfig(cur); return 0; }
     uint32_t addr = 0, mask = 0, flags = 0, mtu = 0;
-    int have_addr = 0, want_dhcp = 0;
+    int have_addr = 0, want_dhcp = 0, want_nodhcp = 0;
     for (; i < argc; i++) {
         const char *a = argv[i];
         if (!strcmp(a, "up")) flags |= GIFF_UP;
         else if (!strcmp(a, "down")) flags |= GIFF_DOWN;
         else if (!strcmp(a, "dhcp")) want_dhcp = 1;
+        else if (!strcmp(a, "nodhcp")) want_nodhcp = 1;
         else if (!strcmp(a, "netmask") && i + 1 < argc) {
             struct in_addr m;
             if (!inet_aton(argv[++i], &m)) { kb_error("bad netmask '%s'", argv[i]); return 1; }
@@ -100,6 +101,13 @@ APPLET(ifconfig) {
     }
     if (!have_addr && mask && cur->addr) { addr = cur->addr; have_addr = 1; }                  /* "ifconfig eth0 netmask M" keeps the address */
     if (have_addr && !mask) mask = (addr >> 24) < 128 ? 0xFF000000u : (addr >> 24) < 192 ? 0xFFFF0000u : 0xFFFFFF00u;
+    if (want_nodhcp && !want_dhcp) {                                 /* stop the DHCP client; the address it set stays, as a static one */
+        struct gnet_if r;
+        memset(&r, 0, sizeof r);
+        strlcpy(r.name, name, sizeof r.name);
+        if (gap_netctl(NETCTL_DHCP_STOP, &r) < 0) { kb_error("%s: %s", name, strerror(errno)); return 1; }
+        if (!have_addr && !flags && !mtu) return 0;
+    }
     if (want_dhcp) {
         struct gnet_if r;
         memset(&r, 0, sizeof r);
@@ -107,7 +115,7 @@ APPLET(ifconfig) {
         if (gap_netctl(NETCTL_DHCP, &r) < 0) { kb_error("%s: %s", name, strerror(errno)); return 1; }
         return 0;
     }
-    if (!have_addr && !flags && !mtu) { kb_error("usage: ifconfig [-a] [IFACE [ADDR[/LEN] [netmask MASK] [mtu N] [up|down|dhcp]]]"); return 2; }
+    if (!have_addr && !flags && !mtu) { kb_error("usage: ifconfig [-a] [IFACE [ADDR[/LEN] [netmask MASK] [mtu N] [up|down|dhcp|nodhcp]]]"); return 2; }
     if (have_addr || mtu || flags) {
         if (!have_addr && mask) { addr = cur->addr; }
         return config_if(name, have_addr ? addr : 0, have_addr ? mask : 0, flags, mtu);

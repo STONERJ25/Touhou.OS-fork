@@ -297,8 +297,11 @@ void pthread_testcancel(void) {
     if (!self->cancel_disabled && __atomic_load_n(&self->cancel_flag, __ATOMIC_ACQUIRE)) __cancel_exit();
 }
 
+volatile int __libc_threaded;       /* set when the first thread is created, never cleared: until then stdio and malloc skip their locks */
+
 int pthread_create(pthread_t *out, const pthread_attr_t *attr, void *(*fn)(void *), void *arg) {
     reap_zombies();
+    __libc_threaded = 1;                                                    /* before the new thread can run (and before any lock is needed) */
     size_t stack = attr && attr->__stack ? attr->__stack : DEFAULT_STACK;
     size_t guard = attr ? attr->__guard : PAGE;
     stack = (stack + PAGE - 1) & ~(PAGE - 1);

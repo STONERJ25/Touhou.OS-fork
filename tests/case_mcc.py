@@ -9,7 +9,7 @@ that only ever runs in QEMU.  The guest runs of this file:
   mcc_kappabox         all of kappabox, built with mcc, passes the shell test table
   mld_relinks_clang    objects made by clang are relinked by mld and the programs still run
   mld_got_relocations  an object made by clang -fPIC (GOTPCREL) is linked statically by mld and runs
-  mcc_libgap           libgap itself (all but math and setjmp) compiled by mcc passes the OS's own utest suite
+  mcc_libgap           libgap itself (all but math, fpconv and setjmp) compiled by mcc passes the OS's own utest suite
   mcc_userland         the whole userland (45 programs, all but the calculator) built by mcc boots the desktop and passes utest and the shell table
   mcc_fuzz             (host) random expression programs: mcc and gcc print the same numbers
 """
@@ -394,7 +394,7 @@ def mld_relinks_clang():
 
 @test
 def mcc_libgap():
-    """libgap compiled by mcc (every file but math.c and setjmp.asm) links with utest compiled by mcc and passes the OS's own utest suite."""
+    """libgap compiled by mcc (every file but math.c, fpconv.c and setjmp.asm) links with utest compiled by mcc and passes the OS's own utest suite."""
     prepare()
     import case_threads
     r = subprocess.run(["wsl.exe", "-e", "bash", U.wsl_path(ROOT / "tools" / "mcc_build_libgap.sh")], capture_output=True, text=True, cwd=ROOT)
@@ -450,9 +450,10 @@ def mcc_userland():
     r = subprocess.run([sys.executable, str(ROOT / "tools" / "mcc_userland.py")], capture_output=True, text=True, cwd=ROOT)
     assert r.returncode == 0, r.stdout + r.stderr
     report = json.loads((ROOT / "build" / "mcc-user" / "report.json").read_text())
-    # still from clang: the calculator (it keeps 80-bit values in memory and mcc's long double is a double), libtls (it uses unsigned __int128, which mcc does not have)
-    # and libjs (its headers use __builtin_signbit, which mcc does not know; what else is behind it was not looked at: docs/SELFHOST.md)
-    rest = [f for f in report["fallback"] if not f.startswith(("user/lib/tls/src/", "user/lib/js/src/"))]
+    # still from clang: the calculator (it keeps 80-bit values in memory and mcc's long double is a double), libtls and libgap's exact
+    # floating point (fpconv.c, math.c: they use unsigned __int128, which mcc does not have) and libjs (its headers use __builtin_signbit,
+    # which mcc does not know; what else is behind it was not looked at: docs/SELFHOST.md)
+    rest = [f for f in report["fallback"] if not f.startswith(("user/lib/tls/src/", "user/lib/js/src/", "user/libc/src/fpconv.c", "user/libc/src/math.c"))]
     assert rest == ["bin/calculator"] and not report["failed"], report
     repl = {}
     for kind in ("bin", "sbin"):

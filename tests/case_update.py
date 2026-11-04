@@ -38,7 +38,9 @@ _spec.loader.exec_module(push_update)
 
 def new_system(tag, hang=False, gz=False):
     """A directory with the kernel.elf and initrd.img of a pretend next version. hang: the kernel's first instruction is a jump to itself. gz: the initrd as a gzip
-    member, like the build's own (docs/UPDATE.md, "The compressed initrd"); otherwise a plain tar (several tests append bytes to it: only a plain tar stays valid)."""
+    member, like the build's own (docs/UPDATE.md, "The compressed initrd"); otherwise a plain tar (several tests append bytes to it: only a plain tar stays valid).
+    A plain tar leaves out the libraries and the sources of the in-guest build (about 7 MB that nothing needs at run time): the whole archive is 24 MB now, and
+    the test ESP (the installer's 64 MiB) must hold the current set, the new one and the copy that is kept ("not enough room on the ESP" otherwise)."""
     out = BUILD / "update-src" / tag
     out.mkdir(parents=True, exist_ok=True)
     kernel = bytearray((BUILD / "esp" / "kernel.elf").read_bytes())
@@ -59,6 +61,8 @@ def new_system(tag, hang=False, gz=False):
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT) as dst:
         for m in src:
+            if not gz and m.name.startswith(("ScarletDevilMansion/lib/", "ScarletDevilMansion/src/")):
+                continue
             dst.addfile(m, src.extractfile(m) if m.isfile() else None)
         marker = f"pushed {tag}\n".encode()
         info = tarfile.TarInfo("Hakurei/etc/update-marker")

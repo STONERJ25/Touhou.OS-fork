@@ -166,13 +166,74 @@ any editor will do. If there is no `cmdline.txt` at all the loader uses `video=n
   - *damage* (a chain that runs into nothing, two files sharing clusters, a directory without `.` / `..`, ...): the volume stays
     **read-only**, nothing is written, `TOUHOU.LOG` is not updated, and the log (`dmesg | grep Keine`, and `cat /proc/fatcheck` with every
     problem) says precisely what and what to do: as root `umount /HumanVillage`, `fsck -a /dev/sda2` (`fsck -y` also repairs what needs a
-    decision, such as a file whose chain is cut at its break), then reboot. Your files are still readable meanwhile. (`fsck` here is new: it has
-    been tested against images on the host and has not yet been run on the real machine; on Windows, "Scan and fix" on the big partition, or
+    decision, such as a file whose chain is cut at its break), then reboot. Your files are still readable meanwhile. The walk-through, with
+    what `fsck` prints, is below. (`fsck` has been run in QEMU guests on FAT12, FAT16 and FAT32 volumes, on 512- and 4096-byte sectors, and on
+    the images that power cuts left behind; it has not yet been run on the real machine. On Windows, "Scan and fix" on the big partition, or
     `fsck.vfat -a` on Linux, do the same job.)
   `hvforce` on the kernel command line mounts the volume read-write even when the check found damage (dangerous), `hvcheck=off` skips the check
   (then a dirty volume is read-only, as before). From inside TouhouOS root can also mount it by hand
   (`umount /HumanVillage; mount -t fat32 -o force,userdirs /dev/sda2 /HumanVillage`), but the flag then stays dirty. If you pull the
   stick of a *running* system, `/HumanVillage` starts failing with "No such device" until you `umount /HumanVillage` and plug it in again.
+
+### After a bad shutdown: what the log says and what to do
+
+A power button held down, a stick pulled out, a hang that ended with the switch: the volume is flagged dirty. The next start goes through its ledger
+before it decides how to mount it (it only reads; a second or so for a small stick, the check gives up after 120 s), and says what it found in one
+`[Keine]` line: on the screen during boot, afterwards `dmesg | grep Keine`; `cat /proc/fatcheck` lists every finding.
+
+| The line says | It means | What to do |
+|---------------|----------|------------|
+| `... nothing is out of place: the Human Village may write in it again` | only the dirty mark was left (the power went between two writes). The volume is mounted read-write (mount option `fsck=ok`) and the mark goes at the first idle flush or `sync` | nothing |
+| `... found only harmless leftovers in the ledger (N lost cluster(s), M other ...): it is mounted read-write, and fsck -a /dev/sda2 as root tidies it up` | `fsck=left`: writable, but a few clusters were allocated and never used, a file's chain is a little longer than its size, or a FAT copy and the free count lag behind. Nothing points at wrong data; the leftovers only cost a little space. The dirty mark stays on the volume until `fsck -a` has been through it (so every start checks again, which is quick); a file with a surplus chain is trimmed when it is next written | not urgent: tidy it up as below when you have a quiet moment |
+| `... its ledger does not add up: N error(s). It stays read-only so that nothing gets worse. As root, umount /HumanVillage and run fsck -a /dev/sda2` (or `... the check of its ledger could not be finished`: out of time or memory, or the stick failed) | real damage: a chain that runs into nothing, two files that share clusters, a directory without `.` and `..`, a name that is not one ... Nothing is written (so no `TOUHOU.LOG` for this boot either); every file that can be read still can | copy out what you need if it matters, then mend it as below |
+
+The repair, from a text console (`Ctrl+Alt+Backspace` leaves the desktop). Root's login is locked: log in as `marisa` and use `sudo`.
+
+```
+cd /
+sudo umount /HumanVillage
+sudo fsck -n /dev/sda2              # look first; the name is in the log line (lsblk shows the disks)
+sudo fsck -a /dev/sda2              # mend what loses nothing
+sudo fsck -y /dev/sda2              # only if -a says "were not allowed: -y allows them"
+sudo reboot
+```
+
+What it prints (abridged; a stick that lost a chain and had a bad name, `fsck -a` first):
+
+```
+fsck: Keine goes through the ledger of /dev/sda2 (FAT32, 80628 clusters of 512 bytes)
+warning  volume is marked dirty (FAT[1] clean-shutdown bit is clear)
+error    /reimu/he*lo.txt: illegal character '*' in the short name
+error    /marisa/spell.dat: chain runs into a free cluster (cluster 37, after 4 cluster(s))
+leftover 139 lost cluster(s) (allocated in the FAT but part of no file), first: 38, 39, 40, 41, 42, 43, 44, 45
+/dev/sda2: 48 files in 10 directories, 80410 of 80628 clusters free
+/dev/sda2: 2 error(s), 3 leftover(s) of a power cut, 2 warning(s)
+  left alone (needs -y): /marisa/spell.dat: chain runs into a free cluster (cluster 37, after 4 cluster(s))
+  fixed: saved a lost chain of 136 cluster(s) as FOUND.000/FILE0000.CHK
+/dev/sda2: 4 repair(s) made in 4 pass(es), 2 lost chain(s) of 139 cluster(s) saved in FOUND.000
+/dev/sda2: 2 error(s) and 0 leftover(s) remain (2 repair(s) were not allowed: -y allows them)
+```
+
+The exit status tells the same in a script: 0 nothing was wrong, 1 everything was mended, 4 problems are left (`-y`, or another computer's `chkdsk`),
+8 the check could not be done (the volume is mounted, it is not FAT, only root may open the disk), 16 usage, 32 you stopped the questions with `q`.
+`fsck` without `-n`, `-a` or `-y` asks before every repair (`y`, `n`, `a` = yes to all, `q`). After the repair the volume is clean: the next
+start does not mention a ledger, and the files are readable and writable again.
+
+* **What is kept, and what is not**: a lost chain is *saved*, not thrown away: it becomes a file `FOUND.000/FILE0000.CHK`, `FILE0001.CHK`, ... in the top
+  folder of the volume (a whole number of clusters, so a little padding at the end). Look at them and keep what is yours. `-y` cuts a chain where it
+  breaks (the file keeps what lies before the break, the rest becomes a `.CHK` file), empties or removes entries that point nowhere, and renames a
+  name that cannot exist: the data stays in the file or in a `.CHK` file, but a name may go or a file end up shorter than it was.
+* **`umount` says busy**: something still has a file open on the volume, usually the desktop (it keeps the home folders there). Leave the desktop
+  first and `cd /` in the shell, or boot once with `nohumanvillage` added to `cmdline.txt` (nothing is mounted then, the homes are in memory),
+  run `fsck` on the partition, take the word out again. This has been tried in QEMU with a root shell and with `nohumanvillage`; whether the
+  desktop on the Dell lets go of the volume has not been tried.
+* **`fsck` cannot help** when the boot sector is damaged (it says so and writes nothing), when the device itself fails, or when the volume is not
+  FAT. On Windows, "Scan and fix" on the big partition, or `fsck.vfat -a` on Linux, can do the same job (Windows saves lost chains the same way,
+  in `FOUND.000`; Linux's `fsck.vfat` calls them `FSCK0000.REC`).
+* **Not tried on the Dell**: `fsck` and this walk-through. QEMU has shown: the options and exit codes on FAT12, FAT16 and FAT32 volumes, 512- and
+  4096-byte sectors, the questions, the refusals, the flow above with a restart afterwards, and the images that random power cuts left behind
+  (`tests/case_fsck.py`: `fsck_cmd_*`). What is worth doing once with the owner's go: switch the machine off with the power button while something
+  writes (a big copy), start it again, read the `[Keine]` line and `cat /proc/fatcheck`, and run the three commands.
 
 ## 6. Known gaps and things to try if it does not work
 
@@ -188,6 +249,8 @@ any editor will do. If there is no `cmdline.txt` at all the loader uses `video=n
 - **Wrong time**: once the network is up the kernel sets the clock itself (`cat /proc/ntp`, [NTP.md](NTP.md)); before that, and without a network, the clock is the chip's: `rtc=local` and `tz=`; fix the chip with `sudo hwclock -w` (see [POWER_AND_TIME.md](POWER_AND_TIME.md)).
 - **Boots, then reboots**: the log's last lines name the subsystem; every driver polls and has timeouts, so a stall is
   normally one device being skipped after a few seconds, not a hang.
+- **Sound** (Intel HD Audio, AC'97 as a fallback; never run on a real codec yet): `volume`, then `beep`; if the jack stays
+  silent, `cat /proc/audio` and `dmesg | grep Nitori` say what the driver found; see [AUDIO.md](AUDIO.md).
 - **Network** (see [NETWORK.md](NETWORK.md)): the I219-LM of the target machine (and RTL8168/8111 boards) have drivers that have
   never run on hardware. On boot the log shows `[Yukari] eth0: Intel I219-LM at ..., MAC ...` and, when a cable is plugged in
   and autonegotiation finishes, `link up, N Mb/s` followed by the DHCP lease line; `ifconfig`, `ip addr` and `cat /proc/net/dev`

@@ -1,0 +1,46 @@
+tms 1
+title Netherworld Tea Party
+mood a stately waltz in a garden where the guests are not quite alive
+author Claude (original)
+tempo 104
+loop yes
+
+; Three beats to the bar (six eighths). E minor, then a lift to G. An FM pluck plays the tune like a koto,
+; the bass takes beat one, a thin pulse plays the "pah-pah" on beats two and three.
+channel lead  inst=fm-pluck pan=-0.15 gain=0.90
+channel stab  inst=thin     pan=0.35  gain=0.55
+channel pad   inst=fm-pad   pan=0.00  gain=0.55
+channel bass  inst=bass     pan=0.00  gain=0.95
+channel drums inst=hat      pan=0.10  gain=0.55
+
+pattern intro
+  lead:  r2. | r2.
+  stab:  o4 r4 g4 b4 | o4 r4 g4 b4
+  pad:   o4 b2. | b2.
+  bass:  o2 e4 r4 r4 | e4 r4 r4
+  drums: r2. | r2.
+
+pattern A
+  lead:  o5 e4 g8 b8 >e4 < | o5 f+4 d8 f+8 b4 | o5 g4 e8 c8 e4 | o5 f+4 a8 >d8 <a4 |
+         o5 g4 b8 >e8 <b4 | o5 a4 e8 c8 e4 | o5 f+4 d+8 f+8 a4 | o5 e2.
+  stab:  o4 r4 g4 b4 | o4 r4 d4 f+4 | o4 r4 e4 g4 | o4 r4 f+4 a4 | o4 r4 g4 b4 | o4 r4 c4 e4 | o4 r4 d+4 a4 | o4 r4 g4 b4
+  pad:   o4 b2. | f+2. | g2. | a2. | b2. | e2. | a2. | g2.
+  bass:  o2 e4 r4 r4 | b4 r4 r4 | c4 r4 r4 | d4 r4 r4 | e4 r4 r4 | a4 r4 r4 | b4 r4 r4 | e4 r4 r4
+  drums: [@5 o2 v7 c r @3 o7 v4 c r c r]8
+
+pattern B
+  lead:  o5 g4 b8 >d8 <b4 | o5 a4 f+8 d8 f+4 | o5 e4 g8 b8 g4 | o5 d4 f+8 b8 f+4 |
+         o5 e4 g8 >c8 <g4 | o5 d4 g8 b8 g4 | o5 c4 e8 a8 e4 | o5 a4 f+4 d4
+  stab:  o4 r4 g4 b4 | o4 r4 f+4 a4 | o4 r4 g4 b4 | o4 r4 d4 f+4 | o4 r4 e4 g4 | o4 r4 g4 b4 | o4 r4 c4 e4 | o4 r4 f+4 a4
+  pad:   o4 d2. | a2. | g2. | f+2. | g2. | d2. | e2. | f+2.
+  bass:  o2 g4 r4 r4 | d4 r4 r4 | e4 r4 r4 | b4 r4 r4 | c4 r4 r4 | g4 r4 r4 | a4 r4 r4 | d4 r4 r4
+  drums: [@5 o2 v7 c r @3 o7 v4 c r c r]8
+
+pattern outro
+  lead:  o5 e4 g4 b4 | e2.
+  stab:  o4 r4 g4 b4 | r2.
+  pad:   o4 b2. | e2.
+  bass:  o2 e4 r4 r4 | e2.
+  drums: r2. | r2.
+
+order intro A B A B outro

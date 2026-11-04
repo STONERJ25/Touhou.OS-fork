@@ -586,6 +586,41 @@ def net_ifconfig_set():
         assert "rc=1" in out and "Operation not permitted" in out, out
 
 
+@test
+def net_dhcp_state_and_stop():
+    """/proc/net/dhcp shows the lease (bound, with what QEMU's DHCP server hands out); `ifconfig eth0 nodhcp` stops the client and the
+    address stays; an ordinary user may not; `ifconfig eth0 dhcp` starts the client again"""
+    lease = r"^eth0 bound 10\.0\.2\.15 255\.255\.255\.0 10\.0\.2\.2 10\.0\.2\.2 10\.0\.2\.3 (\d+) (\d+)$"
+    with Guest("t-net-dhcp", net="e1000", root=True) as g:
+        deadline = time.time() + scaled(180)
+        out = ""
+        while time.time() < deadline:
+            out, rc = g.run("cat /proc/net/dhcp")
+            if re.search(lease, out, re.M):
+                break
+            time.sleep(1)
+        m = re.search(lease, out, re.M)
+        assert m, "the lease never showed as bound:\n" + out
+        assert int(m.group(1)) > 0 and 0 < int(m.group(2)) <= int(m.group(1)), out
+        out, rc = g.run("ifconfig eth0 nodhcp; echo rc=$?; cat /proc/net/dhcp; ifconfig eth0")
+        assert "rc=0" in out and re.search(r"^eth0 off - - - - - 0 0$", out, re.M), out
+        assert "inet 10.0.2.15" in out, "the leased address stays as a static one:\n" + out
+        out, rc = g.run("dmesg | grep 'DHCP stopped'")
+        assert "eth0: DHCP stopped" in out, out
+        out, rc = g.run("ifconfig eth0 dhcp; echo rc=$?", timeout=120)
+        assert "rc=0" in out, out
+        deadline = time.time() + scaled(180)
+        while time.time() < deadline:
+            out, rc = g.run("cat /proc/net/dhcp")
+            if re.search(lease, out, re.M):
+                break
+            time.sleep(1)
+        assert re.search(lease, out, re.M), "the client did not come back after `dhcp`:\n" + out
+    with Guest("t-net-dhcp-user", net="e1000") as g:
+        out, rc = g.run("ifconfig eth0 nodhcp; echo rc=$?")
+        assert "rc=1" in out and "Operation not permitted" in out, out
+
+
 def link_case(model, label):
     def run():
         with Guest("t-net-link-" + label, net=model) as g:

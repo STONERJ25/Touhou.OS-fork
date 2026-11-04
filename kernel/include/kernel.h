@@ -12,6 +12,14 @@
 
 NORETURN void panic(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
+/* Something that must never happen, but that the kernel survives (a double free that was noticed in time, a pointer from user space
+ * that turned out to be bad): logged under the tag WARNING with a backtrace and counted in /proc/kstats. The hardening tests fail
+ * on any warning. Use panic() only when going on is not safe. */
+void kwarn_at(const char *file, int line, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
+u64  kwarn_count(void);
+#define KWARN(...) kwarn_at(__FILE__, __LINE__, __VA_ARGS__)
+#define WARN_ON(cond) ({ int _w = !!(cond); if (unlikely(_w)) KWARN("%s", #cond); _w; })
+
 #define ASSERT(cond) \
     do { if (unlikely(!(cond))) panic("assertion failed: %s (%s:%d)", #cond, __FILE__, __LINE__); } while (0)
 

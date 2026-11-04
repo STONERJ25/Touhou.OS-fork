@@ -415,6 +415,9 @@ APPLET(find) {
 
 /* ------------------------------------------------------------------ xargs */
 
+#define XARGS_BUDGET    (128 * 1024)    /* bytes of items (and their pointers) per command line */
+#define XARGS_MAX_ITEMS 16384
+
 APPLET(xargs) {
     int max_args = 0, null_sep = 0, trace = 0, no_run_empty = 0, c;
     const char *repl = NULL;
@@ -440,8 +443,9 @@ APPLET(xargs) {
     char **items = NULL;
     int n = 0, cap = 0;
     size_t i = 0;
+    char *scratch = malloc(len + 1);                        /* one buffer for the token being read; each item is then copied at its real size */
     while (i < len) {
-        char *tok = malloc(len - i + 1);
+        char *tok = scratch;
         size_t t = 0;
         if (null_sep) {
             while (i < len && data[i]) tok[t++] = data[i++];
@@ -451,7 +455,7 @@ APPLET(xargs) {
             i++;
         } else {
             while (i < len && isspace((unsigned char)data[i])) i++;
-            if (i >= len) { free(tok); break; }
+            if (i >= len) break;
             int quote = 0;
             while (i < len) {
                 char ch = data[i];
@@ -464,16 +468,31 @@ APPLET(xargs) {
             }
         }
         tok[t] = 0;
-        if (repl && !t) { free(tok); continue; }
+        if (repl && !t) continue;
         if (n == cap) { cap = cap ? cap * 2 : 64; items = realloc(items, (size_t)cap * sizeof *items); }
-        items[n++] = tok;
+        items[n++] = strdup(tok);
     }
+    free(scratch);
     free(data);
     if (n == 0 && no_run_empty) return 0;
     int rc = 0;
-    int chunk = max_args > 0 ? max_args : (n ? n : 1);
-    for (int start = 0; start < n || (start == 0 && n == 0); start += chunk) {
-        int cnt = n - start < chunk ? n - start : chunk;
+    /* Without -n a command line takes as many items as fit in a budget well under the kernel's argument limit (512 KiB for
+     * strings and pointers together, environment included), then the command runs again for the next batch. */
+    size_t fixed = 0;
+    for (int j = 0; j < ncmd; j++) fixed += strlen(cmd[j]) + 1 + sizeof(char *);
+    for (int start = 0, cnt; start < n || (start == 0 && n == 0); start += cnt) {
+        cnt = 0;
+        if (max_args > 0) {
+            cnt = n - start < max_args ? n - start : max_args;
+        } else {
+            size_t used = fixed;
+            while (start + cnt < n) {
+                size_t cost = strlen(items[start + cnt]) + 1 + sizeof(char *);
+                if (cnt > 0 && (used + cost > XARGS_BUDGET || cnt >= XARGS_MAX_ITEMS)) break;
+                used += cost;
+                cnt++;
+            }
+        }
         char **av = calloc((size_t)(ncmd + cnt + 2), sizeof(char *));
         int k = 0;
         if (repl) {

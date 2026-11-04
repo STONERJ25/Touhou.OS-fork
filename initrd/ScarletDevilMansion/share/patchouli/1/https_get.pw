@@ -46,4 +46,4 @@
     The trust store. It lives in memory and is gone after a restart unless it is kept with the persistent /etc.
 
 # SEE ALSO
-fetch(1), wget(1), sntp(1), network(7)
+fetch(1), wget(1), sntp(1), network(7), tls(7)

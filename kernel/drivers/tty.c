@@ -258,11 +258,17 @@ int tty_ioctl(Tty *t, unsigned long req, void *arg) {
     case TIOCSPGRP: {
         int jc = tty_job_check(t, JC_CTL);
         if (jc) return jc;
-        t->fg_pgid = *(int *)arg;
-        /* The process that hands out the terminal is the job-control shell of its session, provided the terminal is its own
-         * (the console for a process without a controlling terminal, a pty slave for its session leader). */
+        int want = *(int *)arg;
         Process *p = current ? current->proc : NULL;
-        if (p && (p->ctty == t || (t == tty_console() && !p->ctty))) t->session = p->sid;
+        /* Only the job-control shell of a session may hand out its terminal: the terminal has to be the caller's own (the console for a
+         * process without a controlling terminal, a pty slave for the session that adopted it), and the group one of the caller's session.
+         * Otherwise anybody with a pty open could point its ^C at somebody else's process group. */
+        bool own = !p || p->ctty == t || (t == tty_console() && !p->ctty);
+        if (!own) return -ENOTTY;
+        if (want < 0) return -EINVAL;
+        if (want && p && !pgrp_in_session(want, p->sid)) return -EPERM;
+        t->fg_pgid = want;
+        if (p) t->session = p->sid;
         pgrp_terminal_granted(t->fg_pgid);                  /* members that stopped waiting for the terminal have it now */
         return 0;
     }

@@ -1,6 +1,6 @@
 /*
  * https_get: fetches a URL over HTTPS (or plain HTTP) with libhttp and libtls, verifying the server's certificate against the
- * trust store. docs/TLS.md has the details (there is no manual page yet).
+ * trust store. docs/TLS.md has the details; https_get(1) and tls(7) are the manual pages.
  *
  *   https_get URL [-o FILE] [--ca FILE] [--insecure] [-v] [-I] [-q] [--max-redirs N] [--timeout S] [--tls12|--tls13]
  *             [--cipher aes128|aes256|chacha20] [--time EPOCH] [--require-clock] [--no-decompress]

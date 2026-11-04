@@ -117,9 +117,9 @@ size_t audio_event_render(AudioEvent e, int16_t **out) {
     }
 }
 
-int audio_event_play(AudioEvent e, bool force) {
+static int event_play(AudioEvent e, bool force, bool wait) {
     if (!force && !audio_events_enabled()) return 0;
-    Audio *a = audio_open(AUDIO_NONBLOCK);
+    Audio *a = audio_open(wait ? 0 : AUDIO_NONBLOCK);
     if (!a) return -errno;
     int16_t *pcm = NULL;
     size_t frames = audio_event_render(e, &pcm);
@@ -128,8 +128,12 @@ int audio_event_play(AudioEvent e, bool force) {
     if (!rc) {
         ssize_t n = audio_write(a, pcm, frames * 4);       /* fits in the stream's queue; the kernel plays it out after close */
         if (n < 0) rc = (int)n;
+        else if (wait) audio_drain(a);                      /* for the shutdown tune: the machine is about to go */
     }
     free(pcm);
     audio_close(a);
     return rc;
 }
+
+int audio_event_play(AudioEvent e, bool force) { return event_play(e, force, false); }
+int audio_event_wait(AudioEvent e) { return event_play(e, false, true); }

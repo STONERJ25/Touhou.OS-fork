@@ -104,6 +104,7 @@ NORETURN void kmain(BootInfo *bi) {
     g_kernel_phys = bi->kernel_phys;
     g_kernel_virt = bi->kernel_virt;
     cmdline_init(bi->cmdline);
+    heap_init_debug();                  /* "heapdebug": before the first allocation, so every object is poisoned or none */
     char hold[8];
     if (cmdline_value("stagehold", hold, sizeof hold)) for (const char *q = hold; *q >= '0' && *q <= '9'; q++) g_stagehold = g_stagehold * 10 + (*q - '0');
     stage(4);

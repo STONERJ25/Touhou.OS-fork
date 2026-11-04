@@ -153,8 +153,9 @@ size_t net_proc_udp(char *buf, size_t cap);
 /* ---- configuration / tunables ---- */
 long net_ctl(unsigned long cmd, void *arg);                           /* SYS_netctl backend; arg already in kernel memory */
 void dhcp_start(NetDev *d);
+size_t dhcp_proc(char *buf, size_t cap);                              /* /proc/net/dhcp: one line per card with the state of its lease */
 void dhcp_tick(u64 now);
-void dhcp_stop(NetDev *d);                                            /* an address was set by hand: no lease may replace it */
+void dhcp_stop(NetDev *d);                                            /* an address was set by hand, or the user said so: no lease may replace it */
 void dhcp_input(NetDev *d, const u8 *p, size_t len);                  /* a datagram for port 68 */
 size_t dhcp_dns(u32 *servers, size_t max);                            /* name servers learned from DHCP */
 extern int g_net_lo_drop, g_net_lo_dup, g_net_lo_reorder, g_net_lo_corrupt;   /* fault injection on lo, percent */

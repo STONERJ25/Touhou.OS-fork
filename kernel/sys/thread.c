@@ -50,12 +50,12 @@ static long sys_set_tls(TrapFrame *tf) {
 
 /* tgkill(pid, tid, sig): the signal is aimed at one thread of one process (pthread_kill, raise). */
 static long sys_tgkill(TrapFrame *tf) {
+    if (A0(tf) > 0x7fffffffUL || A1(tf) > 0x7fffffffUL || A2(tf) >= NSIG) return -EINVAL;
     int pid = (int)A0(tf), tid = (int)A1(tf), sig = (int)A2(tf);
-    if (sig < 0 || sig >= NSIG) return -EINVAL;
     Process *self = current->proc;
     Process *p = process_by_pid(pid);
     if (!p || p->state == PROC_ZOMBIE) return -ESRCH;
-    if (self->cred.uid != 0 && self->cred.uid != p->cred.uid && self != p) return -EPERM;
+    if (!signal_permitted(self, p)) return -EPERM;
     u64 f = irq_save();                             /* a thread cannot leave while we look at the list */
     Task *found = NULL;
     for (Task *t = p->threads; t; t = t->thread_next)
@@ -93,10 +93,8 @@ static long sys_sigtimedwait(TrapFrame *tf) {
     u32 set = (u32)A0(tf) & ~((1U << SIGKILL) | (1U << SIGSTOP));
     u64 deadline = ~0ULL;
     if (A1(tf)) {
-        struct gtimespec ts;
-        if (copy_from_user(&ts, (void *)A1(tf), sizeof ts)) return -EFAULT;
-        if (ts.tv_sec < 0 || ts.tv_nsec < 0 || ts.tv_nsec >= 1000000000) return -EINVAL;
-        deadline = uptime_ms() + (u64)ts.tv_sec * 1000 + (u64)ts.tv_nsec / 1000000 + ((ts.tv_nsec % 1000000) ? 1 : 0);
+        long rc0 = deadline_from_timespec((void *)A1(tf), &deadline);
+        if (rc0) return rc0;
     }
     long rc;
     u64 f = irq_save();

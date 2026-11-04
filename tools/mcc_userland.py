@@ -199,7 +199,7 @@ def main():
         for i, src in enumerate(srcs):
             obj = odir / f"{i:03d}-{src.stem}.o"
             objs_of[(kind, name)].append(obj)
-            lines.append(f"MCC_ROOT={U.wsl_path(root)} {host_mcc} -c -I {rel(inc)} {rel(src)} -o {rel(obj)}")
+            lines.append(f"MCC_ROOT={U.wsl_path(root)} {host_mcc} -c -I {rel(inc)} -I shared {rel(src)} -o {rel(obj)}")
     failed = run_jobs("progs-compile", lines, par)
     report["seconds"]["programs-compile"] = round(time.time() - t, 1)
     t = time.time()

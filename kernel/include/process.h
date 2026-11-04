@@ -101,8 +101,19 @@ int      process_spawn_init(const char *path, char *const argv[]);      /* kerne
 NORETURN void process_exit(int status);                                  /* status is a wait() word */
 int      process_fork(TrapFrame *tf);                                    /* child pid or -errno */
 int      process_fork_ex(TrapFrame *tf, u64 settid_addr, u64 cleartid_addr);   /* + the child's id stored in its memory / the word its exit clears (Linux clone) */
+/* Returns 0 (tf holds the new user state), -errno, or EXEC_THREAD_LEAVES: another thread is tearing the process down (exit_group
+ * or its own execve) and the caller must free what it holds and then call thread_leave(). */
+#define EXEC_THREAD_LEAVES 1
 int      process_exec(Process *p, const char *path, char *const argv[], char *const envp[], TrapFrame *tf);
 long     process_wait(int pid, int *status, int options);
+
+/* execve limits (docs/HARDENING.md): entries per vector, bytes per string (the NUL included), and the whole argument block, which
+ * counts the strings and a pointer for each of them, as on Linux. Anything above fails with E2BIG. */
+#define EXEC_MAX_ARGS   32768
+#define EXEC_MAX_STRING (128 * 1024)
+#define EXEC_MAX_TOTAL  (512 * 1024)
+#define EXEC_FIXED      64                                                  /* argc, the two terminating NULLs, the auxiliary vector */
+static inline size_t exec_footprint(size_t string_bytes, size_t nptrs) { return string_bytes + nptrs * sizeof(char *) + EXEC_FIXED; }
 void     process_for_each(void (*fn)(Process *p, void *ctx), void *ctx);
 extern int g_alarms_armed;                                               /* processes with an alarm pending: the scheduler tick looks only while there are any */
 void     alarm_tick(u64 now);                                            /* sends SIGALRM to the processes whose alarm is due (called from the timer interrupt) */
@@ -133,6 +144,8 @@ bool user_range_ok(const void *p, size_t n);
 int  copy_from_user(void *dst, const void *src, size_t n);
 int  copy_to_user(void *dst, const void *src, size_t n);
 int  strncpy_from_user(char *dst, const char *src, size_t max);        /* length, or -EFAULT / -ENAMETOOLONG */
+long deadline_from_timespec(const void *uts, u64 *deadline);          /* user struct gtimespec (relative) -> uptime_ms() deadline, ~0 = never; -EFAULT, -EINVAL */
+long strnlen_user(const char *s, size_t max);                           /* length (NUL not counted) if the NUL is within the first max bytes, else -ENAMETOOLONG; -EFAULT */
 int  clear_user(void *dst, size_t n);
 
 /* threads (kernel/sys/thread.c) */
@@ -160,9 +173,12 @@ int  tty_job_check(struct Tty *t, int kind);                            /* kerne
 /* signals */
 void signal_send(Process *p, int sig);                                  /* process-directed: any thread that does not block it */
 void signal_send_thread(Task *t, int sig);                              /* thread-directed (tgkill, raise) */
+void signal_kill_init(Process *init);                                   /* root's kill -9 1: the one signal init does not shrug off (see signal.c) */
 void signal_force(Process *p, int sig);                                 /* synchronous faults: cannot be ignored or blocked */
-void signal_pgrp(int pgid, int sig);
-int  signal_pgrp_checked(int pgid, int sig, int sender_uid);        /* for kill(): only the members the sender may signal; -EPERM when it may signal none */
+void signal_pgrp(int pgid, int sig);                                    /* no permission checks: for the kernel's own use (the terminal's ^C) */
+bool signal_permitted(const Process *from, const Process *to);
+int  signal_group_from(const Process *from, int pgid, int sig, bool everyone);   /* kill(-pgid) / kill(-1) for a user */
+bool pgrp_in_session(int pgid, int sid);                                /* some live process of the group belongs to the session */
 void signal_deliver(TrapFrame *tf);                                     /* on the way back to user mode */
 bool signal_pending_now(Process *p);                                    /* the calling thread has a deliverable signal (or must die) */
 bool signal_cancel_pending(Task *t);                                    /* pthread_cancel is waiting for this thread to reach a cancellation point */

@@ -1,0 +1,49 @@
+tms 1
+title Kappa Workshop Rush
+mood gears, sparks and a deadline: Nitori is building something loud
+author Claude (original)
+tempo 132
+loop yes
+
+; F major, straight chiptune: square lead, pulse chord stabs on the off beats, octave-bouncing triangle bass.
+channel lead   inst=lead  pan=-0.10 gain=0.80
+channel stab   inst=pulse pan=0.35  gain=0.65
+channel saw    inst=saw   pan=-0.35 gain=0.40
+channel bass   inst=bass  pan=0.00  gain=0.95
+channel drums  inst=hat   pan=0.05  gain=0.65
+
+pattern intro
+  lead:  r1 | r1
+  stab:  r1 | r1
+  saw:   r1 | r1
+  bass:  o2 [f8 >f8 <]4 | [f8 >f8 <]4
+  drums: [@3 o7 v6 c]8 | [@5 o2 v11 c @3 o7 v6 c @4 o5 v9 c @3 o7 v6 c @5 o2 v11 c @4 o5 v9 c @4 o5 v9 c @4 o5 v10 c]1
+
+pattern A
+  lead:  o5 f8 a8 >c8 <a8 f8 a8 >c4 | o5 d8 f8 a8 f8 d8 f8 a4 | o4 b-8 >d8 f8 d8 <b-8 >d8 f4 | o5 c8 e8 g8 e8 c8 e8 g4 |
+         o5 a8 >c8 f8 c8 <a8 >c8 f4 | o5 d8 f8 a8 >d8 <a8 f8 d4 | o4 b-8 >d8 f8 b-8 f8 d8 <b-4 | o5 g8 e8 c8 e8 g4 r4
+  stab:  o4 [r8 a8 r8 f8]2 | o4 [r8 f8 r8 d8]2 | o4 [r8 d8 r8 b-8]2 | o4 [r8 g8 r8 e8]2 |
+         o4 [r8 a8 r8 f8]2 | o4 [r8 f8 r8 d8]2 | o4 [r8 d8 r8 b-8]2 | o4 [r8 g8 r8 e8]2
+  saw:   o3 [f8 r8 r8 f8]2 | o3 [d8 r8 r8 d8]2 | o3 [b-8 r8 r8 b-8]2 | o3 [c8 r8 r8 c8]2 |
+         o3 [f8 r8 r8 f8]2 | o3 [d8 r8 r8 d8]2 | o3 [b-8 r8 r8 b-8]2 | o3 [c8 r8 r8 c8]2
+  bass:  o2 [f8 >f8 <]4 | [d8 >d8 <]4 | [b-8 >b-8 <]4 | [c8 >c8 <]4 | [f8 >f8 <]4 | [d8 >d8 <]4 | [b-8 >b-8 <]4 | [c8 >c8 <]4
+  drums: [@5 o2 v11 c @3 o7 v5 c @4 o5 v8 c @3 o7 v5 c @5 o2 v11 c @3 o7 v5 c @4 o5 v8 c @3 o7 v5 c]8
+
+pattern B
+  lead:  o5 d8 f8 b-8 >d8 <b-8 f8 d4 | o5 e8 g8 >c8 e8 c8 <g8 e4 | o5 f8 a8 >d8 f8 d8 <a8 f4 | o4 a8 >c8 f8 a8 f8 c8 <a4 |
+         o5 b-8 >d8 f8 d8 <b-8 f8 d4 | o5 c8 e8 g8 >c8 <g8 e8 c4 | o4 f8 a8 >c8 f8 c8 <a8 f4 | o5 g4 e4 c4 r4
+  stab:  o4 [r8 b-8 r8 f8]2 | o4 [r8 g8 r8 e8]2 | o4 [r8 a8 r8 f8]2 | o4 [r8 a8 r8 f8]2 |
+         o4 [r8 b-8 r8 f8]2 | o4 [r8 g8 r8 e8]2 | o4 [r8 a8 r8 f8]2 | o4 [r8 g8 r8 e8]2
+  saw:   o3 [b-8 r8 r8 b-8]2 | o3 [c8 r8 r8 c8]2 | o3 [d8 r8 r8 d8]2 | o3 [f8 r8 r8 f8]2 |
+         o3 [b-8 r8 r8 b-8]2 | o3 [c8 r8 r8 c8]2 | o3 [f8 r8 r8 f8]2 | o3 [c8 r8 r8 c8]2
+  bass:  o2 [b-8 >b-8 <]4 | [c8 >c8 <]4 | [d8 >d8 <]4 | [f8 >f8 <]4 | [b-8 >b-8 <]4 | [c8 >c8 <]4 | [f8 >f8 <]4 | [c8 >c8 <]4
+  drums: [@5 o2 v11 c @3 o7 v6 c @4 o5 v9 c @3 o7 v6 c @5 o2 v11 c @5 o2 v8 c @4 o5 v9 c @3 o7 v6 c]8
+
+pattern outro
+  lead:  o5 f2 a2 | f1
+  stab:  r1 | o4 [r8 a8 r8 f8]2
+  saw:   r1 | r1
+  bass:  o2 [f8 >f8 <]4 | f1
+  drums: [@3 o7 v6 c]8 | @5 o2 v11 c1
+
+order intro A B A B A outro

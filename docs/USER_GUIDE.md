@@ -1,8 +1,8 @@
 # TouhouOS user guide
 
 This page is for someone sitting in front of the machine: what is on the screen, how to start things, which keys do what, where
-your files go and how to switch the machine off. It describes what is on `main`. Features that are finished but still sit on unmerged
-`parked/*` branches are listed at the end under [Not merged yet](#not-merged-yet).
+your files go and how to switch the machine off. It describes what is on `main`. What is still missing is listed at the end under
+[Not there yet](#not-there-yet).
 
 Everything on the system has a manual page: open a terminal and type `man NAME` (`man` is Patchouli's library, `patchouli`). Good first
 visits are `man gensokyo` (the lay of the land), `man keys`, `man gapsh`, `man accounts` and `man power`. `patchouli -l` lists every page.
@@ -23,7 +23,7 @@ mechanism, and this guide gives both: the "Netherworld" is the trash folder, a "
 9. [Sound, network, pictures](#sound-network-pictures)
 10. [Boot options](#boot-options)
 11. [Limits and known problems](#limits-and-known-problems)
-12. [Not merged yet](#not-merged-yet)
+12. [Not there yet](#not-there-yet)
 
 ## Starting up
 
@@ -218,9 +218,10 @@ Without such a volume, the home folders and `/etc` are in memory and are lost at
   This is the project's safety rule: the OS never writes to a disk it was not told to. On the owner's Dell the internal disks are not visible
   at all while the firmware's SATA mode is "RAID On".
 - **Shut down before you pull the stick.** A clean shutdown marks the volume clean. If the stick is pulled, or the machine is switched off
-  hard, within a few seconds of a write, the volume is still marked dirty and the next boot mounts it **read-only**, says so in the log, and
-  writes nothing to it. The files are fine; a check on another computer clears the mark (Windows "Scan and fix", or `fsck.vfat -a` on Linux).
-  Details in [REAL_HARDWARE.md](REAL_HARDWARE.md), section 5.
+  hard, within a few seconds of a write, the volume is still marked dirty, and the next boot goes through the whole volume before it mounts it
+  (a second or so). Usually nothing is out of place and it is mounted read-write at once; if a few harmless leftovers are (clusters that were
+  never used), it is mounted read-write too and `sudo fsck -a /dev/sdb2` tidies them up; if something is really wrong it stays **read-only**,
+  writes nothing, and the log says what and to run `fsck` (`man fsck`; the walk-through is in [REAL_HARDWARE.md](REAL_HARDWARE.md), section 5).
 - **The kernel log** is kept on the volume as `TOUHOU.LOG` (this boot) and `TOUHOU.PRV` (the boot before), in its top folder, so a failed boot
   can be read on another computer. `dmesg` shows the same log on the machine.
 
@@ -321,22 +322,14 @@ More words, for diagnosing a PC that does not boot, are in [REAL_HARDWARE.md](RE
 - The clipboard holds at most 1024 bytes.
 - The context menus of the applications (the Explorer, the Notebook) are drawn inside their window, so they cannot extend past its edges.
 - The desktop panel's clock is always 24-hour; the 12/24 hour setting only applies to the Pocket Watch.
-- A HUMANVILLAGE volume that was not shut down cleanly is mounted read-only until it is checked on another computer.
+- A HUMANVILLAGE volume that was not shut down cleanly is gone through before it is mounted: when nothing is out of place it is mounted as
+  usual; otherwise it stays read-only, and the log says what to do (`fsck`, see [REAL_HARDWARE.md](REAL_HARDWARE.md)).
 - On real hardware only the owner's Dell has been tried: its screen, USB keyboard and mouse, the boot stick and sound worked; its network card
   has not had a link yet, and its internal disks are hidden by the firmware's RAID mode. **Tried it on your own PC? Run `hwreport -o` and send the file**
   (it leaves out serial numbers and the end of MAC addresses): [HARDWARE_DB.md](HARDWARE_DB.md) says how and keeps the list of machines.
 
-## Not merged yet
+## Not there yet
 
-These are finished (or nearly) on branches that are not part of `main` yet; they are listed so nobody looks for them on the desktop.
-See the project notes for their state.
-
-| Branch | What it brings |
-|--------|----------------|
-| `parked/audio-jukebox` | Reimu's Jukebox (a music player) with original songs, a `.mod` player, system sounds, a volume slider in the panel |
-| `parked/network-https` | HTTPS in `fetch` and `wget` |
-| `parked/usb-dirty-fsck` | a stick that was not shut down cleanly is checked at boot and stays writable when it is consistent; an `fsck` tool |
-| `parked/utilities-vi` | a much more thorough `vi` |
-| `parked/libc-accuracy` | exact number printing and parsing, faster `sort` and `grep` on big files |
-| `parked/kernel-hardening` | `rm *` and `xargs` on big folders (larger argument limits), fixes for crashes an ordinary user could cause |
-| `parked/mcc-compiler` | a C compiler that runs on the OS |
+Everything that was finished on the old `parked/*` branches is on `main` now (the Jukebox, the thorough `vi`, exact number printing,
+the hardened kernel, `fsck`, the C compiler). What is still missing: `fetch` and `wget` do not speak `https://` (use `https_get`, see
+`man tls`), and the handling of sticks that misbehave (a half-done branch, `wip/usb-storage-soft-fallbacks`). See the project notes.

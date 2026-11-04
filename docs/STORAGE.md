@@ -226,19 +226,41 @@ REAL_HARDWARE.md). `hvcheck=off` skips the check: a dirty volume is read-only as
 read-only anyway is not checked. Volumes mounted by hand are not checked: `mount` still needs `-o force`.
 
 **fsck** (`fsck [-n|-a|-p|-y] [-F] [-v] [-q] DEVICE`, section 8 of the manual): refuses a device (or a partition of it) that is listed in
-`/proc/mounts`, refuses anything that is not FAT12/16/32, needs root. It scans, prints the findings, and (unless `-n`) runs `fatfix_run()`: passes of
-*scan, repair what the findings allow, flush*, until a pass repairs nothing; lost clusters last, once nothing else changes what counts as lost. Every repair
-re-reads the directory slot it is about to change and skips it if the scan's view is stale. `-a` makes the repairs that lose no readable data and no names
-(FAT copies, FSInfo, media byte, backup boot sector, size beyond chain, chain beyond size, bytes after a directory's end, orphaned long-name entries, `.`/`..`,
-cross-linked files get a copy of the shared clusters, lost chains become `FOUND.000/FILEnnnn.CHK`); `-y` also cuts broken chains, removes entries that point
-nowhere, repeat a name or are stray labels, and mends bad 8.3 names; without either it asks per repair on a terminal. `-F` frees lost chains instead of saving
-them. The dirty flag (and FSInfo) is touched only when the last scan finds no error and no leftover. Exit status: 0 nothing wrong, 1 corrected, 4 problems
-left, 8 could not do it, 16 usage. Boot-sector damage is never repaired (the checker refuses such a volume).
+`/proc/mounts` (or a partition of a disk that is, or a disk of a partition that is; `vda10` is not a partition of `vda1`), refuses anything that is not
+FAT12/16/32, needs root. It scans, prints the findings, and (unless `-n`) runs `fatfix_run()`: passes of *scan, repair what the findings allow, flush*,
+until a pass repairs nothing (at most 16); lost clusters last, once nothing else changes what counts as lost. Every repair re-reads the directory slot it is
+about to change and skips it if the scan's view is stale. Within a pass the findings are taken in stages, because a repair can make the later findings
+wrong: the FAT copies; **cross-links** (the second claimant gets a private copy of what it shares before anything is written into either chain or freed
+from it); `.` and `..`; repeated names; everything else. A stage that changed something ends the pass, so the next one starts from a fresh scan; the
+clusters of a chain that another entry has run into are never freed until the cross-link is separated. `-a` makes the repairs that lose no readable data
+and no file (FAT copies, FSInfo, media byte, backup boot sector, size beyond chain, chain beyond size, a chain that breaks behind everything its file's size
+needs, bytes after a directory's end, long-name entries that belong to no file, `.`/`..`, an entry that is an exact copy of another, cross-linked files get
+a copy of the shared clusters, lost chains become `FOUND.000/FILEnnnn.CHK`; a long name that does not match its short entry is dropped and the file stays
+under the short name); `-y` also cuts broken
+chains, removes entries that point nowhere, repeat a name, stand where `.` and `..` belong or are stray labels, and mends bad 8.3 names; without either it
+asks per repair on a terminal (a declined repair is not asked again). `-F` frees lost chains instead of saving them (without it, a volume with more than
+10000 lost chains or no room for `FOUND.000` fails that one repair, not the run). The dirty flag (and FSInfo) is touched only when the last scan finds no
+error and no leftover; an FSInfo sector is only rewritten when it is one already or empty (a damaged FSInfo pointer in the boot sector can name the backup
+boot sector). Exit status: 0 nothing wrong, 1 corrected, 4 problems left, 8 could not do it, 16 usage, 32 stopped at a question. Boot-sector damage is never
+repaired (the checker refuses such a volume).
 
 **Held against the Python checker.** `tools/mkdisk.py`'s `FatReader.check()` is independent of the C code; `tests/case_fsck.py` makes the two agree on
 about 50 kinds of deliberate damage per FAT size (FAT12/16/32) and on 240 random mutations per run (3000+ were run while developing, no difference left).
 To make them agree the Python side learned FAT12, the active FAT of a FAT32 volume with mirroring off, a `benign` class next to `errors` (`Report.serious`
 is `errors` minus `benign`: the leftovers above), invalid dates as warnings, and a FAT32/FAT16 layout that contradicts the cluster count as an error.
+
+**Held against the repair tests.** `fsck_c_repair_*` run the repair engine in the host DLL (no VM) over every damage of the menu on FAT12, FAT16 and FAT32
+(and a 4096-byte-sector volume, where the host session insists on whole-sector reads and writes) with `-y` and with `-a`, and require: both checkers say
+ok or warn afterwards and the dirty flags are clear; every file that was not aimed at is byte for byte what it was; a file that lost its entry or its clusters
+is saved in `FOUND.000` with its exact bytes (a cut chain: the start in the file, the rest in a `.CHK` file); `-a` leaves exactly the damage that needs a
+decision (cut chains, entries that point nowhere, repeated or unusable names, stray labels, cross-linked directories); a second run changes nothing. A fuzz
+(`TOUHOU_FSCK_FUZZ=N`, 400 by default; 3000 `-y` and 1500 `-a` cases were run clean) damages FAT bytes and entries, directory slots, takes another file's first
+cluster for an entry, sets wrong sizes, and requires the same plus that every file the damage left readable survives. What these tests found, and what is
+fixed: trimming a file whose chain was cross-linked gave back clusters that the other file still read (a 70 KB file cut at 1.5 KB); the second claimant of a
+shared cluster (the innocent one, whichever the scan met second) was deleted instead of copied; erased `.`/`..` cost the directory's files their names; an
+exact copy of an entry needed `-y`; a damaged FSInfo pointer made the repair write over the backup boot sector. `fsck_c_repair_interrupted` (a power cut in
+the middle of `fsck`, see "State when paused") added: the link of a cross-linked file's copy could reach the disk before the copy; and a chain that breaks behind
+everything its file needs (what an interrupted trim leaves) is cut by `-a`, not only by `-y`.
 
 
 ## Write ordering
@@ -501,12 +523,21 @@ nine different corrupt boot sectors, damaged chains and directories, and a seede
 overwrite, truncate, delete, rename over files, move directories, mkdir/rmdir) mirrored in a Python model whose final tree
 must match the disk byte for byte.
 
-`python tests/run_all.py fsck` (`tests/case_fsck.py`): `fsck_c_*` need no VM (they build `shared/fatck.c` into a host DLL, `tools/fatck_host.py`, and hold it
-against the Python checker over deliberately damaged images, 20 seconds); `fsck_kernel_*` boot a VM with a dirty volume: a flag and nothing else wrong
-(read-write, the log reaches the stick), harmless leftovers (read-write, surplus chain trimmed on the next write, flag stays), real damage (read-only, the
-log and `/proc/fatcheck` say what, the image is untouched), `hvforce` and `hvcheck=off`, and the limits (nesting beyond 256, a 12 GiB volume with 3 million
-clusters). Tests that used to expect "dirty means read-only" (`storage_dirty_volume_readonly`, `storage_unclean_power_loss`, the bootlog test) run with
-`hvcheck=off`; `usbstor_hotplug_idle` now expects the check and a writable mount.
+`python tests/run_all.py fsck` (`tests/case_fsck.py`; the VM ones through `python tools/qemu-slot.py -- ...`):
+* `fsck_c_*` need no VM (they build `shared/fatck.c` and `shared/fatfix.c` into a host DLL, `tools/fatck_host.py`): `fsck_c_agrees_*` hold the checker against
+  the Python checker over deliberately damaged images (25 seconds); `fsck_c_repair_*` hold the repair engine to what "Dirty volumes" says (the damage menu on
+  FAT12/16/32 and on 4096-byte sectors with `-y` and `-a`, the ways two chains meet, no room for `FOUND.000`, the numbering of `FOUND.000`, a damaged FSInfo pointer, random
+  damage: about four minutes in all). Run them with `python tests/run_all.py fsck_c_` -- **with the underscore: `fsck_c` also selects the `fsck_cmd_*` tests, which boot VMs**.
+* `fsck_kernel_*` boot a VM with a dirty volume: a flag and nothing else wrong (read-write, the log reaches the stick), harmless leftovers (read-write, surplus
+  chain trimmed on the next write, flag stays), real damage (read-only, the log and `/proc/fatcheck` say what, the image is untouched), `hvforce` and `hvcheck=off`,
+  and the limits (nesting beyond 256, a 12 GiB volume with 3 million clusters). Tests that used to expect "dirty means read-only"
+  (`storage_dirty_volume_readonly`, `storage_unclean_power_loss`, the bootlog test) run with `hvcheck=off`; `usbstor_hotplug_idle` now expects the check and a writable mount.
+* `fsck_cmd_*` run `/bin/fsck` itself in the guest: `fsck_cmd_options_and_exit_codes` (one disk of ten small FAT12/16/32 volumes, damaged in their own ways, gone through
+  with every option from a root shell; afterwards the host compares each volume with its own run of the same repairs), `_not_root`, `_asks` (the questions through
+  the serial console), `_4kn` (a 4096-byte-sector disk), `_kernel_advice` and `_kernel_advice_remount` (the flow the kernel's message promises: `umount /HumanVillage`,
+  `fsck -a`, restart or mount by hand, the volume is clean and writable), and `_after_power_cuts`: the images of random power cuts (the crash test's workload and
+  kill, `TOUHOU_FSCK_CUTS=N`, 2 by default), `fsck -n` on each must report leftovers and nothing worse, `fsck -a` saves every lost cluster in `FOUND.000` and
+  changes no readable file, the result equals the host's own repair of the same image, and the next mount finds nothing to check.
 
 `python tests/run_all.py storage_crash` (`tests/case_storagecrash.py`, part of the `storage` group): the power-cut test of "Crash test" above, 3 runs by
 default (about 30 s), `TOUHOU_CRASH_RUNS=50` for the full run (about 9 minutes here).
@@ -526,47 +557,63 @@ write order was then done on `cloud/fat-ordering` (cloud task 7, 2026-10-24), wh
   real stick is not measured; the test runs on virtio-blk only (QEMU keeps every acknowledged write, so it checks the order of the requests; whether a USB stick
   honours SYNCHRONIZE CACHE is not something QEMU can show).
 
-The rest of this section is the state of the check and `fsck` work as it was handed over (only the write-order item changed).
 
-**Done and tested**
-* The checker, `shared/fatck.c`/`.h`, FAT12/16/32. `fsck_c_agrees_with_python` and `fsck_c_agrees_on_random_damage` passed against the Python checker; the
-  engine was extended afterwards (retained findings, repeatable scans, the last good cluster in a finding, long-name/duplicate/dots details for the repair code) and
-  exercised again by the repair scripts below with the same verdicts, but those two tests were not re-run on the final sources.
-* The kernel side: `fat_check.c`, `check_before_mount()` in the policy, the mount options `fsck=ok|left`, `hvforce`, `hvcheck=off`, `/proc/fatcheck`, the trim of
-  a surplus chain on verified volumes. `fsck_kernel_tidy`, `_leftovers`, `_damage`, `_force_and_off`, `_limits` passed, and so did the four adapted old tests
-  (`storage_dirty_volume_readonly`, `storage_unclean_power_loss`, `usbstor_hotplug_idle`, `usbstor_bootlog_never_when_unsafe`) - on the sources of commit
-  `bf52a4d`; the later engine edits are in the kernel build (it builds) but those tests were not re-run, and the big suites (`storage`, `usbstor`, `usb_`, `blk_`)
-  were not re-run after this work at all.
-* `tools/mkdisk.py`: FAT12 images, `Report.benign`/`serious`, the active FAT of FAT32; `tools/fatck_host.py` (host DLL) and `tools/fatck_host_rt.c`.
+**The check and `fsck` (agent `fsck`, 2026-11-04): done and tested in QEMU, never run on the real machine**
+* The checker (`shared/fatck.c`): `fsck_c_agrees_with_python` and `fsck_c_agrees_on_random_damage` pass on the current sources.
+* The repair engine (`shared/fatfix.c`): `fsck_c_repair_*` (no VM, see "Tests"): every damage of the menu on FAT12/16/32 and on 4096-byte sectors with `-y` and `-a`,
+  the ways two chains can meet, no room for `FOUND.000`, a damaged FSInfo pointer, a power cut in the middle of `fsck` (`fsck_c_repair_interrupted`), and a random-damage
+  fuzz (3000 `-y` and 1500 `-a` cases clean). It found and fixed five ways the repair itself lost data or names, and two more in the interrupted runs ("Dirty volumes",
+  "Held against the repair tests"); against the old engine the menu test fails for three of them.
+* `/bin/fsck`: `fsck_cmd_*` (see "Tests"). The assumptions of the hand-over all held: `lseek(SEEK_END)` gives the size of a `/dev` node, writes plus `ioctl(BLKFLSBUF)`
+  on a node work (also on a 4096-byte-sector disk, whose size comes from `BLKSSZGET`), the `/proc/mounts` check, the prompts through the serial console, the exit
+  codes (0, 1, 4, 8, 16, 32). What the guest runs found in the program: a mounted `vda10` stopped `fsck` from looking at `vda1` (a prefix match), a repair left alone
+  was printed as "fixed", and quitting at a question dropped what had been agreed to; all fixed in `user/bin/fsck/main.c`. No kernel, `blk` or libc change was needed.
+* The flow the kernel's message promises works: read-only mount, `umount /HumanVillage` (fsck refuses before it), `fsck -a`, restart: clean, read-write, no mention
+  of a ledger; with damage `-a` leaves, `fsck -y` and a mount by hand without a restart.
+* Power cuts and `fsck` together (`fsck_cmd_after_power_cuts`): the images of random cuts (the crash test's workload) go through `fsck -n` (leftovers and nothing
+  worse), `fsck -a` (every lost cluster saved in `FOUND.000`, no readable file changed, equal to the host's repair of the same image), and the next mount finds nothing
+  to check. 3 cuts passed first, then 24 (seeds 15375694..15375717: 6 FAT16, 18 FAT32 with 512 B, 4 KiB and default clusters; 438 s): 21 of them had lost clusters
+  (up to 380 in 24 files, once 190 in 106 files), 0 to 4 leftover findings each, one left nothing at all; every one ended as the test requires; ten more cuts
+  later with the final binary (one of them left a volume that was already clean: `fsck -a` then exits 0, which the test now accepts). The kernel (main `cf0436e`,
+  with the refused-entry-update fix) was in the guests.
+* `fsck.pw` (the manual page) is updated.
 
-**Written, builds, only partly tested**
-* The repair engine `shared/fatfix.c`/`.h`. Run through the host DLL by scratch scripts (not committed) over the whole damage menu of `tests/case_fsck.py` on FAT12,
-  FAT16 and FAT32: with `-y` (FIX_ALL) every damage except a broken boot sector ends clean according to both checkers; with `-a` (FIX_SAFE) exactly the damage that
-  needs a decision stays (cut chains, entries pointing nowhere, duplicates, bad names, strays), the rest is mended. There are no committed repair tests yet, and no
-  check yet that undamaged files keep their bytes or that a lost chain is saved with the right contents.
-* `/bin/fsck` (`user/bin/fsck/`, `fsck.fat`/`fsck.vfat` links in `tools/build.py` `EXTRA_LINKS`) and its manual page `fsck.pw`: they compile and link, and have **never
-  been run in the guest**. Untested assumptions: `lseek(SEEK_END)` on a `/dev` node gives the size, writes plus `ioctl(BLKFLSBUF)` on a node, the `/proc/mounts`
-  check, the interactive prompts, the exit codes, and `patchouli --check-all` (the `manual` test) accepting `fsck.pw`. The kernel's advice (`fsck -a /dev/sdb2`) points at it.
+**Approximated, or not verified**
+* **Not run on the Dell or any real stick.** The walk-through in REAL_HARDWARE.md ("After a bad shutdown") is what QEMU showed. In particular `umount /HumanVillage`
+  while the desktop runs from that volume (the homes live there) has not been tried: expect "busy" until the desktop has let go; the page says what to do instead
+  (leave the desktop, or boot once with `nohumanvillage`). The only account that may use `sudo` is `marisa`; root's login is locked.
+* `fsck` is restartable, not atomic: a repair pass is written from the cache in whatever order the windows are evicted or flushed (except that a copy of
+  clusters and a new directory cluster are flushed before anything points at them), so a power cut in the middle of `fsck` can leave a volume that needs
+  another `fsck` run (each run starts from a fresh scan, so running it again is the answer). `fsck_c_repair_interrupted` cuts the repair on the host after the
+  first, the last, the middle and some random sectors (writes are torn sector by sector) for every damage of the menu and every scenario on FAT16 and FAT12 (more
+  and FAT32 with `TOUHOU_FSCK_CUT_POINTS=25`; that run, about 9000 cuts, takes six minutes and passed) with `-y` and with `-a`, and runs it again: the second run
+  ends as clean as an uninterrupted one and loses nothing. It found one hole (the link of a cross-linked file's copy written before the copy: the file then read the
+  new clusters' old bytes), fixed by a flush before the link. Not tested: a cut during `fsck` in a guest, or on a device that reorders or drops acknowledged writes.
+* A long name whose checksum does not match its short entry is dropped (the file stays under the short name), as Windows and dosfstools do; it is not re-stamped.
+* The checker refuses a volume whose boot sector it cannot trust, and a boot sector that is wrong but plausible (a root cluster that names some file's data, say) is
+  taken at its word: `fsck -y` on such a volume would "mend" that data as a directory. The random tests leave boot-sector bytes out for this reason (the damage menu
+  has the refused cases); an FSInfo sector the boot sector points at wrongly is left alone.
+* More than 10000 lost chains: the 10001st is not saved (`FILE9999.CHK` is the last name); `-F` frees them.
 
 **Not started**
-* (The FAT write path, item 4 of that task, is done: see the first block of this section.)
-* `docs/REAL_HARDWARE.md` has the short version of what the owner does after a bad shutdown; the full walk-through with a real stick is not tried on hardware.
+* Power cuts *during* `fsck` in a guest (kill the VM at random moments of `fsck -y` on a damaged volume and require that a second `fsck` ends clean); the host test does
+  it per sector, which also tears writes, but with the engine's own model of the device.
+* A way to look at (or mend) the volume the system is running from without leaving the desktop, which the advice of the log line needs on the Dell.
+* `fsck` at boot, before the mount (a command line word), for an installed machine that is only reachable over ssh.
 
 ## How to resume
 
-1. `python tools/build.py`, then `python tests/run_all.py fsck_c` (no VM) and `python tests/run_all.py fsck_kernel` (about two minutes) to see the starting point; then the
-   suites this work touched: `storage`, `usbstor`, `usb_`, `blk_`, `power_,manual`.
-2. Put the repairs under test (`tests/case_fsck.py`): the host-level loop is `tools/fatck_host.py` `fix_volume(path, index, mode)` (see `-a`/`-y` in its `main`); for each entry
-   of `damage_menu()` repair with `FIX_ALL` and `FIX_SAFE`, then require `py_class`/`c_class` to say ok/warn (only boot-sector damage may stay `err`) and compare
-   the file tree before and after (`FatReader.snapshot()`) apart from the files the damage was aimed at; a file that lost its directory entry must come back as
-   `FOUND.000/FILE0000.CHK` with its exact bytes. Fix whatever that finds in `shared/fatfix.c`.
-3. Run `/bin/fsck` in a VM (`fsck_cmd_*`): an image as a second virtio disk (`vdb1`), `fsck -n`, `-a`, `-y` on the damage cases with the host checker looking at the image after
-   the guest has shut down; the refusals (mounted -> exit 8, not FAT -> 8, non-root -> 8); a FAT12 image; `-F`; the flow the kernel message promises
-   (`umount /HumanVillage; fsck -a /dev/vda1`, then `reboot`, then the volume is clean and writable). Expect the first guest run to find libc/devfs surprises (see above).
-   Then `python tests/run_all.py manual` for the page.
-4. The write order is done (`cloud/fat-ordering`). To check it after a change to the FAT driver: `TOUHOU_CRASH_RUNS=50 python tests/run_all.py storage_crash`;
-   a failure prints its seed, replay it with `TOUHOU_CRASH_SEED=<seed> TOUHOU_CRASH_RUNS=1 TOUHOU_KEEP_IMAGES=1` and look at the kept image with
-   `python tools/mkdisk.py --check IMAGE`. What could come next: fewer barriers (most come from a FAT page going from frees to allocations and back; frees could
+1. `python tools/build.py`; `python tests/run_all.py fsck_c_` (no VM, about 5 minutes; mind the underscore) and, through the slot limiter,
+   `python tools/qemu-slot.py -- python tests/run_all.py fsck_cmd,fsck_kernel` (about 5 and 5 minutes); then the suites this work touched: `storage`, `usbstor`, `usb_`, `blk_`,
+   `power_,manual`. After a change to `kernel/fs/fat*.c` also `espgrant,update_push,storage` (the ESP update writes through the same code).
+2. A repair that loses something is a bug in `shared/fatfix.c`: `TOUHOU_FSCK_FUZZ=3000 TOUHOU_FSCK_SEED=100000 python tests/run_all.py fsck_c_repair_fuzz` finds new ones; the
+   failing line names the seed, and `tests/case_fsck.py` `random_damage(src, dst, random.Random(seed), kinds=REPAIR_KINDS)` rebuilds the damaged image
+   (`tools/fatck_host.py -y IMAGE:1` repairs it; `-a` and `-n` too). A new damage for the menu goes into `damage_menu()` and, for the repair tests, into `AIMED`
+   (the files it is aimed at, whether `-a` leaves an error, what has to survive).
+3. After a change to the kernel's FAT driver: `TOUHOU_CRASH_RUNS=50 python tests/run_all.py storage_crash`, and `TOUHOU_FSCK_CUTS=20 python tests/run_all.py fsck_cmd_after_power`.
+   A failing cut names its seed (`TOUHOU_CRASH_SEED=<seed> TOUHOU_FSCK_CUTS=1`, `TOUHOU_KEEP_IMAGES=1` keeps the image for `python tools/mkdisk.py --check IMAGE`).
+4. The write order is done (`cloud/fat-ordering`). What could come next: fewer barriers (most come from a FAT page going from frees to allocations and back; frees could
    be collected per page and written in one go before an allocation reuses the page), a measurement of the flush cost on the real stick (the unmount log line
    counts the extra flushes), and the same test on a USB stick in QEMU (`usb-storage`) instead of virtio-blk.
-5. `docs/REAL_HARDWARE.md`: section 5 (eject / dirty) now describes the check; add what the owner does when the log says the ledger does not add up, once `fsck` has been seen working.
+5. On the Dell, with the owner's go: switch it off with the power button while something writes (a big copy), start it again, read `/proc/fatcheck` and the `[Keine]`
+   line, and try the three commands of REAL_HARDWARE.md, "After a bad shutdown". Note what `umount /HumanVillage` says.

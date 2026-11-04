@@ -127,12 +127,15 @@ int main(int argc, char **argv, char **envp) {
     g_interactive = !command && !script && isatty(0) && isatty(2);
     if (force_interactive) g_interactive = isatty(0);
 
+    g_tty = 0;
     if (g_interactive) {
+        int copy = fcntl(0, F_DUPFD, 10);                   /* job control must not depend on descriptor 0 (exec.c, g_tty) */
+        if (copy >= 0) { fcntl(copy, F_SETFD, FD_CLOEXEC); g_tty = copy; }
         /* Started in the background (`gapsh &`): wait to be brought to the front instead of taking the terminal from
          * the shell that started us. SIGTTIN stops us until fg; a group nobody could continue drops the signal, so the
          * wait is bounded (about a second of running time) and then the shell takes the terminal as before. */
         for (int tries = 0; tries < 100; tries++) {
-            pid_t fgp = tcgetpgrp(0);
+            pid_t fgp = tcgetpgrp(g_tty);
             if (fgp <= 1 || fgp == getpgrp() || kill(-fgp, 0) < 0) break;
             kill(-getpgrp(), SIGTTIN);
             usleep(10000);
@@ -144,7 +147,7 @@ int main(int argc, char **argv, char **envp) {
         signal(SIGTTOU, SIG_IGN);
         pid_t me = getpid();
         if (getpgrp() != me) setpgid(0, 0);
-        tcsetpgrp(0, me);
+        tcsetpgrp(g_tty, me);
         g_shell_pgid = me;
     }
 

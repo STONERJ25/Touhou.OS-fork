@@ -3,7 +3,7 @@
 # SYNOPSIS
 *ifconfig* [*-a*]
 *ifconfig* _IFACE_
-*ifconfig* _IFACE_ [_ADDRESS_[/_LEN_]] [*netmask* _MASK_] [*mtu* _N_] [*up* | *down* | *dhcp*]
+*ifconfig* _IFACE_ [_ADDRESS_[/_LEN_]] [*netmask* _MASK_] [*mtu* _N_] [*up* | *down* | *dhcp* | *nodhcp*]
 
 # DESCRIPTION
 `ifconfig` without arguments lists the interfaces that are up (`-a`: all of them). With an interface name it shows that one. With more arguments it changes the interface; changing anything needs root.
@@ -18,6 +18,8 @@ Giving an address sets it, replaces any address the interface had, drops the rou
     Set the largest packet the interface sends (68 to 1500).
 @ *dhcp*
     Forget a manual setting and start the DHCP client again on this interface. The kernel does this by itself when a cable is plugged in; this is for starting over by hand.
+@ *nodhcp*
+    Stop the DHCP client on this interface: no more requests and no renewals. An address it already leased stays, as if it had been set by hand. `/proc/net/dhcp` shows the state of the lease.
 
 # EXAMPLES
     ifconfig
@@ -28,6 +30,8 @@ Giving an address sets it, replaces any address the interface had, drops the rou
 # FILES
 @ /proc/net/dev
     Counters per interface.
+@ /proc/net/dhcp
+    One line per interface: the DHCP state (off, selecting, requesting, bound, renewing), address, mask, server, gateway, name servers, the lease in seconds and the seconds left.
 
 # EXIT STATUS
 0 on success, 1 when the interface does not exist or the kernel refused (root is needed to change anything), 2 for a usage error.

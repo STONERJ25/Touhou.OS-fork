@@ -430,7 +430,7 @@ static long sys_netctl(TrapFrame *tf) {
     unsigned long cmd = A0(tf);
     size_t size;
     switch (cmd) {
-    case NETCTL_IF_GET: case NETCTL_IF_CONFIG: case NETCTL_DHCP: size = sizeof(struct gnet_if); break;
+    case NETCTL_IF_GET: case NETCTL_IF_CONFIG: case NETCTL_DHCP: case NETCTL_DHCP_STOP: size = sizeof(struct gnet_if); break;
     case NETCTL_ROUTE_GET: case NETCTL_ROUTE_ADD: case NETCTL_ROUTE_DEL: size = sizeof(struct gnet_route); break;
     case NETCTL_ARP_GET: case NETCTL_ARP_SET: case NETCTL_ARP_DEL: size = sizeof(struct gnet_arp); break;
     default: return -EINVAL;

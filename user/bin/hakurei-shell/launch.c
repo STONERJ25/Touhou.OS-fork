@@ -17,6 +17,7 @@ const AppEntry g_apps[] = {
     { "Marisa's Sketchbook",   "Draw pictures",                  KI_SKETCH,    "sketchbook",    "Programs" },
     { "Gensokyo Gallery",      "View pictures",                  KI_IMAGE,     "gallery",       "Programs" },
     { "Kyouko's Browser",      "Browse the web",                 KI_TORII,     "browser",       "Programs" },
+    { "Reimu's Jukebox",       "Play music (Prismriver Concert Hall)", KI_MOON,  "jukebox",       "Programs" },
     { "Spell Manager",         "Running spells (processes)",     KI_SPELLCARD, "spellmgr",      "System" },
     { "Kappa Control Panel",   "Settings and hardware",          KI_GEAR,      "kappa-panel",   "System" },
     { "Danmaku",               "Dodge the bullets",              KI_STAR,      "danmaku",       "Games" },

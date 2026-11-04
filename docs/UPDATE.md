@@ -256,7 +256,7 @@ The rest of this page is the first design, written before the push existed: the 
 `tools/serve-update.py` over HTTP. The pieces it shares with the push (writing the ESP, the loader fallback, the confirmation) are
 now done and described above; where the text below differs from the code (it says "task 5", names `update URL`, allows `N = 2` tries
 under a `TouhouUpdateTry` variable, and asks for the confirmation by `espgrant rm update.try`), the code and the section above are
-right. The pull client would add: the HTTP fetch, the manifest parser and the ECDSA check (libtls on `parked/network-https`), and
+right. The pull client would add: the HTTP fetch, the manifest parser and the ECDSA check (libtls, now in `user/lib/tls`), and
 the same `update recv` machinery to write what it fetched.
 
 ### Quick start for the pull server (on the development PC)
@@ -322,7 +322,7 @@ Exactly one byte sequence is valid for a given content, so a parser on the OS ca
 
 **The public key** that goes into the image is the uncompressed point `04 || X || Y` (65 bytes): `pubkey --format hex` prints
 it, `--format c` prints `touhou_update_pubkey[65]` and `TOUHOU_UPDATE_KEY_ID`. These fit the primitives that exist in `libtls`
-on the `parked/network-https` branch (`user/lib/tls/src/tlsint.h`), so the client needs no new crypto:
+in `user/lib/tls` (`src/tlsint.h`), so the client needs no new crypto:
 
 ```c
 /* body, body_len: the bytes up to and including "end\n"; sig: the 64 bytes decoded from the signature line */
@@ -446,8 +446,7 @@ anywhere in step 5 boots on trial and falls back to the `.old` pair if the mix d
 
 **After a cut the ESP is flagged dirty** (the flags are set before the first write and cleared by every `sync` that finds nothing left to
 write). The loader does not care, but the next `espgrant` mount fails with "was not cleanly unmounted" until the volume has been checked
-or `-f` is given (it then stays flagged). The client should run the dirty-volume check of the `parked/usb-dirty-fsck` work (on
-`cloud/staging`) before it writes; given the table above, `-f` after a cut is safe in practice but leaves lost clusters behind.
+or `-f` is given (it then stays flagged). The client should run the dirty-volume check (`shared/fatck.c`, merged 2026-11-03) before it writes; given the table above, `-f` after a cut is safe in practice but leaves lost clusters behind.
 
 The loader's **"confirm this boot"** step (fallback step 3 below) is `espgrant rm update.try` (or `esp_open()`, `unlink`, `esp_close()`).
 
@@ -520,7 +519,7 @@ Written on 2026-10-24, branch `cloud/update-server` (from `main` `6df1c46`).
 
 ## How to resume
 
-1. Merge `parked/network-https` first (task 2): the client needs `libtls`'s SHA-256 and `tlsc_ecdsa_verify`, which are internal
+1. (Done: libtls is in main.) The client needs `libtls`'s SHA-256 and `tlsc_ecdsa_verify`, which are internal
    (`tlsint.h`); expose the two calls (or link the client against the library's internals) rather than writing new crypto.
 2. Generate the owner's key on the owner's PC (`keygen`), then `pubkey --format c --out shared/update_pubkey.h` (a public key may be
    committed; the build could also take it from an environment variable so that forks use their own).
@@ -542,6 +541,6 @@ starts, so the update can run there, before any OS driver is involved:
   (`netdiag` on the kernel command line; the report lands in `TOUHOU.LOG`). It needs "Enable UEFI Network Stack" in the Dell's BIOS setup.
 * The step after it: use the firmware's TCP4 and DHCP4 protocols (the safe floor of every UEFI network stack; `EFI_HTTP_PROTOCOL` where present) for `GET manifest` and the files from
   `serve-update.py`, check them with the same rules as the OS client (ECDSA P-256 over SHA-256, a manifest not older than the installed one, never the system clock), write `*.new` to the boot ESP
-  through the firmware's own file system driver, rename, keep `kernel.old`/`initrd.old`. The primitives (SHA-256, P-256 verification) exist in `libtls` (branch `parked/network-https`, in `cloud/staging`);
+  through the firmware's own file system driver, rename, keep `kernel.old`/`initrd.old`. The primitives (SHA-256, P-256 verification) exist in `libtls` (`user/lib/tls`);
   they have to be made freestanding and shared (`shared/`) for the loader. Plan A (the OS client, task 5) needs the OS driver, plan B does not.
 * Tests can use QEMU + OVMF (its network stack has SNP for virtio-net and e1000e: `net_loader_netdiag` already sends a DHCP exchange through it) and `serve-update.py` on the host.

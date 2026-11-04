@@ -12,6 +12,7 @@
  *                        update.trial=N  (set by the loader) the new kernel is on trial: restart unless `update confirm` runs (docs/UPDATE.md)
  *                        update.watchdog=SECONDS   how long that takes (default 300)
  *                        wdt=SECONDS|off the hardware watchdog (docs/RELIABILITY.md): init's feeder writes to /dev/watchdog once a second
+ *                        kerneltest=NAME ktargs=k:v,...   run /usr/lib/kernel-tests/NAME (sysfuzz, memhog, ...) as root, power off with its status
  *
  * Before anything else init puts the /etc files kept on the HUMANVILLAGE volume over the initrd defaults (Keine's records,
  * docs/PERSISTENT_ETC.md); a stick that is only mounted later is looked at again before the next session starts.
@@ -358,6 +359,28 @@ int main(void) {
     etc_snapshot(&g_etc_snap);                                            /* what the initrd put into /etc */
     restore_etc(false);                                                   /* before the clock: /etc/timezone may come from the volume */
     run_netconf();
+    /* kerneltest=NAME ktargs=k:v,k:v  runs /usr/lib/kernel-tests/NAME --config ARGS as root and powers off with its exit status
+     * (the fuzzers and stress programs of docs/HARDENING.md; the command line cannot carry spaces, hence the comma list) */
+    char ktname[40], ktargs[200];
+    if (cmdline_get("kerneltest=", ktname, sizeof ktname)) {
+        if (!cmdline_get("ktargs=", ktargs, sizeof ktargs)) ktargs[0] = 0;
+        char path[96];
+        snprintf(path, sizeof path, "/usr/lib/kernel-tests/%s", ktname);
+        printf("[Hakurei] running %s %s\n", path, ktargs);
+        pid_t pid = fork();
+        if (pid == 0) {
+            if (ktargs[0]) execl(path, ktname, "--config", ktargs, (char *)NULL);
+            else execl(path, ktname, (char *)NULL);
+            _exit(127);
+        }
+        int status = 0;
+        pid_t r;
+        while ((r = wait(&status)) != pid && r >= 0) { }       /* orphans of the test are adopted by init: collect them as they come */
+        fflush(stdout);
+        sleep(1);                                               /* the last lines of its report are still on their way through the serial port */
+        gap_reboot(0x100 | (WIFEXITED(status) ? WEXITSTATUS(status) : 99));
+    }
+
     setup_clock();
     printf(TAG " the shrine opens for the day (init, pid %d)\n", getpid());
     start_sshd();
