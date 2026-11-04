@@ -680,11 +680,12 @@ static int global_decls(JSContext *ctx, JSValue list) {
     for (uint32_t i = 2; i + 1 < n; i += 2) {
         int kind = JV_INT(l->elems[i]);
         if (kind != GD_LET && kind != GD_CONST && kind != GD_CLASS) continue;
-        KZ_ROOT(ctx, name);
-        name = l->elems[i + 1];
+        KZ_ROOTS(ctx, r, 2);
+        r[0] = l->elems[i + 1];
         JSVarCell *c = kz_new_cell(ctx, JS_UNINIT);
         if (!c) return -1;
-        if (kz_obj_add_prop(ctx, JV_OBJ(ctx->global_lex), name, kind == GD_CONST ? KZ_PROP_E : (KZ_PROP_W | KZ_PROP_E), JV_MKPTR(c))) return -1;
+        r[1] = JV_MKPTR(c);                 /* (adding the property may collect: the cell is in no object yet) */
+        if (kz_obj_add_prop(ctx, JV_OBJ(ctx->global_lex), r[0], kind == GD_CONST ? KZ_PROP_E : (KZ_PROP_W | KZ_PROP_E), r[1])) return -1;
         ctx->global_epoch++;
     }
     return 0;
@@ -2057,6 +2058,41 @@ L_iter_close_throw: {
         kz_iter_close_on_throw(ctx, &it);
         THROW();
     }
+L_iter_close_async: {
+        /* for await, leaving the loop: iter next -> the result of return() for the code to await; no return method:
+           jump, nothing awaited */
+        int32_t off = rdi32(pc + 1);
+        const uint8_t *target = pc + off;
+        pc += 5;
+        SAVE();
+        JSValue r = kz_iter_close_async_begin(ctx, sp[-2]);
+        CHECK(r);
+        if (r == JS_EMPTY) { sp -= 2; pc = target; DISPATCH(); }
+        sp--;
+        sp[-1] = r;
+        DISPATCH();
+    }
+L_iter_close_check: {
+        pc++;
+        SAVE();
+        if (!JV_IS_OBJECT(sp[-1])) { kz_throw_type(ctx, "Iterator result is not an object"); THROW(); }
+        sp--;
+        DISPATCH();
+    }
+L_iter_close_throw_async: {
+        /* for await, an exception in the body: iter next exc -> exc result (to await), or jump with just exc */
+        int32_t off = rdi32(pc + 1);
+        const uint8_t *target = pc + off;
+        pc += 5;
+        SAVE();
+        JSValue r = kz_iter_close_async_on_throw(ctx, sp[-3]);
+        CHECK(r);
+        sp[-3] = sp[-1];
+        if (r == JS_EMPTY) { sp -= 2; pc = target; DISPATCH(); }
+        sp[-2] = r;
+        sp--;
+        DISPATCH();
+    }
 L_push_done: *sp++ = JS_FALSE; pc++; DISPATCH();
 L_iter_step: {
         pc++;
@@ -2243,7 +2279,7 @@ L_super_call: L_super_call_spread: {
 L_import_call: {
         pc++;
         SAVE();
-        JSValue r = kz_dynamic_import(ctx, sp[-2], b->filename);
+        JSValue r = kz_dynamic_import(ctx, sp[-2], sp[-1], b->filename);
         CHECK(r);
         sp[-2] = r;
         sp--;
@@ -2560,7 +2596,6 @@ L_bind_this: pc++; DISPATCH();
 L_push_import_meta: {
         pc++;
         SAVE();
-        extern JSValue kz_import_meta(JSContext *ctx, JSFunctionBytecode *b);
         JSValue m = kz_import_meta(ctx, b);
         CHECK(m);
         *sp++ = m;

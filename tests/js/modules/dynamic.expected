@@ -1,0 +1,22 @@
+true function
+after the call: target has not run yet: 0
+target ran target
+true 42 1
+43
+42 true
+true
+true
+URIError
+true
+TypeError
+5 TypeError
+null TypeError
+{"with":5} TypeError
+{"with":{"type":1}} TypeError
+true true true
+dyn_missing Error
+dyn_syntax SyntaxError
+dyn_throws TypeError
+dyn_missing Error
+dyn_syntax SyntaxError
+dyn_throws TypeError

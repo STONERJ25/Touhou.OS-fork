@@ -470,8 +470,9 @@ typedef struct KzVarName {
     JSValue name;
     uint16_t slot;              /* local slot or closure cell index */
     uint8_t where;              /* VN_LOCAL, VN_LOCAL_CELL, VN_CLOSURE */
-    uint8_t kind;               /* KZ_BIND_* */
-    uint32_t scope_start, scope_end;   /* pc range where the name is visible */
+    uint8_t kind;               /* VK_* (bytecode.h) */
+    uint8_t outer;              /* the binding is of a function outside the one whose var scope sloppy eval code declares its vars in */
+    uint8_t paramenv;           /* the binding is in the parameter environment of a function with parameter expressions */
 } KzVarName;
 #define VN_LOCAL      0
 #define VN_LOCAL_CELL 1
@@ -519,6 +520,7 @@ struct JSFunctionBytecode {
     uint32_t src_start, src_end;
     uint32_t line, col;
     JSContext *realm;
+    JSValue module_desc;        /* a module's body: the array describing its requests, imports and exports (compile.c) */
 };
 KZ_INLINE int kz_bc_kind(const JSFunctionBytecode *b) { return (int)b->h.aux; }
 
@@ -577,13 +579,14 @@ typedef enum KzIntrinsic {
     KZ_I_ASYNC_GENERATOR_FUNCTION_PROTO, KZ_I_ASYNC_FROM_SYNC_ITERATOR_PROTO, KZ_I_ITERATOR_HELPER_PROTO,
     KZ_I_WRAP_FOR_VALID_ITERATOR_PROTO,
     KZ_I_OBJECT, KZ_I_FUNCTION, KZ_I_ARRAY, KZ_I_STRING, KZ_I_NUMBER, KZ_I_BOOLEAN, KZ_I_SYMBOL, KZ_I_BIGINT,
-    KZ_I_PROMISE, KZ_I_REGEXP, KZ_I_DATE, KZ_I_MAP, KZ_I_SET, KZ_I_ARRAYBUFFER, KZ_I_TYPEDARRAY,
+    KZ_I_PROMISE, KZ_I_REGEXP, KZ_I_DATE, KZ_I_MAP, KZ_I_SET, KZ_I_ARRAYBUFFER, KZ_I_SHAREDARRAYBUFFER, KZ_I_TYPEDARRAY,
     KZ_I_GENERATOR_FUNCTION, KZ_I_ASYNC_FUNCTION, KZ_I_ASYNC_GENERATOR_FUNCTION, KZ_I_PROXY,
     KZ_I_ERROR, KZ_I_EVAL_ERROR, KZ_I_RANGE_ERROR, KZ_I_REFERENCE_ERROR, KZ_I_SYNTAX_ERROR, KZ_I_TYPE_ERROR,
     KZ_I_URI_ERROR, KZ_I_AGGREGATE_ERROR,
     KZ_I_EVAL, KZ_I_THROW_TYPE_ERROR, KZ_I_ARRAY_PROTO_VALUES, KZ_I_PROMISE_RESOLVE_FN, KZ_I_PROMISE_THEN,
     KZ_I_OBJECT_PROTO_TOSTRING, KZ_I_UINT8C, KZ_I_INT8, KZ_I_UINT8, KZ_I_INT16, KZ_I_UINT16, KZ_I_INT32, KZ_I_UINT32,
     KZ_I_FLOAT32, KZ_I_FLOAT64, KZ_I_BIGINT64, KZ_I_BIGUINT64,
+    KZ_I_ITERATOR,
     KZ_I_COUNT
 } KzIntrinsic;
 
@@ -681,6 +684,7 @@ struct JSRuntime {
     KzVec unhandled;                /* rejected promises without handlers (reported when the job queue empties) */
     JSObject **finreg_pending;      /* FinalizationRegistry objects with dead targets (roots until cleaned up) */
     uint32_t finreg_npending, finreg_cap;
+    KzRegExpCode *re_cache[32];     /* compiled regular expressions by (pattern, flags): literals in loops compile once */
 };
 
 typedef struct KzJoinNode { struct KzJoinNode *prev; JSValue obj; } KzJoinNode;
@@ -703,7 +707,8 @@ struct JSContext {
     JSShape *shape_arguments;   /* length, callee, @@iterator */
     JSValue template_cache;     /* unused */
     KzVec api_scope;            /* values kept alive for the embedder */
-    KzVec modules;              /* loaded modules (JV_MKPTR values) */
+    KzVec modules;              /* the module map: loaded modules (JV_MKPTR values), found by their canonical name */
+    uint32_t mod_async_seq;     /* counts the modules that became async (the order they run in later) */
     void *opaque;
 };
 
@@ -935,6 +940,8 @@ int kz_get_iterator_from_method(JSContext *ctx, JSValue obj, JSValue method, KzI
 int kz_iter_step(JSContext *ctx, KzIter *it, JSValue *value);      /* 1 got a value, 0 done, -1 */
 JSValue kz_iter_close(JSContext *ctx, KzIter *it, JSValue completion);   /* returns completion or JS_EXCEPTION */
 int kz_iter_close_on_throw(JSContext *ctx, KzIter *it);           /* keeps the pending exception; always -1 */
+JSValue kz_iter_close_async_begin(JSContext *ctx, JSValue iter);       /* AsyncIteratorClose up to the await: return()'s result, JS_EMPTY if none */
+JSValue kz_iter_close_async_on_throw(JSContext *ctx, JSValue iter);  /* the same with a throw completion: errors are dropped (JS_EMPTY) */
 JSValue kz_create_iter_result(JSContext *ctx, JSValue value, bool done);
 int kz_iterate_to_vec(JSContext *ctx, JSValue iterable, KzVec *out);
 
@@ -1028,7 +1035,9 @@ int kz_init_promise(JSContext *ctx);
 int kz_init_proxy(JSContext *ctx);
 int kz_init_typed(JSContext *ctx);
 int kz_init_iterators(JSContext *ctx);
+int kz_init_iterator_helpers(JSContext *ctx);
 int kz_init_bigint(JSContext *ctx);
+int kz_init_modules(JSContext *ctx);
 int kz_init_intl(JSContext *ctx);
 int kz_init_global(JSContext *ctx);
 
@@ -1038,6 +1047,7 @@ JSValue kz_array_iterator_new(JSContext *ctx, JSValue obj, int kind);    /* kind
 JSValue kz_native_return_this(JSContext *ctx, JSValue this_val, int argc, JSValue *argv, int magic);   /* get [Symbol.species] */
 int kz_group_by(JSContext *ctx, JSValue items, JSValue cb, int mode, JSValue *out);   /* 0: object, 1: Map */
 JSValue kz_array_species_create(JSContext *ctx, JSValue orig, uint64_t len);
+JSValue kz_array_from_async(JSContext *ctx, JSValue this_val, int argc, JSValue *argv, int magic);   /* array_from_async.c */
 JSValue kz_array_create(JSContext *ctx, uint64_t len, JSValue proto);   /* ArrayCreate (RangeError over 2^32-1) */
 JSValue kz_object_to_string_tag(JSContext *ctx, JSValue v);             /* Object.prototype.toString */
 JSValue kz_json_stringify(JSContext *ctx, JSValue v, JSValue replacer, JSValue space);
@@ -1054,6 +1064,7 @@ int kz_promise_then_internal(JSContext *ctx, JSValue promise, KzReactionFn *ok, 
 void kz_promise_resolve_value(JSContext *ctx, JSValue promise, JSValue v);   /* resolve a promise we created */
 void kz_promise_reject_value(JSContext *ctx, JSValue promise, JSValue v);
 int kz_promise_state(JSValue p);
+void kz_promise_mark_handled(JSContext *ctx, JSValue promise);
 void kz_report_rejections(JSRuntime *rt);
 double kz_date_now(JSContext *ctx);
 double kz_local_tza(JSContext *ctx, double t, bool is_utc);
@@ -1073,9 +1084,19 @@ uint32_t kz_bigint_hash(JSValue a);
 int kz_bigint_to_int64(JSContext *ctx, JSValue v, int64_t *out);         /* BigInt64 wrap */
 JSValue kz_to_bigint(JSContext *ctx, JSValue v);
 JSValue kz_bigint_literal(JSContext *ctx, const char *digits, size_t len, int radix);
-JSValue kz_typed_array_create(JSContext *ctx, KzClassId cls, JSValue buffer_or_len, int argc, JSValue *argv);
-bool kz_is_detached(JSObject *ta);
+JSValue kz_bigint_from_uint64(JSContext *ctx, uint64_t v);
+bool kz_is_detached(JSObject *ta);                                       /* a typed array whose buffer was detached */
+bool kz_typed_oob(JSObject *ta);                                         /* ... or that no longer fits its (resized) buffer */
 uint32_t kz_typed_length(JSObject *ta);                                  /* 0 when out of bounds */
+/* ArrayBuffer, typed arrays, DataView, Atomics (arraybuffer.c, typed.c); element kinds are KZ_CLASS_x - KZ_CLASS_UINT8C_ARRAY */
+extern const uint8_t kz_ta_size[11];
+JSValue kz_elem_load(int kind, const uint8_t *p);                        /* a Number from a non-BigInt element */
+JSValue kz_elem_load_big(JSContext *ctx, int kind, const uint8_t *p);    /* a BigInt from a BigInt64/BigUint64 element */
+void kz_elem_store_number(int kind, uint8_t *p, double d);               /* the NumericToRawBytes of a Number */
+int kz_elem_store_big(JSContext *ctx, int kind, uint8_t *p, JSValue big);
+JSValue kz_new_array_buffer(JSContext *ctx, size_t len);                 /* zero-filled */
+int kz_detach_array_buffer(JSContext *ctx, JSObject *ab);                /* DetachArrayBuffer; -1 for a shared buffer */
+bool kz_buffer_is_detached(JSObject *ab);
 int kz_map_set(JSContext *ctx, JSObject *map, JSValue key, JSValue value);
 JSValue kz_map_get(JSContext *ctx, JSObject *map, JSValue key);
 JSValue kz_new_map(JSContext *ctx);
@@ -1103,17 +1124,27 @@ int kz_unicode_property(const char *name, size_t nlen, const char *value, size_t
                         int (*add)(void *, uint32_t, uint32_t), void *opaque);   /* 0, 1 unknown, -1 */
 bool kz_unicode_has_binary(const char *name, uint32_t c);
 int kz_unicode_case_closure(uint32_t lo, uint32_t hi, bool unicode, int (*add)(void *, uint32_t), void *opaque);
-int kz_module_eval(JSContext *ctx, KzModule *m);
-JSValue kz_dynamic_import(JSContext *ctx, JSValue specifier, JSValue referrer);
+int kz_unicode_case_domain(bool unicode, int (*add)(void *, uint32_t, uint32_t), void *opaque);
+/* modules (module.c): the module map is ctx->modules; a module's body is a generator-like frame (generator.c) */
+JSValue kz_dynamic_import(JSContext *ctx, JSValue specifier, JSValue options, JSValue referrer);   /* a promise */
+JSValue kz_import_meta(JSContext *ctx, JSFunctionBytecode *b);
+JSValue kz_module_evaluate_source(JSContext *ctx, const char *src, size_t len, const char *filename);
 void kz_module_trace(JSRuntime *rt, KzModule *m);
 void kz_module_free(JSRuntime *rt, KzModule *m);
+JSValue kz_compile_module(JSContext *ctx, const char *src, size_t len, JSValue name);              /* eval.c: bytecode or JS_EXCEPTION */
+JSValue kz_module_gen_new(JSContext *ctx, JSObject *func);                                          /* generator.c */
+JSValue *kz_module_gen_regs(JSValue gobj);
+int kz_module_gen_start(JSContext *ctx, JSValue gobj);
+int kz_module_gen_run(JSContext *ctx, JSValue gobj);
+int kz_module_gen_run_async(JSContext *ctx, JSValue gobj, JSValue promise);
 void kz_generator_trace(JSRuntime *rt, JSObject *o);
 void kz_generator_free(JSRuntime *rt, JSObject *o);
 void kz_promise_trace(JSRuntime *rt, JSObject *o);
 void kz_promise_free(JSRuntime *rt, JSObject *o);
 void kz_finreg_trace(JSRuntime *rt, JSObject *o);
 void kz_finreg_free(JSRuntime *rt, JSObject *o);
-void kz_regexp_free(JSRuntime *rt, KzRegExpCode *c);
+void kz_regexp_free(JSRuntime *rt, KzRegExpCode *c);       /* drops a reference to compiled code */
+void kz_regexp_cache_free(JSRuntime *rt);
 void kz_trace_frame(JSRuntime *rt, JSFrame *f);
 JSValue kz_intrinsic(JSContext *ctx, KzIntrinsic id);
 KZ_INLINE JSValue kz_intr(JSContext *ctx, KzIntrinsic id) { return ctx->intrinsic[id]; }

@@ -1,0 +1,83 @@
+.page js 1 run JavaScript programs, or play with JavaScript at a prompt
+
+# SYNOPSIS
+*js* [*-s*] [*-m* _MB_] [*-t* _SECONDS_] _FILE_ [_ARGUMENT_...]
+*js* *--module* [*-m* _MB_] [*-t* _SECONDS_] _FILE_ [_ARGUMENT_...]
+*js* [*-s*] [*-m* _MB_] [*-t* _SECONDS_] *-e* _CODE_ [_ARGUMENT_...]
+*js* [*-s*] [*-m* _MB_] [*-t* _SECONDS_] *-p* _CODE_ [_ARGUMENT_...]
+*js* [*-s*] [*-m* _MB_] [*-t* _SECONDS_] [*-i*] [*-*]
+*js* *--help* | *--version*
+
+# DESCRIPTION
+`js` runs a program written in JavaScript (ECMAScript 2024: classes, async functions, generators, destructuring, BigInt, regular expressions with named groups, lookbehind and Unicode properties, typed arrays, Proxy, Date, iterator helpers, Array.fromAsync, modules and the rest of the standard library) on Kosuzu, the interpreter that ships with TouhouOS. It is meant for scripts, calculations and for trying things out; the engine is small and has no JIT, so it is fast enough for text and data, not for number crunching.
+
+The program is a file, the text after `-e` (or `-p`, which also prints the value of the last expression), or standard input when there is no file and standard input is not a terminal (also with the file name `-`). With no program and a terminal on standard input, `js` starts an interactive session. The arguments after the program name are given to the program in `process.argv`.
+
+A script that ends normally is not finished until its timers have run: `setTimeout` and friends keep it alive, and so do pending promise jobs. The exit status is then `process.exitCode`, or 0.
+
+# OPTIONS
+@ *-e* _CODE_
+    Run _CODE_ as the program. The arguments that follow belong to the program, not to `js`.
+@ *-p* _CODE_
+    Run _CODE_ and print the value of its last expression the way `console.log` would (a string as it is).
+@ *-i*
+    Start the interactive session after the program has run (or instead of one).
+@ *-s*
+    Strict mode: the program starts with `"use strict"`.
+@ *--module*
+    Run the program as an ES module (a _FILE_ whose name ends in `.mjs` is one already): `import` and `export`, `import.meta`, `import()` and `await` at the top level. See MODULES below. With `-e` or `-` the code is a module too; `-p` makes no sense for a module.
+@ *-m* _MB_
+    Memory limit for the program's heap in megabytes; the default is 64, 0 means no limit. A program that goes over it gets a `RangeError` ("out of memory") that it can catch; the heap is collected first, so only live data counts.
+@ *-t* _SECONDS_
+    Time limit, fractions allowed. The program is stopped, whatever it is doing (a loop, a regular expression, `sleep`, waiting for a timer), when the whole run takes longer; no `try` can catch it. In the interactive session the limit applies to each input.
+@ *--help*, *--version*
+    Print the usage, or the version, and exit.
+
+# THE ENVIRONMENT OF A PROGRAM
+Besides the language itself, a program finds:
+@ `console`
+    `log`, `info` and `debug` write to standard output, `warn`, `error` and `trace` to standard error, `assert`, `dir`, `group` and `groupEnd` (indenting what follows), `count` and `countReset`, `time`, `timeLog` and `timeEnd`. Values are shown like Node.js shows them: strings as they are, everything else as an expression (`{ a: 1, b: [ 'x' ] }`, `Map(1) { 1 => 2 }`, `[Function: f]`, `123n`, `<ref *1>` and `[Circular *1]` for cycles), with the first arguments of `console.log` read as a format with `%s %d %i %f %j %o %O %%`. The global `print` is `console.log`.
+@ `process`
+    `argv` (`["js", file, argument...]`), `env`, `exit([code])`, `exitCode`, `cwd()`, `platform` (`"touhou"`), `stdout.write(text)`, `stderr.write(text)`, `nextTick(fn)`.
+@ `setTimeout(fn, ms, arg...)`, `setInterval`, `setImmediate`, `clearTimeout`, `clearInterval`, `clearImmediate`, `queueMicrotask(fn)`
+    Timers return a number. Callbacks run after the program has finished, one at a time, after all the promise jobs they leave behind.
+@ `readFile(path)`, `writeFile(path, text[, append])`
+    Whole files as text (UTF-8). A failure throws an `Error` that says why.
+@ `readLine()`, `readStdin()`
+    The next line of standard input without its line end, or `null` at the end; and everything that is left of it.
+@ `sleep(ms)`
+    Waits (the whole program stands still; use a timer to let others run).
+
+# MODULES
+A module is a file; `import x, { y as z } from './lib/thing.mjs'` reads the file `lib/thing.mjs` next to the importing module, and `export` makes names available to other modules. A module name must be a path: absolute (`/home/me/x.mjs`) or starting with `./` or `../`, taken from the directory of the module that imports (a script, or `-e` code, imports from its own directory, or the current one). There are no bare names (`import 'lodash'`), no URLs and no search path. The same file is loaded and run once, however many modules import it, and import cycles work as the standard says.
+
+Modules are strict, `this` is `undefined` at their top level, their variables and functions stay inside them, and `await` may be used at the top level: a module that awaits waits for it, and the modules that import it wait too. `import.meta` has `url` (`file://` and the absolute path), `filename` and `dirname`. `import(path)` gives a promise for the module's namespace and works in scripts as well; it loads the file after the code that called it has finished.
+
+An error thrown by a module (or by one it imports), a name that is imported and not exported, a missing file, or a syntax error in an imported file ends the program with the error on standard error and status 1. A module that is still waiting for a promise when nothing is left that could settle it ends with the message "the module never finished" and status 13.
+
+# THE INTERACTIVE SESSION
+The prompt is `> `; a statement that is not finished (an open bracket, a template string) continues on `... ` lines. Each input is run in the global scope, so variables, functions and classes stay; the value of an expression is shown, and `_` holds it. Errors are shown with their stack and do not end the session. Timers and promise jobs started by an input run before the next prompt.
+
+Editing: the arrow keys, Home and End, Ctrl-A and Ctrl-E (start and end of the line), Ctrl-B and Ctrl-F, Ctrl-K, Ctrl-U and Ctrl-W (cut to the end, to the start, a word), Ctrl-Y (paste what was cut), Ctrl-L (clear the screen), Tab (two spaces), Up and Down (earlier lines, kept in `~/.js_history`). Ctrl-C abandons the line, or stops a program that is running; Ctrl-D on an empty line leaves.
+
+Commands: `.help`, `.exit`, `.clear`, `.load` _FILE_ (run a file in the session).
+
+# EXIT STATUS
+0 when the program ended normally; 1 after an uncaught exception or a promise rejection nobody handled (the error and its stack are printed on standard error); the code given to `process.exit` or `process.exitCode`; 2 for a wrong option or a program file that cannot be read; 13 for a module that waits for ever; 124 when the time limit stopped the program; 130 after Ctrl-C.
+
+# EXAMPLES
+    js -p '2n ** 200n'
+    js -e 'console.log(process.argv.slice(1))' one two
+    js -t 2 -e 'while (true) {}'
+    js -e 'setTimeout(() => console.log("later"), 100)'
+    js -p 'new Date(2024, 1, 29).toDateString()'
+    seq 3 | js -e 'for (let l; l = readLine();) print(l * 2)'
+    js script.js --flag value
+    js main.mjs
+    js --module -e 'console.log(await import("./data.mjs"))'
+
+# NOTES
+The engine implements ECMAScript 2024 with the finished parts of 2025, including modules. There is no `require`, no JSON or other non-JavaScript modules, no network and no way to start programs: a script can read and write files and standard input and output, and that is all. Regular expressions that would run for ever are stopped by the time limit, deep recursion by a RangeError ("Maximum call stack size exceeded").
+
+# SEE ALSO
+bc(1), awk(1), gapsh(1)

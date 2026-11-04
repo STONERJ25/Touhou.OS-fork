@@ -678,6 +678,36 @@ int kz_iter_close_on_throw(JSContext *ctx, KzIter *it) {
     return -1;
 }
 
+/* AsyncIteratorClose (7.4.13) for a normal, break, continue or return completion, up to the Await: GetMethod(iterator,
+   "return") and its call.  JS_EMPTY: there is no return method, so nothing is awaited.  Otherwise the result of the call,
+   which the generated code awaits and checks to be an object (iter_close_check).  An error here propagates. */
+JSValue kz_iter_close_async_begin(JSContext *ctx, JSValue iter) {
+    KZ_ROOTS(ctx, r, 2);
+    r[0] = iter;
+    r[1] = kz_get_method(ctx, r[0], ctx->rt->atom[KZ_ATOM_return]);
+    if (r[1] == JS_EXCEPTION) return JS_EXCEPTION;
+    if (r[1] == JS_UNDEFINED) return JS_EMPTY;
+    return kz_call(ctx, r[1], r[0], 0, NULL);
+}
+
+/* The same for a throw completion (the exception is not pending: the handler holds it on the stack): the errors of
+   GetMethod and of the call are ignored, so is the Await's, and the original exception is thrown again afterwards.
+   JS_EXCEPTION only when an interrupt is pending, which nothing may swallow. */
+JSValue kz_iter_close_async_on_throw(JSContext *ctx, JSValue iter) {
+    JSRuntime *rt = ctx->rt;
+    KZ_ROOTS(ctx, r, 2);
+    r[0] = iter;
+    r[1] = kz_get_method(ctx, r[0], rt->atom[KZ_ATOM_return]);
+    JSValue res = JS_EMPTY;
+    if (r[1] != JS_EXCEPTION && r[1] != JS_UNDEFINED) res = kz_call(ctx, r[1], r[0], 0, NULL);
+    if (r[1] == JS_EXCEPTION || res == JS_EXCEPTION) {
+        if (rt->exc_uncatchable) return JS_EXCEPTION;
+        kz_take_exception(ctx);
+        return JS_EMPTY;
+    }
+    return res;
+}
+
 JSValue kz_create_iter_result(JSContext *ctx, JSValue value, bool done) {
     KZ_ROOT(ctx, v);
     v = value;

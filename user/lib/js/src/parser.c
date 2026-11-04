@@ -292,7 +292,7 @@ static Binding *declare_var(Parser *p, JSValue name, int kind, uint32_t line, ui
     for (Scope *s = p->scope;; s = s->parent) {
         Binding *b = kz_scope_find(s, name);
         if (b) {
-            bool lexical = is_lexical_kind(b->kind) || (b->kind == BK_FUNC && !is_var_scope(s)) ||
+            bool lexical = is_lexical_kind(b->kind) || (b->kind == BK_FUNC && (!is_var_scope(s) || s->kind == SC_MODULE)) ||
                            (b->kind == BK_CATCH && !(b->flags & BF_SIMPLE_CATCH)) || b->kind == BK_IMPORT;
             if (lexical) { redeclared(p, name, line, col); return NULL; }
         }
@@ -384,7 +384,7 @@ static void mark_uses(Parser *p, JSValue name) {
         FuncInfo *f = p->fn;
         while (f && (f->flags & FN_ARROW)) f = f->parent;
         if (f) f->uses_arguments = true;
-        if (p->in_class_field && (!f || (f->flags & FN_FIELD_INIT))) error_tok(p, "'arguments' is not allowed in class field initializer or static initialization block");
+        if (p->in_class_field && (!f || (f->flags & (FN_FIELD_INIT | FN_EVAL)))) error_tok(p, "'arguments' is not allowed in class field initializer or static initialization block");
     }
 }
 
@@ -751,6 +751,7 @@ static Node *parse_object_literal(Parser *p) {
             pr->op = accessor == 1 ? P_GET : accessor == 2 ? P_SET : P_METHOD;
             pr->b = parse_method(p, fflags);
             if (!pr->b) return NULL;
+            pr->b->func->src_start = pr->pos;       /* Function.prototype.toString: the whole method definition, name included */
             goto add;
         }
         if (at(p, T_COLON)) {
@@ -912,7 +913,11 @@ static Node *parse_primary(Parser *p) {
                 else callee = parse_lhs(p, false);
                 if (!callee) return NULL;
                 if (callee->type == N_OPT_CHAIN) { error_node(p, callee, "Invalid optional chain from new expression"); return NULL; }
-                if (callee->type == N_IMPORT_CALL) { error_node(p, callee, "Cannot use new with import"); return NULL; }
+                /* import(x) is a call, not a MemberExpression: neither `new import(x)` nor `new import(x).y` */
+                for (Node *base = callee; base; base = base->a) {
+                    if (base->type == N_IMPORT_CALL) { error_node(p, callee, "Cannot use new with import"); return NULL; }
+                    if (base->type != N_MEMBER && base->type != N_PRIVATE_MEMBER && base->type != N_TAGGED) break;
+                }
                 start->a = callee;
                 if (at(p, T_LPAREN)) {
                     if (next(p)) return NULL;
@@ -1041,12 +1046,12 @@ static Node *parse_primary(Parser *p) {
         if (!n) return NULL;
         n->val = TOK.val;
         n->val2 = TOK.raw;
-        char err[128];
+        char err[512];
         JSString *body = kz_str_flat(p->ctx, JV_STR(TOK.val)), *fl = kz_str_flat(p->ctx, JV_STR(TOK.raw));
         if (!body || !fl) { p->failed = true; return NULL; }
         int rc = kz_regexp_syntax_check(p->ctx, body, fl, err, sizeof err);
         if (rc < 0) { p->failed = true; return NULL; }
-        if (rc > 0) { error_tok(p, "Invalid regular expression: /%s/: %s", "...", err); return NULL; }
+        if (rc > 0) { error_tok(p, "%s", err); return NULL; }
         if (next(p)) return NULL;
         return n;
     }
@@ -1217,6 +1222,7 @@ static Node *parse_lhs(Parser *p, bool allow_call) {
                 /* a direct eval: everything visible here must stay reachable by name */
                 c->flags |= F_DIRECT_EVAL;
                 for (Scope *s = p->scope; s; s = s->parent) s->has_eval = true;
+                if (p->in_params && p->fn) p->fn->eval_in_params = true;
                 for (FuncInfo *f = p->fn; f; f = f->parent) {
                     f->has_direct_eval = true;
                     if (!(f->flags & FN_ARROW)) { f->uses_arguments = true; f->uses_this = true; }
@@ -1523,7 +1529,8 @@ static int declare_name(Parser *p, Node *id, int kind) {
     } else if (kind == BK_CATCH) b = add_binding(p, p->scope, id->val, BK_CATCH);
     else b = declare_lexical(p, p->scope, id->val, kind, id->line, id->col);
     if (!b) return -1;
-    if (kind != BK_PARAM) { b->decl_pos = id->pos; b->decl_end = id->end; b->decl = id; }
+    /* (a `var f` after `function f() {}` redeclares the binding but must not take the function declaration away from it) */
+    if (kind != BK_PARAM && !(kind == BK_VAR && b->kind == BK_FUNC)) { b->decl_pos = id->pos; b->decl_end = id->end; b->decl = id; }
     id->binding = NULL;
     return 0;
 }
@@ -1801,7 +1808,8 @@ static Node *parse_function(Parser *p, int kind_flags, bool is_decl, bool is_exp
     Node *name_node = NULL;
     bool method = flags & FN_METHOD;
     if (!method) {
-        if (flags & FN_ASYNC) { /* the 'async' was consumed by the caller; start at it */ }
+        /* the caller consumed `async`: the function's text (Function.prototype.toString, the Function constructors) starts at it */
+        if (flags & FN_ASYNC) start = p->lx.prev_pos;
         if (expect(p, T_NAME)) return NULL;          /* 'function' */
         if (at(p, T_STAR)) { flags |= FN_GENERATOR; if (next(p)) return NULL; }
         if (at(p, T_NAME)) {
@@ -1822,8 +1830,19 @@ static Node *parse_function(Parser *p, int kind_flags, bool is_decl, bool is_exp
     if (is_decl && name_node) {
         /* declarations bind in the enclosing scope */
         Binding *b;
-        bool block_level = !is_var_scope(p->scope);
-        if (block_level) b = declare_lexical(p, p->scope, name, BK_FUNC, name_node->line, name_node->col);
+        /* (at the top level of a module, function declarations are lexical: duplicates and `var f; function f(){}` are errors) */
+        bool block_level = !is_var_scope(p->scope) || p->scope->kind == SC_MODULE;
+        if (block_level) {
+            /* Annex B.3.2.4 lets a sloppy block hold two declarations of one name only when both are plain functions: an async
+               function or a generator on either side is a redeclaration */
+            Binding *prev = kz_scope_find(p->scope, name);
+            if (prev && prev->kind == BK_FUNC && prev->decl && prev->decl->type == N_FUNC_DECL && prev->decl->func &&
+                ((prev->decl->func->flags | flags) & (FN_ASYNC | FN_GENERATOR))) {
+                redeclared(p, name, name_node->line, name_node->col);
+                return NULL;
+            }
+            b = declare_lexical(p, p->scope, name, BK_FUNC, name_node->line, name_node->col);
+        }
         else b = declare_var(p, name, BK_FUNC, name_node->line, name_node->col);
         if (!b) return NULL;
         b->decl = n;
@@ -1896,13 +1915,15 @@ static Node *parse_arrow_from_params(Parser *p, uint32_t flags, Node *unused, No
     if (!n) return NULL;
     FuncInfo *fi = new_func(p, flags | FN_ARROW | (p->strict ? FN_STRICT : 0));
     if (!fi) return NULL;
+    if (flags & FN_ASYNC) fi->src_start = p->lx.prev_pos;      /* (`async` is consumed) */
     fi->node = n;
     n->func = fi;
     FuncInfo *saved_fn = p->fn;
-    bool saved_strict = p->strict, saved_params = p->in_params;
+    bool saved_strict = p->strict, saved_params = p->in_params, saved_in_fn = p->in_function;
     int saved_labels = p->labels_n, saved_loop = p->loop_depth, saved_switch = p->switch_depth;
     int saved_pending = p->label_pending;
     p->fn = fi;
+    p->in_function = true;                  /* (a `return` in an arrow's block body is legal even in a script's top level) */
     p->in_params = false;
     p->label_pending = 0;
     fi->scope = push_scope(p, SC_FUNC);
@@ -1942,6 +1963,7 @@ static Node *parse_arrow_from_params(Parser *p, uint32_t flags, Node *unused, No
     if (!check_params(p, fi)) return NULL;
     p->fn = saved_fn;
     p->strict = saved_strict;
+    p->in_function = saved_in_fn;
     p->in_params = saved_params;
     p->label_pending = saved_pending;
     p->labels_n = saved_labels;
@@ -2042,6 +2064,7 @@ static Node *parse_class_element(Parser *p, Node *cls, bool derived, bool *has_c
         }
     }
     if (is_static) el->flags |= F_STATIC;
+    uint32_t elem_start = TOK.pos;      /* the text of a method starts here: its async, *, get or set, not the static before it */
     if (at_kw(p, KW_async)) {
         bool nl;
         int t = peek_type(p, &nl, NULL);
@@ -2089,6 +2112,7 @@ static Node *parse_class_element(Parser *p, Node *cls, bool derived, bool *has_c
         Node *fn = parse_function(p, (int)(ff | FN_METHOD), false, false);
         p->strict = saved_strict_flag;
         if (!fn) return NULL;
+        fn->func->src_start = elem_start;
         if (ff & FN_CTOR) fn->func->flags = (fn->func->flags & ~FN_METHOD) | FN_CTOR | (derived ? FN_DERIVED : 0);
         fn->func->class_node = cls;
         el->b = fn;
@@ -2221,6 +2245,14 @@ static Node *parse_class(Parser *p, bool is_decl, bool name_optional) {
     pop_scope(p);
     p->strict = saved_strict;
     finish(p, n);
+    /* the text of a class is the whole class, also when its constructor is written out (Function.prototype.toString) */
+    for (int i = 0; i < n->list.n; i++) {
+        Node *el = n->list.v[i];
+        if (el->op == CE_METHOD && el->ival == 1 && !(el->flags & F_STATIC) && el->b && el->b->func) {
+            el->b->func->src_start = n->pos;
+            el->b->func->src_end = n->end;
+        }
+    }
     if (is_decl) {
         Node *d = new_node_at(p, N_CLASS_DECL, n);
         if (!d) return NULL;
@@ -2311,6 +2343,7 @@ static Node *parse_for(Parser *p) {
     if (at_kw(p, KW_await)) {
         if (!in_async_context(p)) { unexpected(p); return NULL; }
         is_await = true;
+        if (p->fn) p->fn->contains_await = true;        /* (a module with a top-level for await is an async module) */
         if (next(p)) return NULL;
     }
     if (expect(p, T_LPAREN)) return NULL;
@@ -2373,6 +2406,10 @@ static Node *parse_for(Parser *p) {
         n->b = of ? parse_assignment(p, true) : parse_expression(p, true);
         if (!n->b) return NULL;
         if (expect(p, T_RPAREN)) return NULL;
+        /* the head, the right-hand side included, runs with the loop's lexical bindings in their temporal dead zone:
+           `for (let x of x)` is a ReferenceError.  A use before the end of the head keeps its TDZ check. */
+        if (decl && decl_kind != V_VAR)
+            for (Binding *b = n->scope->first; b; b = b->next) b->decl_end = TOK.pos;
         n->d = parse_loop_body(p);
         if (!n->d) return NULL;
         pop_scope(p);
@@ -2803,7 +2840,7 @@ static Node *parse_import(Parser *p) {
     if (at(p, T_STAR)) {
         Node *spec = new_node(p, N_IMPORT_SPEC);
         if (!spec || next(p)) return NULL;
-        if (!(at(p, T_NAME) && TOK.val == rt->atom[KZ_ATOM_as])) { unexpected(p); return NULL; }
+        if (!(at(p, T_NAME) && TOK.val == rt->atom[KZ_ATOM_as] && !TOK.escaped)) { unexpected(p); return NULL; }
         if (next(p)) return NULL;
         spec->val = rt->atom[KZ_ATOM_star];
         Node *id = parse_binding_identifier(p, 0);

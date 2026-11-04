@@ -72,6 +72,7 @@ typedef struct Lexer {
     uint32_t col_cache_pos, col_cache_col, col_cache_line;
     Token tok;              /* the current token */
     uint32_t prev_end;      /* end of the previous token */
+    uint32_t prev_pos;      /* start of the previous token (`async` when a function or arrow that follows it begins) */
     uint32_t prev_line;
     bool html_comments;     /* scripts allow <!-- and --> comments (Annex B) */
     struct Parser *p;
@@ -212,11 +213,14 @@ enum {
 #define BF_ANNEXB     0x08  /* a block function also given a var binding (Annex B.3.3) */
 #define BF_LOOP       0x10  /* declared in a loop head or body: fresh per iteration */
 #define BF_SIMPLE_CATCH 0x20
+#define BF_PRECELL    0x40  /* module scope: the variable cell is made by the linker (exported and imported bindings) */
+#define BF_OUTER      0x80  /* eval's synthesized caller: a binding of a function outside the one eval code declares its vars in */
+#define BF_PARAMENV   0x100 /* eval's synthesized caller: a binding of the parameter environment of a function with parameter expressions */
 
 struct Binding {
     JSValue name;
     uint8_t kind;
-    uint8_t flags;
+    uint16_t flags;
     int16_t slot;           /* local slot in the frame (assigned by the compiler) */
     Scope *scope;
     Binding *next;
@@ -283,6 +287,7 @@ struct FuncInfo {
     int nparams_len;        /* the "length" */
     /* filled by the parser */
     bool uses_arguments, uses_this, uses_new_target, uses_super_call, uses_super_prop, has_direct_eval, has_yield;
+    bool eval_in_params;    /* a direct eval inside the parameter expressions (its vars live in an environment of their own) */
     bool contains_await;
     bool arguments_shadowed;    /* a parameter or lexical named arguments */
     /* filled by the compiler */

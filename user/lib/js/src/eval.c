@@ -43,8 +43,11 @@ static Binding *synth_binding(Parser *p, Scope *s, JSValue name, int kind, int s
     b->slot = (int16_t)slot;
     b->flags = BF_CAPTURED;
     b->export_index = -1;
-    if (s->last) s->last->next = b; else s->first = b;
-    s->last = b;
+    /* (prepended: the entries are made outermost first and kz_scope_find takes the first match, so of two bindings of one name the
+       innermost wins) */
+    b->next = s->first;
+    s->first = b;
+    if (!s->last) s->last = b;
     return b;
 }
 
@@ -63,6 +66,21 @@ static FuncInfo *build_caller(Parser *p, const KzVarName *vn, uint16_t count, bo
     chain[nchain++] = cur;
     for (int i = (int)count - 1; i >= 0; i--) {
         const KzVarName *e = &vn[i];
+        if (e->kind == VK_FIELD_INIT) { fi->flags |= FN_FIELD_INIT; continue; }       /* (a marker: no binding) */
+        if (e->kind == VK_EVAL_OBJ) {
+            /* the object a function's sloppy eval vars live in: a scope of its own, so that names are looked up in it after the
+               bindings of the function (the entries after this one, made into the scopes inside it) and before those outside */
+            Scope *m = synth_scope(p, SC_BLOCK, cur, fi);
+            if (!m) return NULL;
+            Binding *mb = synth_binding(p, m, e->name, BK_HIDDEN, i);
+            if (!mb) return NULL;
+            if (e->outer) mb->flags |= BF_OUTER;
+            if (e->paramenv) mb->flags |= BF_PARAMENV;
+            m->eval_obj = mb;
+            cur = synth_scope(p, SC_BLOCK, m, fi);
+            if (!cur) return NULL;
+            continue;
+        }
         if (e->kind == VK_WITH) {
             Scope *w = synth_scope(p, SC_WITH, cur, fi);
             if (!w) return NULL;
@@ -81,16 +99,26 @@ static FuncInfo *build_caller(Parser *p, const KzVarName *vn, uint16_t count, bo
         case VK_ARGUMENTS: bk = BK_ARGUMENTS; break;
         case VK_PARAM: bk = BK_PARAM; break;
         case VK_FUNC: bk = BK_FUNC; break;
-        case VK_THIS: case VK_NEW_TARGET: case VK_HOME: case VK_EVAL_OBJ: case VK_PRIVATE: bk = BK_HIDDEN; break;
+        case VK_THIS: case VK_NEW_TARGET: case VK_HOME: case VK_EVAL_OBJ: case VK_PRIVATE: case VK_FUNCOBJ: bk = BK_HIDDEN; break;
         default: bk = BK_VAR; break;
         }
         /* an inner name shadows an outer one: the first (innermost) entry wins, so later scopes are outer */
         Binding *b = synth_binding(p, cur, e->name, bk, i);
         if (!b) return NULL;
+        if (e->outer) b->flags |= BF_OUTER;
+        if (e->paramenv) b->flags |= BF_PARAMENV;
         if (bk == BK_LET || bk == BK_CONST) b->flags |= BF_TDZ;
-        if (e->kind == VK_THIS && !fi->this_b) fi->this_b = b;
-        if (e->kind == VK_NEW_TARGET && !fi->new_target_b) fi->new_target_b = b;
-        if (e->kind == VK_HOME && !fi->home_b) fi->home_b = b;
+        /* (this loop runs from the outermost entry inwards: the innermost this, new.target and home object win) */
+        if (e->kind == VK_THIS) fi->this_b = b;
+        if (e->kind == VK_NEW_TARGET) fi->new_target_b = b;
+        if (e->kind == VK_HOME) fi->home_b = b;
+        if (e->kind == VK_FUNCOBJ) {
+            /* the caller is a derived constructor (or an arrow in one): super() may be called, `this` can be
+               uninitialised, and the fields are run after the call (run_fields does nothing when there are none) */
+            fi->fields_b = b;
+            fi->has_instance_elements = true;
+            fi->flags |= FN_DERIVED;
+        }
     }
     (void)chain;
     fi->scope = fi->body_scope = cur;
@@ -102,7 +130,7 @@ static FuncInfo *build_caller(Parser *p, const KzVarName *vn, uint16_t count, bo
 /* the binding the innermost descriptor entry of `name` stands for (NULL: none) */
 static const KzVarName *find_entry(const KzVarName *vn, uint16_t count, JSValue name, int *index) {
     for (uint16_t i = 0; i < count; i++)
-        if (vn[i].name == name && vn[i].kind != VK_WITH) { *index = i; return &vn[i]; }
+        if (vn[i].name == name && vn[i].kind != VK_WITH && vn[i].kind != VK_EVAL_OBJ && !vn[i].outer) { *index = i; return &vn[i]; }
     return NULL;
 }
 
@@ -149,6 +177,30 @@ JSValue kz_eval_script(JSContext *ctx, const char *src, size_t len, const char *
     return kz_call(ctx, rf, ctx->global, 0, NULL);
 }
 
+/* ------------------------------------------------------------------ modules */
+
+/* ParseModule (16.2.1.6.1): parses and compiles module source text.  Returns the module function's bytecode as a cell
+   pointer value (the caller roots it at once; nothing allocates between the return and that), or JS_EXCEPTION with the
+   SyntaxError pending.  `name` is the module's canonical name (an atom): it becomes the bytecode's filename. */
+JSValue kz_compile_module(JSContext *ctx, const char *src, size_t len, JSValue name) {
+    KZ_ROOT_VEC(ctx, values);
+    KZ_ROOTS(ctx, r, 3);
+    r[0] = name;
+    KzSource *s = make_source(ctx, src, len);
+    if (!s) return JS_EXCEPTION;
+    r[1] = JV_MKPTR(s);
+    Parser p;
+    if (kz_parser_init(&p, ctx, s->text, len, r[0], &values)) { kz_parser_free(&p); return JS_EXCEPTION; }
+    p.source = r[1];
+    p.strict = true;
+    p.module = true;
+    Node *prog = kz_parse_program(&p);
+    JSFunctionBytecode *b = prog ? compile(&p, prog) : NULL;
+    kz_parser_free(&p);
+    if (!b) return JS_EXCEPTION;
+    return JV_MKPTR(b);
+}
+
 /* ------------------------------------------------------------------ direct eval */
 
 JSValue kz_eval_direct(JSContext *ctx, JSFrame *f, JSValue arg, uint16_t first, uint16_t count) {
@@ -185,9 +237,30 @@ JSValue kz_eval_direct(JSContext *ctx, JSFrame *f, JSValue arg, uint16_t first, 
         p.eval_in_function = true;
         p.eval_new_target_ok = caller_kind != KZ_FUNC_ARROW || callerfi->new_target_b;
         p.eval_super_prop_ok = callerfi->home_b != NULL;
-        p.eval_super_call_ok = false;
-        p.eval_in_class_field = caller_kind == KZ_FUNC_FIELD_INIT;
+        p.eval_super_call_ok = callerfi->fields_b != NULL && callerfi->this_b != NULL;     /* a derived constructor, or an arrow in one */
+        p.eval_in_class_field = caller_kind == KZ_FUNC_FIELD_INIT || (callerfi->flags & FN_FIELD_INIT);
     }
+    /* the private names of the classes around the call site (their descriptor entries are named "#name"): the eval code may
+       refer to them, and finds the names' cells in the synthesized scopes like any other binding */
+    int nprivate = 0;
+    for (uint16_t i = 0; i < count; i++) if (vn[i].kind == VK_PRIVATE) nprivate++;
+    if (nprivate) {
+        JSValue *names = kz_arena_alloc(&p, (size_t)nprivate * sizeof(JSValue));
+        if (!names) { kz_parser_free(&p); return JS_EXCEPTION; }
+        int k = 0;
+        for (uint16_t i = 0; i < count; i++) {
+            if (vn[i].kind != VK_PRIVATE) continue;
+            KZ_ROOT(ctx, bare);
+            bare = kz_str_sub(ctx, vn[i].name, 1, kz_str_len(JV_STR(vn[i].name)));
+            if (bare == JS_EXCEPTION) { kz_parser_free(&p); return JS_EXCEPTION; }
+            JSValue at = kz_atom_from_str(ctx, bare);
+            if (at == JS_EXCEPTION || kz_parser_keep(&p, at) == JS_EXCEPTION) { kz_parser_free(&p); return JS_EXCEPTION; }
+            names[k++] = at;
+        }
+        p.outer_private = names;
+        p.nouter_private = k;
+    }
+
     Node *prog = kz_parse_program(&p);
     JSFunctionBytecode *b = NULL;
     if (prog) {
@@ -201,19 +274,30 @@ JSValue kz_eval_direct(JSContext *ctx, JSFrame *f, JSValue arg, uint16_t first, 
             Binding **link = &es->first;
             Binding *last = NULL;
             int eval_obj = -1;
-            for (uint16_t i = 0; i < count; i++) if (vn[i].kind == VK_EVAL_OBJ) { eval_obj = i; break; }
+            /* (the var object of the function the eval code runs in; one of an enclosing function is not the place for its vars) */
+            for (uint16_t i = 0; i < count; i++) if (vn[i].kind == VK_EVAL_OBJ && !vn[i].outer) { eval_obj = i; break; }
             bool failed = false;
             while (*link) {
                 Binding *bb = *link;
                 if (bb->kind != BK_VAR && bb->kind != BK_FUNC) { last = bb; link = &bb->next; continue; }
                 int idx;
                 const KzVarName *e = find_entry(vn, count, bb->name, &idx);
-                if (e && (e->kind == VK_LET || e->kind == VK_CONST || e->kind == VK_CLASS_INNER)) {
+                /* A var of eval code in a parameter expression conflicts with the parameters and `arguments`, which live in an
+                   environment between the eval code's and the var object's (the entries before the object in the descriptor). */
+                bool in_params = e && e->paramenv && (e->kind == VK_PARAM || e->kind == VK_ARGUMENTS) && (eval_obj < 0 || idx < eval_obj);
+                if (e && (e->kind == VK_LET || e->kind == VK_CONST || e->kind == VK_CLASS_INNER || in_params)) {
                     char buf[80];
                     kz_str_to_utf8_buf(JV_STR(bb->name), buf, sizeof buf);
                     kz_throw_syntax(ctx, "Identifier '%s' has already been declared", buf);
                     failed = true;
                     break;
+                }
+                if (eval_obj < 0) {
+                    /* a parameter expression: there is no var object to put the name in, so it stays a variable of the eval code
+                       itself (visible there only; the specification keeps it for the rest of the parameter list) */
+                    last = bb;
+                    link = &bb->next;
+                    continue;
                 }
                 /* drop it from the eval scope: references resolve outward, to the caller's binding or the
                    var object (through the eval scope's eval_obj); the prologue binds the name there */

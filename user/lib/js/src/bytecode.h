@@ -47,7 +47,7 @@ enum { FR_FIELD = 0, FR_PRIVATE_METHOD = 1, FR_PRIVATE_GETTER = 2, FR_PRIVATE_SE
 
 /* the eval scope descriptor (KzVarName.kind) */
 enum { VK_VAR = 0, VK_LET, VK_CONST, VK_CALLEE, VK_THIS, VK_NEW_TARGET, VK_HOME, VK_ARGUMENTS, VK_WITH, VK_EVAL_OBJ,
-       VK_FUNC, VK_CLASS_INNER, VK_PRIVATE, VK_PARAM };
+       VK_FUNC, VK_CLASS_INNER, VK_PRIVATE, VK_PARAM, VK_FUNCOBJ, VK_FIELD_INIT };
 
 /* global declaration lists (OP_global_decls): an array [kind, name, kind, name, ...] */
 enum { GD_VAR = 0, GD_FUNC, GD_LET, GD_CONST, GD_CLASS };

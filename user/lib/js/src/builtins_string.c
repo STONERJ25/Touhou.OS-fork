@@ -713,7 +713,8 @@ static JSValue proto_match(JSContext *ctx, JSValue this_val, int argc, JSValue *
     if (JV_IS_NULLISH(this_val)) return kz_throw_type(ctx, "String.prototype.%s called on null or undefined", names[magic]);
     KZ_ROOTS(ctx, r, 3);
     JSValue rx = argv[0];
-    if (!JV_IS_NULLISH(rx)) {
+    /* (ES2025: only an object's @@match / @@matchAll / @@search is looked up, a primitive argument is not asked) */
+    if (JV_IS_OBJECT(rx)) {
         if (magic == 1) {
             int isr = kz_is_regexp(ctx, rx);
             if (isr < 0) return JS_EXCEPTION;
@@ -753,7 +754,7 @@ static JSValue proto_replace(JSContext *ctx, JSValue this_val, int argc, JSValue
     if (JV_IS_NULLISH(this_val)) return kz_throw_type(ctx, "String.prototype.%s called on null or undefined", name);
     KZ_ROOTS(ctx, r, 5);
     JSValue sv = argv[0], rv = argv[1];
-    if (!JV_IS_NULLISH(sv)) {
+    if (JV_IS_OBJECT(sv)) {
         if (magic) {
             int isr = kz_is_regexp(ctx, sv);
             if (isr < 0) return JS_EXCEPTION;
@@ -825,7 +826,7 @@ static JSValue proto_split(JSContext *ctx, JSValue this_val, int argc, JSValue *
     if (JV_IS_NULLISH(this_val)) return kz_throw_type(ctx, "String.prototype.split called on null or undefined");
     KZ_ROOTS(ctx, r, 4);
     JSValue sep = argv[0];
-    if (!JV_IS_NULLISH(sep)) {
+    if (JV_IS_OBJECT(sep)) {
         r[0] = kz_get_method(ctx, sep, rt->sym[KZ_SYM_split]);
         if (r[0] == JS_EXCEPTION) return r[0];
         if (r[0] != JS_UNDEFINED) {

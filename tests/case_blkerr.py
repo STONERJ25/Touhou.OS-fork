@@ -20,6 +20,7 @@ from pathlib import Path
 
 from harness import test, scaled
 from case_blockdev import Guest, pattern_image, pattern_slice, sha, device_by_model, must, q, MiB
+from case_storage import serious_errors
 import mkdisk
 
 IMG_DIR = Path(__file__).resolve().parent.parent / "build" / "blkerr"
@@ -107,18 +108,23 @@ def blk_err_flush():
 @test
 def blk_err_fat_writeback():
     """A FAT32 volume whose disk fails the write-back: `sync` reports EIO, umount refuses (the data stays in memory), the volume's
-    metadata on the disk is not touched (data is written before the FAT and the directory); a one-off error heals with the next sync
-    and the volume then checks clean with the file intact."""
+    metadata on the disk does not point at data that never arrived (data is written before the FAT and the size of the entry; an empty
+    entry may be there); a one-off error heals with the next sync and the volume then checks clean with the file intact, its size
+    included: the entry update that the failed write order refused while the file was written is not lost (fatd_commit, "stale").
+    The file is written in ONE call of at most 64 KiB: a longer one is written in several, and the second call (which links its
+    clusters to the first call's) makes the write order put the first call's data on the disk at once, so a failing disk would fail
+    the write itself instead of the later sync (docs/STORAGE.md, "Write ordering"). The volume has 512-byte clusters, so the root
+    directory, keep.txt and the start of the new file share a cache page: the entry update after the data needs a flush of its own."""
     simg, s_data = fat_image("errfat-sata", 64)
     nimg, n_data = fat_image("errfat-nvme", 64)
-    s_bad, n_bad = s_data + 600, n_data + 600            # inside the first MiB of free clusters, where the new file goes
+    s_bad, n_bad = s_data + 60, n_data + 60              # inside the first 30 KiB of the data area, where the new 60 KiB file goes
     extra = (sata("es", simg, "ide.1", "FATFAIL-SATA", [dict(iotype="write", sector=s_bad)]) +
              nvme("en", "FATFAIL1", nimg, [dict(iotype="write", sector=n_bad, once="on") for _ in range(4)]))   # one more than the driver retries
     with Guest("t-blk-err-fat", extra) as g:
         dev = device_by_model(g.partitions(), "FATFAIL-SATA")
         g.ok(f"mkdir -p /tmp/s /tmp/n && mount -t fat32 /dev/{dev}1 /tmp/s && mount -t fat32 /dev/nvme0n1p1 /tmp/n")
         for d in ("s", "n"):
-            g.ok(f"dd if=/dev/urandom of=/tmp/{d}.bin bs=64k count=16 2>/dev/null && cp /tmp/{d}.bin /tmp/{d}/big.bin")
+            g.ok(f"dd if=/dev/urandom of=/tmp/{d}.bin bs=60k count=1 2>/dev/null && dd if=/tmp/{d}.bin of=/tmp/{d}/big.bin bs=60k 2>/dev/null")
         want = {d: re.search(r"[0-9a-f]{64}", g.ok(f"sha256sum /tmp/{d}.bin")).group(0) for d in ("s", "n")}
         # the persistent error on SATA: sync says so, again and again, and umount refuses
         out, rc = g.run("sync")
@@ -132,7 +138,13 @@ def blk_err_fat_writeback():
         must(log, rf"fat32: cannot unmount {dev}1: writing the volume back failed \(-5\)")
         must(log, r"nvme0: write of \d+ blocks at lba \d+ on nsid 1 failed: status type 2 code 0x80")
         assert want["s"] in g.ok("sha256sum /tmp/s/big.bin"), "the file must still read correctly from memory"
-        # the one-off error on NVMe was reported by one of the syncs above (or the flusher thread) and is gone now: umount writes the rest
+        # the removal of its entry needs the same flush of the data page first, which the disk refuses: the unlink must fail and leave the
+        # file alone (it must not free the clusters while the entry on the disk, which cannot be changed, still points at them)
+        out, rc = g.run("rm /tmp/s/big.bin")
+        assert rc != 0, f"an unlink whose entry removal cannot be written must fail:\n{out}"
+        assert want["s"] in g.ok("sha256sum /tmp/s/big.bin"), "a refused unlink must leave the file as it was"
+        # the one-off error on NVMe was used up by the flush the write order needed while the file was written (the entry update it refused
+        # stayed pending), or by one of the syncs above: it is gone now, and umount writes the rest, the entry included
         out, rc = g.run("umount /tmp/n")
         assert rc == 0, f"once the error is gone the NVMe volume must unmount cleanly:\n{out}"
         must(g.ok("dmesg"), r"fat32: nvme0n1p1 unmounted cleanly")
@@ -147,10 +159,12 @@ def blk_err_fat_writeback():
         assert v.read_file("/keep.txt") == b"keep me\n" * 100
     finally:
         v.close()
-    fat_check(simg)                                          # no errors: dirty at most, nothing points at data that never arrived
+    rep = mkdisk.check_image(str(simg))                      # what a power cut leaves, nothing worse: the new clusters are in the FAT (lost clusters), the data never arrived
+    assert not serious_errors(rep), f"{simg.name}: more than a power cut leaves behind:\n{rep.text(True)}"
     v = mkdisk.open_volume(str(simg), 1)
     try:
-        assert v.find("/big.bin") is None, "the directory entry must not reach the disk before its data"
+        ent = v.find("/big.bin")                             # the empty entry of the creation may be on the disk (the write order flushed it), never a size or a chain
+        assert ent is None or (ent.size == 0 and ent.first == 0), f"the entry must not point at data before the data is on the disk: {ent.size} bytes, first cluster {ent.first}"
         assert v.read_file("/keep.txt") == b"keep me\n" * 100
     finally:
         v.close()

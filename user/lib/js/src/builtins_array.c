@@ -836,7 +836,7 @@ static JSValue proto_concat(JSContext *ctx, JSValue this_val, int argc, JSValue 
             JSObject *src = JV_OBJ(e), *dst = JV_OBJ(r[1]);
             if (!has_holes(src, 0, (uint32_t)len)) {
                 if (kz_elems_reserve(ctx, dst, (uint32_t)(n + len))) return JS_EXCEPTION;
-                memcpy(dst->elems + n, src->elems, (size_t)len * sizeof(JSValue));
+                if (len) memcpy(dst->elems + n, src->elems, (size_t)len * sizeof(JSValue));    /* (an empty array has no buffer: memcpy of NULL is undefined even for 0 bytes) */
                 n += len;
                 dst->elem_len = dst->u.array.length = (uint32_t)n;
                 continue;
@@ -1138,6 +1138,7 @@ static JSValue proto_iter(JSContext *ctx, JSValue this_val, int argc, JSValue *a
 
 static const KzFuncDef array_funcs[] = {
     KZ_FN_ARGS("from", array_from, 1, 3),
+    KZ_FN_ARGS("fromAsync", kz_array_from_async, 1, 3),
     KZ_FN("isArray", array_is_array, 1),
     KZ_FN("of", array_of, 0),
     KZ_GETTER("[Symbol.species]", kz_native_return_this),

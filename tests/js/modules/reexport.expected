@@ -1,0 +1,10 @@
+leaf,leafValue,nsOfLeaf,one,own,renamed,shared,two,viaDefault
+leaf-shared hub-one right-two leaf default leaf-value hub-own
+object default,leaf,leafValue,shared leaf
+false true
+false undefined
+true
+rx_bad_ambiguous.mjs SyntaxError
+rx_bad_missing.mjs SyntaxError
+rx_bad_indirect.mjs SyntaxError
+rx_nothing_here.mjs Error

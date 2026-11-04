@@ -72,11 +72,27 @@ typedef struct JSHostHooks {
     /* An exception that nobody caught in a job (a promise reaction, a FinalizationRegistry callback) or a promise
        rejected without a handler: handed here (may be NULL: then they are dropped). */
     void (*report_error)(JSContext *ctx, JSValue error, bool unhandled_rejection, void *opaque);
-    /* Module loading: return the module's source (malloc'd; the engine frees it with free_fn/free) and its canonical
-       name in *resolved (malloc'd too), or NULL with a message in *error (static or malloc'd: set *error_owned). */
+    /* Module loading.  Asked for every specifier a module requests (`specifier`, as written in the source), with the
+       canonical name of the module that asks (`referrer`: what the host gave as the filename of js_eval, or in *resolved
+       for a module it loaded; an empty string for code that has no name).  Return the module's source text (UTF-8,
+       *len bytes) and set *resolved to its canonical name: the engine keeps one module per canonical name, so two
+       specifiers that name the same file must give the same name.  Return NULL, with a message in *error, when it
+       cannot be loaded.  The engine copies what it needs before it calls anything again, so the source, the name and
+       the message are the host's: a buffer kept until the next call (or static) will do.  May be NULL (then a module
+       that imports anything fails to load). */
     char *(*load_module)(JSContext *ctx, const char *specifier, const char *referrer, size_t *len, char **resolved,
                          const char **error, void *opaque);
+    /* The abbreviation of the local time zone at `utc_ms` ("EST", "JST"), a string that stays valid until the next
+       call, or NULL; Date.prototype.toString shows it in parentheses after the offset.  May be NULL. */
+    const char *(*tz_name)(void *opaque, double utc_ms);
     void *opaque;
+    /* Sleeps for `ms` milliseconds (at most 20 at a time): Atomics.wait with a timeout blocks through it.  May be NULL
+       (the wait then polls the clock and the interrupt handler).  This is the last field so that code written before
+       it existed, which fills the earlier ones in order, still compiles. */
+    void (*sleep_ms)(void *opaque, double ms);
+    /* Called the first time a module evaluates import.meta, with the (empty, null-prototype) object it gets and the
+       module's canonical name: add what the host wants it to have (a `url`, say).  May be NULL. */
+    void (*import_meta)(JSContext *ctx, JSValue meta, const char *module_name, void *opaque);
 } JSHostHooks;
 void js_runtime_set_host_hooks(JSRuntime *rt, const JSHostHooks *hooks);
 
@@ -115,7 +131,13 @@ void js_unpin(JSContext *ctx, JSValue v);
 /* ------------------------------------------------------------------ evaluating code */
 
 #define JS_EVAL_SCRIPT   0      /* a classic script: var and function declarations become global properties */
-#define JS_EVAL_MODULE   1      /* an ES module (strict, import/export); returns a promise for its evaluation */
+/* An ES module (strict, import/export, top-level await).  `filename` is its canonical name (what imports of it from other
+   modules resolve to, and what load_module gets as the referrer of its own imports).  A syntax error in the source is
+   thrown (JS_EXCEPTION).  Otherwise the result is a promise for the whole graph's evaluation: the modules it imports are
+   loaded through the load_module hook and linked, then it is evaluated; a failure to load or link (a missing file, an
+   import that does not resolve) or an error thrown by any module rejects the promise.  A module that awaits at the top
+   level leaves it pending: run jobs (js_run_jobs) until it settles. */
+#define JS_EVAL_MODULE   1
 #define JS_EVAL_STRICT   2      /* a script in strict mode */
 #define JS_EVAL_COMPILE  4      /* only compile: returns a function that runs the script when called */
 
@@ -255,6 +277,16 @@ JSValue js_new_host_object(JSContext *ctx, int class_id, JSValue proto, void *op
 void *js_host_opaque(JSValue obj, int class_id);                       /* NULL if obj is not of that class */
 void js_trace_value(JSTracer *trc, JSValue v);
 
+/* ------------------------------------------------------------------ binary data */
+
+/* A new ArrayBuffer of `len` bytes holding a copy of `data` (zero-filled when data is NULL). */
+JSValue js_new_array_buffer(JSContext *ctx, const void *data, size_t len);
+/* The bytes of an ArrayBuffer or SharedArrayBuffer and their count; NULL when v is neither, or was detached.  The
+   pointer is valid until the buffer is resized, detached or collected. */
+uint8_t *js_array_buffer_data(JSContext *ctx, JSValue v, size_t *len);
+/* DetachArrayBuffer: the buffer loses its bytes (0 on success, -1 with a TypeError when v is not a detachable buffer). */
+int js_array_buffer_detach(JSContext *ctx, JSValue v);
+
 /* ------------------------------------------------------------------ JSON, promises, modules */
 
 JSValue js_json_parse(JSContext *ctx, const char *utf8, size_t len);
@@ -264,6 +296,9 @@ JSValue js_new_promise(JSContext *ctx, JSValue *resolve, JSValue *reject);
 typedef enum { JS_PROMISE_PENDING, JS_PROMISE_FULFILLED, JS_PROMISE_REJECTED } JSPromiseState;
 JSPromiseState js_promise_state(JSContext *ctx, JSValue promise);
 JSValue js_promise_result(JSContext *ctx, JSValue promise);
+/* Says that the host looks after this promise's outcome itself: a rejection is then not reported as an unhandled
+   rejection (through report_error) when the job queue empties. */
+void js_promise_set_handled(JSContext *ctx, JSValue promise);
 
 #ifdef __cplusplus
 }

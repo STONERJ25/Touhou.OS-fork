@@ -211,6 +211,9 @@ void kz_free(JSRuntime *rt, void *p) {
         sys_release(rt, l);
         return;
     }
+#ifdef KZ_POISON
+    memset(p, 0xDD, kz_alloc_size(p));      /* (a debug build: see sweep) */
+#endif
     h->gctype = KZ_GC_FREE;
     h->mark = 0;
     if (rt->gc_running) return;             /* the sweep rebuilds the free lists */
@@ -495,6 +498,7 @@ static void trace_cell(JSRuntime *rt, void *cell) {
         kz_mark_value(rt, b->name);
         kz_mark_value(rt, b->filename);
         kz_mark_value(rt, b->source);
+        kz_mark_value(rt, b->module_desc);
         if (b->ic)
             for (uint32_t i = 0; i < b->nic; i++) {
                 kz_mark_cell(rt, b->ic[i].shape);
@@ -707,6 +711,11 @@ static void sweep(JSRuntime *rt) {
                 finalize(rt, h);
                 h->gctype = KZ_GC_FREE;
                 h->mark = 0;
+#ifdef KZ_POISON
+                /* a debug build (-DKZ_POISON): a dead cell is filled with 0xDD, so that a value the collector should have
+                   kept shows up at once as a wild pointer instead of working until the memory is reused */
+                memset((uint8_t *)h + sizeof(JSGCHeader), 0xDD, p->cell_size - sizeof(JSGCHeader));
+#endif
             }
     KzLarge *l = rt->large;
     while (l) {
@@ -832,6 +841,7 @@ void kz_rt_free_all(JSRuntime *rt) {
         JSGCHeader *h = (JSGCHeader *)((uint8_t *)l + LARGE_HDR);
         if (!(h->gctype == KZ_GC_OBJECT && kz_class((JSObject *)h) == KZ_CLASS_HOST)) finalize(rt, h);
     }
+    kz_regexp_cache_free(rt);       /* (before the pages go: compiled patterns are raw buffers in them) */
     for (int c = 0; c < KZ_NUM_CLASSES; c++) {
         KzPage *p = rt->pages[c];
         while (p) { KzPage *n = p->next; sys_release(rt, p); p = n; }

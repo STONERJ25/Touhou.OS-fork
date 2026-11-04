@@ -396,6 +396,56 @@ static JSValue async_generator_method(JSContext *ctx, JSValue this_val, int argc
     return r[0];
 }
 
+/* ================================================================== module bodies
+ *
+ * A module's function (compile.c) is a generator, so that it can stop after its prologue (which makes the closures of
+ * the module's function declarations) and before its first statement; it is also async when the module has a top-level
+ * await.  The linker (module.c) does not call it: it makes the state object and the frame with kz_module_gen_new, puts
+ * the cells of the bindings that cross a module boundary into the registers, and only then runs the prologue
+ * (kz_module_gen_start, which stops at the initial yield).  Evaluating the module is resuming it, once: a synchronous
+ * body runs to its end (kz_module_gen_run); an async one is driven like an async function (AsyncBlockStart), settling
+ * the promise it is given (kz_module_gen_run_async), so it awaits exactly as an async function does. */
+
+JSValue kz_module_gen_new(JSContext *ctx, JSObject *func) {
+    bool async = func->u.func.b->h.flags & BC_ASYNC;
+    if (async) return new_gen_object(ctx, KZ_CLASS_ASYNC_FUNCTION, JS_NULL, func, JS_UNDEFINED, 0, NULL, GK_ASYNC_FN);
+    return new_gen_object(ctx, KZ_CLASS_GENERATOR, kz_intr(ctx, KZ_I_GENERATOR_PROTO), func, JS_UNDEFINED, 0, NULL, GK_SYNC);
+}
+
+/* the registers of the module's frame (NULL once it has finished) */
+JSValue *kz_module_gen_regs(JSValue gobj) {
+    KzGenerator *g = gen_of(gobj);
+    return g && g->frame ? g->frame->regs : NULL;
+}
+
+/* runs the prologue up to the initial yield: -1 with the exception pending (out of memory) */
+int kz_module_gen_start(JSContext *ctx, JSValue gobj) {
+    KZ_ROOT(ctx, r);
+    r = gobj;
+    JSValue res = kz_run(ctx, gen_of(r)->frame);
+    KzGenerator *g = gen_of(r);
+    if (res != JS_EMPTY) {
+        finish(ctx, g);
+        return res == JS_EXCEPTION ? -1 : 0;
+    }
+    g->state = GS_START;
+    return 0;
+}
+
+/* runs a synchronous module's body to its end: -1 with the exception pending, else 0 */
+int kz_module_gen_run(JSContext *ctx, JSValue gobj) {
+    return gen_resume(ctx, gobj, JS_UNDEFINED, RESUME_NEXT) == JS_EXCEPTION ? -1 : 0;
+}
+
+/* starts an async module's body; `promise` (an engine-made %Promise%) is settled when the body ends: -1 only for an
+   uncatchable error (the interrupt handler said stop) */
+int kz_module_gen_run_async(JSContext *ctx, JSValue gobj, JSValue promise) {
+    KZ_ROOT(ctx, r);
+    r = gobj;
+    gen_of(r)->promise = promise;
+    return drive(ctx, r, RUN_START, JS_UNDEFINED, 0) ? -1 : 0;
+}
+
 /* ================================================================== the async-from-sync iterator */
 
 /* u.any: a = the sync iterator, b = its next method */

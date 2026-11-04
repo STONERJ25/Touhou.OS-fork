@@ -1,0 +1,13 @@
+side effect runs once
+default value default value true
+1 1 1 1 string-named
+fn K-tag var let undefined
+K | L | T | V | a | alias | alias2 | default | fn | string name
+K | L | T | V | a | alias | alias2 | default | fn | string name
+named named default function
+default anonymous class
+"default" anonymous default
+fn K function
+undefined undefined undefined
+undefined true
+string default value

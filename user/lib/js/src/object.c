@@ -1259,6 +1259,9 @@ int kz_own_keys(JSContext *ctx, JSObject *o, KzVec *keys, int filter) {
                 keys->len = w;
                 return 0;
             }
+            /* the hook added keys that come before the ordinary ones (a typed array's indexes: string keys, enumerable);
+               a caller that asked for symbols only does not want them */
+            if (!want_str) keys->len = start;
         }
     }
     if (want_str) {

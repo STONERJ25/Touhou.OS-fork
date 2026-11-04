@@ -582,10 +582,16 @@ JSValue kz_key_from_value(JSContext *ctx, JSValue v) {
     }
     if (JV_IS_STRING(v)) {
         JSString *s = JV_STR(v);
-        if (s->h.flags & STR_ATOM) return v;
+        uint32_t idx;
+        if (s->h.flags & STR_ATOM) {
+            /* an atom is the canonical key for its text, except when the text spells an array index: the
+               one-character atoms "0".."9" (the string table's own) and the atoms made for function names
+               ("12") are index strings too. STR_NOTIDX makes the common case one flag test. */
+            if (kz_str_is_index(s, &idx)) return KZ_KEY_FROM_INDEX(idx);
+            return v;
+        }
         s = kz_str_flat(ctx, s);
         if (!s) return JS_EXCEPTION;
-        uint32_t idx;
         if (kz_str_is_index(s, &idx)) return KZ_KEY_FROM_INDEX(idx);
         return kz_atom_from_str(ctx, v);
     }

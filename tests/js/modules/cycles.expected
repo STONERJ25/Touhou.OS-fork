@@ -1,0 +1,8 @@
+class in TDZ: ReferenceError
+B body: a = ReferenceError fa() = fa
+A body: b = b fromB = function
+a b fa a
+before init: ReferenceError
+later,self
+now initialised
+true string

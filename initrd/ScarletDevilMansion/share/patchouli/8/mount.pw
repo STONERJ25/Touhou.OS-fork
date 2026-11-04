@@ -13,7 +13,7 @@ The Human Village is mounted by the kernel itself: the one volume labelled HUMAN
 @ *-t* _TYPE_
     The filesystem type.
 @ *-o* _OPTIONS_
-    Comma-separated options for a FAT volume: `ro`, `rw`, `force` (mount a volume that was not unmounted cleanly read-write anyway; its dirty flag then stays), `sync`, `uid=N`, `gid=N`, `fmask=OCT`, `dmask=OCT`, `umask=OCT`, `userdirs` (a top-level directory named like a user belongs to that user), and `tzoffset=MINUTES`.
+    Comma-separated options for a FAT volume: `ro`, `rw`, `force` (mount a volume that was not unmounted cleanly read-write anyway; its dirty flag then stays; `mount` does not go through the volume first the way the boot-time mount of the Human Village does, see fsck(8)), `sync`, `uid=N`, `gid=N`, `fmask=OCT`, `dmask=OCT`, `umask=OCT`, `userdirs` (a top-level directory named like a user belongs to that user), and `tzoffset=MINUTES`.
 @ *-r*
     Read-only.
 
@@ -30,4 +30,4 @@ FAT stores the time of a file as the local time of the machine that wrote it, wi
 0, or 1 if the mount failed (the message includes the kernel's reason).
 
 # SEE ALSO
-umount(8), lsblk(1), lsusb(1), dmesg(1), timezone(5)
+umount(8), fsck(8), lsblk(1), lsusb(1), dmesg(1), timezone(5)

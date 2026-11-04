@@ -31,7 +31,8 @@ static JSValue array_iter_next(JSContext *ctx, JSValue this_val, int argc, JSVal
     uint64_t len;
     JSObject *ao = JV_OBJ(a);
     if (KZ_IS_TYPED_ARRAY(kz_class(ao))) {
-        if (kz_is_detached(ao)) return kz_throw_type(ctx, "Cannot perform %%ArrayIteratorPrototype%%.next on a detached ArrayBuffer");
+        /* (a typed array that went out of bounds, or lost its buffer, since the last step: TypeError, not the end) */
+        if (kz_is_detached(ao) || kz_typed_oob(ao)) return kz_throw_type(ctx, "Cannot perform %%ArrayIteratorPrototype%%.next on a detached or out-of-bounds typed array");
         len = kz_typed_length(ao);
     } else if (kz_class(ao) == KZ_CLASS_ARRAY) len = ao->u.array.length;
     else if (kz_length_of(ctx, a, &len)) return JS_EXCEPTION;

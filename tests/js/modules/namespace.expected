@@ -1,0 +1,32 @@
+"0" "1" "10" "2" "bump" "default" "fn" "x" "y" Symbol(Symbol.toStringTag)
+[object Module] Module object null
+{"value":1,"writable":true,"enumerable":true,"configurable":false}
+{"value":"Module","writable":false,"enumerable":false,"configurable":false}
+undefined
+zero one ten two 1 undefined undefined
+0
+2 {"value":2,"writable":true,"enumerable":true,"configurable":false}
+set false false false
+define true false false false false false true false true false
+delete false true false
+has true false true false
+proto true false null
+extensible false true false
+integrity true false
+assign existing TypeError
+assign new TypeError
+assign symbol TypeError
+delete existing TypeError
+delete missing ok true
+defineProperty TypeError
+defineProperty same ok ns
+setPrototypeOf TypeError
+freeze TypeError
+seal ok ns
+0,1,10,2,bump,default,fn,x,y
+[["0","zero"],["1","one"],["10","ten"],["2","two"],["default","d"],["x",1],["y",2]]
+{"0":"zero","1":"one","2":"two","10":"ten","default":"d","x":1,"y":2}
+{"0":"zero","1":"one","10":"ten","2":"two","default":"d","x":1,"y":2}
+0,1,10,2,bump,default,fn,x,y
+2 d
+resolved through the namespace's then

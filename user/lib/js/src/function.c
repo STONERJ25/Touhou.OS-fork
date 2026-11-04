@@ -167,71 +167,85 @@ JSValue kz_make_ctor(JSContext *ctx, KzNative *fn, const char *name, int length,
 
 /* ================================================================== arguments objects */
 
-static int margs_get_own(JSContext *ctx, JSObject *o, JSValue key, KzPropDesc *d) {
-    if (!KZ_KEY_IS_INDEX(key)) return KZ_FALLBACK;
+/* The mapped arguments exotic object (10.4.4).  A mapped index is a data property of the object whose current value is the
+   parameter's: while cells[i] is set, the property exists, is writable and is the parameter.  Where the property is kept
+   (the dense elements, or the shape once its attributes were changed) does not matter here: the ordinary algorithms are
+   run with the mapping switched off, and the value comes from the cell. */
+static JSVarCell *mapped_cell(JSObject *o, JSValue key, uint32_t *idx) {
+    if (!KZ_KEY_IS_INDEX(key)) return NULL;
     uint32_t i = KZ_KEY_INDEX(key);
-    if (i >= o->u.margs.nmapped || !o->u.margs.cells[i]) return KZ_FALLBACK;
-    int r = KZ_FALLBACK;
-    (void)ctx;
-    /* the element exists in elems (the mapping is only for its value) */
-    if (i < o->elem_len && o->elems[i] != JS_HOLE) {
-        d->value = o->u.margs.cells[i]->value;
-        d->getter = d->setter = JS_UNDEFINED;
-        d->flags = KZ_PROP_WEC | PD_HAS_VALUE | PD_HAS_W | PD_HAS_E | PD_HAS_C;
-        r = 1;
-    }
+    if (i >= o->u.margs.nmapped) return NULL;
+    *idx = i;
+    return o->u.margs.cells[i];
+}
+
+static int margs_get_own(JSContext *ctx, JSObject *o, JSValue key, KzPropDesc *d) {
+    uint32_t i;
+    JSVarCell *cell = mapped_cell(o, key, &i);
+    if (!cell) return KZ_FALLBACK;
+    KZ_ROOT(ctx, rc);
+    rc = JV_MKPTR(cell);
+    o->u.margs.cells[i] = NULL;
+    int r = kz_get_own_property(ctx, o, key, d);
+    o->u.margs.cells[i] = cell;
+    if (r == 1) d->value = cell->value;
     return r;
 }
 
 static int margs_get(JSContext *ctx, JSObject *o, JSValue key, JSValue receiver, JSValue *out) {
     (void)ctx;
     (void)receiver;
-    if (!KZ_KEY_IS_INDEX(key)) return KZ_FALLBACK;
-    uint32_t i = KZ_KEY_INDEX(key);
-    if (i >= o->u.margs.nmapped || !o->u.margs.cells[i] || i >= o->elem_len || o->elems[i] == JS_HOLE) return KZ_FALLBACK;
-    *out = o->u.margs.cells[i]->value;
+    uint32_t i;
+    JSVarCell *cell = mapped_cell(o, key, &i);
+    if (!cell) return KZ_FALLBACK;
+    *out = cell->value;
     return 1;
 }
 
 static int margs_set(JSContext *ctx, JSObject *o, JSValue key, JSValue val, JSValue receiver) {
     (void)ctx;
-    if (!KZ_KEY_IS_INDEX(key) || receiver != JV_MKOBJ(o)) return KZ_FALLBACK;
-    uint32_t i = KZ_KEY_INDEX(key);
-    if (i >= o->u.margs.nmapped || !o->u.margs.cells[i] || i >= o->elem_len || o->elems[i] == JS_HOLE) return KZ_FALLBACK;
-    o->u.margs.cells[i]->value = val;
-    o->elems[i] = val;
-    return 1;
+    uint32_t i;
+    JSVarCell *cell = receiver == JV_MKOBJ(o) ? mapped_cell(o, key, &i) : NULL;
+    if (!cell) return KZ_FALLBACK;
+    cell->value = val;
+    return KZ_FALLBACK;                 /* (OrdinarySet goes on: it stores the value in the property too) */
 }
 
 static int margs_define(JSContext *ctx, JSObject *o, JSValue key, const KzPropDesc *d) {
-    if (!KZ_KEY_IS_INDEX(key)) return KZ_FALLBACK;
-    uint32_t i = KZ_KEY_INDEX(key);
-    if (i >= o->u.margs.nmapped || !o->u.margs.cells[i]) return KZ_FALLBACK;
-    /* keep the element's current value in elems, then let the ordinary algorithm run without the mapping */
-    if (i < o->elem_len && o->elems[i] != JS_HOLE) o->elems[i] = o->u.margs.cells[i]->value;
-    JSVarCell *cell = o->u.margs.cells[i];
-    o->u.margs.cells[i] = NULL;             /* unmapped for the moment: the call below takes the ordinary path */
-    int r = kz_define_own_property(ctx, o, key, d, false);
-    if (r <= 0) { o->u.margs.cells[i] = cell; return r; }
-    /* ArgumentsDefineOwnProperty: a data descriptor keeps the mapping unless it makes the property read-only */
+    uint32_t i;
+    JSVarCell *cell = mapped_cell(o, key, &i);
+    if (!cell) return KZ_FALLBACK;
+    KZ_ROOT(ctx, rc);
+    rc = JV_MKPTR(cell);
+    KzPropDesc nd = *d;
     bool accessor = d->flags & (PD_HAS_GET | PD_HAS_SET);
+    bool readonly = (d->flags & PD_HAS_W) && !(d->flags & KZ_PROP_W);
+    /* a property that becomes read-only keeps the parameter's current value */
+    if (!accessor && !(d->flags & PD_HAS_VALUE) && readonly) {
+        nd.value = cell->value;
+        nd.flags |= PD_HAS_VALUE;
+    }
+    o->u.margs.cells[i] = NULL;         /* unmapped for the moment: the call below takes the ordinary path */
+    int r = kz_define_own_property(ctx, o, key, &nd, false);
+    if (r <= 0) { o->u.margs.cells[i] = cell; return r; }
+    /* a data descriptor keeps the mapping unless it makes the property read-only; an accessor ends it */
     if (!accessor) {
         if (d->flags & PD_HAS_VALUE) cell->value = d->value;
-        if (!((d->flags & PD_HAS_W) && !(d->flags & KZ_PROP_W))) o->u.margs.cells[i] = cell;
+        if (!readonly) o->u.margs.cells[i] = cell;
     }
     return 1;
 }
 
 static int margs_del(JSContext *ctx, JSObject *o, JSValue key) {
-    (void)ctx;
-    if (KZ_KEY_IS_INDEX(key)) {
-        uint32_t i = KZ_KEY_INDEX(key);
-        if (i < o->u.margs.nmapped && o->u.margs.cells[i]) {
-            /* deleting unmaps (the ordinary delete runs next) */
-            o->u.margs.cells[i] = NULL;
-        }
-    }
-    return KZ_FALLBACK;
+    uint32_t i;
+    JSVarCell *cell = mapped_cell(o, key, &i);
+    if (!cell) return KZ_FALLBACK;
+    KZ_ROOT(ctx, rc);
+    rc = JV_MKPTR(cell);
+    o->u.margs.cells[i] = NULL;
+    int r = kz_delete_property(ctx, o, key, false);
+    if (r <= 0) o->u.margs.cells[i] = cell;       /* a non-configurable property stays, and stays mapped */
+    return r;
 }
 
 static const KzExotic margs_exotic = {

@@ -1,0 +1,52 @@
+undefined undefined
+ReferenceError
+undefined
+function true
+undefined hoisted
+with: SyntaxError
+legacy octal: SyntaxError
+delete a name: SyntaxError
+duplicate parameters: SyntaxError
+await as a name: SyntaxError
+yield as a name: SyntaxError
+html comment: SyntaxError
+import in a block: SyntaxError
+export in a block: SyntaxError
+duplicate export: SyntaxError
+duplicate export name: SyntaxError
+duplicate default: SyntaxError
+export of nothing: SyntaxError
+return: SyntaxError
+new.target: SyntaxError
+super: SyntaxError
+let let: SyntaxError
+duplicate import: SyntaxError
+import and let: SyntaxError
+duplicate function: SyntaxError
+var and function: SyntaxError
+function and var: SyntaxError
+label await: SyntaxError
+assign arguments: SyntaxError
+await in static block: SyntaxError
+unterminated import: SyntaxError
+string without from: SyntaxError
+escaped as: SyntaxError
+new import: SyntaxError
+new on an import call member: SyntaxError
+fine
+fine
+fine
+fine
+fine
+fine
+fine
+fine
+fine
+fine
+fine
+fine
+fine
+fine
+fine
+fine
+fine

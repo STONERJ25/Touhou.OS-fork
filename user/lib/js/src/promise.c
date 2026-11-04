@@ -60,6 +60,15 @@ void kz_promise_free(JSRuntime *rt, JSObject *o) {
 
 int kz_promise_state(JSValue p) { return JV_OBJ(p)->u.promise.state; }
 
+static void track_rejection(JSContext *ctx, JSValue promise, bool handle);
+
+/* the host (or the engine) deals with this promise's outcome without a reaction */
+void kz_promise_mark_handled(JSContext *ctx, JSValue promise) {
+    JSObject *o = JV_OBJ(promise);
+    if (o->u.promise.state == PS_REJECTED && !o->u.promise.handled) track_rejection(ctx, promise, true);
+    o->u.promise.handled = true;
+}
+
 /* ------------------------------------------------------------------ rejection tracking */
 
 static void track_rejection(JSContext *ctx, JSValue promise, bool handle) {
@@ -454,6 +463,25 @@ static JSValue promise_with_resolvers(JSContext *ctx, JSValue this_val, int argc
     return o;
 }
 
+/* Promise.try (ECMA-262 2025, 27.2.4.8): calls the function at once with the rest of the arguments and settles a new promise
+   (made by `this`, as the other statics do) with its result or the value it threw */
+static JSValue promise_try(JSContext *ctx, JSValue this_val, int argc, JSValue *argv, int magic) {
+    (void)magic;
+    if (!JV_IS_OBJECT(this_val)) return kz_throw_type(ctx, "Promise.try called on non-object");
+    ROOT_CAP(ctx, cap);
+    if (new_capability(ctx, this_val, &cap, false)) return JS_EXCEPTION;
+    KZ_ROOT(ctx, rv);
+    bool threw = false;
+    JSValue res = kz_call(ctx, argc > 0 ? argv[0] : JS_UNDEFINED, JS_UNDEFINED, argc > 1 ? argc - 1 : 0, argc > 1 ? argv + 1 : NULL);
+    if (res == JS_EXCEPTION) {
+        if (ctx->rt->exc_uncatchable) return JS_EXCEPTION;
+        rv = kz_take_exception(ctx);
+        threw = true;
+    } else rv = res;
+    if (cap_settle(ctx, &cap, rv, threw)) return JS_EXCEPTION;
+    return cap.promise;
+}
+
 /*
  * The element functions of Promise.all (kind 0), allSettled (1 fulfilled, 2 rejected) and any (3).
  * data: [values array, remaining cell, capability promise, resolve, reject, index, already-called cell]
@@ -639,6 +667,7 @@ static const KzFuncDef promise_funcs[] = {
     KZ_FN_MAGIC("race", promise_combinator, 1, 3),
     KZ_FN_MAGIC("reject", promise_resolve_static, 1, 1),
     KZ_FN_MAGIC("resolve", promise_resolve_static, 1, 0),
+    KZ_FN("try", promise_try, 1),
     KZ_FN("withResolvers", promise_with_resolvers, 0),
     KZ_GETTER("[Symbol.species]", kz_native_return_this),
 };

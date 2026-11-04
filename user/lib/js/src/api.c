@@ -721,6 +721,30 @@ void *js_host_opaque(JSValue obj, int class_id) {
     return o->u.host.class_id == class_id ? o->u.host.opaque : NULL;
 }
 
+/* ------------------------------------------------------------------ binary data */
+
+JSValue js_new_array_buffer(JSContext *ctx, const void *data, size_t len) {
+    JSValue b = kz_new_array_buffer(ctx, len);
+    if (b == JS_EXCEPTION) return b;
+    if (data && len) memcpy(JV_OBJ(b)->u.ab.data, data, len);
+    return keep(ctx, b);
+}
+
+uint8_t *js_array_buffer_data(JSContext *ctx, JSValue v, size_t *len) {
+    (void)ctx;
+    if (!JV_IS_OBJECT(v)) return NULL;
+    JSObject *o = JV_OBJ(v);
+    if (kz_class(o) != KZ_CLASS_ARRAYBUFFER && kz_class(o) != KZ_CLASS_SHAREDARRAYBUFFER) return NULL;
+    if (o->u.ab.detached) return NULL;
+    if (len) *len = o->u.ab.len;
+    return o->u.ab.data;
+}
+
+int js_array_buffer_detach(JSContext *ctx, JSValue v) {
+    if (!kz_is_class(v, KZ_CLASS_ARRAYBUFFER)) { kz_throw_type(ctx, "not a detachable ArrayBuffer"); return -1; }
+    return kz_detach_array_buffer(ctx, JV_OBJ(v));
+}
+
 /* ------------------------------------------------------------------ JSON and promises */
 
 JSValue js_json_parse(JSContext *ctx, const char *utf8, size_t len) {
@@ -755,4 +779,8 @@ JSPromiseState js_promise_state(JSContext *ctx, JSValue promise) {
 JSValue js_promise_result(JSContext *ctx, JSValue promise) {
     if (!kz_is_class(promise, KZ_CLASS_PROMISE)) return JS_UNDEFINED;
     return keep(ctx, JV_OBJ(promise)->u.promise.result);
+}
+
+void js_promise_set_handled(JSContext *ctx, JSValue promise) {
+    if (kz_is_class(promise, KZ_CLASS_PROMISE)) kz_promise_mark_handled(ctx, promise);
 }

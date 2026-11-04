@@ -102,8 +102,9 @@ static Binding *resolve(Analyzer *a, FuncInfo *fi, Scope *start, JSValue name, N
             if (!capture(a, b, fi)) return NULL;
             return b;
         }
-        /* direct eval code: names its sloppy var declarations made dynamic live in the caller's var object */
-        if (dyn && s->kind == SC_EVAL && s->eval_obj) {
+        /* direct eval code: the var object of a function that earlier sloppy eval code declared vars in is a marker scope of the
+           synthesized caller (eval.c build_caller), placed after the function's own bindings like a real function's is below */
+        if (dyn && s->kind == SC_BLOCK && s->eval_obj && s->func && (s->func->flags & FN_SYNTH_CALLER)) {
             Binding *e = s->eval_obj;
             if (!capture(a, e, fi)) return NULL;
             Node *d = kz_arena_alloc(a->p, sizeof(Node));
@@ -121,11 +122,28 @@ static Binding *resolve(Analyzer *a, FuncInfo *fi, Scope *start, JSValue name, N
             d->ival = WK_WITH;
             if (kz_list_push(a->p, dyn, d)) { an_fail(a); return NULL; }
         }
-        /* leaving a function's var scope that a sloppy direct eval may extend */
+        /* leaving a function's var scope that a sloppy direct eval may extend (the object is a binding of this scope: of
+           the body's, not the parameters', when there are parameter expressions) */
         if (dyn && s->kind == SC_FUNC && s->func && s == s->func->body_scope &&
             sloppy_eval_func(s->func) && !(s->func->flags & (FN_SCRIPT | FN_SYNTH_CALLER))) {
-            Binding *e = hidden_binding(a, s->func, a->ctx->rt->atom[KZ_ATOM_dyn_scope], &s->eval_obj);
-            if (!e || !capture(a, e, fi)) return NULL;
+            Binding *e = s->eval_obj;
+            if (!e) {
+                e = kz_declare_hidden(a->p, s, a->ctx->rt->atom[KZ_ATOM_dyn_scope]);
+                if (!e) { an_fail(a); return NULL; }
+                s->eval_obj = e;
+            }
+            if (!capture(a, e, fi)) return NULL;
+            Node *d = kz_arena_alloc(a->p, sizeof(Node));
+            if (!d) { an_fail(a); return NULL; }
+            d->binding = e;
+            d->ival = WK_EVAL;
+            if (kz_list_push(a->p, dyn, d)) { an_fail(a); return NULL; }
+        }
+        /* leaving the parameter environment of a function whose parameter expressions hold a sloppy direct eval: the vars
+           that eval code declared there are visible to the rest of the parameters and to the body, but shadowed by them */
+        if (dyn && s->kind == SC_PARAMS && s->eval_obj) {
+            Binding *e = s->eval_obj;
+            if (!capture(a, e, fi)) return NULL;
             Node *d = kz_arena_alloc(a->p, sizeof(Node));
             if (!d) { an_fail(a); return NULL; }
             d->binding = e;
@@ -231,8 +249,12 @@ static void analyze(Analyzer *a, Node *n, FuncInfo *fi) {
         FuncInfo *g = non_arrow(fi);
         if (!g) return;
         if (g->flags & FN_SYNTH_CALLER) {
-            /* eval code in a method: the eval function's home is the caller's; super() is not supported */
+            /* eval code in a method or constructor: this, the home object, new.target and the constructor itself come
+               from the caller's bindings, which the eval function must have in its closure variables */
             n->binding = this_binding_for(a, fi);
+            if (g->home_b && !capture(a, g->home_b, fi)) return;
+            if (g->new_target_b && !capture(a, g->new_target_b, fi)) return;
+            if (g->fields_b && !capture(a, g->fields_b, fi)) return;
             return;
         }
         if (g != fi) {
@@ -307,6 +329,10 @@ static void analyze(Analyzer *a, Node *n, FuncInfo *fi) {
                 if (b) capture(a, b, fi);
                 if (g->flags & (FN_METHOD | FN_CTOR | FN_FIELD_INIT | FN_STATIC_BLOCK)) {
                     b = hidden_binding(a, g, a->ctx->rt->atom[KZ_ATOM_home_object], &g->home_b);
+                    if (b) capture(a, b, fi);
+                }
+                if (g->flags & FN_DERIVED) {
+                    b = hidden_binding(a, g, a->ctx->rt->atom[KZ_ATOM_class_fields], &g->fields_b);
                     if (b) capture(a, b, fi);
                 }
             }
@@ -414,8 +440,26 @@ static void analyze_function(Analyzer *a, FuncInfo *fi) {
                     if (b->kind == BK_PARAM) b->flags |= BF_CAPTURED;
         }
     }
+    /* a sloppy direct eval in the parameter expressions declares its vars in an environment between the function's and the one
+       the parameters live in; it must exist before the parameters are analyzed (closures made in the list see it) */
+    if (fi->eval_in_params && !(fi->flags & (FN_STRICT | FN_SCRIPT | FN_MODULE | FN_EVAL | FN_SYNTH_CALLER)) && fi->scope != fi->body_scope &&
+        !fi->scope->eval_obj) {
+        Binding *pe = kz_declare_hidden(a->p, fi->scope, a->ctx->rt->atom[KZ_ATOM_dyn_scope]);
+        if (!pe) { an_fail(a); return; }
+        fi->scope->eval_obj = pe;
+    }
     annexb(a, fi);
     if (fi->flags & FN_DERIVED) this_binding_for(a, fi);    /* derived constructors keep this in a TDZ binding */
+    /* A function with a direct eval needs its own `this` (and new.target, home object) bindings even when its body
+       never mentions them: the eval code finds them through the innermost entry of the scope descriptor, which would
+       otherwise be an enclosing function's (the wrong value, or a null cell at run time). */
+    if (fi->has_direct_eval && !(fi->flags & (FN_ARROW | FN_SCRIPT | FN_MODULE | FN_EVAL | FN_SYNTH_CALLER))) {
+        this_binding_for(a, fi);
+        hidden_binding(a, fi, a->ctx->rt->atom[KZ_ATOM_new_target], &fi->new_target_b);
+        if (fi->flags & (FN_METHOD | FN_GETTER | FN_SETTER | FN_CTOR | FN_FIELD_INIT | FN_STATIC_BLOCK))
+            hidden_binding(a, fi, a->ctx->rt->atom[KZ_ATOM_home_object], &fi->home_b);
+        if (fi->flags & FN_DERIVED) hidden_binding(a, fi, a->ctx->rt->atom[KZ_ATOM_class_fields], &fi->fields_b);   /* (for super() in the eval code) */
+    }
     for (int i = 0; i < fi->params.n && !a->failed; i++) analyze(a, fi->params.v[i], fi);
     analyze_list(a, &fi->body, fi);
     /* a direct eval may use any binding of this function and its parents: keep them all in cells */
@@ -458,6 +502,7 @@ typedef struct CB {
     int nlabels;
     bool breakable, continuable;
     bool async_iter;
+    int seq;            /* serial number: blocks pushed later have larger ones */
     int depth;          /* stack depth below the block's own items */
     int items;          /* stack items the block keeps while it runs */
     IntVec breaks, continues;
@@ -465,6 +510,10 @@ typedef struct CB {
     Cont *conts;
     int nconts, conts_cap;
 } CB;
+
+/* A stretch of code that closes the iterator of block `seq` on its way out (break, continue, return).  Exceptions it throws belong
+   to whatever encloses that block, not to the block's own handler or to a try inside it, though the code sits in their range. */
+typedef struct Hole { uint32_t start, end; int seq; } Hole;
 
 typedef struct FS {
     Parser *p;
@@ -479,6 +528,9 @@ typedef struct FS {
     CB *cb;
     KzExcEntry *exc;
     uint32_t nexc, exc_cap;
+    int cb_serial;      /* the number of the most recently pushed block */
+    Hole *holes;        /* (parser arena) */
+    uint32_t nholes, holes_cap;
     KzPosEntry *pos;
     uint32_t npos, pos_cap;
     uint32_t nic;
@@ -573,6 +625,10 @@ static uint32_t value_hash(JSValue v) { return (uint32_t)(((uint64_t)v * 0x9E377
 
 /* a constant-pool index for v (deduplicated by identity) */
 static uint32_t add_const(FS *fs, JSValue v) {
+    /* (v may be the bytecode of a function that was just compiled, which nothing else holds yet, and the allocations
+       below - the hash table, the vector - can collect) */
+    KZ_ROOT(fs->ctx, rv);
+    rv = v;
     if (fs->chash_size && (fs->consts->len + 1) * 2 > fs->chash_size) {
         /* rehash */
         uint32_t ns = fs->chash_size * 2;
@@ -596,7 +652,7 @@ static uint32_t add_const(FS *fs, JSValue v) {
     if (dedup)
         for (; fs->chash[j]; j = (j + 1) & m)
             if (fs->consts->v[fs->chash[j] - 1] == v) return fs->chash[j] - 1;
-    if (kz_vec_push(fs->ctx, fs->consts, v)) { fs_oom(fs); return 0; }
+    if (kz_vec_push(fs->ctx, fs->consts, rv)) { fs_oom(fs); return 0; }
     uint32_t idx = fs->consts->len - 1;
     j = value_hash(v) & m;
     while (fs->chash[j]) j = (j + 1) & m;
@@ -622,7 +678,7 @@ static int new_slot(FS *fs) {
     return fs->nslots++;
 }
 
-static void add_exc(FS *fs, uint32_t start, uint32_t end, uint32_t handler, int depth) {
+static void add_exc_range(FS *fs, uint32_t start, uint32_t end, uint32_t handler, int depth) {
     if (start >= end) return;
     if (fs->nexc == fs->exc_cap) {
         uint32_t nc = fs->exc_cap ? fs->exc_cap * 2 : 8;
@@ -636,6 +692,41 @@ static void add_exc(FS *fs, uint32_t start, uint32_t end, uint32_t handler, int 
     fs->exc[fs->nexc].handler = handler;
     fs->exc[fs->nexc].depth = (uint32_t)depth;
     fs->nexc++;
+}
+
+/* Protects [start, end) with a handler, except for the holes of blocks that were already open when the region began
+   (entry_seq = the serial of the innermost one): the code that closes their iterators runs after the region is left. */
+static void add_exc(FS *fs, uint32_t start, uint32_t end, uint32_t handler, int depth, int entry_seq) {
+    uint32_t from = start;
+    /* (the holes are recorded in code order: binary search for the first one inside the region, so that a function with
+       thousands of loops and exits does not cost a pass over all the holes for each of them) */
+    uint32_t lo = 0, hi = fs->nholes;
+    while (lo < hi) {
+        uint32_t mid = lo + (hi - lo) / 2;
+        if (fs->holes[mid].start < start) lo = mid + 1; else hi = mid;
+    }
+    for (uint32_t i = lo; i < fs->nholes && fs->holes[i].start < end; i++) {
+        Hole *h = &fs->holes[i];
+        if (h->seq > entry_seq || h->end > end) continue;
+        add_exc_range(fs, from, h->start, handler, depth);
+        from = h->end;
+    }
+    add_exc_range(fs, from, end, handler, depth);
+}
+
+static void add_hole(FS *fs, uint32_t start, uint32_t end, int seq) {
+    if (fs->nholes == fs->holes_cap) {
+        uint32_t nc = fs->holes_cap ? fs->holes_cap * 2 : 8;
+        Hole *nh = kz_arena_alloc(fs->p, nc * sizeof(Hole));
+        if (!nh) { fs_oom(fs); return; }
+        if (fs->nholes) memcpy(nh, fs->holes, fs->nholes * sizeof(Hole));
+        fs->holes = nh;
+        fs->holes_cap = nc;
+    }
+    fs->holes[fs->nholes].start = start;
+    fs->holes[fs->nholes].end = end;
+    fs->holes[fs->nholes].seq = seq;
+    fs->nholes++;
 }
 
 static void push_number(FS *fs, double d) {
@@ -784,15 +875,17 @@ static void gen_ident_store(FS *fs, Node *n, bool keep) {
 /* initialises a declared binding (var/let/const/param/catch) from the stack */
 static void gen_binding_init(FS *fs, Node *id, int decl) {
     Binding *b = id->binding;
+    if (decl == V_VAR && id->list.n) {
+        /* A var whose name may live in a dynamic scope: in a function with a sloppy eval (the variable can be a property of the
+           object eval's vars go to), in sloppy eval code (its new vars are properties of that object, and there may be no static
+           binding at all), or under `with` (`with (o) { var x = 1 }` assigns o.x when o has an x).  Store by the usual path. */
+        gen_ident_store(fs, id, false);
+        return;
+    }
     if (!b) {
         /* global code: var and function names are global properties; let/const/class are global lexicals */
         if (decl == V_LET || decl == V_CONST || decl == BK_CLASS) emit_atom_ic(fs, OP_put_global_init, id->val);
         else emit_atom_ic(fs, OP_put_global, id->val);
-        return;
-    }
-    if (decl == V_VAR && id->list.n) {
-        /* a var in a function with a sloppy eval: the binding may be dynamic; store by the usual path */
-        gen_ident_store(fs, id, false);
         return;
     }
     if (decl == V_VAR) emit_store_binding(fs, b, false, false, false);
@@ -846,9 +939,12 @@ static void gen_func_expr(FS *fs, Node *n, JSValue name_hint) {
 }
 
 static void gen_expr_named(FS *fs, Node *n, JSValue name) {
-    if (name && is_anon_fn(n)) {
-        if (n->type == N_CLASS) { gen_class(fs, n, name); return; }
-        gen_func_expr(fs, n, name);
+    /* (IsFunctionDefinition and NamedEvaluation look through parentheses: `f = (function () {})` names the function f) */
+    Node *u = n;
+    while (u && u->type == N_PAREN) u = u->a;
+    if (name && is_anon_fn(u)) {
+        if (u->type == N_CLASS) { gen_class(fs, u, name); return; }
+        gen_func_expr(fs, u, name);
         return;
     }
     gen_expr(fs, n);
@@ -1104,51 +1200,100 @@ static void emit_call(FS *fs, int argc) {
     adjust(fs, -(argc + 2) + 1);
 }
 
+/* Is b a binding of a function outside the one whose variable environment sloppy eval code at this site extends?  That is
+   the function the site is in; for eval code (transparent: its layers share the environment of the code that called it) the
+   function of the caller, which build_caller flattened into a synthesized scope chain whose bindings carry BF_OUTER. */
+static bool binding_is_outer(FuncInfo *site, FuncInfo *var_fn, Binding *b) {
+    FuncInfo *of = b->scope->func;
+    for (FuncInfo *f = site; f && f != var_fn; f = f->parent)
+        if (f == of) return false;                  /* a layer of eval code between the site and the function */
+    if (of == var_fn) return (of->flags & FN_SYNTH_CALLER) && (b->flags & BF_OUTER);
+    return true;
+}
+
+/* room for one more descriptor entry; NULL when out of memory */
+static KzVarName *vn_push(FS *fs) {
+    if (fs->nvn == fs->vn_cap) {
+        uint32_t nc = fs->vn_cap ? fs->vn_cap * 2 : 16;
+        KzVarName *nv = kz_realloc(fs->ctx, fs->vn, nc * sizeof(KzVarName));
+        if (!nv) { fs_oom(fs); return NULL; }
+        fs->vn = nv;
+        fs->vn_cap = nc;
+    }
+    return &fs->vn[fs->nvn++];
+}
+
+/* one entry of the descriptor; false when out of memory */
+static bool eval_site_entry(FS *fs, FuncInfo *owner_fn, FuncInfo *var_fn, Scope *s, Binding *b) {
+    FuncInfo *fi = fs->fi;
+    if (global_scope(s) && b->kind != BK_HIDDEN) return true;
+    int vk;
+    switch (b->kind) {
+    case BK_LET: case BK_CATCH: vk = VK_LET; break;
+    case BK_CONST: vk = s->kind == SC_CLASS ? VK_CLASS_INNER : VK_CONST; break;
+    case BK_CLASS: vk = VK_LET; break;
+    case BK_CALLEE: vk = VK_CALLEE; break;
+    case BK_FUNC: vk = VK_FUNC; break;
+    case BK_PARAM: vk = VK_PARAM; break;
+    case BK_ARGUMENTS: vk = VK_ARGUMENTS; break;
+    case BK_HIDDEN: {
+        FuncInfo *bf = b->scope->func;
+        if (b == bf->this_b || b == bf->new_target_b || b == bf->home_b || b == bf->fields_b) {
+            if (bf != owner_fn) return true;
+            if (b == bf->this_b) vk = VK_THIS;
+            else if (b == bf->new_target_b) vk = VK_NEW_TARGET;
+            else if (b == bf->home_b) vk = VK_HOME;
+            else if (bf->flags & FN_DERIVED) vk = VK_FUNCOBJ;     /* (only a derived constructor's eval code may call super()) */
+            else return true;
+        } else if (s->kind == SC_WITH && b == s->with_obj) vk = VK_WITH;
+        else if (b == s->eval_obj) vk = VK_EVAL_OBJ;
+        else if (JV_IS_STRING(b->name) && kz_str_len(JV_STR(b->name)) > 0 && kz_str_at(kz_str_flat(fs->ctx, JV_STR(b->name)), 0) == '#') vk = VK_PRIVATE;
+        else return true;
+        break;
+    }
+    default: vk = VK_VAR; break;
+    }
+    if (!(b->flags & BF_CAPTURED) && in_this_fs(fs, b)) return true;     /* (cannot happen with eval) */
+    KzVarName *e = vn_push(fs);
+    if (!e) return false;
+    e->name = b->name;
+    e->kind = (uint8_t)vk;
+    e->outer = binding_is_outer(fi, var_fn, b);
+    e->paramenv = b->scope->kind == SC_PARAMS || (b->flags & BF_PARAMENV);
+    if (in_this_fs(fs, b)) { e->where = VN_LOCAL_CELL; e->slot = (uint16_t)b->slot; }
+    else { e->where = VN_CLOSURE; e->slot = (uint16_t)captured_index(fi, b); }
+    return true;
+}
+
 /* the eval scope descriptor for a direct eval at this point: every visible binding, innermost first */
 static void gen_eval_site(FS *fs, Node *call, uint16_t *first, uint16_t *count) {
     *first = (uint16_t)fs->nvn;
     FuncInfo *fi = fs->fi;
+    /* The eval code shares the this, new.target, home object and constructor of the nearest function that is not an
+       arrow (or itself eval code); the same four bindings of functions further out are shadowed by that function's
+       own and must not be visible, or `eval("super()")` in a plain function inside a constructor would be accepted. */
+    FuncInfo *owner_fn = non_arrow(fi);
+    /* The function whose variable environment sloppy eval code extends: this one, or for eval code the function its caller
+       is in (eval code is transparent).  Its bindings are the ones a var declared by eval code can already exist as. */
+    FuncInfo *var_fn = fi;
+    while (var_fn && (var_fn->flags & FN_DIRECT_EVAL)) var_fn = var_fn->parent;
     for (Scope *s = call->scope; s; s = s->parent) {
-        for (Binding *b = s->first; b; b = b->next) {
-            if (global_scope(s) && b->kind != BK_HIDDEN) continue;
-            int vk;
-            switch (b->kind) {
-            case BK_LET: case BK_CATCH: vk = VK_LET; break;
-            case BK_CONST: vk = s->kind == SC_CLASS ? VK_CLASS_INNER : VK_CONST; break;
-            case BK_CLASS: vk = VK_LET; break;
-            case BK_CALLEE: vk = VK_CALLEE; break;
-            case BK_FUNC: vk = VK_FUNC; break;
-            case BK_PARAM: vk = VK_PARAM; break;
-            case BK_ARGUMENTS: vk = VK_ARGUMENTS; break;
-            case BK_HIDDEN:
-                if (b == b->scope->func->this_b) vk = VK_THIS;
-                else if (b == b->scope->func->new_target_b) vk = VK_NEW_TARGET;
-                else if (b == b->scope->func->home_b) vk = VK_HOME;
-                else if (s->kind == SC_WITH && b == s->with_obj) vk = VK_WITH;
-                else if (b == s->eval_obj) vk = VK_EVAL_OBJ;
-                else if (JV_IS_STRING(b->name) && kz_str_len(JV_STR(b->name)) > 0 && kz_str_at(kz_str_flat(fs->ctx, JV_STR(b->name)), 0) == '#') vk = VK_PRIVATE;
-                else continue;
-                break;
-            default: vk = VK_VAR; break;
-            }
-            if (!(b->flags & BF_CAPTURED) && in_this_fs(fs, b)) continue;     /* (cannot happen with eval) */
-            if (fs->nvn == fs->vn_cap) {
-                uint32_t nc = fs->vn_cap ? fs->vn_cap * 2 : 16;
-                KzVarName *nv = kz_realloc(fs->ctx, fs->vn, nc * sizeof(KzVarName));
-                if (!nv) { fs_oom(fs); return; }
-                fs->vn = nv;
-                fs->vn_cap = nc;
-            }
-            KzVarName *e = &fs->vn[fs->nvn++];
-            e->name = b->name;
-            e->kind = (uint8_t)vk;
-            if (in_this_fs(fs, b)) { e->where = VN_LOCAL_CELL; e->slot = (uint16_t)b->slot; }
-            else { e->where = VN_CLOSURE; e->slot = (uint16_t)captured_index(fi, b); }
-            e->scope_start = e->scope_end = 0;
-        }
-        /* the function boundary of a sloppy function: eval's vars go to the innermost var scope's object */
-        if ((s->kind == SC_FUNC || s->kind == SC_EVAL) && s->func && s == s->func->body_scope && sloppy_eval_func(s->func) &&
-            !(s->func->flags & FN_SCRIPT) && !s->eval_obj) { }
+        for (Binding *b = s->first; b; b = b->next)
+            if (b != s->eval_obj && !eval_site_entry(fs, owner_fn, var_fn, s, b)) return;
+        /* the object eval's vars go to is looked at after the scope's own bindings (a name is a property of it only when no
+           binding of the scope has it).  The scope of eval code points at the caller's object, which has its own marker
+           scope in the synthesized chain. */
+        if (s->eval_obj && s->eval_obj->scope == s && !eval_site_entry(fs, owner_fn, var_fn, s, s->eval_obj)) return;
+    }
+    /* eval code in a class field initializer (also in an arrow function in one) may not mention `arguments` */
+    if (owner_fn && (owner_fn->flags & FN_FIELD_INIT)) {
+        KzVarName *e = vn_push(fs);
+        if (!e) return;
+        e->name = JS_UNDEFINED;
+        e->kind = VK_FIELD_INIT;
+        e->outer = e->paramenv = 0;
+        e->where = VN_LOCAL_CELL;
+        e->slot = 0;
     }
     *count = (uint16_t)(fs->nvn - *first);
 }
@@ -1940,6 +2085,7 @@ static void gen_destructure(FS *fs, Node *pat, int decl) {
         uint32_t start = fs->len;
         CB cb = { 0 };
         cb.kind = CB_ITERDESTR;
+        cb.seq = ++fs->cb_serial;
         cb.prev = fs->cb;
         cb.depth = base;
         cb.items = 3;
@@ -2011,7 +2157,7 @@ static void gen_destructure(FS *fs, Node *pat, int decl) {
         uint32_t handler = fs->len;
         fs->depth = base + 3 + 1;
         emit_op(fs, OP_iter_finish_throw);
-        add_exc(fs, start, end, handler, base + 3);
+        add_exc(fs, start, end, handler, base + 3, cb.seq);
         patch_here(fs, jok);
         fs->depth = base;
         (void)rt;
@@ -2025,6 +2171,7 @@ static void gen_destructure(FS *fs, Node *pat, int decl) {
 static CB *push_cb(FS *fs, CB *cb, int kind) {
     memset(cb, 0, sizeof *cb);
     cb->kind = kind;
+    cb->seq = ++fs->cb_serial;
     cb->prev = fs->cb;
     cb->depth = fs->depth;
     fs->cb = cb;
@@ -2037,16 +2184,29 @@ static void drop_to(FS *fs, int depth) {
     while (fs->depth > depth) emit_op(fs, OP_drop);
 }
 
+/* for await leaving the loop: AsyncIteratorClose.  GetMethod(iterator, "return"); with no such method nothing happens (and
+   nothing is awaited: the number of ticks is observable); otherwise call it, await the result, and the awaited value must be an
+   object.  iter next -> */
+static void gen_async_close(FS *fs) {
+    int jnone = emit_jump(fs, OP_iter_close_async);
+    emit_op(fs, OP_await);
+    emit_op(fs, OP_iter_close_check);
+    patch_here(fs, jnone);
+}
+
 /* the cleanup an exit through block cb needs (its own stack items) */
 static void exit_block_items(FS *fs, CB *cb) {
     drop_to(fs, cb->depth + cb->items);
+    uint32_t from = fs->len;
     if (cb->kind == CB_FOROF) {
-        if (cb->async_iter) {
-            /* for await: return() is awaited */
-            emit_op(fs, OP_iter_close);
-        } else emit_op(fs, OP_iter_close);
+        if (cb->async_iter) gen_async_close(fs);
+        else emit_op(fs, OP_iter_close);
+        add_hole(fs, from, fs->len, cb->seq);
     } else if (cb->kind == CB_FORIN) emit_op(fs, OP_drop);
-    else if (cb->kind == CB_ITERDESTR) emit_op(fs, OP_iter_finish);
+    else if (cb->kind == CB_ITERDESTR) {
+        emit_op(fs, OP_iter_finish);
+        add_hole(fs, from, fs->len, cb->seq);
+    }
     fs->depth = cb->depth;
 }
 
@@ -2180,7 +2340,7 @@ static void enter_scope(FS *fs, Scope *s) {
     if (global_scope(s)) return;
     for (Binding *b = s->first; b; b = b->next) {
         if (b->slot < 0) continue;
-        if (b->kind == BK_PARAM || b->kind == BK_ARGUMENTS || b->kind == BK_IMPORT) continue;
+        if (b->kind == BK_PARAM || b->kind == BK_ARGUMENTS || b->kind == BK_IMPORT || (b->flags & BF_PRECELL)) continue;
         if (b->kind == BK_HIDDEN && (b == fs->fi->this_b || b == fs->fi->new_target_b || b == fs->fi->home_b || b == fs->fi->fields_b)) continue;
         bool lexical = is_lexical_kind_x(b->kind);
         if (b->flags & BF_CAPTURED) emit_op_u16(fs, lexical ? OP_new_lcell : OP_new_lcell_undef, (uint16_t)b->slot);
@@ -2367,10 +2527,25 @@ static void gen_for_of(FS *fs, Node *n, JSValue *labels, int nlabels) {
     uint32_t handler = fs->len;
     fs->depth = cb.depth + 3;
     if (async) {
-        /* iter next exc: call return and await it, then rethrow */
-        emit_op(fs, OP_iter_close_throw);
+        /* iter next exc: call return() and await its result, then throw exc again.  Whatever closing throws, or
+           returns, is ignored: the exception in flight wins (AsyncIteratorClose with a throw completion). */
+        int jnone = emit_jump(fs, OP_iter_close_throw_async);       /* -> exc result (or exc, jumping) */
+        uint32_t aw_start = fs->len;
+        emit_op(fs, OP_await);
+        emit_op(fs, OP_drop);                                      /* exc */
+        uint32_t aw_end = fs->len;
+        patch_here(fs, jnone);
+        fs->depth = cb.depth + 1;
+        uint32_t rethrow = fs->len;
+        emit_op(fs, OP_throw);
+        /* the await rejected: exc error -> exc, then the same throw */
+        uint32_t on_reject = fs->len;
+        fs->depth = cb.depth + 2;
+        emit_op(fs, OP_drop);
+        emit_jump_back(fs, OP_goto, (int)rethrow);
+        add_exc(fs, aw_start, aw_end, on_reject, cb.depth + 1, -1);
     } else emit_op(fs, OP_iter_close_throw);
-    add_exc(fs, body_start, body_end, handler, cb.depth + 2);
+    add_exc(fs, body_start, body_end, handler, cb.depth + 2, cb.seq);
     fs->depth = cb.depth + 2;
     patch_here(fs, jdone);
     if (async) fs->depth = cb.depth + 2;
@@ -2428,6 +2603,7 @@ static void gen_try(FS *fs, Node *n) {
         fin.depth = base;
     }
     uint32_t try_start = fs->len;
+    int entry_seq = fs->cb_serial;      /* (the exits of the blocks open here leave the try: their closing code is not protected) */
     gen_block(fs, n->a);
     uint32_t try_end = fs->len;
     int jover = -1;
@@ -2440,7 +2616,7 @@ static void gen_try(FS *fs, Node *n) {
     uint32_t catch_end = try_end;
     if (n->c) {
         uint32_t handler = fs->len;
-        add_exc(fs, try_start, try_end, handler, base);
+        add_exc(fs, try_start, try_end, handler, base, entry_seq);
         fs->depth = base + 1;
         enter_scope(fs, n->scope);
         if (n->b) {
@@ -2466,7 +2642,7 @@ static void gen_try(FS *fs, Node *n) {
     }
     /* the throw path into finally: exc -> exc THROW */
     uint32_t handler = fs->len;
-    add_exc(fs, try_start, catch_end, handler, base);
+    add_exc(fs, try_start, catch_end, handler, base, entry_seq);
     fs->depth = base + 1;
     emit_op_u8(fs, OP_push_i8, COMPLETION_THROW);
     pop_cb(fs);
@@ -2536,15 +2712,17 @@ static void gen_labelled(FS *fs, Node *n) {
 
 static void gen_class_decl(FS *fs, Node *n) {
     Node *cls = n->a;
-    gen_class(fs, cls, 0);
+    /* (`export default class {}` declares the binding *default* for an anonymous class, whose name is "default") */
+    bool star_default = n->val == fs->ctx->rt->atom[KZ_ATOM_star_default_star];
+    gen_class(fs, cls, star_default ? fs->ctx->rt->atom[KZ_ATOM_default] : 0);
     /* the outer binding */
     Binding *b = NULL;
     for (Scope *s = n->scope; s; s = s->parent) {
-        b = kz_scope_find(s, cls->val);
+        b = kz_scope_find(s, n->val);
         if (b) break;
     }
     if (b && !global_scope(b->scope)) emit_store_binding(fs, b, false, false, true);
-    else emit_atom_ic(fs, OP_put_global_init, cls->val);
+    else emit_atom_ic(fs, OP_put_global_init, n->val);
 }
 
 static void gen_stmt(FS *fs, Node *n) {
@@ -2708,9 +2886,10 @@ static void gen_class(FS *fs, Node *n, JSValue name_hint) {
     else emit_op(fs, OP_push_undefined);
     JSFunctionBytecode *cb = gen_function(fs, ctor_fi, name ? name : rt->atom[KZ_ATOM_empty]);
     if (!cb) { fs_oom(fs); return; }
+    uint32_t cb_index = add_const(fs, JV_MKPTR(cb));      /* (the pool holds the constructor's code before anything else allocates) */
     set_pos(fs, n);
     emit_op(fs, OP_class_create);
-    emit_u32(fs, add_const(fs, JV_MKPTR(cb)));
+    emit_u32(fs, cb_index);
     emit_byte(fs, (uint8_t)(derived ? 1 : 0));
     int sc = new_slot(fs), sp = new_slot(fs);
     emit_op_u16(fs, OP_put_loc, (uint16_t)sp);
@@ -2859,7 +3038,7 @@ static void assign_slots(FS *fs, FuncInfo *fi) {
         }
         for (Binding *b = s->first; b; b = b->next) {
             if (b->slot >= 0) continue;
-            if (b->kind == BK_IMPORT || global_binding(s, b)) continue;
+            if (global_binding(s, b)) continue;
             b->slot = (int16_t)n++;
         }
     }
@@ -2928,9 +3107,10 @@ static void gen_prologue(FS *fs, FuncInfo *fi) {
     if ((fi->flags & FN_CTOR) && !(fi->flags & FN_DERIVED) && fi->has_instance_elements) {
         emit_op(fs, OP_push_func);
         emit_op(fs, OP_push_this);
-        emit_op(fs, OP_run_fields);
-        adjust(fs, -2);
+        emit_op(fs, OP_run_fields);         /* (emit_op accounts for the two values it pops) */
     }
+    if (fi->scope != fi->body_scope && fi->scope->eval_obj && (fi->scope->eval_obj->flags & BF_CAPTURED))
+        emit_op_u16(fs, OP_new_lcell_undef, (uint16_t)fi->scope->eval_obj->slot);       /* (the parameter environment's var object) */
     if (!simple) {
         /* parameters are in their TDZ until bound */
         for (Binding *b = fi->scope->first; b; b = b->next) {
@@ -2953,6 +3133,8 @@ static void gen_prologue(FS *fs, FuncInfo *fi) {
                 emit_store_binding(fs, b, false, false, true);
             }
         }
+        /* (the cell of the object sloppy eval code puts its vars in exists before any closure is made: they capture it) */
+        if (vs->eval_obj && (vs->eval_obj->flags & BF_CAPTURED)) emit_op_u16(fs, OP_new_lcell_undef, (uint16_t)vs->eval_obj->slot);
         /* lexical bindings and functions */
         for (Binding *b = vs->first; b; b = b->next) {
             if (b->kind == BK_VAR || b->kind == BK_FUNC) continue;
@@ -2966,8 +3148,7 @@ static void gen_prologue(FS *fs, FuncInfo *fi) {
             gen_closure(fs, b->decl, 0);
             emit_store_binding(fs, b, false, false, true);
         }
-    } else enter_scope(fs, fi->scope);
-    if (vs && vs->eval_obj && (vs->eval_obj->flags & BF_CAPTURED)) emit_op_u16(fs, OP_new_lcell_undef, (uint16_t)vs->eval_obj->slot);
+    } else enter_scope(fs, fi->scope);       /* (makes the cells, the eval var object's too, then the closures of the function declarations) */
     if (fi->flags & FN_GENERATOR) emit_op(fs, OP_initial_yield);
     (void)rt;
 }
@@ -3146,15 +3327,262 @@ static void gen_eval_decls(FS *fs, FuncInfo *fi) {
     }
 }
 
+/* ------------------------------------------------------------------ modules
+ *
+ * A module is compiled as a generator function (an async generator when it has a top-level await): calling it runs the
+ * prologue up to the initial yield, which creates the closures of its function declarations; evaluating the module is
+ * resuming it.  The variable cells of the bindings that cross a module boundary (the exported ones, the imported ones)
+ * are not made by the prologue but by the linker (module.c), which puts them into the frame before it starts, so that a
+ * function hoisted in one module can already close over a variable that another module exports, also in a cycle.
+ * Those bindings are marked BF_PRECELL | BF_CAPTURED here.
+ *
+ * The module's description for the linker is a flat array in the bytecode (JSFunctionBytecode.module_desc):
+ *   [ has_tla, nreq, specifier..., nimp, (request, import name, slot)..., nexp, (kind, export name, a, b)... ]
+ * with export kinds MX_LOCAL (a = slot, b = 1 for a binding that starts uninitialised), MX_INDIRECT (a = request, b =
+ * the name imported there, "*" for the namespace) and MX_STAR (a = request).
+ */
+enum { MX_LOCAL, MX_INDIRECT, MX_STAR };
+
+typedef void (*NameFn)(void *ud, Node *ident);
+
+/* the identifiers a binding pattern declares */
+static void bound_names(Node *pat, NameFn fn, void *ud) {
+    if (!pat) return;
+    switch (pat->type) {
+    case N_IDENT: fn(ud, pat); return;
+    case N_ASSIGN_PAT: bound_names(pat->a, fn, ud); return;
+    case N_REST: bound_names(pat->a, fn, ud); return;
+    case N_OBJ_PATTERN:
+        for (int i = 0; i < pat->list.n; i++) {
+            Node *pp = pat->list.v[i];
+            if (pp->type == N_REST) bound_names(pp->a, fn, ud);
+            else bound_names(pp->b, fn, ud);
+        }
+        return;
+    case N_ARR_PATTERN:
+        for (int i = 0; i < pat->list.n; i++) bound_names(pat->list.v[i], fn, ud);
+        return;
+    default: return;
+    }
+}
+
+/* the names a declaration statement declares: through fn for var, let and const; *single for a function or class */
+static void declared_names(Node *decl, NameFn fn, void *ud, JSValue *single) {
+    if (!decl) return;
+    if (decl->type == N_VAR) {
+        for (int i = 0; i < decl->list.n; i++) bound_names(decl->list.v[i]->a, fn, ud);
+    } else *single = decl->val;
+}
+
+typedef struct ModCtx {
+    Analyzer *a;
+    Scope *ms;
+    KzVec *reqs, *imps, *exps;
+    JSValue *seen;              /* export names so far, for the duplicate check */
+    int nseen, cap_seen;
+    Node *at;                   /* the statement being described (positions of errors) */
+    bool failed;
+} ModCtx;
+
+static void mod_error(ModCtx *m, Node *at, const char *fmt, JSValue name) {
+    char buf[96];
+    kz_str_to_utf8_buf(JV_STR(name), buf, sizeof buf);
+    kz_throw_syntax_at(m->a->ctx, m->a->p->filename, at ? at->line : 0, at ? at->col : 0, fmt, buf);
+    an_fail(m->a);
+    m->failed = true;
+}
+
+static void mod_mark(Binding *b) { b->flags |= BF_CAPTURED | BF_PRECELL; }
+
+static void mod_push(ModCtx *m, KzVec *v, JSValue x) {
+    if (m->failed) return;
+    if (kz_vec_push(m->a->ctx, v, x)) { an_fail(m->a); m->failed = true; }
+}
+
+static int mod_request(ModCtx *m, JSValue spec) {
+    JSValue at = kz_atom_from_str(m->a->ctx, spec);
+    if (at == JS_EXCEPTION || kz_parser_keep(m->a->p, at) == JS_EXCEPTION) { an_fail(m->a); m->failed = true; return 0; }
+    for (uint32_t i = 0; i < m->reqs->len; i++) if (m->reqs->v[i] == at) return (int)i;
+    mod_push(m, m->reqs, at);
+    return (int)m->reqs->len - 1;
+}
+
+static void mod_export(ModCtx *m, Node *at, int kind, JSValue name, int64_t a, JSValue b) {
+    if (kind != MX_STAR) {
+        for (int i = 0; i < m->nseen; i++) if (m->seen[i] == name) { mod_error(m, at, "Duplicate export of '%s'", name); return; }
+        if (m->nseen == m->cap_seen) {
+            int nc = m->cap_seen ? m->cap_seen * 2 : 16;
+            JSValue *ns = kz_arena_alloc(m->a->p, (size_t)nc * sizeof(JSValue));
+            if (!ns) { an_fail(m->a); m->failed = true; return; }
+            if (m->nseen) memcpy(ns, m->seen, (size_t)m->nseen * sizeof(JSValue));
+            m->seen = ns;
+            m->cap_seen = nc;
+        }
+        m->seen[m->nseen++] = name;
+    }
+    mod_push(m, m->exps, JV_MKINT(kind));
+    mod_push(m, m->exps, name);
+    mod_push(m, m->exps, JV_MKINT((int32_t)a));
+    mod_push(m, m->exps, b);
+}
+
+static void cb_mark(void *u, Node *id) {
+    ModCtx *m = u;
+    Binding *b = kz_scope_find(m->ms, id->val);
+    if (b) mod_mark(b);
+}
+
+static void cb_export(void *u, Node *id) {
+    ModCtx *m = u;
+    Binding *b = kz_scope_find(m->ms, id->val);
+    if (b) mod_export(m, m->at, MX_LOCAL, id->val, b->slot, JV_MKINT(is_lexical_kind_x(b->kind) ? 1 : 0));
+}
+
+/* marks every binding that crosses a module boundary; reports exports of names that are not declared */
+static void module_prepare(Analyzer *a, FuncInfo *fi, Node *prog) {
+    Scope *ms = fi->scope;
+    ModCtx m = { a, ms, NULL, NULL, NULL, NULL, 0, 0, NULL, false };
+    for (Binding *b = ms->first; b; b = b->next)
+        if (b->kind == BK_IMPORT) mod_mark(b);
+    for (int i = 0; i < prog->list.n && !m.failed; i++) {
+        Node *n = prog->list.v[i];
+        if (n->type != N_EXPORT) continue;
+        JSValue single = 0;
+        switch (n->op) {
+        case EX_DECL: case EX_DEFAULT_DECL: {
+            declared_names(n->a, cb_mark, &m, &single);
+            if (single) { Binding *b = kz_scope_find(ms, single); if (b) mod_mark(b); }
+            break;
+        }
+        case EX_DEFAULT_EXPR: {
+            Binding *b = kz_scope_find(ms, a->ctx->rt->atom[KZ_ATOM_star_default_star]);
+            if (b) mod_mark(b);
+            break;
+        }
+        case EX_NAMED:
+            for (int k = 0; k < n->list.n; k++) {
+                Node *spec = n->list.v[k];
+                Binding *b = kz_scope_find(ms, spec->val);
+                if (!b) { mod_error(&m, spec, "Export '%s' is not defined in module", spec->val); return; }
+                mod_mark(b);
+            }
+            break;
+        default: break;
+        }
+    }
+}
+
+/* the description for the linker (after the slots are assigned) */
+static JSValue module_descriptor(FS *fs, FuncInfo *fi, Node *prog) {
+    JSContext *ctx = fs->ctx;
+    JSRuntime *rt = ctx->rt;
+    Analyzer a = { fs->p, ctx, false };
+    Scope *ms = fi->scope;
+    KZ_ROOT_VEC(ctx, reqs);
+    KZ_ROOT_VEC(ctx, imps);
+    KZ_ROOT_VEC(ctx, exps);
+    ModCtx m = { &a, ms, &reqs, &imps, &exps, NULL, 0, 0, NULL, false };
+    /* requests, and the import entries */
+    for (int i = 0; i < prog->list.n && !m.failed; i++) {
+        Node *n = prog->list.v[i];
+        if (n->type == N_IMPORT) {
+            int rq = mod_request(&m, n->val);
+            for (int k = 0; k < n->list.n && !m.failed; k++) {
+                Node *spec = n->list.v[k];
+                Binding *b = kz_scope_find(ms, spec->val2);
+                if (!b) continue;
+                mod_push(&m, &imps, JV_MKINT(rq));
+                mod_push(&m, &imps, spec->val);
+                mod_push(&m, &imps, JV_MKINT(b->slot));
+            }
+        } else if (n->type == N_EXPORT && (n->op == EX_FROM || n->op == EX_ALL)) mod_request(&m, n->val);
+    }
+    /* the exports */
+    for (int i = 0; i < prog->list.n && !m.failed; i++) {
+        Node *n = prog->list.v[i];
+        if (n->type != N_EXPORT) continue;
+        m.at = n;
+        switch (n->op) {
+        case EX_DECL: {
+            JSValue single = 0;
+            declared_names(n->a, cb_export, &m, &single);
+            if (single) { Binding *b = kz_scope_find(ms, single); if (b) mod_export(&m, n, MX_LOCAL, single, b->slot, JV_MKINT(is_lexical_kind_x(b->kind) ? 1 : 0)); }
+            break;
+        }
+        case EX_DEFAULT_DECL: {
+            Binding *b = kz_scope_find(ms, n->a->val);
+            if (b) mod_export(&m, n, MX_LOCAL, rt->atom[KZ_ATOM_default], b->slot, JV_MKINT(is_lexical_kind_x(b->kind) ? 1 : 0));
+            break;
+        }
+        case EX_DEFAULT_EXPR: {
+            Binding *b = kz_scope_find(ms, rt->atom[KZ_ATOM_star_default_star]);
+            if (b) mod_export(&m, n, MX_LOCAL, rt->atom[KZ_ATOM_default], b->slot, JV_MKINT(1));
+            break;
+        }
+        case EX_NAMED:
+            for (int k = 0; k < n->list.n && !m.failed; k++) {
+                Node *spec = n->list.v[k];
+                Binding *b = kz_scope_find(ms, spec->val);
+                if (!b) continue;
+                if (b->kind == BK_IMPORT) {
+                    /* re-exporting an import: an indirect export of what it imports (a namespace stays a local cell) */
+                    bool done = false;
+                    for (uint32_t q = 0; q + 2 < imps.len; q += 3) {
+                        if ((int)JV_INT(imps.v[q + 2]) != b->slot) continue;
+                        /* (a namespace import is an indirect export of "all" too, so that two modules that re-export
+                           the same module's namespace export the same binding) */
+                        mod_export(&m, spec, MX_INDIRECT, spec->val2, JV_INT(imps.v[q]), imps.v[q + 1]);
+                        done = true;
+                        break;
+                    }
+                    if (!done) mod_export(&m, spec, MX_LOCAL, spec->val2, b->slot, JV_MKINT(0));
+                } else mod_export(&m, spec, MX_LOCAL, spec->val2, b->slot, JV_MKINT(is_lexical_kind_x(b->kind) ? 1 : 0));
+            }
+            break;
+        case EX_FROM: {
+            int rq = mod_request(&m, n->val);
+            for (int k = 0; k < n->list.n && !m.failed; k++) {
+                Node *spec = n->list.v[k];
+                mod_export(&m, spec, MX_INDIRECT, spec->val2, rq, spec->val);
+            }
+            break;
+        }
+        case EX_ALL: {
+            int rq = mod_request(&m, n->val);
+            mod_export(&m, n, MX_STAR, JS_UNDEFINED, rq, JS_UNDEFINED);
+            break;
+        }
+        default: break;
+        }
+    }
+    if (m.failed || a.failed) return JS_EXCEPTION;
+    /* assemble: has_tla, requests, imports, exports */
+    KZ_ROOT(ctx, arr);
+    arr = kz_new_array(ctx, 0);
+    if (arr == JS_EXCEPTION) return arr;
+    JSObject *ao = JV_OBJ(arr);
+    if (kz_array_push(ctx, ao, JV_MKBOOL((fi->flags & FN_ASYNC) != 0)) || kz_array_push(ctx, ao, JV_MKINT((int32_t)reqs.len))) return JS_EXCEPTION;
+    for (uint32_t i = 0; i < reqs.len; i++) if (kz_array_push(ctx, ao, reqs.v[i])) return JS_EXCEPTION;
+    if (kz_array_push(ctx, ao, JV_MKINT((int32_t)(imps.len / 3)))) return JS_EXCEPTION;
+    for (uint32_t i = 0; i < imps.len; i++) if (kz_array_push(ctx, ao, imps.v[i])) return JS_EXCEPTION;
+    if (kz_array_push(ctx, ao, JV_MKINT((int32_t)(exps.len / 4)))) return JS_EXCEPTION;
+    for (uint32_t i = 0; i < exps.len; i++) if (kz_array_push(ctx, ao, exps.v[i])) return JS_EXCEPTION;
+    return arr;
+}
+
 JSFunctionBytecode *kz_compile_program(Parser *p, Node *prog) {
     JSContext *ctx = p->ctx;
     FuncInfo *fi = prog->func;
     Analyzer a = { p, ctx, false };
+    if (fi->flags & FN_MODULE) fi->flags |= FN_GENERATOR | (fi->contains_await ? FN_ASYNC : 0);
     analyze_function(&a, fi);
+    if ((fi->flags & FN_MODULE) && !a.failed) module_prepare(&a, fi, prog);
     /* direct eval: resolve the names moved out of the eval scope (to the caller's bindings or its var object) */
     for (int i = 0; i < fi->eval_vars.n && !a.failed; i++) {
         Node *n = fi->eval_vars.v[i];
-        n->binding = resolve(&a, fi, fi->scope, n->val, NULL);
+        Binding *b = resolve(&a, fi, fi->scope, n->val, NULL);
+        /* a binding of an enclosing function is not the variable (it is shadowed by a new one in this function's var object) */
+        n->binding = b && !(b->flags & BF_OUTER) ? b : NULL;
         if (fi->scope->eval_obj) capture(&a, fi->scope->eval_obj, fi);
     }
     if (a.failed || p->failed) return NULL;
@@ -3170,6 +3598,12 @@ JSFunctionBytecode *kz_compile_program(Parser *p, Node *prog) {
     fs.global_code = (fi->flags & FN_SCRIPT) != 0;
     fs.eval_code = (fi->flags & FN_EVAL) != 0;
     assign_slots(&fs, fi);
+    KZ_ROOT(ctx, mod_desc);
+    mod_desc = JS_UNDEFINED;
+    if (fi->flags & FN_MODULE) {
+        mod_desc = module_descriptor(&fs, fi, prog);
+        if (mod_desc == JS_EXCEPTION) return NULL;
+    }
     if (fi->flags & (FN_SCRIPT | FN_EVAL)) {
         fs.completion = new_slot(&fs);
     }
@@ -3211,6 +3645,7 @@ JSFunctionBytecode *kz_compile_program(Parser *p, Node *prog) {
     if (fs.exc) kz_free(ctx->rt, fs.exc);
     if (fs.pos) kz_free(ctx->rt, fs.pos);
     if (fs.vn) kz_free(ctx->rt, fs.vn);
+    if (b) b->module_desc = mod_desc;
     (void)g_pending_labels_unused;
     (void)g_label_buf;
     (void)g_label_n;

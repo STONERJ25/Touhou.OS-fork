@@ -150,6 +150,36 @@ int kz_unicode_case_closure(uint32_t lo, uint32_t hi, bool unicode, int (*add)(v
     return 0;
 }
 
+/*
+ * Calls add(lo, hi) for the ranges (ascending) of the characters c that case-fold to something else (unicode:
+ * simple case folding, scf(c) != c; otherwise the toUppercase-based Canonicalize of non-unicode patterns).  The
+ * complement of this set is what /v with /i calls AllCharacters: the characters that are their own canonical form.
+ */
+int kz_unicode_case_domain(bool unicode, int (*add)(void *, uint32_t, uint32_t), void *opaque) {
+    if (unicode) {
+        if (add(opaque, 'A', 'Z')) return -1;
+        for (size_t i = 0; i < KZ_COUNTOF(kz_fold_runs); i++) {
+            const KzCaseRun *r = &kz_fold_runs[i];
+            if (r->step == 1) {
+                if (add(opaque, r->start, r->start + (uint32_t)r->len - 1)) return -1;
+            } else {
+                for (uint32_t k = 0; k < r->len; k++)
+                    if (add(opaque, r->start + k * r->step, r->start + k * r->step)) return -1;
+            }
+        }
+        return 0;
+    }
+    if (add(opaque, 'a', 'z')) return -1;
+    for (size_t i = 0; i < KZ_COUNTOF(kz_upper_runs); i++) {
+        const KzCaseRun *r = &kz_upper_runs[i];
+        for (uint32_t k = 0; k < r->len; k++) {
+            uint32_t c = r->start + k * r->step;
+            if (c <= 0xFFFF && kz_unicode_canonicalize_nonunicode(c) != c && add(opaque, c, c)) return -1;
+        }
+    }
+    return 0;
+}
+
 /* ================================================================== property escapes */
 
 static int name_cmp(const char *a, const char *b, size_t blen) {

@@ -343,10 +343,10 @@ bool kz_realm_init(JSContext *ctx) {
     if (r[1] == JS_EXCEPTION) return false;
     ctx->global_lex = r[1];
     if (kz_init_object(ctx) || kz_init_function(ctx) || kz_init_error(ctx) || kz_init_symbol(ctx) ||
-        kz_init_iterators(ctx) || kz_init_array(ctx) || kz_init_string(ctx) || kz_init_number(ctx) ||
+        kz_init_iterators(ctx) || kz_init_iterator_helpers(ctx) || kz_init_array(ctx) || kz_init_string(ctx) || kz_init_number(ctx) ||
         kz_init_math(ctx) || kz_init_json(ctx) || kz_init_function_kinds(ctx) || kz_init_generators(ctx) ||
         kz_init_regexp(ctx) || kz_init_date(ctx) || kz_init_map(ctx) || kz_init_promise(ctx) || kz_init_proxy(ctx) ||
-        kz_init_typed(ctx) || kz_init_bigint(ctx) || kz_init_intl(ctx) || kz_init_global(ctx))
+        kz_init_typed(ctx) || kz_init_bigint(ctx) || kz_init_modules(ctx) || kz_init_intl(ctx) || kz_init_global(ctx))
         return false;
     return true;
 }

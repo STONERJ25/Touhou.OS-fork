@@ -456,7 +456,8 @@ SPECIAL_MODES = {"bin/eiki": 0o4755, "bin/su": 0o4755, "bin/passwd": 0o4755, "sb
 EXTRA_LINKS = [("bin/sudo", "eiki"), ("bin/sh", "gapsh"),       # #!/bin/sh scripts (and system()/popen() callers) find a shell
                ("bin/cc", "mcc"), ("bin/mld", "mcc"), ("bin/mar", "mcc"),   # one program, three names (docs/MCC.md)
                ("bin/make", "mmake"),                                        # mmake under its usual name (docs/SELFHOST.md)
-               ("bin/pc98", "pc98app")]                                      # the PC-98 emulator: `pc98 IMAGE` (docs/PC98_APP.md)
+               ("bin/pc98", "pc98app"),                                      # the PC-98 emulator: `pc98 IMAGE` (docs/PC98_APP.md)
+               ("bin/fsck.fat", "fsck"), ("bin/fsck.vfat", "fsck")]          # the FAT file system checker under its usual names (docs/STORAGE.md)
 
 
 def build_initrd(user_bins):

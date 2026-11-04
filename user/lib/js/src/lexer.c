@@ -632,6 +632,7 @@ int kz_lex_regexp(Lexer *lx) {
 int kz_lex_next(Lexer *lx) {
     Token *t = &lx->tok;
     lx->prev_end = t->end;
+    lx->prev_pos = t->pos;
     lx->prev_line = lx->line;
     bool nl = false;
     if (lx->pos == 0 && lx->len >= 2 && lx->src[0] == '#' && lx->src[1] == '!') {

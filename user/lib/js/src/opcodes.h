@@ -166,6 +166,9 @@ OP(iter_call_next, 1, 2, 3)         /* iter next -> iter next result (for-await:
 OP(iter_result, 5, 1, 1)            /* result -> value, or jump (dropping it) when done */
 OP(iter_close, 1, 2, 0)             /* iter next -> (iterator.return()) */
 OP(iter_close_throw, 1, 3, 0)       /* iter next exc -> rethrows exc after return() (whose errors are ignored) */
+OP(iter_close_async, 5, 2, 1)       /* iter next -> result of return() (to await), or jump with nothing left when there is no return method */
+OP(iter_close_check, 1, 1, 0)       /* the awaited result of return() -> (): a TypeError unless it is an object */
+OP(iter_close_throw_async, 5, 3, 2) /* iter next exc -> exc result (to await), or jump with just exc: errors of closing are ignored */
 OP(iter_step, 1, 3, 4)              /* iter next done -> iter next done value */
 OP(iter_rest, 1, 3, 4)              /* iter next done -> iter next done array */
 OP(iter_finish, 1, 3, 0)            /* iter next done -> (return() unless done) */
