@@ -52,6 +52,8 @@ Rough sizing, in "agent sessions" like the ones that wrote the web engine: L0 an
 
 `linux PROGRAM [ARGUMENT...]` runs a **static x86-64 Linux executable**: either a program with no C library at all (the kit in `user/linuxtest`) or one linked statically with glibc. `native PROGRAM` is the way back for a native tool started from inside a Linux program. Files and directories, signals (handlers with `siginfo`, the alternate stack, the floating-point state, `SA_RESTART`), threads (`clone` with `CLONE_THREAD`, futexes, thread-local storage) and timers (`alarm`, `clock_nanosleep`) work too; dynamically linked executables, sockets and the real-time signals are not there yet (see "Next" below).
 
+**On real hardware.** The six glibc test programs were copied to the Dell OptiPlex (Core i5-7500, Kaby Lake) on 2026-11-04 and run there under the Linux personality: all six print exactly what a real Linux prints, the signal and thread programs included (real CPUID and FXSAVE state, real timers).
+
 **How it is built**
 
 * **The personality.** `Process.abi` is `ABI_NATIVE` or `ABI_LINUX`. `syscall_dispatch` (`kernel/sys/syscalls.c`) sends a Linux process's calls to `linux_syscall`; everything else is as before. `fork` copies the personality, `execve` keeps it unless the new native call `setabi` (119, used by `linux` and `native`) asked for the other one for that one exec.
