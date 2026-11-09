@@ -259,6 +259,7 @@ static int exec_file(Process *p, const char *path, char *const argv[], char *con
     if (fmode & S_ISGID) p->cred.gid = fgid;
     AddrSpace old = p->as;
     p->as = nas;
+    if (p->abi != abi) current->sig_blocked &= ~sigbit(SIGCANCEL);    /* signal 31 means "cancellation is off" to a native program and SIGSYS to a Linux one: a mask carries neither over */
     p->abi = abi;
     current->pml4 = nas.pml4;
     vmm_switch(nas.pml4);

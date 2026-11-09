@@ -154,6 +154,7 @@ The kernel has one CPU, so "a lock" is either interrupt disabling (short section
 
 ## Cancellation, sigsuspend and sigwait
 
+* (This is the native personality's signal 31. A program of the Linux personality has `SIGSYS` there, an ordinary signal: docs/COMPAT.md, "Signals".)
 * `pthread_cancel(t)` sets a flag in the target's control block and sends it `SIGCANCEL` (31) with `tgkill`. The kernel
   treats that signal as *sticky*: `signal_deliver` never runs a handler for it, it stays pending, and any interruptible
   wait of that thread returns, after which `syscall_dispatch` reports `-ECANCELED` instead of `-EINTR`. libc's `__ret()`

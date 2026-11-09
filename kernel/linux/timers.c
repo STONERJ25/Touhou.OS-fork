@@ -449,7 +449,7 @@ long lnx_timer_create(TrapFrame *tf) {
     if (!defaults && copy_from_user(&sev, (void *)A1(tf), sizeof sev)) return -EFAULT;
     if (!defaults) {
         if (sev.notify != SIGEV_SIGNAL && sev.notify != SIGEV_NONE && sev.notify != SIGEV_THREAD && sev.notify != SIGEV_THREAD_ID) return -EINVAL;
-        if (sev.notify != SIGEV_NONE && (sev.signo <= 0 || sev.signo > SIGRTMAX_K || sev.signo == SIGCANCEL)) return -EINVAL;
+        if (sev.notify != SIGEV_NONE && (sev.signo <= 0 || sev.signo > SIGRTMAX_K)) return -EINVAL;
         if (sev.notify == SIGEV_THREAD_ID) {
             bool found = false;
             u64 f = irq_save();

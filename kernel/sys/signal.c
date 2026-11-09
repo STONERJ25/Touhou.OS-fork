@@ -36,6 +36,10 @@ static bool ignored(Process *p, int sig) {
     return h == SIG_IGN || (h == SIG_DFL && default_ignored(sig));
 }
 
+/* Signal 31 is the native thread library's SIGCANCEL: a sticky, thread-directed request that never runs a handler (below). For a program of the Linux personality it is
+ * SIGSYS, an ordinary signal (the owner freed it for Linux programs on 2026-11-09): this is the bit of the thread's sets that means "cancel", or 0 for such a program. */
+static inline u64 cancel_bit(const Task *t) { return t->proc && t->proc->abi == ABI_LINUX ? 0 : sigbit(SIGCANCEL); }
+
 /* A group exit or an exec in another thread wants this thread gone (it leaves at its next trip through signal_deliver). */
 bool thread_must_die(Task *t) {
     Process *p = t->proc;
@@ -48,7 +52,7 @@ bool signal_pending_now(Process *p) {
     (void)p;
     if (!t->proc) return false;
     u64 pend = (t->sig_pending | t->proc->sig_pending) & ~t->sig_blocked;
-    if (t->ignore_cancel) pend &= ~sigbit(SIGCANCEL);
+    if (t->ignore_cancel) pend &= ~cancel_bit(t);
     return thread_must_die(t) || pend != 0;
 }
 
@@ -56,7 +60,8 @@ bool signal_pending_now(Process *p) {
  * it makes interruptible waits return, and syscall_dispatch then reports -ECANCELED instead of -EINTR. Blocking the signal
  * is how a thread disables cancellation. */
 bool signal_cancel_pending(Task *t) {
-    return (t->sig_pending & sigbit(SIGCANCEL)) && !(t->sig_blocked & sigbit(SIGCANCEL));
+    u64 c = cancel_bit(t);
+    return (t->sig_pending & c) && !(t->sig_blocked & c);
 }
 
 /* ------------------------------------------------------------------ queued siginfo (Linux personality) */
@@ -458,6 +463,9 @@ static bool thrown_away(Process *p, int sig, Task *only) {
 }
 
 static int send_checked(Process *p, int sig, const SigInfo *info) {
+    /* SIGCANCEL is thread-directed only (syscalls.c): sent to a native process as a whole it would stay pending for ever and make every wait of the process return at once.
+     * Only a program of the Linux personality can aim signal 31 that way (it is SIGSYS to it), so it is dropped here. */
+    if (sig == SIGCANCEL && p->abi != ABI_LINUX) return 1;
     if (job_signal(p, sig, NULL)) return 1;
     u64 f = irq_save();
     if (thrown_away(p, sig, NULL)) { irq_restore(f); return 1; }
@@ -580,7 +588,7 @@ long signal_wait(u64 set, u64 deadline, SigInfo *info) {
     Task *t = current;
     Process *p = t->proc;
     long rc;
-    set &= ~(sigbit(SIGKILL) | sigbit(SIGSTOP) | sigbit(SIGCANCEL));
+    set &= ~(sigbit(SIGKILL) | sigbit(SIGSTOP) | cancel_bit(t));
     u64 f = irq_save();
     t->sigwait_set = set;
     for (;;) {
@@ -616,7 +624,7 @@ void signal_deliver(TrapFrame *tf) {
     Process *p = t->proc;
     if (!p || (tf->cs & 3) != 3) return;
     if (!p->exiting && !p->execing && !p->stopped && !t->saved_mask_valid &&
-        !((t->sig_pending | p->sig_pending) & (~t->sig_blocked | sigbit(SIGKILL)) & ~sigbit(SIGCANCEL)))
+        !((t->sig_pending | p->sig_pending) & (~t->sig_blocked | sigbit(SIGKILL)) & ~cancel_bit(t)))
         return;
     signal_deliver_slow(tf);
 }
@@ -633,7 +641,7 @@ __attribute__((noinline)) static void signal_deliver_slow(TrapFrame *tf) {
     for (;;) {
         SigInfo info;
         u64 f = irq_save();
-        u64 pend = (t->sig_pending | p->sig_pending) & (~t->sig_blocked | sigbit(SIGKILL)) & ~sigbit(SIGCANCEL);
+        u64 pend = (t->sig_pending | p->sig_pending) & (~t->sig_blocked | sigbit(SIGKILL)) & ~cancel_bit(t);
         int sig = 0;
         if (pend) {
             if (p->abi == ABI_LINUX) {

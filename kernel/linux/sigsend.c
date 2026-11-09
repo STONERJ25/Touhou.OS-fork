@@ -18,7 +18,7 @@
 
 static inline Process *me(void) { return current->proc; }
 
-static bool valid_sig(int sig) { return sig >= 0 && sig <= SIGRTMAX_K && sig != SIGCANCEL; }
+static bool valid_sig(int sig) { return sig >= 0 && sig <= SIGRTMAX_K; }
 
 /* kill(pid, sig): pid is a 32-bit pid_t, so only the low half of the register counts (kill(-1) arrives as 0xFFFFFFFF or as all ones, depending on the caller). */
 long lnx_kill(TrapFrame *tf) {
@@ -49,6 +49,7 @@ static long send_to_thread(int tgid, int tid, int sig, const SigInfo *info) {
     long rc = 0;
     if (!a.found) rc = -ESRCH;
     else if (!valid_sig(sig)) rc = -EINVAL;
+    else if (sig == SIGCANCEL && a.owner->abi != ABI_LINUX) rc = -EINVAL;     /* signal 31 is SIGSYS to us but pthread_cancel to a native thread: it is not ours to send */
     else if (!signal_permitted(me(), a.owner)) rc = -EPERM;
     else if (sig) rc = signal_send_thread_info(a.found, sig, info);
     irq_restore(f);

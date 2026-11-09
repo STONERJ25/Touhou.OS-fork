@@ -1,0 +1,25 @@
+sigaction(SIGSYS): 0
+raise: 1 signal(s), signo 31, code -6 (as expected), sent by this process 1
+kill: 1 signal(s), signo 31, code 0 (as expected), sent by this process 1
+kill with the number 31: 1 signal(s), signo 31, code 0 (as expected), sent by this process 1
+pthread_kill (self): 1 signal(s), signo 31, code -6 (as expected), sent by this process 1
+sigqueue: 1 signal(s), signo 31, code -1 (as expected), value 4242
+sigaction query: 0, handler is ours 1, SA_SIGINFO 1
+blocked: in the mask 1, neighbours 30 and 32 in the mask 0 0
+blocked: delivered at once 0, pending 1
+unblocked: 1 signal(s), signo 31, code -6 (as expected), sent by this process 1
+unblocked: pending now 0
+full mask: SIGSYS in it 1, SIGUSR1 in it 1
+empty mask: SIGSYS in it 0
+signal(SIG_IGN): the previous handler was ours 1
+ignored: 0 signal(s)
+sigaction(SIGSYS): 0
+sigwaitinfo: 31, signo 31, code 0, sent by this process 1, handler ran 0
+sigtimedwait with nothing pending: -1, EAGAIN
+timer_create with SIGSYS: 0
+timer: sigwaitinfo 31, signo 31, code -2 (as expected)
+sigsuspend: -1, EINTR, handler ran 1, blocked again afterwards 1
+pthread_kill (other thread): 1 signal(s), the handler ran in that thread 1, code -6
+kill with the main thread blocking it: 1 signal(s), the handler ran in the other thread 1, code 0
+default action: the child was killed by a signal, signal 31
+exit status: 0

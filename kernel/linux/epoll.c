@@ -40,8 +40,8 @@ static u64 left_ms(u64 deadline) {
     return deadline == ~0ULL ? 0 : deadline > now ? deadline - now : 0;
 }
 
-/* The signal mask a ppoll, pselect6 or epoll_pwait call runs under. Linux's sigset has bit n-1 for signal n, the kernel's bit n (signal 64 in bit 0), and the native
- * signal SIGCANCEL is not a Linux signal: kernel/linux/signal.c converts (lnx_sigset_to_kernel), as for rt_sigsuspend. The old mask is remembered the way
+/* The signal mask a ppoll, pselect6 or epoll_pwait call runs under. Linux's sigset has bit n-1 for signal n, the kernel's bit n (signal 64 in bit 0):
+ * kernel/linux/signal.c converts (lnx_sigset_to_kernel), as for rt_sigsuspend. The old mask is remembered the way
  * sigsuspend remembers it (Task.saved_mask): signal_deliver puts it back on the way out of the call, after a handler has run if there was one. A signal that the new
  * mask lets through and that is already pending ends the wait at once (pollq_wait and ep_wait look at the pending signals under the mask of the moment). */
 static long sigmask_swap(u64 usig, u64 size) {
@@ -54,7 +54,7 @@ static long sigmask_swap(u64 usig, u64 size) {
     u64 f = irq_save();
     t->saved_mask = t->sig_blocked;
     t->saved_mask_valid = true;
-    t->sig_blocked = n | (t->sig_blocked & sigbit(SIGCANCEL));
+    t->sig_blocked = n;
     irq_restore(f);
     return 0;
 }

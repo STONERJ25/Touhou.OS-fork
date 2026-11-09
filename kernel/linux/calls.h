@@ -37,7 +37,7 @@ long lnx_fcntl(TrapFrame *tf);
 long lnx_open_via_proc(const char *abs, int flags);       /* open() of /dev/stdout, /proc/self/fd/N ...: a descriptor for the open file itself, or -ENOSYS (not such a path) */
 
 /* kernel/linux/signal.c */
-u64 lnx_sigset_to_kernel(u64 lset);         /* a Linux sigset_t (bit n-1 is signal n) as the kernel's signal set (kernel/include/siginfo.h); the native SIGCANCEL bit never passes */
+u64 lnx_sigset_to_kernel(u64 lset);         /* a Linux sigset_t (bit n-1 is signal n) as the kernel's signal set (kernel/include/siginfo.h) */
 u64 lnx_sigset_to_linux(u64 kset);
 long lnx_rt_sigaction(TrapFrame *tf);
 long lnx_rt_sigprocmask(TrapFrame *tf);

@@ -9,9 +9,9 @@
  * supplied), a ucontext holding the machine state, a siginfo, and the floating-point state below them -- so that the restorer's call to rt_sigreturn finds what
  * it expects and a handler that looks at its arguments sees the real thing.
  *
- * Signals 1..30 and 32..64 exist for a Linux program. Signal 31 (SIGSYS in Linux) is the native thread library's SIGCANCEL here and stays out of sight: no
- * mask or set a program can read or write has it, and rt_sigaction answers EINVAL for it. Signals 32 and 33 are the C library's (pthread_cancel, the set-user-id
- * broadcast) and reach their handlers as any other real-time signal does.
+ * Signals 1..64 all exist for a Linux program. Signal 31 is SIGSYS, an ordinary signal as in Linux (until 2026-11-09 it was hidden, because the native thread library
+ * uses it as its SIGCANCEL; that meaning is now the native personality's alone, kernel/sys/signal.c, and a Linux program cannot cancel a native thread with it).
+ * Signals 32 and 33 are the C library's (pthread_cancel, the set-user-id broadcast) and reach their handlers as any other real-time signal does.
  *
  * Written from the sigaction(2), sigreturn(2), sigaltstack(2), sigprocmask(2), sigtimedwait(2) and signal(7) manual pages, POSIX, and the psABI; the layouts are
  * checked against the C library's by tests/host/test_linux_abi.py and test_linux_signals_abi.py.
@@ -24,17 +24,16 @@
 
 /* ------------------------------------------------------------------ signal sets */
 
-/* A Linux sigset_t is 64 bits with bit n-1 for signal n; the kernel's sets have bit n for signal n and signal 64 in bit 0 (siginfo.h): one rotation apart. The
- * bit of SIGCANCEL (31, a signal of the native thread library) never goes in or out. */
+/* A Linux sigset_t is 64 bits with bit n-1 for signal n; the kernel's sets have bit n for signal n and signal 64 in bit 0 (siginfo.h): one rotation apart. */
 #define LNX_SIGSET_SIZE 8
 #define UNMASKABLE (sigbit(SIGKILL) | sigbit(SIGSTOP))
 
-u64 lnx_sigset_to_kernel(u64 lset) { return ((lset << 1) | (lset >> 63)) & ~sigbit(SIGCANCEL); }       /* also for calls that take a mask (ppoll, epoll_pwait, pselect6) */
-u64 lnx_sigset_to_linux(u64 kset) { kset &= ~sigbit(SIGCANCEL); return (kset >> 1) | (kset << 63); }
+u64 lnx_sigset_to_kernel(u64 lset) { return (lset << 1) | (lset >> 63); }       /* also for calls that take a mask (ppoll, epoll_pwait, pselect6) */
+u64 lnx_sigset_to_linux(u64 kset) { return (kset >> 1) | (kset << 63); }
 #define to_kernel lnx_sigset_to_kernel
 #define to_linux lnx_sigset_to_linux
 
-static bool is_signal(int sig) { return sig > 0 && sig <= SIGRTMAX_K && sig != SIGCANCEL; }
+static bool is_signal(int sig) { return sig > 0 && sig <= SIGRTMAX_K; }
 
 /* ------------------------------------------------------------------ the calls */
 
@@ -73,7 +72,7 @@ long lnx_rt_sigprocmask(TrapFrame *tf) {
         switch (A0(tf)) {
         case LNX_SIG_BLOCK:   t->sig_blocked |= n; break;
         case LNX_SIG_UNBLOCK: t->sig_blocked &= ~n; break;
-        case LNX_SIG_SETMASK: t->sig_blocked = n | (t->sig_blocked & sigbit(SIGCANCEL)); break;
+        case LNX_SIG_SETMASK: t->sig_blocked = n; break;
         default: return -EINVAL;
         }
     }
@@ -97,7 +96,7 @@ long lnx_rt_sigsuspend(TrapFrame *tf) {
     u64 f = irq_save();
     t->saved_mask = t->sig_blocked;
     t->saved_mask_valid = true;
-    t->sig_blocked = (to_kernel(set) & ~UNMASKABLE) | (t->sig_blocked & sigbit(SIGCANCEL));
+    t->sig_blocked = to_kernel(set) & ~UNMASKABLE;
     while (!signal_pending_now(t->proc)) {
         t->intr = true;
         t->wake_ms = ~0ULL;
@@ -287,7 +286,7 @@ long lnx_rt_sigreturn(TrapFrame *tf) {
     tf->rflags = (c->eflags & 0xDD5) | RFLAGS_IF | 2;       /* never trust the saved flags beyond the arithmetic ones */
     tf->cs = USER_CS;
     tf->ss = USER_DS;
-    current->sig_blocked = (to_kernel(fr.uc.uc_sigmask) & ~UNMASKABLE) | (current->sig_blocked & sigbit(SIGCANCEL));
+    current->sig_blocked = to_kernel(fr.uc.uc_sigmask) & ~UNMASKABLE;
     if (c->fpstate) {
         u8 fx[FPSTATE_SIZE] __attribute__((aligned(16)));
         if (copy_from_user(fx, (void *)c->fpstate, FPSTATE_SIZE) == 0) {

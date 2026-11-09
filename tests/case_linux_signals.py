@@ -24,11 +24,13 @@ PROGRAMS = {
     "glibc_timers": ("linux /tmp/glibc_timers", 300),
     "glibc_cancel": ("linux /tmp/glibc_cancel", 300),
     "glibc_setxid": ("linux /tmp/glibc_setxid", 300),
+    "glibc_sigsys": ("linux /tmp/glibc_sigsys", 300),
 }
 
 # a process that a signal killed is announced by the kernel on the console the program writes to
-KERNEL_TAGS = {"glibc_rtsig": ("[Eiki]",), "glibc_siginfo": ("[Eiki]",)}
-EXPECTED_KERNEL_LINES = {"glibc_rtsig": ("was exorcised by signal 44",), "glibc_siginfo": ("was exorcised by signal 15", "was exorcised by signal 9")}
+KERNEL_TAGS = {"glibc_rtsig": ("[Eiki]",), "glibc_siginfo": ("[Eiki]",), "glibc_sigsys": ("[Eiki]",)}
+EXPECTED_KERNEL_LINES = {"glibc_rtsig": ("was exorcised by signal 44",), "glibc_siginfo": ("was exorcised by signal 15", "was exorcised by signal 9"),
+                         "glibc_sigsys": ("was exorcised by signal 31",)}
 
 
 def run_programs(names, vm_name):
@@ -80,6 +82,14 @@ def linux_rt_timers_match_linux():
     thread notification, expiry counts, overruns, absolute times, timer_gettime/timer_settime/timer_delete, the clocks (CPU time of the process and of a thread
     included), clock_getres, nanosleep and clock_nanosleep with the errors Linux gives: the same lines as on a real Linux"""
     run_programs(["glibc_timers"], "t-linux-timers")
+
+
+@test
+def linux_sigsys_is_an_ordinary_signal():
+    """Signal 31 (SIGSYS) for a Linux program, which the native thread library's pthread_cancel request used to hide: a handler with its siginfo for raise, kill,
+    sigqueue and pthread_kill, sigaction's answer, blocking, pending and unblocking, a full mask, SIG_IGN, sigwaitinfo and sigtimedwait, sigsuspend, a POSIX timer
+    that notifies with it, one thread and the thread that does not block it, and death by the default action: the same lines as on a real Linux"""
+    run_programs(["glibc_sigsys"], "t-linux-sigsys")
 
 
 @test

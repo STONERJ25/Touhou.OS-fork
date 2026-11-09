@@ -83,6 +83,7 @@ HOSTED_PROGRAMS.update({                            # real-time signals, who sen
     "glibc_timers": ([], {}),
     "glibc_cancel": ([], {}),
     "glibc_setxid": ([], {}),
+    "glibc_sigsys": ([], {}),                       # signal 31 as an ordinary signal for a Linux program (freed on 2026-11-09)
 })
 
 # How a hosted program is built when it is not simply `gcc -static NAME.c`: name -> (source file, flags). gcc's default is a dynamic position-independent executable.
