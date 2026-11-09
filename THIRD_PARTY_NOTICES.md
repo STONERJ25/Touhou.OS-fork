@@ -13,6 +13,14 @@ The glyph bitmaps were rasterised by `tools/genfont.py` from **DejaVu Sans Mono*
 * The license permits use, copying, modification, merging, publishing, distribution and sale of the font software, with the copyright and permission notice kept in all copies, **no sale of the font by itself**, and **no use of the names "Bitstream" or "Vera"** for modified versions.
 * The full text is in [assets/fonts/LICENSE_DEJAVU](assets/fonts/LICENSE_DEJAVU).
 
+### The Gensokyo typefaces (`assets/fonts/Gensokyo*.ttf`, with the programs that build them in `assets/fonts/source/`)
+
+Ten TrueType files (Gensokyo Sans in two weights, Gensokyo Mono and seven display faces) drawn for this project. They are original work, and they are under the **SIL Open Font License, Version 1.1, with no Reserved Font Name**, which is a different license from the MIT License of the code:
+
+* Copyright (c) 2026 STONERJ25 (https://github.com/STONERJ25/Touhou.OS-fork).
+* The fonts may be used, studied, modified and redistributed freely, with any software and in any document (a document made with them does not become OFL), but not sold by themselves. A modified version stays under the OFL, and the copyright notice and the license stay with every copy. Because there is no Reserved Font Name, a modified version may keep the name "Gensokyo ...".
+* The full text is in [assets/fonts/OFL.txt](assets/fonts/OFL.txt) (the same file is `LICENSE` in each folder of the sources); the text of the license is the official one, unchanged. The notice, a sentence about the license and its address are also in the name table of every font file, and every image carries `OFL.txt` next to the fonts, in `/ScarletDevilMansion/share/doc/touhouos/`.
+
 ## Used by the tests, not included
 
 These are downloaded or generated at test time into `build/` (git-ignored) and never become part of the repository or of an image.
@@ -32,7 +40,6 @@ Known-answer vectors that are committed are facts, not code from another project
 
 * **Game data.** The PC-98 emulator runs programs from disk images the user provides. No game, ROM, BIOS or font ROM of any machine is in the repository, in an image built from it, or in the tests.
 * **Linux programs and libraries.** The Linux compatibility layer ([docs/COMPAT.md](docs/COMPAT.md)) runs programs and shared libraries that the user installs; none are shipped. The test programs in `tests/linux/src` are our own sources; the tests build them on the developer's Linux (in WSL) with the compiler and C library found there, so the resulting static binaries contain that C library's code under its own license (the LGPL for glibc). They live in `build/linux-inputs` (git-ignored), are downloaded into a test guest from the host, and are never committed or put into an image.
-* **The Gensokyo typefaces** (`assets/fonts/Gensokyo*.ttf`, drawn for this project) are not part of the public repository until their license is chosen ([docs/LICENSING.md](docs/LICENSING.md)).
 
 ## Names and characters
 

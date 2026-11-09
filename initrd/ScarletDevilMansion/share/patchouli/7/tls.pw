@@ -1,7 +1,7 @@
 .page tls 7 HTTPS: libtls, certificates and what to trust
 
 # DESCRIPTION
-Most of the web speaks only HTTPS. `libtls` (the sources are in `user/lib/tls`, the design and the tests in `docs/TLS.md`) is the TLS client of this system: `https_get(1)` and the Browser use it through `libhttp`, and any C program can link it (it is part of the usual link line) and include `<tls.h>`. It is a client only, written for this system, small enough to read, and **not a hardened production TLS stack**: see "SECURITY NOTES".
+Most of the web speaks only HTTPS. `libtls` (the sources are in `user/lib/tls`, the design and the tests in `docs/TLS.md`) is the TLS client of this system: `fetch(1)`, `wget(1)`, `https_get(1)` and the Browser use it through `libhttp`, and any C program can link it (it is part of the usual link line) and include `<tls.h>`. It is a client only, written for this system, small enough to read, and **not a hardened production TLS stack**: see "SECURITY NOTES".
 
 # WHAT IT SPEAKS
 @ TLS 1.3
@@ -26,7 +26,7 @@ A connection is refused unless every step passes.
 Not done: revocation lists, OCSP, Certificate Transparency, and fetching a missing intermediate certificate from the web; a server that forgets to send its intermediate certificate is refused.
 
 # THE TRUST STORE
-The library ships no root certificates. It reads the file named by the variable `SSL_CERT_FILE`, or else `/etc/ssl/cacert.pem`: a PEM bundle such as Mozilla's list. `/etc` is rebuilt from the system image at every start, so a bundle copied there by hand lasts only until the next restart; the owner's build puts a local copy (`assets/local/ssl/cacert.pem`, which is not part of the source) into the image. Without any store a connection fails with a sentence that says where to put one. The bundle does not update itself: an authority that is later removed from Mozilla's list stays trusted here until the file is replaced. `https_get --ca FILE` replaces the store for one command, and a server certificate that is itself in the file is trusted as it is, which is how to use a self-made certificate without switching all checking off (`--insecure` does that, and warns).
+The library ships no root certificates. It reads the file named by the variable `SSL_CERT_FILE`, or else `/etc/ssl/cacert.pem`: a PEM bundle such as Mozilla's list. `/etc` is rebuilt from the system image at every start, so a bundle copied there by hand lasts only until the next restart; the owner's build puts a local copy (`assets/local/ssl/cacert.pem`, which is not part of the source) into the image. Without any store a connection fails with a sentence that says where to put one. The bundle does not update itself: an authority that is later removed from Mozilla's list stays trusted here until the file is replaced. `https_get --ca FILE` (`fetch --cacert FILE`) replaces the store for one command, and a server certificate that is itself in the file is trusted as it is, which is how to use a self-made certificate without switching all checking off (`--insecure`, or `-k` for `fetch` and `wget`, does that, and warns).
 
 # RANDOM NUMBERS
 Keys and nonces come from `getrandom()`, the kernel's ChaCha20 generator (see `/proc/random`). It is seeded at boot from the processor's RDSEED and RDRAND instructions when they exist, plus timing jitter and events; on a processor without them the seed is little more than jitter.
@@ -41,4 +41,4 @@ The primitives are checked against Python's `cryptography` and OpenSSL, and the 
     State of the random number generator.
 
 # SEE ALSO
-https_get(1), browser(1), sntp(1), network(7)
+fetch(1), https_get(1), browser(1), sntp(1), network(7)

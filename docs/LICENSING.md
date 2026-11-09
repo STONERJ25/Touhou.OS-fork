@@ -8,7 +8,7 @@ What may be done with TouhouOS, in one page. The short version: **the code, the 
 |---|---|---|
 | Loader, kernel, libraries, programs, tools, tests, documentation, screenshots | MIT | [LICENSE](../LICENSE) |
 | The 8x16 bitmap font data (`shared/font8x16.c`, generated from DejaVu Sans Mono) | The Bitstream Vera / DejaVu license (free to use, copy, modify and distribute; the notice stays with every copy; no sale of the font by itself; modified fonts may not carry the "Bitstream" or "Vera" names) | [assets/fonts/LICENSE_DEJAVU](../assets/fonts/LICENSE_DEJAVU) |
-| The Gensokyo typefaces (drawn for this project) | Not published yet: the license is chosen before they are. A common choice for fonts is the SIL Open Font License 1.1 | `assets/fonts/` in the development tree |
+| The Gensokyo typefaces (ten TrueType files drawn for this project, and the Python programs that build them) | SIL Open Font License 1.1, no Reserved Font Name: free to use, study, modify and redistribute with any software, not to be sold by themselves; the notice and the license stay with every copy, and modified versions stay under the OFL | [assets/fonts/OFL.txt](../assets/fonts/OFL.txt) |
 | Game data, ROMs, BIOS images, font ROMs | Never in the repository or in an image; the user supplies their own | [PC98.md](PC98.md) |
 | Linux (and later Windows) programs and libraries | Never shipped; the user installs them in a root directory the compatibility layer reads | [COMPAT.md](COMPAT.md) |
 | Touhou Project's characters, names, settings, art, music | Belong to ZUN and Team Shanghai Alice; nothing here grants rights to them. This is an unofficial fan work | [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) |
@@ -17,9 +17,13 @@ What may be done with TouhouOS, in one page. The short version: **the code, the 
 
 The project is original work written from public specifications (the rule is spelled out in [COMPAT.md](COMPAT.md): no source of other implementations is read or copied), so no other license's terms are inherited and the author is free to choose. MIT is short, widely understood, lets anyone use, change, embed and redistribute the code (an operating system is more fun when people can take parts of it), and only asks that the copyright notice travels with the code.
 
+## Why the typefaces are not MIT
+
+A font is not a program, and a document made with it should not fall under the font's terms. The SIL Open Font License was written for exactly this: anybody may use the fonts in any document or product, bundle them with any software (commercial or not), change them and pass them on, while the fonts themselves cannot be sold alone and no version of them can be put under another license, so that improvements stay free too. The owner chose it on 2026-11-08, **without a Reserved Font Name** (the optional clause that stops a modified version from using the font's name): anybody may call a modified version "Gensokyo ..." as well. The copyright holder is STONERJ25, as in the MIT License. The text in `assets/fonts/OFL.txt` is the official one, unchanged (`tests/host/test_font_license.py` holds its checksum), and the fonts' name tables, their generators and the `LICENSE` copies next to the sources are kept in step with it by the same test.
+
 ## What a distribution must carry
 
-MIT asks that the notice stays "in all copies or substantial portions". Every image built from this tree therefore contains `LICENSE`, `THIRD_PARTY_NOTICES.md` and `LICENSE_DEJAVU` in `/ScarletDevilMansion/share/doc/touhouos/` (`tools/build.py` puts them there; `tests/case_license.py` checks it). Anyone who redistributes an image or a part of the tree keeps the same files with it.
+MIT asks that the notice stays "in all copies or substantial portions". Every image built from this tree therefore contains `LICENSE`, `THIRD_PARTY_NOTICES.md`, `LICENSE_DEJAVU` and `OFL.txt` in `/ScarletDevilMansion/share/doc/touhouos/` (`tools/build.py` puts them there; `tests/case_license.py` checks it). Anyone who redistributes an image or a part of the tree keeps the same files with it. The Open Font License asks the same of the fonts: each copy carries the copyright notice and the license, which is `OFL.txt` here, and the name table of every font file holds the notice, a sentence about the license and its address, so that a font file copied alone still says what it is.
 
 ## Rules for contributors (people and agents)
 
@@ -30,4 +34,4 @@ MIT asks that the notice stays "in all copies or substantial portions". Every im
 
 ## The public repository
 
-[github.com/STONERJ25/Touhou.OS-fork](https://github.com/STONERJ25/Touhou.OS-fork) is an export of the development tree made by `tools/publish-github.py`: internal notes and private identifiers are left out, and a scan refuses to publish anything that looks like a key, a token, a machine identifier, game data or a font file. The license above applies to what is in it.
+[github.com/STONERJ25/Touhou.OS-fork](https://github.com/STONERJ25/Touhou.OS-fork) is an export of the development tree made by `tools/publish-github.py`: internal notes and private identifiers are left out, and a scan refuses to publish anything that looks like a key, a token, a machine identifier, game data or a font file. The one exception is the Gensokyo typefaces: they are original work under the OFL and are published (only those files, by name and by the checksums in `assets/fonts/SHA256SUMS`; any other font file stops the publish). The license above applies to what is in it, and the typefaces carry their own (`assets/fonts/OFL.txt`).

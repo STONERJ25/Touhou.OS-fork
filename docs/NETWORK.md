@@ -2,7 +2,8 @@
 
 TouhouOS has a TCP/IP stack in the kernel, drivers for the network cards of QEMU and of common PCs, a DHCP client, a DNS
 resolver in the C library, and the usual tools. Yukari Yakumo opens gaps between places; here she opens them between
-machines (the kernel log tag is `[Yukari]`). Everything is IPv4, plain HTTP, and polled: no interrupts, no TLS, no IPv6.
+machines (the kernel log tag is `[Yukari]`). Everything is IPv4 and polled: no interrupts, no IPv6. The kernel carries bytes only; TLS is a library in user space
+([TLS.md](TLS.md)) that `fetch`, `wget`, `https_get` and the Browser use for `https://`.
 
 ```
  tools (ifconfig ip route ping netstat ss nslookup host fetch wget nc sntp ntpdate httpd)   user/bin/kappabox/net_*.c
@@ -257,7 +258,8 @@ output with generous timeouts or retry.
 * The TCP out-of-order table holds 8 intervals; data beyond that is dropped and resent.
 * TIME_WAIT lasts 30 s, not the traditional 60 to 120.
 * The drivers copy every frame once (no zero-copy); the receive path allocates a 2 KiB buffer per packet.
-* `nc`, `fetch` and `httpd` are simple tools: no IPv6, no TLS, no persistent connections, no ranges.
+* `nc`, `fetch`, `wget` and `httpd` are simple tools: no IPv6, no persistent connections, no ranges, no cookies, no authentication. `fetch` and `wget`
+  speak `https://` too (libhttp and libtls, the certificate always checked, see "fetch and wget" in [TLS.md](TLS.md)); `nc` and `httpd` do not speak TLS.
 
 ## Files
 

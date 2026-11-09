@@ -6,7 +6,7 @@ sub-pixel position, measures and lays out text, and caches rendered glyphs. It i
 (`shared/font8x16.c`) remains for the terminal, the text areas, the pixel-art programs and characters the interface font lacks.
 
 Everything is written from the specifications (Microsoft's OpenType specification, Apple's TrueType Reference Manual, Adobe Technical Notes 5176/5177);
-no code from other projects. The only fonts in the repository are the owner's own, `assets/fonts` (Gensokyo Sans and seven display faces; license undecided); the
+no code from other projects. The only fonts in the repository are the owner's own, `assets/fonts` (Gensokyo Sans, Mono and seven display faces; SIL Open Font License 1.1); the
 tests generate their fonts (`tests/host/ttfmake.py`), read those eight, and use the owner's Windows fonts only in place, in tests that skip themselves when the files
 are absent (docs/ASSETS.md).
 
@@ -204,7 +204,7 @@ measure with **Gensokyo Sans** instead of the 8x16 bitmap font, so every widget 
   named, bold is as it was: the text drawn a second time half a pixel to the right, one pixel wider (and so for the bitmap font).
 
 Tests: `KappaShim` and `UiFont` (host, below) compare the toolkit's text with libttf's own drawing pixel for pixel at scales 1 to 3, including the bitmap fallback, bold, tabs,
-clipping, truncation, hit testing and the switch-off paths. A font the OS draws with is now shipped (`assets/fonts`, docs/ASSETS.md: original work of the owner, license undecided).
+clipping, truncation, hit testing and the switch-off paths. A font the OS draws with is now shipped (`assets/fonts`, docs/ASSETS.md: original work of the owner, SIL Open Font License 1.1).
 
 ## For the browser (the `WebFont` interface)
 

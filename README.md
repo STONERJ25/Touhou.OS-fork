@@ -77,5 +77,5 @@ python tools/hosttest.py discover -s tests/host -p "test_*.py"     # host-side t
 
 * **No game data, ROMs or BIOS images** are in this repository or ever will be. The PC-98 work needs your own, legally obtained disk images, and a font ROM you supply, read at run time.
 * **License:** the code, the documentation and the original assets are under the [MIT License](LICENSE). The few third-party items (the bitmap font data derives from DejaVu) and everything that is deliberately *not* here are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), and [docs/LICENSING.md](docs/LICENSING.md) explains the rules in one page. Every image built from this tree carries those files.
-* The project's own typeface is not published yet (its license is still to be chosen); until it is, the desktop falls back to the built-in bitmap font in a build from this repository.
+* The project's own typefaces (Gensokyo Sans, Mono and seven display faces) are under the SIL Open Font License 1.1, not the MIT License: see [assets/fonts/OFL.txt](assets/fonts/OFL.txt). In a build from a tree that does not hold the font files the desktop falls back to the built-in bitmap font.
 * Touhou Project is the work of ZUN / Team Shanghai Alice. This is an unofficial fan project, not affiliated with or endorsed by them.

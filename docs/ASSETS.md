@@ -10,7 +10,7 @@ What the project does instead:
   here, in a PC-98 flavoured style (limited palette, dithering, 8x16 text, hard pixels). The aesthetic is free to use.
 - **Fonts.** `shared/font8x16.c` is generated from DejaVu Sans Mono (Bitstream Vera license, `assets/fonts/LICENSE_DEJAVU`)
   plus procedural box-drawing glyphs.
-  `assets/fonts/Gensokyo*.ttf` are the owner's own TrueType fonts (Gensokyo Sans and seven display faces, made from the sources in `assets/fonts/source/`; license undecided, all rights reserved by the owner, see `assets/fonts/README.md`);
+  `assets/fonts/Gensokyo*.ttf` are the owner's own TrueType fonts (Gensokyo Sans and seven display faces, made from the sources in `assets/fonts/source/`; SIL Open Font License 1.1, no Reserved Font Name: `assets/fonts/OFL.txt`, see `assets/fonts/README.md`);
   `tools/build.py` installs them under `/ScarletDevilMansion/share/fonts/`.
 - **User-supplied files stay local.** `assets/local/` is git-ignored. Anything the user puts there (their own game copies,
   wallpapers, music) is for their own machine and is never committed. Loaders for such files are fine; the files are not.

@@ -494,8 +494,9 @@ def build_initrd(user_bins):
     if fonts.exists():
         for p in sorted(fonts.glob("Gensokyo*.ttf")):
             items.append((f"ScarletDevilMansion/share/fonts/{p.name}", p))
-    # The license and the notices travel with every image: MIT asks that the notice stays with all copies, and the bitmap font data derives from DejaVu (docs/LICENSING.md).
-    for src in ("LICENSE", "THIRD_PARTY_NOTICES.md", "assets/fonts/LICENSE_DEJAVU"):
+    # The license and the notices travel with every image: MIT asks that the notice stays with all copies, the bitmap font data derives from DejaVu, and the Gensokyo
+    # typefaces above are under the SIL Open Font License, which asks that each copy of the fonts carries its copyright notice and the license (docs/LICENSING.md).
+    for src in ("LICENSE", "THIRD_PARTY_NOTICES.md", "assets/fonts/LICENSE_DEJAVU", "assets/fonts/OFL.txt"):
         if (ROOT / src).is_file():
             items.append((f"ScarletDevilMansion/share/doc/touhouos/{Path(src).name}", ROOT / src))
     # the compiler's system root (headers, crt0.o, libgap.a ...) lives in /ScarletDevilMansion on the guest

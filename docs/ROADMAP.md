@@ -35,7 +35,7 @@ since 2026-11-03; see the project notes.)
 - [x] real-hardware audit, rounds 1 and 2 (framebuffer write-combining and the MTRR fallback, xHCI/AHCI/NVMe/PCI/ACPI against the specs, the loader's memory types); the OS booted to the desktop on the target Dell on 2026-10-23 (docs/HARDWARE_AUDIT.md)
 - [ ] real hardware, rest: a network link and the internal disks on the Dell (SATA is in RAID mode there), USB stick quirks (half done, does not compile: the branch `wip/usb-storage-soft-fallbacks`)
 - [x] networking: NICs (virtio, e1000/e1000e, rtl8139 tested in QEMU; I217-I219 and rtl8168 written but never run on hardware), ARP/IP/UDP/TCP, DHCP/DNS, tools (docs/NETWORK.md)
-- [ ] networking, next: a link on the real PC (the I219 was found on the Dell, no cable was plugged in; RTL8168 never run); `fetch` and `wget` over HTTPS (`https_get` does it today; docs/TLS.md); IPv6, SACK, a Kappa network panel
+- [ ] networking, next: a link on the real PC (the I219 was found on the Dell, no cable was plugged in; RTL8168 never run); IPv6, SACK, a Kappa network panel
 - [x] audio core: Intel HDA / AC97, mixer, `play`, `beep`, `volume`
 - [x] audio rest: generic HDA codec path walk, Jukebox, songs, `.mod` player, system sounds, panel volume (docs/AUDIO.md; the codec walk is verified in QEMU only)
 - [x] threads (clone, futex, pthreads)

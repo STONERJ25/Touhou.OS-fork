@@ -1,16 +1,20 @@
-.page fetch 1 download a web page or file over HTTP
+.page fetch 1 download a web page or file over HTTP or HTTPS
 
 # SYNOPSIS
-*fetch* [*-q*] [*-i*] [*-O* _FILE_] [*-T* _SECONDS_] [*-U* _AGENT_] [*-H* _HEADER_] [*-r* _REDIRECTS_] _URL_...
+*fetch* [*-q*] [*-i*] [*-k*] [*-O* _FILE_] [*-T* _SECONDS_] [*-U* _AGENT_] [*-H* _HEADER_] [*-r* _REDIRECTS_] [*--cacert* _FILE_] _URL_...
 
 # DESCRIPTION
-`fetch` sends an HTTP/1.1 `GET` request to each _URL_ and writes the body of the answer to standard output (or to the file named with `-O`). Only plain `http://` is spoken: there is no TLS in this system, and a `https://` address is refused with a message rather than quietly downgraded.
+`fetch` sends an HTTP/1.1 `GET` request to each _URL_ and writes the body of the answer to standard output (or to the file named with `-O`). Both `http://` and `https://` addresses work.
 
-Redirects (301, 302, 303, 307, 308) are followed up to eight times, with relative and absolute `Location` headers. Bodies sent with a `Content-Length`, in chunks (`Transfer-Encoding: chunked`) or simply until the server closes the connection are all understood. The request carries `Connection: close`, a `Host` header (with the port when it is not 80) and a short `User-Agent`.
+For `https://` the connection goes through the system's TLS library (tls(7)), and **the server's certificate is always checked**: the chain must lead to a root in the trust store, every certificate must be valid at the time the clock shows, and the name must match. A server that fails is refused with a sentence that says why, nothing is fetched, and the exit status is 5. The trust store is the PEM file named by `--cacert`, else by the variable `SSL_CERT_FILE`, else `/etc/ssl/cacert.pem`; the system ships no roots of its own (see tls(7)). A computer whose clock is wrong cannot make safe connections: set it with `sntp -s` first. `-k` goes on without checking and says so on standard error, whatever `-q` says.
+
+Redirects (301, 302, 303, 307, 308) are followed up to eight times, with relative and absolute `Location` headers. A redirect from `http` to `https` continues over TLS; one from `https` to `http` continues in the clear after a warning. Bodies sent with a `Content-Length`, in chunks (`Transfer-Encoding: chunked`) or simply until the server closes the connection are all understood. The request carries `Connection: close`, a `Host` header (with the port when it is not the default one) and a short `User-Agent`; it does not ask for compressed answers, so what the server sends is what is written.
 
 Progress messages (`Connecting to ...`, the status line, the length) go to standard error unless `-q` is given. If the server answers with an error status (400 and up) nothing is written, the status is reported and the exit status is 8.
 
 `wget` is the same program with the habits of its namesake: without `-O` it saves the body in a file named after the last part of the URL path (`index.html` when there is none), adding `.1`, `.2` and so on rather than overwriting. `wget -O - URL` prints to standard output.
+
+`https_get(1)` is the tool for looking closely at a TLS connection (`-v` shows the protocol, the suite and every certificate of the verified path).
 
 # OPTIONS
 @ *-O* _FILE_
@@ -27,14 +31,24 @@ Progress messages (`Connecting to ...`, the status line, the length) go to stand
     One extra request header, such as `Accept-Language: ja`.
 @ *-r* _REDIRECTS_
     How many redirects to follow (default 8).
+@ *--cacert* _FILE_
+    Trust the root certificates in FILE (PEM) instead of `$SSL_CERT_FILE` or `/etc/ssl/cacert.pem`. (`--ca-certificate` and `--ca` mean the same.)
+@ *-k*, *--insecure*, *--no-check-certificate*
+    Do not verify the server's certificate (https only). The connection is still encrypted, but anybody on the way can pretend to be the server. A warning says so, and names what the verification would have complained about. For a server that is being tried out.
 
 # EXAMPLES
     fetch http://10.0.2.2:8000/hello.txt
     fetch -q -O /tmp/page.html http://example.test/
+    fetch --cacert /tmp/roots.pem https://example.com/
     wget http://10.0.2.2:8000/archive.tar
+    wget -k https://192.168.0.10/
 
 # EXIT STATUS
-0 on success, 1 for protocol errors and local failures, 4 when the server could not be reached, 8 when it answered with an error status, 2 for a usage error.
+0 on success, 1 for protocol errors and local failures, 2 for a usage error, 4 when the server could not be reached, 5 when no safe TLS connection could be made (a certificate was refused, there is no trust store, the handshake failed), 8 when the server answered with an error status. These are the numbers `wget` uses; `https_get(1)` numbers its failures differently.
+
+# FILES
+@ /etc/ssl/cacert.pem
+    The default trust store for https. It lives in memory and is gone after a restart unless it is kept with the persistent /etc (tls(7)).
 
 # SEE ALSO
-nc(1), httpd(1), nslookup(1), network(7)
+https_get(1), nc(1), httpd(1), nslookup(1), network(7), tls(7)

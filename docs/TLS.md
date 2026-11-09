@@ -194,6 +194,25 @@ written.
 **Its name.** Kappabox applets are C identifiers (`tools/build.py` collects `APPLET(\w+)` and `main.c` compares `argv[0]` exactly),
 so the command is `https_get`. The brief's `https-get` needs two one-line changes outside this work (see "Open ends").
 
+## fetch and wget
+
+`fetch` and `wget` (`user/bin/kappabox/net_fetch.c`) speak `https://` since 2026-11-08. `http://` is still served by the code in that file, on its
+own sockets; an `https://` URL goes through libhttp and libtls exactly as `https_get` does, with the same verification (chain, dates, name, usage;
+no way to turn it off except `-k`/`--insecure`/`--no-check-certificate`, which warns on standard error even with `-q`, and says what verification
+would have found). The trust store is `--cacert FILE` (`--ca-certificate`, `--ca`), else `$SSL_CERT_FILE`, else `/etc/ssl/cacert.pem`.
+
+* Redirects: the first request may be plain; a redirect to `https://` continues over TLS (the rest of the chain is libhttp's, with the budget that
+  `-r` has left), a redirect from `https` to `http` continues in the clear after a `WARNING: redirected from https to plain http` line.
+* They never ask for compressed answers (`Accept-Encoding` is not sent, as before) so a `.tar.gz` is saved as the server sent it. `-U` replaces
+  libhttp's `User-Agent` line (`http_request_build` sends the caller's own `User-Agent` instead of its default, never both).
+* A body is written as it arrives, straight to the file (no `.part` file: that is `https_get -o`). A transfer that dies leaves what arrived, as the
+  plain path always did; the exit status says so.
+* Exit status, the numbers `wget` uses: 0 done, 1 protocol error or local failure, 2 usage, 4 the server could not be reached, 5 no safe TLS connection
+  (certificate refused, no trust store, failed handshake), 8 the server answered 400 or above (nothing is written). `https_get` numbers its failures
+  differently (above); `fetch` keeps the numbers it had.
+* Tests: `tls_guest_fetch_wget` (this file: a Python HTTPS server on the host, the test CA) and `net_fetch_host` (plain HTTP, unchanged);
+  `test_request_user_agent` in `tests/host/test_tls_vectors.py` for the request builder.
+
 ## What is implemented
 
 | Area | Done |

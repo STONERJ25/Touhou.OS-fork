@@ -2144,6 +2144,27 @@ class HttpUrls(unittest.TestCase):
         self.assertTrue(req.startswith(b"GET / HTTP/1.1\r\nHost: example.org\r\n"), req)
         self.assertNotIn(b"Accept-Encoding", req)
 
+    def test_request_user_agent(self):
+        """fetch -U: a User-Agent line in the extra headers replaces the library's own (two would be sent otherwise);
+        another header that only mentions the name does not"""
+        url = b"http://example.org/".hex()
+
+        def build(extra):
+            return U(T().one(f"http_request {url} {extra.encode().hex()} 0"))
+
+        req = U(T().one(f"http_request {url} - 0"))        # '-' is "no extra headers" on the tool's side
+        self.assertEqual(req.count(b"User-Agent:"), 1, req)
+        self.assertIn(b"User-Agent: libhttp/1.0 (TouhouOS)\r\n", req)
+        for line in ("User-Agent: fetch/1.0 (Gensokyo)\r\n", "user-agent: lower\r\n", "X-A: 1\r\nUSER-AGENT: upper\r\nX-B: 2\r\n"):
+            req = build(line)
+            self.assertEqual(req.lower().count(b"user-agent:"), 1, req)
+            self.assertNotIn(b"libhttp", req)
+            self.assertIn(line.encode(), req)
+            self.assertTrue(req.endswith(b"\r\n\r\n"), req)
+        req = build("X-Note: user-agent: mentioned\r\n")   # only a value mentions it: the default stays
+        self.assertIn(b"User-Agent: libhttp/1.0 (TouhouOS)\r\n", req)
+        self.assertIn(b"X-Note: user-agent: mentioned\r\n", req)
+
 
 class HttpParsing(unittest.TestCase):
     def each_split(self, raw, **kw):

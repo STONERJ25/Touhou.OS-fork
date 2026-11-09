@@ -63,7 +63,8 @@ int  http_url_format(const HttpUrl *u, char *buf, size_t cap);                  
 
 /* ---- requests ---- */
 /* "GET /path HTTP/1.1" with Host, User-Agent, Accept, Accept-Encoding (gzip, deflate when decode), Connection: close, then
- * extra ("Name: value\r\n" lines, may be NULL). Returns the length, or < 0 if it does not fit. */
+ * extra ("Name: value\r\n" lines, may be NULL). Returns the length, or < 0 if it does not fit. When extra has a User-Agent line
+ * of its own, that one is sent instead of the library's. */
 long http_request_build(char *buf, size_t cap, const char *method, const HttpUrl *u, const char *extra, int decode);
 
 /* ---- responses: the push parser ---- */

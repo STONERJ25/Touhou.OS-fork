@@ -174,12 +174,26 @@ int http_url_resolve(const HttpUrl *base, const char *ref, HttpUrl *out) {
     return http_url_parse(buf, out);
 }
 
+/* True when one of the "Name: value\r\n" lines in extra starts with name (given with its colon, e.g. "user-agent:"); the value of
+ * another header that merely mentions the name does not count. */
+static int has_header(const char *extra, const char *name) {
+    size_t n = strlen(name);
+    for (const char *p = extra; p && *p;) {
+        if (strncasecmp(p, name, n) == 0) return 1;
+        const char *nl = strchr(p, '\n');
+        p = nl ? nl + 1 : NULL;
+    }
+    return 0;
+}
+
 long http_request_build(char *buf, size_t cap, const char *method, const HttpUrl *u, const char *extra, int decode) {
     char hostport[HTTP_MAX_HOST + 8];
     if (u->port != default_port(u->scheme)) snprintf(hostport, sizeof hostport, "%s:%d", u->host, u->port);
     else snprintf(hostport, sizeof hostport, "%s", u->host);
-    int n = snprintf(buf, cap, "%s %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: libhttp/1.0 (TouhouOS)\r\nAccept: */*\r\n%sConnection: close\r\n%s\r\n",
-                     method, u->path, hostport, decode ? "Accept-Encoding: gzip, deflate\r\n" : "", extra ? extra : "");
+    /* a caller that sends its own User-Agent (fetch -U) replaces ours: two of them is a request some servers refuse */
+    const char *agent = extra && has_header(extra, "user-agent:") ? "" : "User-Agent: libhttp/1.0 (TouhouOS)\r\n";
+    int n = snprintf(buf, cap, "%s %s HTTP/1.1\r\nHost: %s\r\n%sAccept: */*\r\n%sConnection: close\r\n%s\r\n",
+                     method, u->path, hostport, agent, decode ? "Accept-Encoding: gzip, deflate\r\n" : "", extra ? extra : "");
     return n < 0 || (size_t)n >= cap ? -1 : n;
 }
 

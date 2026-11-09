@@ -276,6 +276,10 @@ def https_site(c):
     elif path == b"/gzip":
         z = gzip.compress(PAGE)
         send(b"200 OK", [b"Content-Encoding: gzip", b"Content-Length: %d" % len(z)], z)
+    elif path == b"/echo":                                          # the request as the server received it (headers included)
+        send(b"200 OK", [b"Content-Type: text/plain", b"Content-Length: %d" % len(req)], req)
+    elif path == b"/empty":
+        send(b"200 OK", [b"Content-Length: 0"])
     elif path == b"/redirect":
         send(b"302 Found", [b"Location: /page", b"Content-Length: 0"])
     elif path.startswith(b"/to-plain"):
@@ -454,6 +458,81 @@ def tls_guest_downloads():
             assert "the server answered 404" in out and "not here!" in out, out[-1500:]
             out, rc = s.get(f"-q {base}/nothing > /dev/null")
             assert rc == 4, (rc, out)
+        finally:
+            site.stop()
+            plain.stop()
+
+
+@test
+def tls_guest_fetch_wget():
+    """fetch and wget over https: pages (plain, chunked, empty), redirects in all three directions, -i, -U and -H (one User-Agent, no Accept-Encoding),
+    wget's file names, a 404 (exit 8), no trust store and a name the certificate does not cover (exit 5), --cacert and $SSL_CERT_FILE, -k with its warning"""
+    if skip_reason():
+        return
+    with Setup("t-tls-fetch") as s:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(*s.pki.files("ec"))
+        site = Raw(https_site, ctx)
+        plain = Raw(https_site)
+        base = f"https://tls.test:{site.port}"
+        ca = "--cacert /tmp/ca.pem"
+        want = hashlib.sha256(PAGE).hexdigest()
+        try:
+            # no trust store was shipped: the verification cannot succeed, so nothing is fetched (wget's exit status 5)
+            out, rc = s.run(f"fetch -q {base}/page; echo rc=$?")
+            assert "rc=5" in out and "no trusted root certificates" in out, out[-1500:]
+
+            for path in ("/page", "/chunked", "/redirect"):
+                out, rc = s.run(f"fetch -q {ca} {base}{path} > /tmp/p; echo rc=$?; sha256sum /tmp/p")
+                assert "rc=0" in out and want in out, (path, out[-1500:])
+            out, rc = s.run(f"fetch {ca} -O /tmp/p {base}/page")                       # the progress lines, as for http
+            assert "Connecting to tls.test:%d... connected (TLS 1." % site.port in out and "certificate verified" in out, out[-1500:]
+            assert "200 OK" in out and f"Length: {len(PAGE)} [text/html]" in out and "'/tmp/p' saved [%d]" % len(PAGE) in out, out[-1500:]
+
+            # $SSL_CERT_FILE names the roots as well; --ca and --ca-certificate=FILE are the other spellings
+            out, rc = s.run(f"export SSL_CERT_FILE=/tmp/ca.pem; fetch -q {base}/page > /tmp/p; echo rc=$?; unset SSL_CERT_FILE; sha256sum /tmp/p")
+            assert "rc=0" in out and want in out, out[-1500:]
+            for spelling in ("--ca /tmp/ca.pem", "--ca-certificate=/tmp/ca.pem"):
+                out, rc = s.run(f"fetch -q {spelling} {base}/page > /tmp/p; echo rc=$?; sha256sum /tmp/p")
+                assert "rc=0" in out and want in out, (spelling, out[-1500:])
+
+            # redirects: http to https continues over TLS, https to http continues in the clear with the warning
+            out, rc = s.run(f"fetch {ca} -O /tmp/p 'http://tls.test:{plain.port}/to-plain?{base}/page'; sha256sum /tmp/p")
+            assert "[following]" in out and want in out, out[-1500:]
+            out, rc = s.run(f"fetch -q {ca} 'http://tls.test:{plain.port}/to-plain?{base}/redirect' > /tmp/p; echo rc=$?; sha256sum /tmp/p")
+            assert "rc=0" in out and want in out, out[-1500:]
+            out, rc = s.run(f"fetch -q {ca} '{base}/to-plain?http://tls.test:{plain.port}/page' > /tmp/p; echo rc=$?; sha256sum /tmp/p")
+            assert "WARNING: redirected from https to plain http" in out and "rc=0" in out and want in out, out[-1500:]
+            out, rc = s.run(f"fetch -q -r 0 {ca} {base}/redirect; echo rc=$?")
+            assert "too many redirects" in out and "rc=1" in out, out[-1500:]
+
+            # -i, -U, -H: the request as the server saw it
+            out, rc = s.run(f"fetch -q -i {ca} {base}/page | head -3")
+            assert "HTTP/1.1 200 OK" in out and "Content-Type: text/html" in out, out[-1500:]
+            out, rc = s.run(f"fetch -q {ca} {base}/echo")
+            assert "GET /echo HTTP/1.1" in out and "Host: tls.test:%d" % site.port in out, out[-1500:]
+            assert out.count("User-Agent:") == 1 and "User-Agent: fetch/1.0 (Gensokyo)" in out and "Accept-Encoding" not in out, out[-1500:]
+            out, rc = s.run(f"fetch -q -U my-agent/9 -H 'X-Marker: yes' {ca} {base}/echo")
+            assert out.count("User-Agent:") == 1 and "User-Agent: my-agent/9" in out and "X-Marker: yes" in out and "fetch/1.0" not in out, out[-1500:]
+
+            # wget: the file is named after the URL, never overwritten; an empty body still makes a file; a 404 writes nothing
+            out, rc = s.run(f"cd /tmp && rm -f page page.1 empty && wget {ca} {base}/page && wget {ca} {base}/page && sha256sum page page.1")
+            assert "Saving to: 'page'" in out and "Saving to: 'page.1'" in out and out.count(want) == 2, out[-1500:]
+            assert "'page' saved [%d]" % len(PAGE) in out, out[-1500:]
+            out, rc = s.run(f"cd /tmp && wget -q {ca} {base}/empty; echo rc=$?; wc -c empty")
+            assert "rc=0" in out and "0 empty" in out, out[-1500:]
+            out, rc = s.run(f"cd /tmp && wget -q {ca} -O - {base}/page | sha256sum")
+            assert want in out, out[-1500:]
+            out, rc = s.run(f"cd /tmp && rm -f nothing && fetch -q {ca} -O nothing {base}/nothing; echo rc=$?; test -e nothing && echo EXISTS || echo ABSENT")
+            assert "rc=8" in out and "server returned 404" in out and "ABSENT" in out, out[-1500:]
+
+            # a certificate for another name is refused; -k goes on and says so (and what verification would have said)
+            out, rc = s.run(f"fetch -q {ca} https://wrong.test:{site.port}/page; echo rc=$?")
+            assert "rc=5" in out and "not valid for wrong.test" in out, out[-1500:]
+            for flag in ("-k", "--insecure", "--no-check-certificate"):
+                out, rc = s.run(f"fetch -q {flag} https://wrong.test:{site.port}/page > /tmp/p; echo rc=$?; sha256sum /tmp/p")
+                assert "rc=0" in out and want in out, (flag, out[-1500:])
+                assert "NOT checked" in out and "Verification would have said" in out, (flag, out[-1500:])
         finally:
             site.stop()
             plain.stop()

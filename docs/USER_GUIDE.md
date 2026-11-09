@@ -277,7 +277,7 @@ There is no suspend or hibernate.
 - **Sound** (Intel HDA and AC'97 sound cards): `volume` shows or sets the master volume (`volume 40`, `volume mute`); it starts at 60 at each
   boot. `beep` plays a tone, `play FILE.wav` plays a WAV file. There is no volume control in the panel yet.
 - **Network**: when a network cable is plugged in, the kernel asks the network for an address by itself (DHCP). `ifconfig` or `ip addr` show
-  the state, `ping`, `nslookup`, `fetch URL` / `wget URL` (plain `http://` only: there is no HTTPS on `main`), `sntp SERVER` shows how far off the
+  the state, `ping`, `nslookup`, `fetch URL` / `wget URL` (`http://` and `https://`; an https server's certificate is checked against `/etc/ssl/cacert.pem` or `--cacert FILE`, see `man tls`), `sntp SERVER` shows how far off the
   clock is and `sudo sntp -s SERVER` sets it. There is no network panel; see [NETWORK.md](NETWORK.md) and `man network`.
 - **Pictures**: screenshots with Ctrl+F12, *Take screenshot* in the desktop menu or `screenshot`; the wallpaper with the Gallery's W key, the
   Control Panel (Appearance) or `wallpaper PICTURE` (`wallpaper -c` goes back to the drawn night scene). `imginfo` and `convert` work on picture
@@ -331,5 +331,4 @@ More words, for diagnosing a PC that does not boot, are in [REAL_HARDWARE.md](RE
 ## Not there yet
 
 Everything that was finished on the old `parked/*` branches is on `main` now (the Jukebox, the thorough `vi`, exact number printing,
-the hardened kernel, `fsck`, the C compiler). What is still missing: `fetch` and `wget` do not speak `https://` (use `https_get`, see
-`man tls`), and the handling of sticks that misbehave (a half-done branch, `wip/usb-storage-soft-fallbacks`). See the project notes.
+the hardened kernel, `fsck`, the C compiler). What is still missing: the handling of sticks that misbehave (a half-done branch, `wip/usb-storage-soft-fallbacks`). See the project notes.
