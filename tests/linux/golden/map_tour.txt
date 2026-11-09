@@ -1,0 +1,47 @@
+--- anonymous memory
+mapped: yes, first byte 0, last byte 0
+pages hold: a b c d
+aligned to a page: yes
+--- partial munmap
+unmap the middle two pages: 0
+page 0: read and write; page 1: unmapped or no access; page 2: unmapped or no access; page 3: read and write
+page 0 still holds a, page 3 still holds d
+unmap the first page: 0, the last: 0
+page 0: unmapped or no access; page 3: unmapped or no access
+--- file-backed private mappings
+offset 0: A, offset 4096: B, offset 8192: C
+private write: mapping shows Z...Y, the file still has C
+read-only mapping: read only
+read-write private mapping: read and write
+two pages from offset 4096: B then C
+an offset that is not a multiple of the page size: refused (Invalid argument)
+a descriptor that is not open: Bad file descriptor
+length zero: Invalid argument
+--- a reservation filled with MAP_FIXED (what the dynamic linker does for a library)
+reserved eight pages: yes; page 0 is unmapped or no access
+file at page 1 with MAP_FIXED: yes, at the address asked for: yes
+data page at page 3: C, written: yes
+zero pages at page 4: yes, first byte 0
+page 0: unmapped or no access; page 1: read only ('A'); page 2: read only ('B'); page 3: read and write; page 4: read and write; page 5: read and write; page 6: unmapped or no access
+mprotect the gap pages 6 and 7 to PROT_NONE: 0; page 6: unmapped or no access
+the page before the fixed mapping is untouched: unmapped or no access
+MAP_FIXED at an address that is not page aligned: Invalid argument
+--- mprotect (what RELRO does)
+before: read and write
+mprotect the middle page read-only: 0
+page 0: read and write; page 1: read only; page 2: read and write
+page 1 still holds r
+mprotect it back: 0; page 1: read and write
+mprotect with an address that is not page aligned: Invalid argument
+--- hints that change nothing a program can see
+MAP_NORESERVE | MAP_POPULATE: accepted
+MAP_STACK: accepted
+madvise MADV_WILLNEED: 0, MADV_SEQUENTIAL: 0
+madvise MADV_DONTNEED on anonymous memory: 0, and the page reads as zero: yes
+--- mremap
+grow from two pages to six: yes; the old content is kept: yes; the new pages are zero: yes
+shrink to three pages in place: yes; the fourth page is gone: yes
+--- a big anonymous block
+64 MiB reserved: yes
+first and last byte written: 1 2, middle reads 0
+exit status: 0

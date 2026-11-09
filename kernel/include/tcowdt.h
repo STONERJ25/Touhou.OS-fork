@@ -12,6 +12,11 @@ enum { TCOWDT_OFF = 0, TCOWDT_KERNEL, TCOWDT_USER, TCOWDT_NOBODY };     /* who f
 void tcowdt_shutdown(void);
 void tcowdt_panic_restart(void);    /* the panic path restarts the machine: the same long budget, port I/O only, no log line */
 
+/* For work in the boot thread that can outlast the timer the loader armed, before the Momiji thread exists (the check and the repair of the Human Village in
+ * kernel/fs/fat_check.c run in the storage policy, which comes before the initcalls): call it from every request that work makes to a device. It reloads the timer,
+ * at most once a second, and does nothing when the loader did not arm one or when the kernel or user space feeds it already. */
+void tcowdt_boot_feed(void);
+
 int  tcowdt_feeder(void);           /* TCOWDT_*: TCOWDT_OFF when there is no watchdog or it is not armed */
 u32  tcowdt_timeout(void);          /* seconds from the last feed to the restart, 0 when not armed */
 u32  tcowdt_seconds_left(void);     /* until the restart, if nobody feeds it from now on (0 when not armed) */

@@ -1,0 +1,6 @@
+getaddrinfo(localhost, 8080): 0, 127.0.0.1 among the results 1, port 8080 1, socktype stream 1
+gethostbyname(localhost): found 1, first address 127.0.0.1 1
+numeric host: 0, 192.0.2.33 port 443
+a name with AI_NUMERICHOST: -2 (EAI_NONAME -2)
+getnameinfo numeric: 0, 127.0.0.1:8080
+exit status: 0

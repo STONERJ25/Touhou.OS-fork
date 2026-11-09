@@ -1,0 +1,55 @@
+--- pipelines
+HELLO WORLD
+      2 a
+      1 c
+8 9 10 
+5
+two
+a:c
+2
+3
+4
+1
+two
+3
+banana
+2
+2
+x
+y
+--- redirection and here-documents
+here-document with 42 and substitution
+no expansion of $HOME here
+2
+first
+second
+third
+error output went to a file
+ 00 00 00 00
+--- arithmetic, variables and loops
+3 42 3 1
+x=5 y=10
+1,2,3,
+i=3
+word alpha
+word beta
+matched a*
+fallback 1
+function got one and two
+returned 4
+--- exit statuses
+true: 0
+false: 1
+subshell: 7
+sh -c: 9
+3 > 2
+strings equal
+42
+5
+--- processes
+slept
+in a subshell
+the shell has a process id
+end of the script
+trapped
+exit status: 0

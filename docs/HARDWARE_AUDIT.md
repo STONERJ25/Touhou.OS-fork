@@ -171,23 +171,24 @@ connector), addresses the device with BSR first, reads descriptors with three tr
 The port reset is a bus reset for the stick, so the address and configuration the firmware gave it are forgotten before we address it. The boot waits
 at most 8 s for the bus (`usb_wait_settled`); a stick that needs longer is mounted later by the hot-plug hook (`usbstor_late_ready`).
 
-**Against real sticks** (Linux's `usb-storage` and its unusual-devices list are the catalogue). Status "WIP" means: designed and at least partly written,
-not finished, not built, not tested, parked on the branch `wip/usb-storage-soft-fallbacks` ("State when paused" below says which parts exist); the
-audit branch's `storage.c` is still the merged original, so none of the fixes in this table is in effect yet.
+**Against real sticks** (Linux's `usb-storage` and its unusual-devices list are the catalogue). Status "fixed" means: written in `storage.c` and covered by a QEMU
+test that fails without it (2026-11-08, the branch `agent/usb-fallbacks`; the half-done work of the second round is merged in and finished). **QEMU's stick never
+misbehaves, so every hang, lie and odd answer in this table is simulated inside the driver** (`usbstorage.fault=...`): the tests prove what the driver decides, resets, believes and logs,
+not what a real stick and the controller do after a real hang. `docs/USB.md` ("Sticks that misbehave", "What real sticks do that QEMU cannot show") lists what is simulated and what to try with a real stick. **Nothing here has met real hardware.**
 
-| # | What real sticks do | What `storage.c` does today (evidence) | Status |
+| # | What real sticks do | What `storage.c` did (evidence) | Status |
 |---|---------------------|----------------------------------------|--------|
-| U1 | Do not answer GET MAX LUN at all: the control request times out (Linux takes one LUN). | `msc_probe`: `rc == -ETIMEDOUT` returns `-ENODEV`; the stick is not driven. | WIP: clear `dev->broken`, one LUN |
-| U2 | Hang on MODE SENSE (the write-protect probe). | `lun_write_protected` says "writable" but the timeout left `dev->broken` set: every later transfer fails with `-ENODEV`, the disk registers and is useless. | WIP: reset recovery, writable, never asked again |
-| U3 | Put nonsense in the status wrapper's residue: more than was asked for, or "nothing moved" after a read that went through (Linux: `US_FL_IGNORE_RESIDUE`, and it clamps). | `csw_check` turned a residue above the request into a phase error (reset recovery, retry: a stick that always does it never becomes ready); `msc_io_one` failed a good read whose residue was not 0. | WIP: the bytes that moved and the status byte decide, residue clamped and counted |
-| U4 | Hang or garble transfers above 32 KiB (Linux caps some at 32 KiB by quirk entry). | One size, 64 KiB; a hang ends in `msc_died`, the stick is gone. | WIP: ladder 64, 32, 16, 4 KiB: a hang resets the stick and goes down at once, a second failure of a command goes down; logged |
-| U5 | Need more than 400 ms after SET_CONFIGURATION (Linux waits 1 s). | `FIRST_COMMAND_DELAY_MS 400`. | WIP: 1000 |
-| U6 | Hang once on INQUIRY, TEST UNIT READY or READ CAPACITY while still waking up. | `msc_died` at the first timeout. | WIP: `msc_run_boot`: up to two resets and retries per stick |
-| U7 | READ CAPACITY(10) says "more than 2 TiB" (0xFFFFFFFF) on a bridge that cannot do (16); block size 0. | Both end with the stick ignored. | WIP: 2^32 blocks like Linux; block size 0 means 512 |
-| U8 | The last block is off by one (`US_FL_FIX_CAPACITY`). | Trusted. | WIP: quirk `fixcap` only; no probing read (reading the last block of a flaky stick can itself hang it) |
-| U9 | Individual behaviour that cannot be guessed. | No table. | WIP: `g_quirk_table` (empty) and `usbstorage.quirk=VID:PID:flag,flag/...` (flags `nosync nowp fixcap chunk32k chunk16k chunk4k slowstart`) |
+| U1 | Do not answer GET MAX LUN at all: the control request times out (Linux takes one LUN). | `msc_probe`: `rc == -ETIMEDOUT` returned `-ENODEV`; the stick was not driven. | **fixed**: one LUN, the core's `broken` mark cleared, logged (`GET MAX LUN got no answer within 3000 ms`). `usbstor_get_max_lun_hang` (`lunhang:1`, simulated) |
+| U2 | Hang on MODE SENSE (the write-protect probe). | `lun_write_protected` said "writable" but the timeout left `dev->broken` set: every later transfer failed with `-ENODEV`, the disk registered and was useless. | **fixed**: reset recovery, writable, never asked again (the kernel adds `nowp` for the stick); a REQUEST SENSE that hangs after a refused MODE SENSE is treated alike. `usbstor_mode_sense_hang` (`modehang:1`, simulated). A protected stick that was taken to be writable answers the first write with DATA PROTECT and turns read-only (a path that had no test): `usbstor_data_protect_after_all` (real QEMU behaviour, with `nowp` standing in for the unusable MODE SENSE) |
+| U3 | Put nonsense in the status wrapper's residue: more than was asked for, or "nothing moved" after a read that went through (Linux: `US_FL_IGNORE_RESIDUE`, and it clamps). | `csw_check` turned a residue above the request into a phase error (reset recovery, retry: a stick that always does it never becomes ready); `msc_io_one` failed a good read whose residue was not 0. | **fixed**: the bytes that moved and the status byte decide, the residue is clamped and counted (`residues` in `/proc/usbstorage`). `usbstor_residue_lies` (`residue:1`, `badresidue:1`: every status from the first on lies; simulated) |
+| U4 | Hang or garble transfers above 32 KiB (Linux caps some at 32 KiB by quirk entry). | One size, 64 KiB; a hang ended in `msc_died`, the stick was gone. | **fixed**: ladder 64, 32, 16, 4 KiB: a hang resets the stick and goes down at once, a second failure of a command goes down; logged. At the bottom the stick is given up on. `usbstor_ladder_steps_down` (`maxlen:16384`), `usbstor_ladder_bottom` (`maxlen:2048`); simulated |
+| U5 | Need more than 400 ms after SET_CONFIGURATION (Linux waits 1 s). | `FIRST_COMMAND_DELAY_MS 400`. | **fixed**: 1000 ms, 3000 ms with the `slowstart` quirk (measured by `usbstor_quirks_cmdline`) |
+| U6 | Hang once on INQUIRY, TEST UNIT READY or READ CAPACITY while still waking up. | `msc_died` at the first timeout. | **fixed**: `msc_run_boot`: a reset and one more try, two such resets per stick at most. `usbstor_bringup_nudge` (`drop:2`); a stick that stays silent is still given up on: `usbstor_silent_stick_bounded` (`deaf:2`); simulated |
+| U7 | READ CAPACITY(10) says "more than 2 TiB" (0xFFFFFFFF) on a bridge that cannot do (16); block size 0. | Both ended with the stick ignored. | **fixed**: 2^32 blocks like Linux when (16) is refused, the real size (and READ/WRITE(16)) when it works; block size 0 means 512. `usbstor_capacity_fallbacks` (`cap10max:1,rc16illegal:1`, `cap10max:1`, `bsz0:1`); simulated |
+| U8 | The last block is off by one (`US_FL_FIX_CAPACITY`). | Trusted. | **fixed** as a quirk only (`fixcap`); no probing read (reading the last block of a flaky stick can itself hang it). `usbstor_quirks_cmdline` |
+| U9 | Individual behaviour that cannot be guessed. | No table. | **fixed**: `g_quirk_table` (empty: no stick is known to need an entry) and `usbstorage.quirk=VID:PID:flag,flag/...` (flags `nosync nowp fixcap chunk32k chunk16k chunk4k slowstart`); a typo on the command line is reported. `usbstor_quirks_cmdline` |
 | U10 | A stick that stalls or ignores the bulk-only reset itself: Linux falls back to a port reset (`usb_reset_device`) and re-enumerates it in place. | `msc_garbage` gives the stick up (`-ENODEV`). | **not done**: needs a re-enumerate-in-place facility in `usb.c`/`xhci.c` (Reset Device command or port reset, Address Device, Configure Endpoint again) |
-| U11 | Diagnostics that fit a photograph. | Events are logged (stick with vendor:product, size, writable, "given up on", ...); a failing single command was only in `usb=debug`. | WIP: `msc_note` (the first 8 problems per stick on the screen, with opcode, LBA, sense key/asc/ascq). **Not done**: one `usb: summary` line before "boot complete" (devices with their drivers, LUN states, HUMANVILLAGE result) |
+| U11 | Diagnostics that fit a photograph. | Events were logged (stick with vendor:product, size, writable, "given up on", ...); a failing single command was only in `usb=debug`. | **fixed** for the stick itself: `msc_note` prints the first 8 problems per stick (a short or garbled transfer, a bad or stalled wrapper and the reset after it, a failed read or write with opcode, LBA and sense key/asc/ascq), every unit prints a second line with how its size and write protection were found, the command size and the quirks, `/proc/usbstorage` shows command size, quirks and the residue counter. **Not done**: one `usb: summary` line before "boot complete" (devices with their drivers, LUN states, HUMANVILLAGE result): it belongs in `usb.c` |
 | U12 | Sticks and enclosures that offer both UAS and bulk-only. | Only alternate setting 0 of an interface is parsed, so bulk-only is used when it is alt 0; a device whose alt 0 is UAS is logged and ignored (`usbstor_uas_ignored`). | **fine** |
 | U13 | `mountpolicy.c`, `bootlog.c`. | Boot sectors and labels are read, nothing else; one HUMANVILLAGE volume, the first found, internal disks before sticks; the log is written only to a clean, writable volume, synced after every write, rotated to `TOUHOU.PRV`; a stick pulled mid-run costs `-ENODEV`, not a hang. | **fine**; the FAT dirty-volume work in `fat*.c` and `mountpolicy.c` belongs to the USB agent and was not touched |
 
@@ -369,8 +370,10 @@ Files: `kernel/drivers/ahci.c` (`ahci_blk_flush`, `lose_write`), `kernel/drivers
    the audit lines above included, up to about five seconds before the end; a file without the "clean run" line at its end belongs to a boot that did not finish.
 
 8. If the stick is not mounted (no `/HumanVillage`, `TOUHOU.LOG` missing on the stick afterwards): read the `usb-storage ...` lines (vendor:product, size,
-   `writable` / `given up on` / `did not become ready`) and the `[Keine]` lines right after them; `usb=debug` on the command line adds every command. The
-   fallbacks for sticks that behave badly are still being written (U1-U11 above).
+   `writable` / `given up on` / `did not become ready`, the second line of the unit with how its size and write protection were found, the command size and the quirks)
+   and the `[Keine]` lines right after them; `usb=debug` on the command line adds every command. A stick that behaves badly is answered by soft fallbacks (U1-U11
+   above, simulated in QEMU only) and by the quirk words of `usbstorage.quirk=VVVV:PPPP:flag,flag` (see `docs/USB.md`, "Sticks that misbehave" and "What to try with a real
+   misbehaving stick").
 
 ## Tests
 
@@ -399,45 +402,20 @@ The second round (asked for after the first audit was merged) was stopped on req
 * **Not re-run after those changes**: the USB tests (xhci.c lost its private D0 block; the wake-up is a no-op for a function in D0, which QEMU's always is), the
   network and audio tests (also through `pci_enable`), the whole `hwaudit` group in one go, the desktop tests. Run `python tests/run_all.py` before merging.
 
-**Half done: USB mass storage soft fallbacks (U1-U11 above)**, parked, because it does not compile yet, on the branch `wip/usb-storage-soft-fallbacks` (one
-commit, `5bd592f`, only `kernel/drivers/usb/storage.c`). In it: the header comment with the new knobs, the quirk machinery (empty table,
-`usbstorage.quirk=`, parser, flag names), the size ladder helpers, a `csw_check` that no longer judges the residue, `residue_clamped`, the fault
-variables and their use in `msc_run` (`maxlen`, `modehang`, `residue`, `badresidue`), a rewritten `msc_io_one` (splits by `Msc.chunk`, trusts the bytes that
-moved, ladder on the second failure, a hang means reset and go down at once, `msc_note`), `msc_blk_rw` reading the chunk each round, a `lun_write_protected` that
-survives a hang, `msc_run_boot`/`msc_run_boot_retry` (two resets for a bring-up command that hangs), and the 1 s first-command delay.
-Still to write before it builds and works: `cfg_load` must parse the new faults (`maxlen`, `modehang`, `lunhang`, `residue`, `badresidue`, `cap10max`,
-`rc16illegal`) and keep `usbstorage.quirk=` in `g_quirk_opt`; `msc_probe` must set `Msc.chunk` (`MSC_CHUNK`, or the chunk quirk), `Msc.quirks`
-(`quirks_for`), the first-command delay (`slowstart`), log the quirks, treat a GET MAX LUN timeout as one LUN (clear `dev->broken`, fault `lunhang`);
-`lun_step` (INQUIRY) and `lun_ready` must call `msc_run_boot`; `lun_capacity` must use `msc_run_boot_retry`, map block size 0 to 512, fall back to 2^32
-blocks when READ CAPACITY(10) says 0xFFFFFFFF and READ CAPACITY(16) is refused, honour `fixcap` and the faults `cap10max`/`rc16illegal`, and fill
-`MscLun.cap_how`; `Q_NO_SYNC` must set `l->no_sync`; `lun_register` should print `cap_how`, `wp_how`, the chunk and the quirks; `msc_describe` should show chunk,
-quirks and the residue counter.
+**USB mass storage soft fallbacks (U1-U9, most of U11): finished on 2026-11-08** on the branch `agent/usb-fallbacks` (the half-done commit of the branch
+`wip/usb-storage-soft-fallbacks` merged in and completed; files `kernel/drivers/usb/storage.c`, `tests/case_usbstorage.py`, `docs/USB.md`; the table above has the status of each item and the
+test that covers it; all hangs, lies and odd answers are simulated inside the driver, nothing has met a real misbehaving stick).
 
-**Not started**: U10 (re-enumerating a stick in place when its bulk-only reset fails), U11's one-line `usb: summary` before "boot complete", a section in
-`docs/USB.md` for the new knobs, the tests below.
+**Not done**: U10 (re-enumerating a stick in place when its bulk-only reset fails: a port reset or Reset Device, then Address Device and Configure Endpoint again, in `usb.c`/`xhci.c`),
+and U11's one-line `usb: summary` before "boot complete" (devices with their drivers, LUN states, HUMANVILLAGE result).
 
 ## How to resume
 
 1. `git checkout worktree-agent-a6d5e6306014eb8c7` (or merge it into main first), `python tools/build.py`, `python tests/run_all.py hwaudit` (15 tests, all
    passed before the pause), then the full suite once, because the regression runs listed above were not repeated.
-2. The USB work: the owner of `storage.c` and `mountpolicy.c` is the USB agent, who was editing the FAT dirty-volume checks (`fat*.c`, `mountpolicy.c`) at
-   the time; the diff in `storage.c` is large (about 300 lines). Bring it over with `git checkout wip/usb-storage-soft-fallbacks -- kernel/drivers/usb/storage.c`
-   (if `storage.c` changed on main meanwhile: `git merge wip/usb-storage-soft-fallbacks` and resolve), finish the list above, build, then fix `selftest()`
-   in `storage.c`: a residue above the request is now accepted and clamped (`EXPECT(!csw_check(...))`), and add checks for `quirks_for`/`quirk_entry`,
-   `ladder_below` and `residue_clamped`. Agree the scope with the USB agent first if a smaller patch is preferred (the ladder and the residue rule matter
-   most; the quirk table can follow).
-3. Tests to write in `tests/case_usbstorage.py` (each needs its fault in `cfg_load`):
-
-   | Test | Command line | Must show |
-   |------|--------------|-----------|
-   | ladder | `usbstorage.fault=maxlen:16384 usbstorage.timeout=1500` | `hung the stick ... at most 32 KiB`, then `at most 16 KiB`; 35 MiB read back identical, a 2.7 MB file written and read back by the host; no `given up on` |
-   | residue | `usbstorage.fault=residue:50,badresidue:60` | data identical, `0 reset recoveries`, the residue counter above 0 |
-   | MODE SENSE hang | `usbstorage.fault=modehang:1 usbstorage.timeout=2000` | `MODE SENSE hung the stick`, the disk online and writable, one reset recovery |
-   | GET MAX LUN hang | `usbstorage.fault=lunhang:1` | online with one LUN |
-   | capacity | `usbstorage.fault=cap10max:1,rc16illegal:1` | 4294967296 blocks of 512, no `ignored` |
-   | bring-up nudge | `usbstorage.fault=drop:2 usbstorage.timeout=1500` | `got no answer; the stick was reset (1 of 2 tries)` and the stick online. The existing `usbstor_silent_stick_bounded` expects exactly this fault to condemn the stick, so it needs a persistent fault (for example a new `deaf:2`: every command from the second on) to keep testing "a stick that stays silent is given up on" |
-   | quirks | `usbstorage.quirk=46f4:0001:chunk4k,fixcap` | `/proc/usbstorage` shows 204799 blocks and a 4 KiB chunk, reads and writes correct |
-
-   Then `python tests/run_all.py usbstor,hwaudit,selftest`.
-4. The remaining candidates after that: U10 and U11, MTRR copying for a future SMP start (F8), ECAM/MCFG (P2, not needed), and the checks that only the real
-   machine can do (the checklist for the first boot, above).
+2. The USB soft fallbacks are finished (see above); their tests are `python tests/run_all.py usbstor` (35 tests; the fallbacks are `usbstor_bringup_nudge`,
+   `usbstor_get_max_lun_hang`, `usbstor_mode_sense_hang`, `usbstor_data_protect_after_all`, `usbstor_residue_lies`, `usbstor_ladder_steps_down`, `usbstor_ladder_bottom`,
+   `usbstor_capacity_fallbacks`, `usbstor_quirks_cmdline`, `usbstor_silent_stick_bounded`). Then `python tests/run_all.py hwaudit,selftest`.
+3. The remaining candidates: U10 (re-enumerate a stick in place) and U11's `usb: summary` line, both in `usb.c`/`xhci.c`; MTRR copying for a future SMP start (F8),
+   ECAM/MCFG (P2, not needed), and the checks that only the real machine can do (the checklist for the first boot, above), among them the first real
+   misbehaving stick (`docs/USB.md`, "What to try with a real misbehaving stick").

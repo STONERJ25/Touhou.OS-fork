@@ -89,6 +89,11 @@ whose page is absent wakes nobody. Waiters are woken oldest first; a timed-out o
   the default action, which ends the process.
 * A process-directed signal can interrupt a thread that another thread then beats to the delivery; that thread sees a
   spurious `EINTR`. All libc loops handle `EINTR`.
+* A signal whose action is "ignore" (`SIG_IGN`, or the default of `SIGCHLD`, `SIGCONT` and `SIGWINCH`) is thrown away when it is
+  sent, **unless** some thread blocks it or waits for it in `sigtimedwait` (the action may change before it is unblocked, and
+  the waiter wants it whatever the action is), as POSIX 2.4.4 and Linux have it. So `sigtimedwait` for `SIGCHLD` works with the
+  default action, and a blocked `SIGCHLD` shows up in `sigpending`. Signal sets are 64 bits wide in the kernel since the Linux
+  personality's real-time signals (see [COMPAT.md](COMPAT.md)); native programs still see signals 1 to 31 and 32-bit masks.
 
 ### Locking (what protects what)
 

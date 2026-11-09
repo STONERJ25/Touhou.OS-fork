@@ -1,0 +1,22 @@
+hello from a static-PIE program
+argc=3
+argv[1]=alpha
+argv[2]=beta
+FOO=bar
+executable file type: ET_DYN
+program headers through AT_PHDR: 12 entries of 56 bytes, 4 loadable, interpreter none, dynamic section present, TLS present
+AT_PHDR lies inside the loaded image: yes
+AT_ENTRY is the entry point of the file (plus the load bias): yes
+AT_BASE is zero
+AT_PAGESZ=4096 AT_CLKTCK=100 AT_SECURE=0 AT_PLATFORM=x86_64
+AT_EXECFN ends in: dyn_hello_spie
+AT_RANDOM has bytes: yes
+relocated pointer: 5
+through the variable: 9
+relocated strings: alpha beta gamma
+function table: 14 21
+thread-local variable: 42 then 7, buffer of 299
+object 0: "" with 12 segments
+malloc of 1 MiB: 1
+float: 3.142 0.5
+exit status: 3

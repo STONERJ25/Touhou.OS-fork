@@ -1,6 +1,8 @@
 /*
- * fatfix -- the repair engine behind /bin/fsck, on top of the scanner in fatck.h. User space only (the kernel never repairs anything:
- * it checks, and when it is not satisfied it mounts read-only and says what to run). tools/fatck_host.py builds it into the test DLL.
+ * fatfix -- the repair engine behind /bin/fsck, on top of the scanner in fatck.h. tools/fatck_host.py builds it into the test DLL. The kernel
+ * checks a dirty HUMANVILLAGE volume read-only and, when it is not satisfied, mounts it read-only and says what to run; only with
+ * `hvfsck=safe` on the command line does kernel/fs/fat_check.c call this engine, with FIX_SAFE and no questions, on the volume before it is
+ * mounted (docs/STORAGE.md, "Mending at boot"). FIX_ALL is never used there.
  *
  * It works in passes: scan (findings are retained), repair what the findings allow, flush, scan again, until a pass repairs nothing.
  * Within a pass the findings are taken in an order that keeps the later ones valid (fatfix.c, stage_of): the FAT copies, then cross-links

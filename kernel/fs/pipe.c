@@ -99,7 +99,13 @@ static int pipe_poll(File *f) {
     return m;
 }
 
-static const FileOps pipe_fops = { .read = pipe_read, .write = pipe_write, .ioctl = pipe_ioctl, .close = pipe_close, .poll = pipe_poll };
+/* A reader waits for data (or for the last writer to leave) on rd_wq, a writer for room (or for the last reader to leave) on wr_wq: those are the queues to watch. */
+static WaitQueue *pipe_pollwq(File *f) {
+    Pipe *p = f->priv;
+    return (f->flags & O_ACCMODE) == O_RDONLY ? &p->rd_wq : &p->wr_wq;
+}
+
+static const FileOps pipe_fops = { .read = pipe_read, .write = pipe_write, .ioctl = pipe_ioctl, .close = pipe_close, .poll = pipe_poll, .pollwq = pipe_pollwq };
 static const VNodeOps pipe_vnode_ops = { 0 };
 
 int vfs_pipe(File **rd, File **wr) {

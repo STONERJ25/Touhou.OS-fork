@@ -75,9 +75,13 @@ machines (the kernel log tag is `[Yukari]`). Everything is IPv4 and polled: no i
 * **Sockets**: `AF_INET` `SOCK_STREAM`/`SOCK_DGRAM` (and `SOCK_DGRAM` with `IPPROTO_ICMP` for ping) through the existing
   calls; `bind`, `connect` and `accept` take a `sockaddr*` for both families (UNIX sockets used to get a bare path).
   Options: `SO_REUSEADDR SO_BROADCAST SO_ERROR SO_RCVTIMEO SO_SNDTIMEO SO_KEEPALIVE SO_TYPE SO_ACCEPTCONN TCP_NODELAY
-  TCP_MAXSEG IP_TTL IP_TOS`. Blocking and `O_NONBLOCK`, `poll()`/`select()`, `MSG_PEEK/DONTWAIT/WAITALL/NOSIGNAL`, `EPIPE`
+  TCP_MAXSEG IP_TTL IP_TOS` (and, accepted without effect or kept so that a read-back answers, the others Linux programs set: [COMPAT](COMPAT.md#sockets-poll-and-event-descriptors-2026-11-08)). Blocking and `O_NONBLOCK`, `poll()`/`select()`, `MSG_PEEK/DONTWAIT/WAITALL/NOSIGNAL`, `EPIPE`
   with `SIGPIPE`, `ECONNREFUSED`, `ETIMEDOUT`, `ECONNRESET`. Ports below 1024 need root. A connect that outlives
   `SO_SNDTIMEO` fails with `ETIMEDOUT` and abandons the attempt.
+* **Waiting for sockets.** `poll()` (and the Linux `select`, `ppoll`, `epoll_*`) do not spin: a socket's `FileOps.pollwq` names the one wait queue that every `sock_wake`
+  (and so every state change of a TCP, UDP or ICMP socket) wakes, and a `PollWaiter` attached to that queue (`kernel/fs/pollq.c`, `kernel/include/pollq.h`) tells the
+  waiting call. AF_UNIX sockets did the same with the queue of their connection (streams) or their own (datagrams); the contract for any file type is in [COMPAT](COMPAT.md#the-readiness-interface).
+  Options for UNIX sockets: `SO_PEERCRED`, `SO_PASSCRED`, `SO_TYPE`, ...; a UNIX socket can be a datagram socket, can be bound to a path or to an abstract name and can carry open files in a message.
 * **`SYS_netctl`** (96) is how the tools read and change interfaces, routes and the ARP cache and restart DHCP (structures in
   `shared/netabi.h`); changing anything needs root.
 * **libgap** also gained `htons/htonl/ntohs/ntohl`, `inet_aton/addr/ntoa/pton/ntop`, `select`, `sockaddr_in`, `netdb.h`,
@@ -245,6 +249,7 @@ The "internet" of the QEMU tests is a set of Python servers on the host's loopba
 | `net_sntp_host` | `sntp`/`ntpdate` against a Python NTP responder two hours ahead: offset measured, clock stepped by root, refused for others |
 | `net_link_e1000`, `_virtio`, `_rtl8139` | QEMU's `set_link` pulls and re-plugs the cable: the link goes down without hanging anything, plugging in again brings a new DHCP lease and a working network |
 | `net_ifconfig_set` | root changes address, mask, MTU, routes and neighbours with `ifconfig`, `ip` and `route` |
+| `linux_net_sockets_match_linux`, `linux_net_events_match_linux`, `linux_net_talks_to_the_host` | static glibc programs under the Linux personality: TCP, UDP and UNIX sockets (streams, datagrams, descriptors in messages), the errors, `poll`/`select`/`epoll`/`eventfd`/`timerfd`, ten TCP clients served by one thread, and a program that talks to Python servers on the host through 10.0.2.2 (TCP, UDP, a hand-made DNS query); the first two are compared line by line with the same programs on a real Linux (`tools/linux-oracle.py`) |
 
 The guest clock can run several times slower than wall time, so no test sleeps and then expects an effect: they wait for
 output with generous timeouts or retry.
@@ -267,5 +272,5 @@ output with generous timeouts or retry.
 `shared/netabi.h` (constants, errno values, `netctl` structures), `user/libc/src/{socket,inet,netdb}.c` and the headers
 `sys/socket.h`, `sys/select.h`, `netinet/{in,tcp}.h`, `arpa/inet.h`, `netdb.h`, `user/bin/kappabox/net_*.c`,
 `user/bin/nettest.c`, `initrd/Hakurei/etc/hosts`, the manual pages (`network(7)`, `resolv.conf(5)`, `hosts(5)` and one per tool),
-`tests/case_net.py`. `procfs` gained subdirectories (`procfs_register("net/dev", gen)`) and writable files
+`tests/case_net.py`; the readiness interface and the event descriptors are `kernel/fs/{pollq,epoll,eventfd,timerfd}.c`, `kernel/include/{pollq,evfd,unixsock}.h`, and the Linux calls around sockets `kernel/linux/{net,epoll}.c` with the tests `tests/case_linux_net.py` (`linux_net_*`, against a real Linux). `procfs` gained subdirectories (`procfs_register("net/dev", gen)`) and writable files
 (`procfs_register_rw`) for `/proc/net`.

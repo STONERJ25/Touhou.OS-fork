@@ -1,0 +1,25 @@
+pthread_cancel of a thread in read: 0
+read: join 0, result is PTHREAD_CANCELED: 1, quick: 1
+the cleanup handler ran: 1, read did not return: 1
+nanosleep: join 0, result is PTHREAD_CANCELED: 1, quick: 1
+the cleanup handler ran: 1
+pthread_cond_wait: join 0, result is PTHREAD_CANCELED: 1, quick: 1
+the mutex was released by the cleanup handler: 1, trylock works: 1
+sem_wait: join 0, result is PTHREAD_CANCELED: 1, quick: 1
+the cleanup handler ran: 1
+pthread_join: join 0, result is PTHREAD_CANCELED: 1, quick: 1
+the cleanup handler ran: 1
+the thread that was being joined: join 0, result is PTHREAD_CANCELED: 1, quick: 1
+nested cleanup handlers: join 0, result is PTHREAD_CANCELED: 1, quick: 1
+the handlers ran last pushed first: cba
+cancellation disabled: the thread kept running: 1
+cancellation enabled again: join 0, result is PTHREAD_CANCELED: 1, quick: 1
+it stopped at the first cancellation point: 1
+the thread that spins is running: 1
+asynchronous cancellation of a spinning thread: join 0, result is PTHREAD_CANCELED: 1, quick: 1
+four threads cancelled at once: 4 of 4 came back as cancelled
+pthread_exit: the value is 42: 1, the cleanup handler ran: 1
+pthread_cancel of a thread that has finished: 0
+it returned its own value, not PTHREAD_CANCELED: 1
+done
+exit status: 0

@@ -12,6 +12,7 @@
 #include "fb.h"
 #include "tcowdt.h"
 #include "linux.h"
+#include "pollq.h"
 
 extern void syscall_entry(void);
 void machine_poweroff(void);
@@ -137,6 +138,7 @@ static long sys_execve(TrapFrame *tf) {
         rc = process_exec(me(), path, argv.v, envp.v, &ntf);
         if (rc == 0) *tf = ntf;
         me()->exec_abi = 0;                 /* a setabi() request is for one execve only, whether it worked or not */
+        me()->exec_noroot = false;
     }
     execvec_free(&argv);
     execvec_free(&envp);
@@ -149,8 +151,11 @@ static long sys_execve(TrapFrame *tf) {
  * execve only. Without it a program keeps the personality it already has: a Linux program that execs another one stays a Linux program. */
 static long sys_setabi(TrapFrame *tf) {
     u64 abi = A0(tf);
+    bool noroot = (abi & ABI_NOROOT) != 0;                  /* a Linux program normally runs in the Linux root when there is one; ABI_NOROOT keeps it in the real root */
+    abi &= ~(u64)ABI_NOROOT;
     if (abi != ABI_NATIVE && abi != ABI_LINUX) return -EINVAL;
     me()->exec_abi = (u8)(abi + 1);
+    me()->exec_noroot = noroot;
     return 0;
 }
 
@@ -162,6 +167,7 @@ static long sys_alarm(TrapFrame *tf) {
     u64 prev = p->alarm_at;
     long left = prev ? (long)(((prev > now ? prev - now : 0) + 999) / 1000) : 0;
     p->alarm_at = secs ? now + secs * 1000 : 0;
+    p->alarm_interval = 0;                          /* alarm() and setitimer(ITIMER_REAL) are one timer (docs/COMPAT.md): the alarm replaces an interval as well */
     if (!prev && p->alarm_at) g_alarms_armed++;
     else if (prev && !p->alarm_at) g_alarms_armed--;
     irq_restore(f);
@@ -179,24 +185,7 @@ static long sys_kill(TrapFrame *tf) {
     long pid = (long)A0(tf);
     int sig = (int)A1(tf);
     if (A1(tf) >= NSIG || sig < 0 || sig >= NSIG || sig == SIGCANCEL) return -EINVAL;      /* SIGCANCEL is thread-directed only (tgkill) */
-    Process *self = me();
-    if (pid > 0) {
-        if (pid > 0x7fffffffL) return -ESRCH;                           /* not a pid: do not let it wrap around to one (kill(2^32 + 1) was init) */
-        Process *t = process_by_pid((int)pid);
-        if (!t || t->state == PROC_ZOMBIE) return -ESRCH;
-        if (!signal_permitted(self, t)) return -EPERM;
-        if (t == g_init_proc && sig == SIGKILL && self->cred.uid == 0) { signal_kill_init(t); return 0; }       /* root may end init on purpose: the machine panics, which the panic tests rely on */
-        if (sig) signal_send(t, sig);
-        return 0;
-    }
-    if (pid == -1) {                                                    /* everybody the caller may signal (init and the caller excepted) */
-        int r = signal_group_from(self, 0, sig, true);
-        return r < 0 ? r : 0;
-    }
-    if (pid < -0x7fffffffL) return -ESRCH;
-    int pg = pid == 0 ? self->pgid : (int)-pid;
-    int r = signal_group_from(self, pg, sig, false);
-    return r < 0 ? r : 0;
+    return signal_kill(me(), pid, sig);                                 /* kernel/sys/signal.c: shared with the Linux personality's kill */
 }
 
 static long sys_setpgid(TrapFrame *tf) {
@@ -508,6 +497,23 @@ static long sys_readlink(TrapFrame *tf) {
     return rc;
 }
 
+/* The working directory of p becomes v (a reference the process takes over); abs is its normalized absolute path. Another thread may be resolving a relative path against the
+ * old directory right now, so a threaded process keeps the old reference in a small ring and drops the oldest one instead (everything is released at exit). */
+void process_set_cwd(Process *p, VNode *v, const char *abs) {
+    VNode *old = p->cwd;
+    if (old && p->nthreads > 1) {
+        u64 f = irq_save();
+        VNode *drop = p->old_cwd[0];
+        for (unsigned i = 0; i + 1 < ARRAY_SIZE(p->old_cwd); i++) p->old_cwd[i] = p->old_cwd[i + 1];
+        p->old_cwd[ARRAY_SIZE(p->old_cwd) - 1] = old;
+        irq_restore(f);
+        old = drop;
+    }
+    if (old) vnode_put(old);
+    p->cwd = v;
+    strlcpy(p->cwd_path, abs, sizeof p->cwd_path);
+}
+
 static long sys_chdir(TrapFrame *tf) {
     char *path = kmalloc(PATH_MAX);
     if (!path) return -ENOMEM;
@@ -518,22 +524,9 @@ static long sys_chdir(TrapFrame *tf) {
         rc = vfs_lookup(path, p->cwd, &p->cred, LOOKUP_DIR, &v);
         if (rc == 0 && (rc = vfs_access(v, &p->cred, X_OK)) != 0) vnode_put(v);
         if (rc == 0) {
-            /* Another thread may be resolving a relative path against the old directory right now, so a threaded process keeps
-             * the old reference in a small ring and drops the oldest one instead (everything is released at exit). */
-            VNode *old = p->cwd;
-            if (old && p->nthreads > 1) {
-                u64 f = irq_save();
-                VNode *drop = p->old_cwd[0];
-                for (unsigned i = 0; i + 1 < ARRAY_SIZE(p->old_cwd); i++) p->old_cwd[i] = p->old_cwd[i + 1];
-                p->old_cwd[ARRAY_SIZE(p->old_cwd) - 1] = old;
-                irq_restore(f);
-                old = drop;
-            }
-            if (old) vnode_put(old);
-            p->cwd = v;
             char norm[256];
             path_normalize(p->cwd_path, path, norm, sizeof norm);
-            strlcpy(p->cwd_path, norm, sizeof p->cwd_path);
+            process_set_cwd(p, v, norm);
         }
     }
     kfree(path);
@@ -626,6 +619,8 @@ static long sys_ioctl(TrapFrame *tf) {
     return rc;
 }
 
+/* poll(fds, nfds, timeout): kernel/fs/pollq.c waits on the wait queues of the descriptors (include/pollq.h), so a change is noticed at once; a descriptor whose
+ * file type has no queue is looked at again every 2 ms, as this call always did. A descriptor that is not open answers POLLNVAL and counts as ready. */
 static long sys_poll(TrapFrame *tf) {
     u64 nfds = A1(tf);
     if (nfds > 64) return -EINVAL;
@@ -634,23 +629,9 @@ static long sys_poll(TrapFrame *tf) {
     long timeout = (long)A2(tf);
     u64 nowms = uptime_ms();
     u64 deadline = timeout < 0 || (u64)timeout >= ~0ULL - nowms ? ~0ULL : nowms + (u64)timeout;
-    for (;;) {
-        int ready = 0;
-        for (u64 i = 0; i < nfds; i++) {
-            pfd[i].revents = 0;
-            File *f = fd_get(me(), pfd[i].fd);
-            if (!f) { pfd[i].revents = POLLNVAL; ready++; continue; }
-            int m = vfs_poll(f) & (pfd[i].events | POLLERR | POLLHUP);
-            pfd[i].revents = (short)m;
-            if (m) ready++;
-        }
-        if (ready || uptime_ms() >= deadline) {
-            copy_to_user((void *)A0(tf), pfd, nfds * sizeof(struct gpollfd));
-            return ready;
-        }
-        if (signal_pending_now(me())) return -EINTR;
-        task_sleep_ms(2);
-    }
+    long ready = pollq_poll(pfd, nfds, deadline, 0);
+    if (ready >= 0) copy_to_user((void *)A0(tf), pfd, nfds * sizeof(struct gpollfd));
+    return ready;
 }
 
 /* ------------------------------------------------------------------ memory */
@@ -677,6 +658,13 @@ static long do_mmap(TrapFrame *tf) {
     u64 off = A5(tf);
     if (!len) return -EINVAL;
     len = ALIGN_UP(len, PAGE_SIZE);
+    File *f = NULL;
+    if (!(flags & MAP_ANONYMOUS)) {                         /* what can be refused is refused before anything already mapped at a fixed address is replaced */
+        f = fd_get(me(), fd);
+        if (!f || !f->vn) return -EBADF;
+        if (!(flags & MAP_SHARED) && (f->flags & O_ACCMODE) == O_WRONLY) return -EACCES;       /* a private mapping reads the file */
+        if (off & (PAGE_SIZE - 1)) return -EINVAL;
+    }
     if (flags & MAP_FIXED) {
         if (addr & (PAGE_SIZE - 1)) return -EINVAL;
         uvm_unmap(as, addr, len);
@@ -685,13 +673,11 @@ static long do_mmap(TrapFrame *tf) {
         if (!addr) return -ENOMEM;
     }
 
-    if (flags & MAP_ANONYMOUS) {
+    if (!f) {
         int rc = uvm_map(as, addr, len, prot, 0);
         return rc ? rc : (long)addr;
     }
 
-    File *f = fd_get(me(), fd);
-    if (!f || !f->vn) return -EBADF;
     VNode *v = f->vn;
     /* Device memory (framebuffer) and shared buffers (tmpfs files mapped MAP_SHARED, e.g. window contents). RAM pages are
      * reference counted and mapped write-back; anything else (MMIO, framebuffer) is write-combining. */
@@ -715,7 +701,7 @@ static long do_mmap(TrapFrame *tf) {
         return (long)addr;
     }
     if (!S_ISREG(v->mode)) return -ENODEV;
-    int rc = uvm_map(as, addr, len, prot | PROT_WRITE, 0);   /* private copy: fill now, then drop write if not requested */
+    int rc = uvm_map(as, addr, len, prot | PROT_WRITE, VMA_FILE);   /* private copy: fill now, then drop write if not requested */
     if (!rc) rc = uvm_populate(as, addr, len);
     if (rc) return rc;
     u64 save = f->off;

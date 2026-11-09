@@ -51,8 +51,8 @@ is no xHCI controller (or `usb=off`, or the controller failed), and when nothing
 waits until the bus is quiet: every controller started, no port left to examine, no enumeration in progress, no mass storage unit still
 getting ready, the automount of a stick's HUMANVILLAGE volume finished, and nothing new for 150 ms (hub ports report late). The wait
 is bounded at 8 s whatever happens (`[Kappa] usb: still busy after 8000 ms ...` in the log); a stick that needs longer is mounted by the
-hot-plug path when it is ready, after the session has started. A normal boot with a keyboard, a mouse and a stick pays about a second
-(400 ms of it is a pause between configuring a stick and the first command: many cheap sticks lock up when spoken to at once; Linux waits 1 s).
+hot-plug path when it is ready, after the session has started. A normal boot with a keyboard, a mouse and a stick pays about a second and a half
+(a second of it is a pause between configuring a stick and the first command: many cheap sticks lock up when spoken to at once; Linux waits 1 s too).
 
 Every wait has a timeout: commands 5 s (Linux's value), control transfers 2.5-3 s, port resets 1.5 s (warm 4 s), BIOS hand-off 1 s,
 HCRST 2 s. If the controller itself stops answering (all-ones register reads, `HSE`/`HCE`, unexpected halt, command ring that cannot be
@@ -196,38 +196,41 @@ bulk-only interface as alternate setting 0, which is what gets driven). `usbstor
 [Keine] the Human Village keeps its records on the stick now (sdb2, found by partition label): the homes persist from here on
 ```
 
-**Bring-up is a state machine, not a blocking probe.** `probe` only asks GET MAX LUN and records the LUNs; then, 400 ms later (many cheap
-sticks lock up when they are spoken to the moment they are configured) and one SCSI command per usbd round and LUN (so hubs and keyboards
+**Bring-up is a state machine, not a blocking probe.** `probe` only asks GET MAX LUN and records the LUNs; then, 1 s later (many cheap
+sticks lock up when they are spoken to the moment they are configured; 3 s with the `slowstart` quirk) and one SCSI command per usbd round and LUN (so hubs and keyboards
 keep being served while a stick spins up), each LUN goes through
 `START` (INQUIRY: type 0x00/0x0E/0x07 is a disk, a qualifier or type 0x1F means "no device at this LUN", anything else is logged and
 ignored) -> `WAIT` (TEST UNIT READY; on CHECK CONDITION REQUEST SENSE decides: "becoming ready" and unit attention are tried again every
 250 ms for at most 20 s, "medium not present" goes to `NOMEDIA`, a unit that does not implement the command is taken as ready) ->
 READ CAPACITY(10) (and (16) when the last LBA is 0xFFFFFFFF) -> MODE SENSE(6) for the write-protect bit -> `ONLINE`
 (`blk_register_sd`, then the mount policy hears about it, see STORAGE.md). `NOMEDIA` (a card reader without a card) asks again every two
-seconds. `/proc/usbstorage` shows each LUN's state:
+seconds. A bring-up command that gets no answer does not end the stick at once, see "Sticks that misbehave" below. `/proc/usbstorage`
+shows each stick (reset recoveries so far, the current command size, the quirks in force) and each LUN's state and counters:
 
 ```
-usb-storage 1-1: 46f4:0001 bulk-only, 1 LUN, 0 reset recoveries
-  lun 0: online "QEMU QEMU HARDDISK" sdb 204800 x 512 rw  reads 9 writes 10 syncs 17 errors 0
+usb-storage 1-1: 46f4:0001 bulk-only, 1 LUN, 0 reset recoveries, 64 KiB per command, quirks none
+  lun 0: online "QEMU QEMU HARDDISK" sdb 204800 x 512 rw  reads 9 writes 10 syncs 17 errors 0 residues 0
 ```
 
 **I/O.** `BlockDev.read/write/flush` run on arbitrary threads and go through `usb_call`; each hand-over is one SCSI command of at most
-64 KiB (one bulk transfer), so a 4 MiB filesystem request is 64 hand-overs and usbd serves its other work in between. READ/WRITE(10) is
+64 KiB (one bulk transfer; less once the stick has shown that it cannot take that), so a 4 MiB filesystem request is 64 hand-overs and usbd serves its other work in between. READ/WRITE(10) is
 used until a request needs 64-bit LBAs or 32-bit counts (or the unit's capacity needed READ CAPACITY(16); `usbstorage.rw16` forces the
 16-byte forms for testing). **Write policy** is the one of the SATA and NVMe drivers: every write request is followed by one
 SYNCHRONIZE CACHE(10); a stick that answers ILLEGAL REQUEST, fails the transfer twice, or hangs on it (some bridges do: it gets one bulk-only
 reset, and if it answers again the volume is kept) is not asked again, and the write is not failed for it. `blk.ro` does *not* apply to sticks (it is for the internal disks); a stick follows its own write-protect switch, and a
 DATA PROTECT answer to a write switches the disk to read-only on the spot.
 
-**Everything the device says is checked.** CSW: signature, tag, status byte (0 or 1; 2 is a phase error), residue not larger than the
-request, and for a "good" read that exactly the requested bytes arrived. Sense data: only the fixed (70h/71h) and descriptor (72h/73h)
-formats are believed, anything else is a plain failure. Capacity: block size zero, not a power of two, or other than 512/4096 ->
-the LUN is ignored with the reason in the log; `last LBA + 1` overflowing or more than a pebibyte -> ignored. GET MAX LUN above 15 is taken
+**Everything the device says is checked.** CSW: signature, tag, status byte (0 or 1; 2 is a phase error). The residue field is *not*
+believed (sticks put nonsense in it): what counts is how many bytes really moved in the data stage, and for a "good" read or write that
+all the requested bytes did. Sense data: only the fixed (70h/71h) and descriptor (72h/73h)
+formats are believed, anything else is a plain failure. Capacity: a block size that is not a power of two, or other than 512/4096 ->
+the LUN is ignored with the reason in the log (a block size of 0 is taken to be 512); `last LBA + 1` overflowing or more than a pebibyte -> ignored. GET MAX LUN above 15 is taken
 to mean one LUN, more than 8 LUNs use the first 8. A wrapper the stick will not take, a stalled data or status stage, a bad CSW: **bulk-only
 reset recovery** (class request 0xFF, then CLEAR_FEATURE(HALT) on bulk-in and bulk-out) and one more try, up to three per request; if the
-recovery itself fails, or a transfer times out (5 s for commands, 15 s for reads, 30 s for writes and SYNCHRONIZE CACHE), the stick is
-"given up on": its disks are unregistered, every later request returns `-ENODEV`, nothing else is sent to it. `usbstorage.selftest` runs
-the validators against hand-made hostile answers (29 checks).
+recovery itself fails, the stick is "given up on": its disks are unregistered, every later request returns `-ENODEV`, nothing else is sent
+to it. A transfer that times out (5 s for commands, 15 s for reads, 30 s for writes and SYNCHRONIZE CACHE) is not the end of the stick any
+more: see the ladder below; only a stick that hangs at the bottom of it, or does not come back from the reset, is given up on.
+`usbstorage.selftest` runs the validators and the pure parts of the fallbacks against hand-made hostile answers (56 checks).
 
 **Removable media.** A request that finds "medium not present" drops the disk (`-ENODEV` to the caller, the partitions go with it) and the
 unit is polled until a medium returns; "unit attention: medium may have changed" (06/28) drops the disk too and probes the unit again from
@@ -243,6 +246,79 @@ write-back (the volume stays flagged dirty).
 
 Nothing in the driver writes on its own: WRITE(10/16) and SYNCHRONIZE CACHE exist only on the path of `BlockDev.write` / `flush`, i.e.
 for a filesystem the policy or `mount` mounted, or for root writing the `/dev` node. The partition scan only reads.
+
+### Sticks that misbehave: fallbacks, quirks, and what the log says
+
+Real sticks do things QEMU's does not (Linux's "unusual devices" list is the catalogue of what exists). The driver copes with the common ones
+**without knowing the stick in advance**, since a distributable image meets many sticks; it has a place for what cannot be guessed (quirks);
+and it logs every deviation with numbers, so that a photograph of the screen says what happened. All lines are tagged `[Kappa]` and start with `usb-storage <port>`.
+
+| What a real stick does | What the driver does about it | What the log says |
+|---|---|---|
+| Ignores GET MAX LUN (neither answers nor stalls: the control request times out after 3 s) | takes one LUN, clears the "broken" mark the core put on the device, goes on | `GET MAX LUN got no answer within 3000 ms -- taken to mean one LUN` |
+| Is not awake when the first commands come (needs more than the 1 s pause after SET_CONFIGURATION) | a bring-up command (INQUIRY, TEST UNIT READY, READ CAPACITY) that gets no answer: bulk-only reset, the command is asked once more; two such resets per stick at most. A stick that stays deaf is given up on. The quirk `slowstart` makes the pause 3 s | `opcode 00 got no answer; the stick was reset (1 of 2 tries) and is asked again`, then possibly `no answer to TEST UNIT READY -- the stick is given up on` |
+| Hangs or garbles transfers above some size (some above 32 KiB) | **the ladder**, 64 / 32 / 16 / 4 KiB per command: a command that hangs resets the stick and goes down one rung at once; a transfer that comes back garbled or short is asked again once, and the second failure goes down one rung. The request is cut up again (a command that hung is repeated in full, which is harmless for a write) and the size stays for the stick. A stick that hangs at 4 KiB is given up on. A medium error or a refusal is not about size and does not move the ladder | `a 64 KiB read hung the stick; it answers again after a reset and is asked for at most 32 KiB per command from now on`; `a 32 KiB write failed twice (garbled transfer); from now on at most 16 KiB per command` |
+| Lies in the residue field of a good status (more than was asked for, or "nothing moved" although everything did) | the number of bytes that really moved and the status byte decide; a residue beyond the request is clamped; no reset is spent on it | the counter `residues` of the unit in `/proc/usbstorage` |
+| Stalls, refuses or hangs on MODE SENSE (the write-protect probe) | taken to be writable; a protected stick answers the first write with DATA PROTECT and the disk turns read-only then (its partitions with it, so a later `mount` sees the truth). A hang costs one reset, and the question is not asked again (the stick gets the `nowp` quirk). A REQUEST SENSE that hangs after a refusal is treated alike | `MODE SENSE hung the stick; it answered again after a reset and is taken to be writable (and is not asked again)`; `sdb is write-protected after all (data protect): switching it to read-only` |
+| Answers READ CAPACITY(10) with a block size of 0 | 512 | `block size 0 taken to be 512` in the unit's second line |
+| Answers READ CAPACITY(10) with "last block 0xFFFFFFFF" (more than 2 TiB, or a bridge that cannot know) | READ CAPACITY(16) is asked; a stick that refuses or garbles it keeps the 10-byte answer, 2^32 blocks (READ/WRITE(10) can address all of it) | `READ CAPACITY(10) says the last block is 0xFFFFFFFF and READ CAPACITY(16) is refused: taken to have 2^32 blocks` |
+| Reports the block count where the last LBA belongs (one block too many) | only the quirk `fixcap` takes one block off: there is no guess, because reading the last block of a flaky stick can itself hang it | `quirk fixcap: one block less` |
+| Hangs on SYNCHRONIZE CACHE, or does not know it | one reset, and it is not asked again; the write is not failed for it | `SYNCHRONIZE CACHE hung the stick; it answered again after a reset and will not be asked to sync any more` |
+
+A unit that goes online prints a second line that says how all of this was found out:
+
+```
+[Kappa] usb-storage 1-1 lun 0: "QEMU QEMU HARDDISK", 100 MiB in 512-byte blocks, writable -- carried over the river as sdb
+[Kappa] usb-storage 1-1 lun 0: 204800 blocks from READ CAPACITY(10); write protection: MODE SENSE says writable; at most 64 KiB per command; quirks: none
+```
+
+The first eight problems per stick (a transfer that came back short or garbled, a bad status wrapper or a stalled command wrapper and the reset that followed,
+a read or write that failed with its sense key/asc/ascq) print one line each, with the opcode and where there is one the block address and the numbers.
+After the eighth line the rest only appear with `usb=debug`, so that a dying stick cannot flood the screen. `usb=debug` also logs every single command.
+
+**Quirks** are for what cannot be guessed. The table in `storage.c` (`g_quirk_table`, keyed by vendor:product) is empty on purpose: no stick is known to need an
+entry, and an entry needs a source that can be named. The owner of a stick that misbehaves adds an entry on the kernel command line without rebuilding anything:
+
+```
+usbstorage.quirk=VVVV:PPPP:flag,flag/VVVV:PPPP:flag        (hex ids, as the log line of the stick and `lsusb` show them)
+```
+
+| Flag | Effect | Try it when |
+|---|---|---|
+| `chunk32k`, `chunk16k`, `chunk4k` | at most that much per command from the start (the ladder gets there by itself after failures) | the log shows `hung the stick` or `failed twice` for big transfers |
+| `nosync` | no SYNCHRONIZE CACHE after writes | `SYNCHRONIZE CACHE hung the stick`, or writes crawl |
+| `nowp` | no MODE SENSE; the stick is taken to be writable | `MODE SENSE hung the stick` |
+| `fixcap` | READ CAPACITY gave the block count: one block less is used | reading the last block of the stick fails, or the size is one block more than the stick has |
+| `slowstart` | 3 s, not 1 s, before the first command | the very first command gets `got no answer` right after plugging in |
+
+The first log line of a stick (`usb-storage 1-3: vvvv:pppp, bulk-only transport, 1 LUN -- the kappa are sizing the stick up`) names its ids and, if any quirk is in force, lists
+it. An entry on the command line is confirmed once (`quirks for vvvv:pppp from the command line: ...`); one that is not understood is reported instead of ignored
+(`usbstorage.quirk=: the entry "..." is not well formed`, or `has a flag that is not known`, with the list of the flags there are).
+
+### What real sticks do that QEMU cannot show, and which of it the tests only simulate
+
+QEMU's `usb-storage` is a good citizen: it never hangs, never NAKs for long, never puts nonsense in a status wrapper, always answers GET MAX LUN, READ CAPACITY and
+MODE SENSE like the books say, and answers a bad command wrapper with a STALL. So most of the tests drive the *reaction of the driver* with faults built into the
+driver (`usbstorage.fault=...`, see the command line table), which edit or swallow an answer inside `storage.c`. They prove what the driver decides, resets, believes and logs; they cannot
+prove how the controller and a real stick behave after a real hang.
+
+| Behaviour of real sticks | In the tests | What only a real stick can add |
+|---|---|---|
+| A hang: no answer to a command wrapper, a data or status stage, GET MAX LUN, MODE SENSE | **simulated** (`drop:N`, `deaf:N`, `maxlen:BYTES`, `modehang:1`, `lunhang:1`, `syncdrop:N`): the driver waits out the timeout and behaves as `usb_bulk()` does after one (`-ETIMEDOUT`, device marked broken). The xHCI recovery after a real timeout (Stop Endpoint, Reset Endpoint, Set TR Dequeue Pointer) is tested for its own sake by the general USB tests (`usbfault=`) | whether the stick answers after the bulk-only reset, or needs a port reset (**not implemented**: re-enumerating a stick in place needs a facility in `usb.c`/`xhci.c`, a stick that stalls its own reset is given up on); data toggles that are out of step (see Limitations) |
+| Lies in the residue field | **simulated** (`residue:N`, `badresidue:N`): the status wrapper is edited after it came off the wire | the same lies with a real data stage |
+| Short or garbled data with a good status | the paths are exercised with real reset recoveries by corrupted status wrappers (`csw:N`) and stalled command wrappers (`stall:N`), which QEMU's device does answer; the ladder's reaction to garbled data is covered through hangs | wrong bytes that look right (nothing can detect those without a checksum above) |
+| READ CAPACITY: 2^32 blocks, block size 0, one block too many | **simulated** (`cap10max:1`, `rc16illegal:1`, `bsz0:1`; `fixcap` is a quirk word) | which bridges do it |
+| A slow wake-up | `notready:MS` (answers "becoming ready"), `drop:N` and `deaf:N` (does not answer) | real spin-up times |
+| A write-protected stick whose MODE SENSE is unusable | **real**: QEMU's read-only stick answers WRITE with DATA PROTECT; the `nowp` quirk stands in for the unusable MODE SENSE | |
+| Several LUNs | `maxlun:N` (QEMU's stick has one; the other slots answer like empty ones) | |
+| The quirk words | their effect is tested on QEMU's stick (`usbstor_quirks_cmdline`) | whether they cure a real stick |
+
+**What to try with a real misbehaving stick.** (1) Boot with it, or plug it in, and read the `usb-storage` lines (a photograph is enough; in a shell `dmesg | grep usb-storage`).
+`lsusb` shows whether the stick was enumerated at all and which driver took it. (2) `cat /proc/usbstorage`: reset recoveries, the command size and the quirks of the stick, and per unit
+`errors` and `residues`. A command size below 64 KiB means that the ladder stepped down; the lines with `hung the stick` or `failed twice` say why. Put that size into a quirk
+(`chunk16k`, say) to skip the failures at the next boot. (3) A stick that is "given up on" says which command was the last: `got no answer; the stick was reset` and `no answer to ...`
+point to a stick that needs more time (`slowstart`) or does not like that command; `usb=debug` logs every command with its time. (4) Change one quirk word per boot (the kernel
+command line is `cmdline.txt` on the boot volume) and keep the lines of the first and of the last boot.
 
 ## Files in /proc
 
@@ -276,8 +352,9 @@ Bus 1 Port 7.2: ID 0627:0001 QEMU QEMU USB Keyboard, full-speed, class 00, drive
 | `usbstorage.nosync` | no SYNCHRONIZE CACHE after write requests |
 | `usbstorage.rw16` | READ CAPACITY(16) and READ/WRITE(16) even for small devices |
 | `usbstorage.selftest` | run the validators against hand-made hostile device answers; one log line with the verdict |
-| `usbstorage.timeout=MS` | every bulk wait at most MS ms (tests; a timeout gives the stick up) |
-| `usbstorage.fault=csw:N,stall:N,drop:N,syncdrop:N,notready:MS,maxlun:N` | fault injection for the tests, several separated by commas: the N-th status wrapper is corrupted / the N-th command wrapper stalls the pipe / the N-th command gets no answer / the N-th SYNCHRONIZE CACHE gets no answer / every unit is "not ready" for MS ms / GET MAX LUN answers N |
+| `usbstorage.timeout=MS` | every bulk wait at most MS ms (tests; a hang costs the stick a reset and a smaller command size, and a stick that hangs at the bottom of that ladder is given up on) |
+| `usbstorage.quirk=VVVV:PPPP:flag,flag/VVVV:PPPP:flag` | quirks for the sticks with these hex ids; flags `nosync nowp fixcap chunk32k chunk16k chunk4k slowstart` (see "Sticks that misbehave"); several entries separated by `/`; a typo is reported in the log |
+| `usbstorage.fault=csw:N,stall:N,drop:N,deaf:N,syncdrop:N,maxlen:BYTES,modehang:1,lunhang:1,residue:N,badresidue:N,cap10max:1,rc16illegal:1,bsz0:1,notready:MS,maxlun:N` | fault injection for the tests, several separated by commas: the N-th status wrapper is corrupted / the N-th command wrapper stalls the pipe / the N-th command gets no answer / every command from the N-th on gets no answer / the N-th SYNCHRONIZE CACHE gets no answer / every command that moves more than BYTES gets no answer / MODE SENSE gets no answer / GET MAX LUN gets no answer / from the N-th status on every status says that nothing moved / from the N-th status on every status carries a residue beyond the request / READ CAPACITY(10) says "last block 0xFFFFFFFF" / READ CAPACITY(16) is refused / READ CAPACITY(10) says block size 0 / every unit is "not ready" for MS ms / GET MAX LUN answers N. One log line says that fault injection is on |
 | `usb=parsertest` | run the HID report descriptor parser and decoders against built-in descriptors at boot (one log line with the result) |
 | `usbfault=ctl:N`, `usbfault=cmd:N` | never ring the doorbell for the Nth control transfer / command (counted from boot; the start-up No-Op is command 1) |
 | `usbring=N` | use only N (16..256) entries of every ring, so cycle-bit / link TRB wrap-around happens after N-1 TRBs; `USB_RING=16 python tests/run_all.py usb_` runs the whole USB suite that way |
@@ -353,7 +430,7 @@ full-speed devices (control endpoint size correction); a SuperSpeed device; bulk
 declined; report-descriptor mode; STALL recovery; control transfer and command timeouts; the NEC xHCI model; an xHCI with nothing
 attached; no xHCI at all (PS/2 only); `usb=off`.
 
-The mass storage tests (`python tests/run_all.py usbstor`, 26 tests, about 12 minutes on a busy machine) boot QEMU with `-device qemu-xhci` and
+The mass storage tests (`python tests/run_all.py usbstor`, 35 tests, about 8 minutes of guest time, 15 on a busy machine) boot QEMU with `-device qemu-xhci` and
 `-device usb-storage` sticks built by `tools/mkdisk.py` (they use `-blockdev` nodes, because QEMU deletes an `-drive if=none` backend
 when its device is unplugged) and cover: model, size, partitions and the `lsblk` / `/proc/partitions` / `/proc/usbstorage` / `lsusb` rows;
 whole-device, partition and unaligned reads against the host's checksums; HUMANVILLAGE mounted before the first session; persistence
@@ -361,10 +438,14 @@ across two boots and the image fsck after each poweroff; a write-protected stick
 idle and during a long read, plugging it in again, the dirty flag after a pull; a stick behind a hub that is pulled out with the hub; four hostile sticks (blank, garbage GPT, wild GPT, lying
 MBR) that must stay untouched; a UAS device that is ignored; two sticks with the same label (the first wins); a stick without the label;
 an internal disk that wins over a stick; 4096-byte blocks; FAT time stamps with `tz=`, without, and through `mount`; stalls and
-corrupted status wrappers during a read, a write and the bring-up; a stick that never answers; a stick that needs 12 s (and one that
+corrupted status wrappers during a read, a write and the bring-up; a stick that never answers (and one that is silent only once); a stick that needs 12 s (and one that
 needs 30 s); card-reader behaviour (medium removed, inserted, swapped); empty LUN slots; `usbstorage=off`; the validators' self test; the
 kernel log on the stick (clean run, rotation, killed machine, read-only / dirty / `bootlog=off`); and the `mkimage` stick booted through
-OVMF twice.
+OVMF twice. The soft fallbacks have their own tests, **all of them simulated inside the driver** (see "What real sticks do that QEMU cannot show"):
+`usbstor_bringup_nudge` (`drop:2`), `usbstor_get_max_lun_hang` (`lunhang:1`), `usbstor_mode_sense_hang` (`modehang:1`), `usbstor_data_protect_after_all` (the `nowp`
+quirk on a read-only stick: real DATA PROTECT), `usbstor_residue_lies` (`residue:1`, `badresidue:1`), `usbstor_ladder_steps_down` and `usbstor_ladder_bottom`
+(`maxlen:16384`, `maxlen:2048`), `usbstor_capacity_fallbacks` (`cap10max:1,rc16illegal:1`, `cap10max:1`, `bsz0:1`) and `usbstor_quirks_cmdline` (a quirk line with
+`chunk4k,fixcap,nosync,slowstart`, an entry for another stick, a malformed entry and an unknown flag).
 
 Harness notes: QMP `input-send-event` with a `device` argument names a *display*, and QEMU 11 aborts on any other id, so
 `Qemu._input` no longer forwards it. Default routing already works: a usb-kbd becomes the default keyboard when it is created or
@@ -427,10 +508,13 @@ A class driver is a `UsbDriver` (`usb.h`): `match`, `probe`, `disconnect`, `labe
 * Mass storage: only SCSI over the bulk-only transport (no UAS, so no stream-based throughput; a UAS stick is driven through its
   bulk-only alternate setting, which is slower but works). Not tested against hardware, and QEMU shapes what was tested: its sticks have
   one LUN (`usb-bot` with a second LUN hangs the OVMF firmware before the kernel starts, so several real LUNs are exercised only through
-  the empty-slot path, `usbstorage.fault=maxlun:2`), never NAK for long, and answer a missing command wrapper with a STALL. Timeouts are
-  fatal for the stick (the core marks a device `broken` after one), so a very slow flash chip that takes more than 15 s for 64 KiB would
-  be given up on; the timeouts are generous on purpose. After a bulk-only reset the xHCI data toggle is only reset by Reset Endpoint when a
-  stall preceded it (QEMU does not model toggles; a real device that needs a reset without any stall may see a toggle mismatch).
+  the empty-slot path, `usbstorage.fault=maxlun:2`), never NAK for long, and answer a missing command wrapper with a STALL. A timeout is
+  answered by a reset and a smaller command size (the ladder); a stick that is slow even at 4 KiB (more than 15 s for a read, 30 s for a write) is
+  still given up on, and so is one that does not come back from the reset: the timeouts are generous on purpose. After a bulk-only reset the xHCI
+  data toggle is only reset by Reset Endpoint when a stall preceded it (QEMU does not model toggles; a real device that needs a reset without any
+  stall may see a toggle mismatch). The soft fallbacks (hangs, lies in the residue field, odd READ CAPACITY answers) are exercised by faults built into the driver,
+  not by a stick that really does them, see "What real sticks do that QEMU cannot show". Not done: re-enumerating a stick in place (a port reset
+  when its bulk-only reset fails, as Linux does) needs a facility in `usb.c`/`xhci.c`; one `usb: summary` line before "boot complete" (devices with their drivers and LUN states).
 * `disconnect` cannot release the `BlockDev` structs of a stick that had disks (see above); a machine that is plugged and unplugged
   thousands of times loses a few hundred KiB.
 * Boot is bounded (`usb_wait_settled`, 8 s), but the HUMANVILLAGE mount itself is not: `vfs_mount_opts` holds the VFS namespace lock while the

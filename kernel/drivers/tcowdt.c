@@ -8,7 +8,9 @@
  * Who feeds it:
  *   the loader     arms it just before the kernel starts (boot/recovery.c) when the kernel carries BOOT_WDT_MARK (this file does), so
  *                  that a kernel that hangs before it gets here is restarted too;
- *   the kernel     the "Momiji" thread reloads it from boot until user space opens /dev/watchdog: a scheduler that stops lets it run out;
+ *   the kernel     the "Momiji" thread reloads it from the initcalls on until user space opens /dev/watchdog: a scheduler that stops lets it run out.
+ *                  Before the thread exists the storage policy runs in the boot thread, and its long work (the check and the repair of the Human Village,
+ *                  kernel/fs/fat_check.c) reloads the timer itself through tcowdt_boot_feed();
  *   user space     init's feeder (user/sbin/init.c) writes to /dev/watchdog once a second: a user space that hangs lets it run out;
  *   nobody         after /dev/watchdog was closed without the magic 'V' (the Linux protocol: any write reloads, a 'V' in the last write
  *                  before the last close stops it), in a shutdown (tcowdt_shutdown: the shutdown gets a time budget of its own) and
@@ -100,6 +102,25 @@ u32 tcowdt_seconds_left(void) {
     if (!W.armed) return 0;
     u64 gone = (uptime_ms() - W.last_feed) / 1000;
     return gone >= W.seconds ? 0 : W.seconds - (u32)gone;
+}
+
+/* The loader arms the timer just before the kernel starts (120 s unless wdt= says otherwise), and the Momiji thread below exists only from the initcalls on. The storage
+ * policy runs in between, and a check or a repair of the Human Village in the boot thread (kernel/fs/fat_check.c, hvfsck=safe) can outlast the timer: it would restart the
+ * machine in the middle of its work, and again at the next start, which finds the volume still dirty. So that work calls this from every request it makes to the device.
+ * The timer is the loader's, so the hardware is addressed from what the loader reported (BootInfo), not from g_hw, which is looked for later. */
+void tcowdt_boot_feed(void) {
+    static u64 last;
+    u64 now = uptime_ms();
+    if (now - last < 1000) return;
+    last = now;
+    u32 state = BOOT_WDT_STATE(g_boot.wdt_state);
+    if (g_boot.version < 5 || !g_boot.wdt_tcobase || (state != BOOT_WDT_ARMED && state != BOOT_WDT_ARMED_NR) || tcowdt_feeder() != TCOWDT_OFF) return;
+    TcoHw t;
+    memset(&t, 0, sizeof t);
+    t.tcobase = (uint16_t)g_boot.wdt_tcobase;
+    u64 f = irq_save();
+    tcohw_reload(&t);
+    irq_restore(f);
 }
 
 static const char *nr_text(void) {

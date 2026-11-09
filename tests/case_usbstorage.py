@@ -253,8 +253,8 @@ def usbstor_hotplug_idle():
             wait_log(vm, r"\[Keine\] fat32: sdb2 mounted on /HumanVillage.*read-write: the consistency check found", timeout=120, since=mark)
             assert re.search(r"sdb2 was not closed properly: Keine goes through the whole ledger", vm.text()[mark:]), vm.text()[-2500:]
             no_incident(vm)
-            out = g.ok(f"cat {HV}/reimu/note.txt")                                          # the shell is alive and the data readable
-            assert out.strip() == "before the pull", out + vm.text()[-2500:]
+            out = say(g, f"cat {HV}/reimu/note.txt")                                        # the shell is alive and the data readable
+            assert out == "before the pull", out + vm.text()[-2500:]                        # (say(): the bootlog announces itself right after the mount, and that line can land inside the output)
 
 
 @test
@@ -675,14 +675,16 @@ def usbstor_recovery_in_bringup():
 
 @test
 def usbstor_silent_stick_bounded():
-    """A stick that stops answering (the second command gets no answer): the bring-up gives up after the timeout, boot is not held up
-    beyond the bounded wait, no disk appears, and the rest of the machine works. A hang in the middle of I/O drops the disk and fails the request."""
+    """A stick that stops answering for good (every command from the second on gets no answer): the bring-up resets it once and asks again
+    (a stick that was only waking up deserves that), then gives up after the timeout; boot is not held up beyond the bounded wait, no disk
+    appears, and the rest of the machine works. (One dropped command is survived: see usbstor_bringup_nudge.)"""
     with stick_image("usbs-silent") as img:
         h0 = img.sha()
         t0 = time.time()
-        with boot(None, root=True, cmdline="usbstorage.fault=drop:2 usbstorage.timeout=1500", name="t-usbs-silent", extra=XHCI + stick(img)) as (g, vm):
+        with boot(None, root=True, cmdline="usbstorage.fault=deaf:2 usbstorage.timeout=1500", name="t-usbs-silent", extra=XHCI + stick(img)) as (g, vm):
             text = vm.text()
             assert re.search(r"fault injection: command wrapper 2 gets no answer", text), text[-3000:]
+            wait_log(vm, r"usb-storage \S+: opcode 00 got no answer; the stick was reset \(1 of 2 tries\) and is asked again", timeout=60)
             wait_log(vm, r"usb-storage \S+: no answer to TEST UNIT READY -- the stick is given up on", timeout=60)
             out = g.ok("cat /proc/usbstorage; lsblk")
             assert "given up on" in out and not re.search(r"^sdb\s", out, re.M), out
@@ -735,15 +737,292 @@ def usbstor_late_ready():
             g.poweroff()
 
 
+# ---------------------------------------------------------------------------------------------------------------------
+# what real sticks do and QEMU's does not: the soft fallbacks
+#
+# QEMU's usb-storage never hangs, never lies in the residue field, and answers GET MAX LUN and READ CAPACITY like the book says. Every hang
+# and every lie below is therefore simulated inside the driver (usbstorage.fault=..., see the header of kernel/drivers/usb/storage.c): the tests
+# prove what the driver does about it (resets, smaller commands, what it believes, what it logs), not that the transport underneath survives
+# a real hang. docs/USB.md ("What real sticks do that QEMU cannot show") lists what is simulated and what to try with a real misbehaving stick.
+
+def seen_at(vm, patterns, until, timeout=180):
+    """Polls the serial log every 50 ms until `until` has appeared; returns {name: host time at which the pattern was first noticed}."""
+    seen = {}
+    end = time.time() + scaled(timeout)
+    while time.time() < end:
+        text = vm.text()
+        now = time.time()
+        for name, rx in patterns.items():
+            if name not in seen and re.search(rx, text):
+                seen[name] = now
+        if re.search(until, text):
+            return seen
+        if not vm.alive():
+            break
+        time.sleep(0.05)
+    raise TimeoutError(f"/{until}/ never appeared in the log:\n" + vm.text()[-2500:])
+
+
+def stick_trouble(text):
+    """The driver's own lines that say a stick or one of its units was ignored or given up on (not the bare words: the ATAPI drive of the VM is 'ignored' too)."""
+    return re.findall(r"^\[Kappa\] usb-storage[^\n]*(?:-- ignored|given up on)[^\n]*$", text, re.M)
+
+
+@test
+def usbstor_bringup_nudge():
+    """A stick that does not answer one bring-up command while it is waking up (the second command gets no answer): it is reset and asked again,
+    once, and then comes up as if nothing had happened: disk online, volume mounted, reads and writes right."""
+    with stick_image("usbs-nudge") as img:
+        with boot(None, root=True, cmdline="usbstorage.fault=drop:2 usbstorage.timeout=1500", name="t-usbs-nudge", extra=XHCI + stick(img)) as (g, vm):
+            text = vm.text()
+            assert re.search(r"fault injection: command wrapper 2 gets no answer \(opcode 00\)", text), text[-3000:]
+            assert re.search(r"usb-storage \S+: opcode 00 got no answer; the stick was reset \(1 of 2 tries\) and is asked again", text), text[-3000:]
+            assert "given up on" not in text
+            out = g.ok("cat /proc/usbstorage")
+            assert re.search(r"1 LUN, 1 reset recovery, ", out) and "lun 0: online" in out, out
+            assert "/dev/sdb2 on /HumanVillage" in g.ok("mount")
+            assert say(g, f"cat {H}/hello.txt") == "hello from the stick"
+            g.ok(f"seq 1 400000 > {HV}/numbers.txt")
+            no_incident(vm)
+            g.poweroff()
+        img.check()
+        assert host_read(img, "/numbers.txt") == NUMBERS
+
+
+@test
+def usbstor_get_max_lun_hang():
+    """A stick that ignores GET MAX LUN (the control request times out; simulated): it is taken to have one LUN and not given up on, and the
+    core's 'broken' mark is cleared, so the commands that follow go out: disk online, volume mounted, reads and writes right."""
+    with stick_image("usbs-lunhang") as img:
+        with boot(None, root=True, cmdline="usbstorage.fault=lunhang:1", name="t-usbs-lunhang", extra=XHCI + stick(img)) as (g, vm):
+            text = vm.text()
+            assert re.search(r"fault injection: GET MAX LUN gets no answer", text), text[-3000:]
+            assert re.search(r"usb-storage \S+: GET MAX LUN got no answer within 3000 ms -- taken to mean one LUN", text), text[-3000:]
+            assert "given up on" not in text
+            out = g.ok("cat /proc/usbstorage")
+            assert re.search(r"1 LUN, 0 reset recoveries, ", out) and re.search(r"lun 0: online .* sdb 204800 x 512 rw", out), out
+            assert "/dev/sdb2 on /HumanVillage" in g.ok("mount")
+            assert say(g, f"cat {H}/hello.txt") == "hello from the stick"
+            g.ok(f"seq 1 400000 > {HV}/numbers.txt")
+            no_incident(vm)
+            g.poweroff()
+        img.check()
+        assert host_read(img, "/numbers.txt") == NUMBERS
+
+
+@test
+def usbstor_mode_sense_hang():
+    """A stick that hangs on MODE SENSE, the write-protect probe (simulated): one reset, the disk comes up writable, the question is not asked
+    again (the kernel remembers it as the nowp quirk), nothing is given up on, and writes land."""
+    with stick_image("usbs-modehang") as img:
+        with boot(None, root=True, cmdline="usbstorage.fault=modehang:1 usbstorage.timeout=2000", name="t-usbs-modehang", extra=XHCI + stick(img)) as (g, vm):
+            text = vm.text()
+            assert re.search(r"usb-storage \S+: MODE SENSE hung the stick; it answered again after a reset and is taken to be writable", text), text[-3000:]
+            assert re.search(r"write protection: MODE SENSE hung, taken to be writable; at most 64 KiB per command; quirks: nowp", text), text[-3000:]
+            assert "given up on" not in text
+            out = g.ok("cat /proc/usbstorage; lsblk")
+            assert re.search(r"1 LUN, 1 reset recovery, ", out) and re.search(r"lun 0: online .* sdb 204800 x 512 rw", out), out
+            assert re.search(r"^sdb\s+100M\s+0\s+disk", out, re.M), out
+            assert "/dev/sdb2 on /HumanVillage" in g.ok("mount")
+            g.ok(f"seq 1 400000 > {HV}/numbers.txt")
+            no_incident(vm)
+            g.poweroff()
+        img.check()
+        assert host_read(img, "/numbers.txt") == NUMBERS
+
+
+@test
+def usbstor_data_protect_after_all():
+    """A write-protected stick whose MODE SENSE is not asked (the nowp quirk; a stick whose MODE SENSE fails or hangs ends up the same way): the
+    disk comes up as writable, the first write is answered with DATA PROTECT and the disk is switched to read-only on the spot; the stick is not
+    modified, nothing hangs, and the system carries on."""
+    with stick_image("usbs-dataprotect") as img:
+        h0 = img.sha()
+        with boot(None, root=True, cmdline="usbstorage.quirk=46f4:0001:nowp", name="t-usbs-dataprotect", extra=XHCI + stick(img, ro=True)) as (g, vm):
+            wait_log(vm, r"usb-storage \S+ lun 0: \S+ is write-protected after all \(data protect\): switching it to read-only", timeout=90)
+            text = vm.text()
+            assert re.search(r"write protection: not asked \(quirk nowp\); at most 64 KiB per command; quirks: nowp", text), text[-3000:]
+            assert "given up on" not in text
+            out = g.ok("lsblk")
+            assert re.search(r"^sdb\s+\S+\s+1\s+disk\s+usb-storage", out, re.M), out            # RO column: the disk is read-only now
+            assert re.search(r"^sdb1\s+\S+\s+1\s+part", out, re.M) and re.search(r"^sdb2\s+\S+\s+1\s+part", out, re.M), out       # ... and so are its partitions
+            out = g.ok("cat /proc/usbstorage")
+            assert re.search(r"lun 0: online .* sdb 204800 x 512 ro", out), out
+            g.fails(f"touch {HV}/new.txt", r"[Rr]ead-only|EROFS|[Ii]nput/output")
+            no_incident(vm)
+            assert say(g, "echo alive") == "alive"
+            g.poweroff()
+        assert img.sha() == h0, "a write-protected stick was modified"
+        # the same stick, but now MODE SENSE hangs (simulated) instead of being skipped: reset, taken to be writable, DATA PROTECT on the first write
+        with boot(None, root=True, cmdline="usbstorage.fault=modehang:1 usbstorage.timeout=2000", name="t-usbs-dataprotect2", extra=XHCI + stick(img, ro=True)) as (g, vm):
+            wait_log(vm, r"usb-storage \S+ lun 0: \S+ is write-protected after all \(data protect\): switching it to read-only", timeout=90)
+            text = vm.text()
+            assert re.search(r"MODE SENSE hung the stick; it answered again after a reset and is taken to be writable", text), text[-3000:]
+            assert "given up on" not in text
+            assert re.search(r"lun 0: online .* sdb 204800 x 512 ro", g.ok("cat /proc/usbstorage"))
+            no_incident(vm)
+            assert say(g, "echo alive") == "alive"
+            g.poweroff()
+        assert img.sha() == h0, "a write-protected stick was modified"
+
+
+@test
+def usbstor_residue_lies():
+    """A stick that lies in the residue field of every status -- 'nothing moved' in the first boot, 'more than I was asked for' in the second
+    (simulated from the first command on): the bytes that really moved decide, so the data is right, no reset recovery is spent and the stick is
+    not given up on, and the counter says how often the lie was not believed. (Before, a residue beyond the request was a protocol error and the
+    stick never came up.)"""
+    for name, fault in (("nothing", "residue:1"), ("beyond", "badresidue:1")):
+        with stick_image(f"usbs-residue-{name}") as img:
+            front = open(img.path, "rb").read(16 * MIB)
+            with boot(None, root=True, cmdline=f"usbstorage.fault={fault}", name=f"t-usbs-residue-{name}", extra=XHCI + stick(img)) as (g, vm):
+                assert re.search(r"fault injection: from status 1 on the stick (says that nothing moved|puts a residue beyond the request)", vm.text()), vm.text()[-3000:]
+                assert sha(front) in g.ok("dd if=/dev/sdb bs=1M count=16 2>/dev/null | sha256sum", timeout=240), f"{name}: the data differs"
+                g.ok(f"seq 1 400000 > {HV}/numbers.txt")
+                out = g.ok("cat /proc/usbstorage")
+                assert re.search(r"1 LUN, 0 reset recoveries, ", out) and re.search(r"lun 0: online .* sdb 204800 x 512 rw", out), out
+                m = re.search(r"lun 0: online .* errors (\d+) residues (\d+)", out)
+                assert m and int(m.group(1)) == 0 and int(m.group(2)) >= 200, out
+                assert "given up on" not in vm.text()
+                no_incident(vm)
+                g.poweroff()
+            img.check()
+            assert host_read(img, "/numbers.txt") == NUMBERS
+
+
+@test
+def usbstor_ladder_steps_down():
+    """A stick that hangs on every command that moves more than 16 KiB (simulated): the first big transfer hangs it, it is reset and asked for
+    less -- 64, then 32, then 16 KiB per command -- no data is lost, writes land, the stick is not given up on, and the log says what happened."""
+    with stick_image("usbs-ladder") as img:
+        front = open(img.path, "rb").read(24 * MIB)
+        with boot(None, root=True, cmdline="usbstorage.fault=maxlen:16384 usbstorage.timeout=3000", name="t-usbs-ladder", extra=XHCI + stick(img)) as (g, vm):
+            assert sha(front) in g.ok("dd if=/dev/sdb bs=1M count=24 2>/dev/null | sha256sum", timeout=300), "the data differs"
+            g.ok(f"seq 1 400000 > {HV}/numbers.txt")
+            text = vm.text()
+            assert re.search(r"usb-storage \S+: a (64|32) KiB (read|write) hung the stick; it answers again after a reset and is asked for at most (32|16) KiB per command from now on", text), text[-3000:]
+            assert "asked for at most 16 KiB per command from now on" in text, text[-3000:]
+            assert "given up on" not in text
+            out = g.ok("cat /proc/usbstorage")
+            m = re.search(r"1 LUN, (\d+) reset recover(?:y|ies), 16 KiB per command", out)
+            assert m and int(m.group(1)) in (1, 2), out                  # one reset per rung it had to step down (64 -> 32 -> 16, or 64 -> 16 at once)
+            assert "lun 0: online" in out and "/dev/sdb2 on /HumanVillage" in g.ok("mount"), out
+            no_incident(vm)
+            g.poweroff()
+        img.check()
+        assert host_read(img, "/numbers.txt") == NUMBERS
+
+
+@test
+def usbstor_ladder_bottom():
+    """A stick that hangs on everything larger than 2 KiB (simulated): the ladder runs out at 4 KiB and the stick is given up on, the boot is
+    not held up beyond its bounded wait, no disk stays, the rest of the machine works, and nothing is written."""
+    with stick_image("usbs-bottom") as img:
+        h0 = img.sha()
+        with boot(None, root=True, cmdline="usbstorage.fault=maxlen:2048 usbstorage.timeout=2000", name="t-usbs-bottom", extra=XHCI + stick(img)) as (g, vm):
+            wait_log(vm, r"usb-storage \S+: a read timed out -- the stick is given up on", timeout=90)
+            text = vm.text()
+            assert re.search(r"a 16 KiB read hung the stick; it answers again after a reset and is asked for at most 4 KiB per command from now on", text), text[-3000:]
+            out = g.ok("cat /proc/usbstorage; lsblk")
+            assert "given up on" in out and not re.search(r"^sdb\s", out, re.M), out
+            assert "HumanVillage" not in g.ok("mount")
+            assert "still busy after" not in vm.text()
+            no_incident(vm)
+            assert say(g, "echo alive") == "alive"
+            g.poweroff()
+        assert img.sha() == h0, "a stick that was given up on was written to"
+
+
+@test
+def usbstor_capacity_fallbacks():
+    """READ CAPACITY answers that cannot be used as they stand (simulated): 'last block 0xFFFFFFFF' from a bridge that cannot do READ CAPACITY(16)
+    is taken to be 2^32 blocks; the same answer from a stick that can is followed by the 16-byte form (real size, READ/WRITE(16) from then on);
+    a block size of 0 is 512. None of the three sticks is ignored."""
+    with stick_image("usbs-cap") as img:
+        front = open(img.path, "rb").read(4 * MIB)
+        # 1. more than 2 TiB, and READ CAPACITY(16) is refused: 2^32 blocks
+        with boot(None, root=True, cmdline="usbstorage.fault=cap10max:1,rc16illegal:1", name="t-usbs-cap1", extra=XHCI + stick(img)) as (g, vm):
+            text = vm.text()
+            assert re.search(r"lun 0: READ CAPACITY\(10\) says the last block is 0xFFFFFFFF and READ CAPACITY\(16\) is refused: taken to have 2\^32 blocks", text), text[-3000:]
+            assert re.search(r"4294967296 blocks from READ CAPACITY\(10\) said more than 2 TiB and the 16-byte form was refused, so 2\^32 blocks;", text), text[-3000:]
+            assert not stick_trouble(text), text[-3000:]
+            assert re.search(r"lun 0: online .* sdb 4294967296 x 512 rw", g.ok("cat /proc/usbstorage"))
+            assert "/dev/sdb2 on /HumanVillage" in g.ok("mount")                  # the partition table is at the front, where the real stick has its data
+            assert sha(front) in g.ok("dd if=/dev/sdb bs=1M count=4 2>/dev/null | sha256sum")
+            out, _ = g.run("dd if=/dev/sdb of=/dev/null bs=512 skip=300000 count=1 2>&1")      # beyond the real end of the stick: an error, not a hang
+            assert "1+0 records out" not in out, out
+            assert say(g, f"cat {H}/hello.txt") == "hello from the stick"
+            no_incident(vm)
+            g.poweroff()
+        img.check()
+        # 2. 'more than 2 TiB' from the 10-byte form, but READ CAPACITY(16) works: the real size, READ/WRITE(16) for everything after
+        with boot(None, root=True, cmdline="usbstorage.fault=cap10max:1", name="t-usbs-cap2", extra=XHCI + stick(img)) as (g, vm):
+            text = vm.text()
+            assert re.search(r"204800 blocks from READ CAPACITY\(16\), the 10-byte form said more than 2 TiB;", text), text[-3000:]
+            assert not stick_trouble(text), text[-3000:]
+            assert re.search(r"lun 0: online .* sdb 204800 x 512 rw", g.ok("cat /proc/usbstorage"))
+            assert sha(front) in g.ok("dd if=/dev/sdb bs=1M count=4 2>/dev/null | sha256sum")
+            g.ok(f"seq 1 400000 > {HV}/numbers.txt")
+            no_incident(vm)
+            g.poweroff()
+        img.check()
+        assert host_read(img, "/numbers.txt") == NUMBERS
+        # 3. a block size of 0
+        with boot(None, root=True, cmdline="usbstorage.fault=bsz0:1", name="t-usbs-cap3", extra=XHCI + stick(img)) as (g, vm):
+            text = vm.text()
+            assert re.search(r"204800 blocks from READ CAPACITY\(10\), block size 0 taken to be 512;", text), text[-3000:]
+            assert not stick_trouble(text), text[-3000:]
+            assert re.search(r"lun 0: online .* sdb 204800 x 512 rw", g.ok("cat /proc/usbstorage"))
+            assert sha(NUMBERS) in g.ok(f"sha256sum {HV}/numbers.txt")
+            g.poweroff()
+        img.check()
+
+
+@test
+def usbstor_quirks_cmdline():
+    """usbstorage.quirk=VID:PID:flags, what the owner types for a stick that misbehaves: chunk4k, fixcap, nosync and slowstart take effect for the
+    stick named, are logged, a typo is reported instead of ignored, and an entry for another stick does nothing."""
+    quirk = "46f4:0001:chunk4k,fixcap,nosync,slowstart/dead:beef:nowp/oops/46f4:0001:bogus"
+    with stick_image("usbs-quirks") as img:
+        front = open(img.path, "rb").read(8 * MIB)
+        with Qemu(cmdline=f"text user=root usbstorage.quirk={quirk}", name="t-usbs-quirks", extra=XHCI + stick(img)) as vm:
+            seen = seen_at(vm, {"probe": r"usb-storage \S+: 46f4:0001, bulk-only transport", "online": r"carried over the river as sdb"}, ROOT_PROMPT)
+            vm.expect(ROOT_PROMPT, timeout=60)
+            g = Guest(vm, True)
+            text = vm.text()
+            gap = seen["online"] - seen["probe"]
+            assert gap >= 2.0, f"slowstart: the first command should wait 3 s after the stick was found (1 s without the quirk), it took {gap:.1f} s"
+            assert "usb-storage: quirks for 46f4:0001 from the command line: nosync,fixcap,chunk4k,slowstart" in text, text[-3000:]
+            assert "usb-storage: quirks for dead:beef from the command line: nowp" in text, text[-3000:]
+            assert 'usb-storage: usbstorage.quirk=: the entry "oops" is not well formed' in text, text[-3000:]
+            assert 'usb-storage: usbstorage.quirk=: the entry "46f4:0001:bogus" has a flag that is not known' in text, text[-3000:]
+            assert re.search(r"usb-storage \S+: 46f4:0001, bulk-only transport, 1 LUN, quirks: nosync,fixcap,chunk4k,slowstart -- ", text), text[-3000:]
+            assert ("204799 blocks from READ CAPACITY(10), quirk fixcap: one block less; write protection: MODE SENSE says writable; "
+                    "at most 4 KiB per command; quirks: nosync,fixcap,chunk4k,slowstart") in text, text[-3000:]
+            out = g.ok("cat /proc/usbstorage")
+            assert re.search(r"4 KiB per command, quirks nosync,fixcap,chunk4k,slowstart", out) and re.search(r"lun 0: online .* sdb 204799 x 512 rw", out), out
+            assert "/dev/sdb2 on /HumanVillage" in g.ok("mount")
+            assert sha(front) in g.ok("dd if=/dev/sdb bs=1M count=8 2>/dev/null | sha256sum", timeout=240), "the data differs"
+            g.ok(f"seq 1 400000 > {HV}/numbers.txt")
+            out = g.ok("cat /proc/usbstorage")
+            m = re.search(r"writes (\d+) syncs (\d+) errors (\d+)", out)
+            assert m and int(m.group(1)) > 100 and m.group(2) == "0" and m.group(3) == "0", out         # nosync: writes, but no SYNCHRONIZE CACHE after them
+            no_incident(vm)
+            g.poweroff()
+        img.check()
+        assert host_read(img, "/numbers.txt") == NUMBERS
+
+
 @test
 def usbstor_selftests():
-    """The validators (capacity, block size, status wrapper, sense data, INQUIRY) against hand-made hostile answers, and the TZ parser."""
+    """The validators (capacity, block size, status wrapper, sense data, INQUIRY), the pure parts of the fallbacks (residue clamp, size ladder, quirk
+    parser, capacity repairs) against hand-made hostile answers, and the TZ parser."""
     with stick_image("usbs-self") as img:
         with Qemu(cmdline="text usbstorage.selftest storage.selftest", name="t-usbs-selftest", extra=XHCI + stick(img)) as vm:
             m = vm.expect(r"storage selftest: (\d+) time zone checks, (\d+) failed", timeout=120)
             assert int(m.group(1)) >= 10 and m.group(2) == "0", vm.text()[-2500:]
             m = vm.expect(r"usb-storage selftest: (\d+) checks, (\d+) failed", timeout=120)
-            assert int(m.group(1)) >= 25 and m.group(2) == "0", vm.text()[-2500:]
+            assert int(m.group(1)) >= 50 and m.group(2) == "0", vm.text()[-2500:]
             assert "selftest:" not in re.sub(r"(usb-)?storage selftest: \d+ (checks|time zone checks), 0 failed", "", vm.text()), vm.text()[-2500:]
 
 

@@ -7,6 +7,7 @@
 #include "vfs.h"
 #include "mm.h"
 #include "abi.h"
+#include "siginfo.h"
 #include "syscall.h"
 
 #define MAX_FD          64
@@ -24,6 +25,7 @@
 #define VMA_HEAP     0x200
 #define VMA_IO       0x400          /* pages are not owned by this mapping and must not be freed */
 #define VMA_WC       0x800          /* map write-combining (framebuffer) */
+#define VMA_FILE     0x1000         /* filled from a file when it was mapped (a private copy): madvise(MADV_DONTNEED) must not zero it */
 
 typedef struct Vma {
     u64 start, end;
@@ -72,8 +74,8 @@ typedef struct Process {
     WaitQueue wait_wq;              /* the parent blocks here in waitpid */
     VNode *old_cwd[8];              /* directories left by chdir, released at exit: another thread may still be resolving a path against one */
 
-    u32 sig_pending;                /* process-directed signals not yet taken by a thread (per-thread masks live in Task) */
-    struct gsigaction sigact[NSIG];
+    u64 sig_pending;                /* process-directed signals not yet taken by a thread (a set, see siginfo.h; per-thread masks live in Task) */
+    struct gsigaction sigact[KNSIG];                    /* by signal number; native programs use 1..31, the Linux personality 1..64 */
 
     /* job control (docs/JOBCONTROL.md): a stopped process keeps all its threads parked at the edge of user mode */
     bool stopped;                   /* SIGSTOP / SIGTSTP / SIGTTIN / SIGTTOU took effect and no SIGCONT has followed */
@@ -89,7 +91,21 @@ typedef struct Process {
 
     u8 abi;                         /* system call personality: ABI_NATIVE or ABI_LINUX (docs/COMPAT.md); fork copies it, execve keeps it unless exec_abi asks for the other */
     u8 exec_abi;                    /* SYS_setabi: the personality of the next successful execve, plus one (0 = no request) */
+    /* The Linux root (docs/COMPAT.md, kernel/linux/root.c): a Linux program started from a native one runs inside the tmpfs mounted on /linux, which is "/" for it */
+    VNode *root;                    /* what "/" means to this process: NULL = the real root; else the root of the Linux tree (a reference; fork copies it, a native exec drops it) */
+    bool exec_noroot;               /* SYS_setabi(ABI_LINUX | ABI_NOROOT): the next Linux program runs in the real root (a Linux binary kept at a native path) */
     u64 alarm_at;                   /* alarm(): the uptime in ms at which SIGALRM is sent (0 = no alarm); kept across execve, not inherited by fork */
+
+    /* The Linux personality's signals and timers (docs/COMPAT.md; kernel/sys/signal.c, kernel/linux/timers.c). None of it is inherited by fork. */
+    SigList sigl;                   /* the siginfo of the signals behind sig_pending */
+    int  sigq_count;                /* entries held by the queues of the process and of its threads (SIGQ_PER_PROC at most) */
+    u64  alarm_interval;            /* setitimer(ITIMER_REAL): ms between expirations after the first (0: once); alarm() clears it */
+    u64  itimer_virt, itimer_virt_iv;   /* ITIMER_VIRTUAL: CPU ticks left, counting only user mode, and the reload value (0 = off) */
+    u64  itimer_prof, itimer_prof_iv;   /* ITIMER_PROF: CPU ticks left, user and system together, and the reload value */
+    struct KTimer *ktimers;         /* POSIX timers (timer_create); dropped at execve and at exit */
+    int  ktimer_next_id;
+    u64  dead_ticks, dead_utime;    /* cpu_ticks and utime_ticks of the threads that have ended */
+    u64  child_ticks, child_utime;  /* the same for the children this process has waited for, and their waited-for children (times, getrusage) */
 } Process;
 
 extern Process *g_init_proc;
@@ -106,6 +122,18 @@ int      process_fork_ex(TrapFrame *tf, u64 settid_addr, u64 cleartid_addr);   /
 #define EXEC_THREAD_LEAVES 1
 int      process_exec(Process *p, const char *path, char *const argv[], char *const envp[], TrapFrame *tf);
 long     process_wait(int pid, int *status, int options);
+
+/* waitid(2) (the Linux personality): which child, which events (the Linux values of the option bits), and what happened */
+#define WAITID_ALL        0
+#define WAITID_PID        1
+#define WAITID_PGID       2
+#define WAITID_NOHANG     0x00000001
+#define WAITID_STOPPED    0x00000002
+#define WAITID_EXITED     0x00000004
+#define WAITID_CONTINUED  0x00000008
+#define WAITID_NOWAIT     0x01000000
+typedef struct WaitInfo { int pid; u32 uid; int code; int status; s64 utime, stime; } WaitInfo;
+long     process_waitid(int idtype, int id, int options, WaitInfo *out);       /* 0 (out->pid 0: WNOHANG found nothing), -ECHILD, -EINTR */
 
 /* execve limits (docs/HARDENING.md): entries per vector, bytes per string (the NUL included), and the whole argument block, which
  * counts the strings and a pointer for each of them, as on Linux. Anything above fails with E2BIG. */
@@ -183,6 +211,29 @@ void signal_deliver(TrapFrame *tf);                                     /* on th
 bool signal_pending_now(Process *p);                                    /* the calling thread has a deliverable signal (or must die) */
 bool signal_cancel_pending(Task *t);                                    /* pthread_cancel is waiting for this thread to reach a cancellation point */
 long sys_sigreturn_impl(TrapFrame *tf);
+
+/* signals with a siginfo: the Linux personality queues them (kernel/sys/signal.c). A signal sent with no info is the kernel's own (SI_KERNEL). */
+#define SIGQ_PER_PROC 128                                               /* queued signals one process may hold (sigqueue fails with EAGAIN beyond that) */
+int  signal_send_info(Process *p, int sig, const SigInfo *info);        /* 0, or -EAGAIN when a queued (real-time) signal found no room */
+int  signal_send_thread_info(Task *t, int sig, const SigInfo *info);
+int  signal_send_from(const Process *from, Process *to, int sig);       /* kill(2): the sender's pid and user id go into the siginfo when `to` can read one */
+long signal_kill(Process *self, long pid, int sig);                     /* kill(2) of either personality: one process, a group, everybody; 0 or -errno */
+int  signal_group_info(const Process *from, int pgid, int sig, bool everyone, const SigInfo *info);   /* like signal_group_from, with a siginfo (NULL: from kill(2)) */
+void signal_discard(Process *p, u64 mask);                              /* drop these pending signals, in the process and in every thread */
+void signal_action_changed(Process *p, int sig);                        /* a signal whose action became "ignore" loses what is pending */
+long signal_wait(u64 set, u64 deadline, SigInfo *info);                 /* sigtimedwait: the signal taken (and its siginfo), -EAGAIN at the deadline, -EINTR */
+void signal_thread_exit(Task *t);                                       /* the thread's queued signals are dropped */
+void signal_process_exit(Process *p);
+void signal_exec_reset(Process *p);                                     /* execve: handlers back to default, nothing pending, POSIX timers gone */
+void signal_child_info(SigInfo *info, const Process *child, int code, int status);   /* the SIGCHLD siginfo for a child event (code CLD_*, status as in siginfo) */
+void process_cpu_ticks(const Process *p, u64 *user, u64 *total);        /* CPU time of all the threads, living and dead, in timer ticks */
+void ktimers_cpu_tick(Process *p, bool user);                           /* the scheduler tick ran this process: setitimer(ITIMER_VIRTUAL, ITIMER_PROF) */
+void ktimers_tick(u64 now);                                             /* POSIX timers that are due (called from the timer interrupt while any is armed) */
+void ktimers_process_exit(Process *p);                                  /* exit and execve: the POSIX timers are dropped */
+void ktimer_signal_taken(Process *p, SigInfo *info);                    /* a timer's signal is being delivered: its siginfo gets the overrun count */
+void ktimer_signal_dropped(Process *p, const SigInfo *info);            /* a timer's signal was thrown away: the timer may queue the next one */
+void signal_drop_timer(Process *p, int timerid);                        /* timer_delete: the timer's queued signal never arrives (irq off) */
+extern int g_ktimers_armed;
 
 /* syscall plumbing */
 typedef long (*SyscallFn)(TrapFrame *tf);

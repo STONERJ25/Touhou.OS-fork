@@ -65,6 +65,11 @@ delete them after switching firmware.
 Actions workflow uses. It only stretches how long the harness waits; it changes nothing the tests check. Two kinds of checks are left unscaled on purpose because they measure speed rather than
 wait for something: the "opening took too long" limits in `tests/case_notebook.py` and the dead-controller check in `tests/case_blockdev.py`.
 
+Two tests break **because** of the scale (found by the whole-suite run of 2026-11-09, which used `3`), since a wait of theirs is stretched while the guest has a time of its own that is not: run them with the default scale.
+`ssh_forward_caps_and_flood` holds forwarded channels idle for `scaled(3)` seconds twice before it uses them, and the guest's `httpd` drops a connection that has sent nothing for 10 s;
+`update_hung_kernel_falls_back` pushes with `--wait scaled(40)` (120 s) and then sleeps, while the loader's own watchdog (120 s) resets the hung trial kernel by itself, so the test's two
+resets land on the wrong starts. Both pass at the default scale (40 s and 118 s). `python tools/suite.py` with `TOUHOU_TIMEOUT_SCALE=3` therefore reports these two as failed when they are not.
+
 ## Test runner: retries, expected failures, parallel groups
 
 ### `tests/run_all.py`

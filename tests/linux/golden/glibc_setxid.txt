@@ -1,0 +1,14 @@
+setuid(own uid) with 3 other threads: 0
+setgid(own gid): 0
+seteuid(own euid): 0
+setegid(own egid): 0
+setreuid(-1, -1): 0
+setregid(-1, -1): 0
+setresuid(-1, -1, -1): 0
+setresgid(-1, -1, -1): 0
+every thread sees the same ids as before: 1
+setuid again with new threads: 0
+every thread sees the same ids again: 1
+setuid(0) as an ordinary user: -1, errno 1 (EPERM 1)
+ids unchanged afterwards: 1
+exit status: 0

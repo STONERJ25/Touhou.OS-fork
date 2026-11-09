@@ -1,0 +1,47 @@
+kill(2): signo 10, code 0 (SI_USER 0), sender is the parent 1, uid is mine
+raise: 1 signal(s), signo 12, code -6 (as expected), sender is the expected process 1, uid is mine
+tgkill: 1 signal(s), signo 12, code -6 (as expected), sender is the expected process 1, uid is mine
+tkill: 1 signal(s), signo 12, code -6 (as expected), sender is the expected process 1, uid is mine
+pthread_kill: 1 signal(s), signo 12, code -6 (as expected), sender is the expected process 1, uid is mine
+kill of ourselves: 1 signal(s), signo 12, code 0 (as expected), sender is the expected process 1, uid is mine
+sigqueue: 1 signal(s), signo 12, code -1 (as expected), sender is the expected process 1, uid is mine
+alarm: 1 signal(s), signo 14, code 128 (as expected), sender is the expected process 1, uid is zero
+write to a broken pipe: -1, errno 32 (EPIPE 1)
+SIGPIPE: 1 signal(s), signo 13, code 0 (as expected), sender is the expected process 1, uid is mine
+SIGCHLD after exit(7): 17, signo 17, code 1, from the child 1, uid is mine 1, status 7, times are not negative 1
+wait4 with a rusage: the child, exited with 7: 1, its times are small: 1
+SIGCHLD after SIGTERM: 17, signo 17, code 2, from the child 1, uid is mine 1, status 15, times are not negative 1
+SIGCHLD after SIGSTOP: 17, signo 17, code 5, from the child 1, uid is mine 1, status 19, times are not negative 1
+waitpid(WUNTRACED): the child, stopped 1, stop signal 19
+SIGCHLD after SIGCONT: 17, signo 17, code 6, from the child 1, uid is mine 1, status 18, times are not negative 1
+waitpid(WCONTINUED): the child, continued 1
+SIGCHLD after SIGKILL: 17, signo 17, code 2, from the child 1, uid is mine 1, status 9, times are not negative 1
+SIGCHLD handler for exit(3): 1 signal(s), signo 17, code 1 (as expected), sender is the expected process 1, uid is mine
+status seen by the handler: 3
+SIGCHLD after exit(5) for waitid: 17, signo 17, code 1, from the child 1, uid is mine 1, status 5, times are not negative 1
+waitid P_PID WEXITED|WNOWAIT: 0, signo 17, code 1, pid set, uid mine, status 5
+waitid P_PID WEXITED (reaps): 0, signo 17, code 1, pid set, uid mine, status 5
+waitid P_PID again: -1, errno 10
+waitid P_ALL WEXITED|WNOHANG, a child still runs: 0, signo 0, code 0, pid zero, uid -, status 0
+SIGCHLD after SIGSTOP for waitid: 17, signo 17, code 5, from the child 1, uid is mine 1, status 19, times are not negative 1
+waitid P_PID WSTOPPED|WNOWAIT: 0, signo 17, code 5, pid set, uid mine, status 19
+waitid P_PID WSTOPPED: 0, signo 17, code 5, pid set, uid mine, status 19
+waitid P_PID WSTOPPED|WNOHANG, already reported: 0, signo 0, code 0, pid zero, uid -, status 0
+SIGCHLD after SIGCONT for waitid: 17, signo 17, code 6, from the child 1, uid is mine 1, status 18, times are not negative 1
+waitid P_PID WCONTINUED: 0, signo 17, code 6, pid set, uid mine, status 18
+SIGCHLD after SIGTERM for waitid: 17, signo 17, code 2, from the child 1, uid is mine 1, status 15, times are not negative 1
+waitid P_PGID WEXITED (the group of the caller: 0): 0, signo 17, code 2, pid set, uid mine, status 15
+waitid P_ALL, nothing left: -1, errno 10
+waitid with no event wanted: -1, errno 22
+waitid a bad id type: -1, errno 22
+waitid P_PID 0: -1, errno 22
+kill(0, SIGUSR1): 0
+the sender itself: 1 signal(s), signo 10, code 0 (as expected), sender is the expected process 1, uid is mine
+a child of the group: signo 10, code 0, sender is the parent 1
+a child of the group: signo 10, code 0, sender is the parent 1
+kill(-group, 0): 0
+kill(-group, SIGTERM): 0
+a member of the other group: ended 1, by signal 15
+a member of the other group: ended 1, by signal 15
+kill of an empty group: -1, errno 3 (ESRCH 1)
+exit status: 0

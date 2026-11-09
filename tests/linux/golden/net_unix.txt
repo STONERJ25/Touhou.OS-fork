@@ -1,0 +1,46 @@
+socketpair: 0
+0 -> 1: 4 'ping', 1 -> 0: 5 'pong!'
+getsockname of a socketpair end: 0, family 1, length 2
+getpeername of a socketpair end: 0, family 1, length 2
+SO_PEERCRED: 0, length 12, pid is ours 1, uid is ours 1, gid is ours 1
+SO_TYPE 1, SO_ERROR 0
+MSG_PEEK: 4 'abcd', MSG_WAITALL: 6 'abcdef', MSG_DONTWAIT on an empty queue: -1 errno 11 (EAGAIN 11)
+shutdown(SHUT_WR) on end 0: 0
+end 1 still reads what was sent: 4 'last', then end of file: 0
+end 0 sending after its own shutdown: -1 errno 32 (EPIPE 32)
+the other direction still works: 24
+poll on end 1 after end 0 shut down its sending: POLLIN 1, POLLOUT 1, POLLRDHUP 1, POLLHUP 0
+after end 0 closed: read gives 0, MSG_NOSIGNAL send gives -1 errno 32 (EPIPE 32), SIGPIPE count 0; write gives -1 errno 32, SIGPIPE count 1
+socketpair with flags: non-blocking 1 1, close-on-exec 1 1, an empty non-blocking read: -1 errno 11
+bind /tmp/net_unix_test.sock: 0
+getsockname of the bound socket: 0, family 1, length 26, path /tmp/net_unix_test.sock
+getpeername of a socket that is not connected: -1, family -1, length 0
+listen: 0
+bind to the same path: -1 errno 98 (EADDRINUSE 98)
+SO_ACCEPTCONN: 1
+the client binds /tmp/net_unix_client.sock: 0
+connect: 0
+connect again: -1 errno 106 (EISCONN 106)
+accept4: ok 1, non-blocking 1, close-on-exec 1, the client's name is /tmp/net_unix_client.sock (length 28)
+accepted socket, getsockname: 0, family 1, length 26, path /tmp/net_unix_test.sock
+accepted socket, getpeername: 0, family 1, length 28, path /tmp/net_unix_client.sock
+client, getsockname: 0, family 1, length 28, path /tmp/net_unix_client.sock
+client, getpeername: 0, family 1, length 26, path /tmp/net_unix_test.sock
+SO_PEERCRED on the accepted socket: pid is ours 1, uid is ours 1
+accepted socket, nothing sent yet: POLLIN 0, POLLOUT 1
+the server read 12 'hello server'
+accept on a non-blocking listener with nobody waiting: -1 errno 11 (EAGAIN 11)
+connect to a socket file nobody listens on: -1 errno 111 (ECONNREFUSED 111)
+connect to a path that does not exist: -1 errno 2 (ENOENT 2)
+bind to an abstract name: 0
+getsockname of it: 0, family 1, length 20, abstract name net-unix-abstract
+bind the same abstract name again: -1 errno 98 (EADDRINUSE 98)
+connect to it: 0
+through the abstract name: 8 'abstract'
+after the listener closed, the name is gone: -1 errno 111 (ECONNREFUSED 111)
+socket with a protocol other than 0: -1 errno 93 (EPROTONOSUPPORT 93)
+socket with stray type bits: -1 errno 22 (EINVAL 22)
+socket(AF_INET6) is either available or EAFNOSUPPORT: 1
+socket(AF_NETLINK) is either available or EAFNOSUPPORT/EPROTONOSUPPORT: 1
+large transfer: 300000 bytes arrived, checksum equal 1, then end of file 0
+exit status: 0

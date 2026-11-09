@@ -44,6 +44,10 @@ typedef struct Sock {
     u32  rcvtimeo, sndtimeo;            /* milliseconds, 0 = wait forever */
     u32  uid;
     u32  ino;
+    /* options a program set and reads back; they change nothing here (no keep-alive probes are sent, closing never waits or resets because of a linger) */
+    u16  ka_idle, ka_intvl;             /* TCP_KEEPIDLE, TCP_KEEPINTVL in seconds; 0 = the Linux defaults (7200, 75) */
+    u8   ka_cnt;                        /* TCP_KEEPCNT; 0 = 9 */
+    s32  linger_on, linger_sec;         /* SO_LINGER */
     WaitQueue wq;                       /* everything that can happen to the socket wakes this */
 
     /* listening sockets */
@@ -92,6 +96,7 @@ void  sock_wake(Sock *s);
 bool  sock_exists(Sock *s);
 
 ssize_t sk_recv(File *f, u8 *buf, size_t n, int mflags, u32 *from_addr, u16 *from_port);
+ssize_t sk_recv_ex(File *f, u8 *buf, size_t n, int mflags, u32 *from_addr, u16 *from_port, size_t *full);   /* + the full length of a datagram (for MSG_TRUNC) */
 ssize_t sk_send(File *f, const u8 *buf, size_t n, int mflags, bool have_addr, u32 daddr, u16 dport);
 int   sk_block(Sock *s, u32 tmo, u64 *deadline);          /* sleeps on the socket with the lock dropped; 0, -EAGAIN (timeout), -EINTR */
 int   sk_get_sockaddr(u64 uaddr, u64 len, u32 *addr, u16 *port);

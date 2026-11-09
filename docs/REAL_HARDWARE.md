@@ -130,6 +130,7 @@ clock is hours off on the first boot, the PC's clock chip holds local time (Wind
 | `nohumanvillage` | do not mount the HUMANVILLAGE volume |
 | `hvforce` | mount the HUMANVILLAGE volume read-write even if it was not closed properly **and** the check of its contents found damage. **Dangerous**: what is written to a damaged volume can make it worse; use it only to get at your files (copy them out first) |
 | `hvcheck=off` | do not go through a dirty HUMANVILLAGE volume before mounting it: it is then read-only, as in the first versions (with `hvforce` it is forced) |
+| `hvfsck=safe` | when the HUMANVILLAGE volume was not closed properly and the check of its contents finds damage, make the repairs of `fsck -a` (those that lose no data and no file) **before the volume is mounted**, check it again, and mount it read-write if it is in order. Damage that needs `fsck -y` is left alone (read-only, as without the word). Off by default; needs a device that can be written (under `blk.ro` the partition must be named by `blk.rw=`). See section 5, "Mending at boot" |
 | `init=kshell` | skip userland, start the kernel's own tiny shell |
 | `fb.cache=uc` | map the framebuffer uncached instead of write-combining: only for comparing the `framebuffer speed` log line when the screen feels slow (it also switches the MTRR fallback below off) |
 | `fb.mtrr=auto` (default), `on`, `off` | the slow-screen fallback: when the screen measures under 400 MB/s the kernel tries a write-combining MTRR over the display adapter's BAR, logs `fb speed before N MB/s after M MB/s` and takes it back if the screen did not get faster. `on` tries it even when the screen is fast, `off` never touches the MTRRs |
@@ -165,9 +166,10 @@ any editor will do. If there is no `cmdline.txt` at all the loader uses `video=n
     count): mounted read-write too, and the log says so; the flag stays until a file system check tidies them up (`fsck -a`, below);
   - *damage* (a chain that runs into nothing, two files sharing clusters, a directory without `.` / `..`, ...): the volume stays
     **read-only**, nothing is written, `TOUHOU.LOG` is not updated, and the log (`dmesg | grep Keine`, and `cat /proc/fatcheck` with every
-    problem) says precisely what and what to do: as root `umount /HumanVillage`, `fsck -a /dev/sda2` (`fsck -y` also repairs what needs a
-    decision, such as a file whose chain is cut at its break), then reboot. Your files are still readable meanwhile. The walk-through, with
-    what `fsck` prints, is below. (`fsck` has been run in QEMU guests on FAT12, FAT16 and FAT32 volumes, on 512- and 4096-byte sectors, and on
+    problem) says precisely what and what to do: restart with `hvfsck=safe` on the kernel command line, which makes the safe repairs before the
+    volume is mounted ("Mending at boot" below); or by hand, as root `umount /HumanVillage`, `fsck -a /dev/sda2` (`fsck -y` also repairs what
+    needs a decision, such as a file whose chain is cut at its break), then reboot. Your files are still readable meanwhile. The walk-through,
+    with what `fsck` prints, is below. (`fsck` has been run in QEMU guests on FAT12, FAT16 and FAT32 volumes, on 512- and 4096-byte sectors, and on
     the images that power cuts left behind; it has not yet been run on the real machine. On Windows, "Scan and fix" on the big partition, or
     `fsck.vfat -a` on Linux, do the same job.)
   `hvforce` on the kernel command line mounts the volume read-write even when the check found damage (dangerous), `hvcheck=off` skips the check
@@ -185,7 +187,9 @@ before it decides how to mount it (it only reads; a second or so for a small sti
 |---------------|----------|------------|
 | `... nothing is out of place: the Human Village may write in it again` | only the dirty mark was left (the power went between two writes). The volume is mounted read-write (mount option `fsck=ok`) and the mark goes at the first idle flush or `sync` | nothing |
 | `... found only harmless leftovers in the ledger (N lost cluster(s), M other ...): it is mounted read-write, and fsck -a /dev/sda2 as root tidies it up` | `fsck=left`: writable, but a few clusters were allocated and never used, a file's chain is a little longer than its size, or a FAT copy and the free count lag behind. Nothing points at wrong data; the leftovers only cost a little space. The dirty mark stays on the volume until `fsck -a` has been through it (so every start checks again, which is quick); a file with a surplus chain is trimmed when it is next written | not urgent: tidy it up as below when you have a quiet moment |
-| `... its ledger does not add up: N error(s). It stays read-only so that nothing gets worse. As root, umount /HumanVillage and run fsck -a /dev/sda2` (or `... the check of its ledger could not be finished`: out of time or memory, or the stick failed) | real damage: a chain that runs into nothing, two files that share clusters, a directory without `.` and `..`, a name that is not one ... Nothing is written (so no `TOUHOU.LOG` for this boot either); every file that can be read still can | copy out what you need if it matters, then mend it as below |
+| `... its ledger does not add up: N error(s). It stays read-only so that nothing gets worse. To have the safe repairs made before the volume is mounted, put hvfsck=safe on the kernel command line ... By hand: As root, umount /HumanVillage and run fsck -a /dev/sda2` (or `... the check of its ledger could not be finished`: out of time or memory, or the stick failed) | real damage: a chain that runs into nothing, two files that share clusters, a directory without `.` and `..`, a name that is not one ... Nothing is written (so no `TOUHOU.LOG` for this boot either); every file that can be read still can | copy out what you need if it matters, then mend it with `hvfsck=safe` or as below |
+| `... mended with hvfsck=safe in N ms (P pass(es)): R repair(s), ...` | the word was set: the repairs of `fsck -a` were made on the unmounted volume, the volume was gone through again from the device, and nothing is out of place: read-write, the dirty mark is gone | nothing; look at `FOUND.000` if the line says lost chains were saved |
+| `... mended with hvfsck=safe as far as it goes ..., but its ledger does not add up. ... restart once with nohumanvillage ...` | what is left needs a decision that only `fsck -y` makes (a chain cut, an entry removed): read-only, and `/proc/fatcheck` says what is left | restart once with `nohumanvillage`, `sudo fsck -y /dev/...`, take the word out, as the line says |
 
 The repair, from a text console (`Ctrl+Alt+Backspace` leaves the desktop). Root's login is locked: log in as `marisa` and use `sudo`.
 
@@ -234,6 +238,40 @@ start does not mention a ledger, and the files are readable and writable again.
   4096-byte sectors, the questions, the refusals, the flow above with a restart afterwards, and the images that random power cuts left behind
   (`tests/case_fsck.py`: `fsck_cmd_*`). What is worth doing once with the owner's go: switch the machine off with the power button while something
   writes (a big copy), start it again, read the `[Keine]` line and `cat /proc/fatcheck`, and run the three commands.
+
+### Mending at boot: `hvfsck=safe`
+
+For a machine that is switched off with the power button after a hang and is only reached over the network afterwards, the walk-through above has a flaw:
+under a running desktop `umount /HumanVillage` says *busy* (the homes live there), so the machine does not heal itself. The kernel word **`hvfsck=safe`**
+(off by default) makes the kernel do the safe part itself, at the start, before the volume is mounted and before anything has a file open on it:
+
+1. the check of the ledger runs as always; only when it finds **damage** (not a bare dirty mark, not harmless leftovers, which take the paths in the
+   table above) and could finish does the word act;
+2. the repairs of `fsck -a` are made on the unmounted partition: FAT copies and FSInfo, sizes against chains, stray long-name entries, `.` and `..`, cross-linked
+   files (each gets its own copy of the shared clusters), lost chains (saved as `FOUND.000/FILEnnnn.CHK`), and the dirty mark when everything is in order. A repair
+   that costs a name or part of a file (a chain cut at its break, an entry removed or renamed: `fsck -y`) is **never** made;
+3. the volume is gone through again, in a new session that reads everything from the device, and it is mounted read-write only if that finds nothing out of place (or
+   only harmless leftovers); otherwise read-only as without the word, and the log says what is left and what to do.
+
+How to switch it on: put the word on the kernel command line, in `cmdline.txt` on the EFI partition, next to the other words (keep `blk.ro` and `blk.rw=` as they
+are: the Human Village's partition must be writable, else the log says that the word cannot act). On an installed machine `tools/push-update.py --cmdline "..."` replaces
+the whole line ([UPDATE.md](UPDATE.md)); on another computer the ESP is an ordinary FAT32 volume. It is the owner's decision when: the word changes what the machine
+does after every bad shutdown.
+
+What it takes: the check plus one scan of the volume per pass of the repair (a repair that mends one thing takes 4 passes) and one more scan to look again; a scan
+costs about 0.35 microseconds per cluster of the volume in QEMU's emulated CPU, so **about 22 seconds in all for a 180 GB volume with 32 KiB clusters in QEMU, and about 135
+for the same volume with 4 KiB clusters; measured in QEMU only, not on the Dell**, where the CPU is several times faster. A line on the screen says every 15 seconds
+that it is still at it, and the watchdog is fed meanwhile. If the power goes out again in the middle of the repair, the next start checks the volume again and does what
+that finding calls for: damage that is left is mended, harmless leftovers (what most cuts leave) are mounted as they are and `fsck -a` tidies them (the repair is
+restartable, not atomic: [STORAGE.md](STORAGE.md), "Mending at boot", has what was tried). Look at the result with `dmesg | grep Keine`, `cat /proc/fatcheck` and
+`ls /HumanVillage/FOUND.000`; the lines are also in `TOUHOU.LOG` on the volume.
+
+**Not tried on the Dell.** QEMU has shown: the whole damage menu on FAT32 with 512- and 4096-byte clusters, FAT16, a 4096-byte-sector disk, an NVMe drive under
+`blk.ro` with and without `blk.rw=` (the Dell's command line), a read-only disk, the watchdog, and power cuts at every sector of two repairs on the host and at
+random write requests of the real boot path in a VM. What is worth trying on the Dell with the owner's go: put the word into `cmdline.txt`, switch the machine off
+with the power button while something writes (a big copy), start it again and read the `[Keine]` lines. A bare dirty flag or harmless leftovers (the usual result
+of that) are mounted read-write as before and the word does nothing; to see it act, the volume needs real damage, and the only volume the policy mounts on the Dell
+is the owner's own, so that test is the owner's call (a damaged copy of a test image on a spare stick is mounted only where no internal HUMANVILLAGE volume exists).
 
 ## 6. Known gaps and things to try if it does not work
 

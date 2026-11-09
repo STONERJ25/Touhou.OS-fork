@@ -1,0 +1,25 @@
+empty pipe: 1 ready; read end POLLIN 0; write end POLLOUT 1
+after a write: 2 ready; read end POLLIN 1
+drained: 0 ready
+the writer closed: 1 ready; POLLHUP 1
+a descriptor that is not open: 1 ready; POLLNVAL 1; a negative descriptor gets revents 0
+poll(NULL, 0, 150): 0, took at least 150 ms: 1, under 10 s: 1
+timeout on a quiet pipe: 0, took at least 120 ms: 1
+woken by a write from another process: 1, POLLIN 1, well before the timeout: 1
+SIGALRM during poll: -1 errno 4 (EINTR 4), the handler ran 1 times
+select, data waiting (one byte) and room to write: 2 ready; read 1 write 1 except 0
+select on a quiet pipe with 300 ms: 0 ready, set cleared 1, took at least 295 ms: 1, time left is under the original: 1
+select with a descriptor that is not open: -1 errno 9 (EBADF 9)
+select with a negative nfds: -1 errno 22 (EINVAL 22)
+select as a sleep: 0, took at least 95 ms: 1
+socketpair, nothing sent: 1 ready; POLLIN 0 POLLOUT 1
+after the other end wrote: 1 ready; POLLIN 1
+listener with nobody connecting: 0 ready
+after a connect: 1 ready; POLLIN 1
+select sees the pending connection too: 1 ready, set 1
+ppoll with an empty mask and SIGUSR1 pending: -1 errno 4 (EINTR 4), handler ran 1 time
+afterwards SIGUSR1 is blocked again: 1
+pselect the same way: -1 errno 4 (EINTR 4), handler ran 1 time
+afterwards SIGUSR1 is blocked again: 1
+ppoll with nothing pending and a short timeout: 0
+exit status: 0

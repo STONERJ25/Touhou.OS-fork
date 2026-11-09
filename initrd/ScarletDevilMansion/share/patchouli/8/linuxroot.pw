@@ -1,0 +1,32 @@
+.page linuxroot 8 make or remove the directory tree that programs built for Linux run in
+
+# SYNOPSIS
+*linuxroot* _ARCHIVE_
+*linuxroot* *-d*
+*linuxroot*
+
+# DESCRIPTION
+A program started with linux(1) finds its libraries, its dynamic linker and the other programs it starts under `/linux`: a directory tree that holds the files of a Linux distribution. `linuxroot` makes that tree. Given an _ARCHIVE_ (a plain tar file or a gzip-compressed one) it creates `/linux` if there is none, mounts a tmpfs on it, and unpacks the archive there with tar(1): modes, owners, times and symbolic links are kept, a hard link comes out as a copy, and a device node or a pipe in the archive is skipped with a line of its own. It then replaces `/linux/etc/resolv.conf` by the machine's own, so that name lookups of Linux programs use the name servers this machine learned.
+
+Without an argument it only says whether a Linux root is mounted. Only root may make or remove the tree.
+
+The tree is a tmpfs: it lives in RAM and uses as much of it as the files in the archive weigh (about 15 MB for the archive that `tools/make-linux-root.py` builds from a Ubuntu 24.04 with glibc, bash, dash and the coreutils, which unpacks in about a second under QEMU). Nothing of it survives a restart; keep the archive on a disk, for example on the Human Village volume, and unpack it again when it is wanted.
+
+# OPTIONS
+@ *-d*
+    Empty `/linux` and unmount it, which gives the memory back. A Linux program that still runs in the tree keeps the (empty) mount; the command says so.
+
+# EXIT STATUS
+0 on success, and, without an argument, when a Linux root is mounted. 1 if the command failed (an archive that cannot be read or did not unpack cleanly, `/linux` already holding a root, no root to remove, not being root) and, without an argument, when no root is mounted. 2 for a wrong number of arguments.
+
+# EXAMPLES
+    linuxroot /HumanVillage/linux-root.tar
+    linux /bin/ls /
+    linux /bin/bash
+    linuxroot -d
+
+# NOTES
+`/proc`, `/dev`, `/tmp`, `/sys` and `/run` are not taken from the tree: a Linux program sees the machine's own, so that it can talk to the machine and hand files to native programs through `/tmp`. The native directories (`/HumanVillage` and the others) do not exist for it at all.
+
+# SEE ALSO
+linux(1), tar(1), mount(8), umount(8), gensokyo(7)

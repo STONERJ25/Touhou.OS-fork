@@ -303,6 +303,7 @@ if the file is missing the loader uses the same two words.
 | `rtc=local` | the PC's clock chip keeps local time |
 | `ntp=off`, `ntp=HOST` | no network time / ask this NTP server (by default the kernel sets the clock from the lease's server or a public one; `man ntp`) |
 | `nohumanvillage` | do not mount any HUMANVILLAGE volume |
+| `hvfsck=safe` | after a bad shutdown, make the repairs of `fsck -a` on the Human Village before it is mounted, so that it comes up read-write by itself (off by default; [REAL_HARDWARE.md](REAL_HARDWARE.md), section 5) |
 | `bootlog=off` | do not write `TOUHOU.LOG` |
 | `nonet`, `noaudio`, `usbstorage=off`, `usb=off` | leave the network cards, the sound card, USB sticks, or all of USB alone |
 | `ahci=off`, `nvme=off` | leave the SATA controllers, or the NVMe drives, alone |
@@ -331,4 +332,4 @@ More words, for diagnosing a PC that does not boot, are in [REAL_HARDWARE.md](RE
 ## Not there yet
 
 Everything that was finished on the old `parked/*` branches is on `main` now (the Jukebox, the thorough `vi`, exact number printing,
-the hardened kernel, `fsck`, the C compiler). What is still missing: the handling of sticks that misbehave (a half-done branch, `wip/usb-storage-soft-fallbacks`). See the project notes.
+the hardened kernel, `fsck`, the C compiler). Sticks that misbehave are handled by soft fallbacks and `usbstorage.quirk=` words (written and tested in QEMU, not yet tried on a stick that really misbehaves: [USB](USB.md), "Sticks that misbehave"). See the project notes.

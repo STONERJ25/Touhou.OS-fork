@@ -1,0 +1,22 @@
+socket(): non-blocking 0, close-on-exec 0; with the flags: non-blocking 1, close-on-exec 1
+FIONBIO turns O_NONBLOCK on: 1, and off: 1, F_SETFL does it too: 1
+F_DUPFD_CLOEXEC: descriptor at least 10: 1, close-on-exec 1, non-blocking is shared: 1
+non-blocking connect: returned 0 or EINPROGRESS: 1
+poll for writability: 1 ready, POLLOUT 1, POLLERR 0, SO_ERROR 0
+the listener polls readable: 1
+accept4 with flags: ok 1, non-blocking 1, close-on-exec 1
+accept with nobody waiting: -1, errno 11 (EAGAIN 11)
+read with nothing to read: -1, errno 11 (EAGAIN 11)
+recv on the non-blocking client: -1, errno 11
+the server end after a write: POLLIN 1, POLLOUT 1
+the server read 4 bytes: 'ping'
+bind to a port that is in use: -1, errno 98 (EADDRINUSE 98)
+after the peer closed: POLLIN 1, POLLRDHUP 1
+read at end of file: 0
+MSG_NOSIGNAL: a send to the closed peer ends in EPIPE: 1, SIGPIPE handler runs: 0
+without it: EPIPE 1, SIGPIPE delivered to the handler: 1
+connect to a closed port: ECONNREFUSED at once or EINPROGRESS: 1
+poll: POLLERR or POLLHUP 1, SO_ERROR 111 (ECONNREFUSED 111)
+SO_ERROR again: 0 (it is cleared by reading it)
+blocking connect to a closed port: -1, errno 111 (ECONNREFUSED 111)
+exit status: 0

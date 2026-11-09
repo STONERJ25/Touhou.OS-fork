@@ -144,9 +144,9 @@ def linux_missing_calls_are_named_once():
         vm.expect(test_shell.PROMPT, timeout=300)
         out, rc = run(vm, f"linux {TESTS}/lnx_enosys")
         lines = [l for l in out.splitlines() if not l.startswith("[Outside World]")]       # the log line of the first miss is on the console too
-        assert lines == ["socket: -38", "socket again: -38", "a number that is not a system call: -38"] and rc == 0, f"{rc} {out!r}"
-        out, _ = run(vm, "dmesg | grep -c 'Linux system call 41 (socket) is not implemented'")
-        assert out.strip() == "1", f"the log named socket {out.strip()!r} times"
+        assert lines == ["inotify_init: -38", "inotify_init again: -38", "a number that is not a system call: -38"] and rc == 0, f"{rc} {out!r}"
+        out, _ = run(vm, "dmesg | grep -c 'Linux system call 253 (inotify_init) is not implemented'")
+        assert out.strip() == "1", f"the log named inotify_init {out.strip()!r} times"
         out, _ = run(vm, "dmesg | grep -c 'Linux system call 5000'")
         assert out.strip() == "0", f"a number beyond the table must not be logged: {out!r}"
 

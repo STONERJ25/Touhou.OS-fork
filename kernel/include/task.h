@@ -5,6 +5,7 @@
 #include "types.h"
 #include "arch.h"
 #include "abi.h"
+#include "siginfo.h"
 
 #define KSTACK_SIZE  (16 * 1024)
 #define SCHED_SLICE  10         /* ticks (ms) */
@@ -50,16 +51,18 @@ typedef struct Task {
     int  tgid;                  /* pid of the process this thread belongs to (0 for kernel threads); stays valid after the Process is gone */
     u64  fs_base;               /* TLS base, loaded into IA32_FS_BASE when this thread runs */
     u64  clear_tid;             /* user address that is zeroed and futex-woken when the thread exits (0 = none) */
-    u32  sig_blocked;           /* per-thread signal mask */
-    u32  sig_pending;           /* signals aimed at this thread (tgkill, synchronous faults) */
-    u32  sigwait_set;           /* signals this thread is waiting to accept in sigtimedwait (they may be blocked) */
-    u32  saved_mask;            /* sigsuspend: the mask to bring back once a handler has run */
+    u64  sig_blocked;           /* per-thread signal mask (a set: signal n is bit n, signal 64 is bit 0; see siginfo.h) */
+    u64  sig_pending;           /* signals aimed at this thread (tgkill, synchronous faults) */
+    u64  sigwait_set;           /* signals this thread is waiting to accept in sigtimedwait (they may be blocked) */
+    u64  saved_mask;            /* sigsuspend: the mask to bring back once a handler has run */
     bool saved_mask_valid;
     bool ignore_cancel;         /* inside a futex wait that is not a cancellation point: a pending cancel does not interrupt it */
     /* Linux personality signals (kernel/linux/signal.c): the alternate signal stack, and what the synchronous fault that raised a signal looked like (siginfo) */
     u64  alt_sp, alt_size;
     u64  fault_addr;
     int  fault_code;            /* si_code of the signal a fault raised (SEGV_MAPERR, ...), 0 when the signal was sent */
+    SigList sigl;               /* queued siginfo behind sig_pending (Linux personality: kernel/sys/signal.c) */
+    u64  utime_ticks;           /* the part of cpu_ticks that interrupted user mode (setitimer, CPU clocks: kernel/sched/task.c) */
 } Task;
 
 /* Start-up state of a user thread, set before the Task can first run. */
@@ -67,12 +70,13 @@ typedef struct ThreadInit {
     int  utid;
     u64  fs_base;
     u64  clear_tid;
-    u32  sig_blocked;
+    u64  sig_blocked;
 } ThreadInit;
 
 typedef struct WaitQueue {
     Task *head;
     Task *tail;
+    struct PollWaiter *pw;      /* observers (poll, select, epoll) told on every wake-up: kernel/fs/pollq.c, include/pollq.h */
 } WaitQueue;
 
 extern Task *g_current;
@@ -105,6 +109,7 @@ void  wq_block(WaitQueue *wq);                      /* call with IRQs disabled; 
 bool  wq_block_timeout(WaitQueue *wq, u64 ms);      /* false if the timeout expired */
 void  wq_wake_one(WaitQueue *wq);
 void  wq_wake_all(WaitQueue *wq);
+void  pollq_fire(WaitQueue *wq);                    /* kernel/fs/pollq.c: runs the observers of wq; called by wq_wake_one and wq_wake_all with IRQs off */
 
 /* Sleep until cond is true. cond is evaluated with IRQs disabled. */
 #define wait_event(wq, cond)                                      \

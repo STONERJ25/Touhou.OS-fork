@@ -1,0 +1,35 @@
+socket: ok
+SO_TYPE: 1, length 4
+SO_REUSEADDR: 0
+bind to a free port on 127.0.0.1: 0
+listen: 0
+getsockname: 0, family 2, address 127.0.0.1, port assigned 1, length 16
+SO_ACCEPTCONN on the listener: 1
+connect: 0
+client local address 127.0.0.1, peer address 127.0.0.1, peer port is the listener's: 1
+TCP_NODELAY 0, SO_KEEPALIVE 0, TCP_KEEPIDLE 0, SO_RCVBUF 0, SO_SNDBUF 0, SO_LINGER 0
+read back: nodelay 1, keepalive 1, keepidle 30, linger 1/5
+an unknown option: -1, errno 92 (ENOPROTOOPT 92)
+write hello: 5
+echo: 5 'hello'
+MSG_PEEK: 3 'abc', then MSG_WAITALL read: 6 'abcdef'
+MSG_DONTWAIT with nothing to read: -1, errno 11 (EAGAIN 11)
+sendmsg of 4+4+5 bytes: 13
+recvmsg into 4+9 bytes: 13 'one-' 'two-three', msg_flags 0, msg_namelen 0
+writev of 2+3 bytes: 5
+readv into 2+3 bytes: 5 'xy' 'zzz'
+sendfile of 50000 bytes from offset 1000: 50000, the offset moved on to 51000: 1, the file position was left alone: 1
+the echo has the file's bytes: 50000 bytes, equal 1
+sendfile without an offset: 3000, the file position moved to 5000: 1
+the echo: 3000 bytes, equal 1
+sendfile past the end of the file is cut short: 1000, the offset is 100000: 1
+sendfile from a descriptor that is not open: -1 errno 9 (EBADF 9)
+sendfile into a pipe: 10
+large transfer: sent 1000000, echoed back 1000000, checksum equal 1
+shutdown(SHUT_WR): 0
+read after the server closed: 0
+the server read 1054029 bytes in all and saw end of file: 1
+send after our own shutdown: -1, errno 32 (EPIPE 32)
+SO_ERROR: 0
+close: 0, 0
+exit status: 0

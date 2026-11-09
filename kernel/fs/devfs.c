@@ -178,4 +178,14 @@ void devfs_register_standard(void) {
     devfs_register("console", S_IFCHR | 0620, &tty_ops, NULL, 0x0501);
     devfs_register("tty", S_IFCHR | 0666, &ctty_ops, NULL, 0x0500);
     devfs_register("kmsg", S_IFCHR | 0644, &kmsg_ops, NULL, 0x010B);
+
+    /* The links that every Linux distribution has in /dev (shell scripts and C programs open "/dev/stdout" and "/dev/fd/3"); the Linux root passes /dev through (docs/COMPAT.md). */
+    static const struct { const char *name, *target; } links[] = {
+        { "stdin", "/proc/self/fd/0" }, { "stdout", "/proc/self/fd/1" }, { "stderr", "/proc/self/fd/2" }, { "fd", "/proc/self/fd" },
+    };
+    VNode *root = devfs_root();
+    for (unsigned i = 0; root && root->ops->symlink && i < ARRAY_SIZE(links); i++) {
+        VNode *l = NULL;
+        if (root->ops->symlink(root, links[i].name, links[i].target, &l) == 0) vnode_put(l);
+    }
 }

@@ -267,7 +267,10 @@ static void inet_close(File *f) {
     net_kick();
 }
 
-const FileOps g_inet_fops = { .read = inet_read, .write = inet_write, .ioctl = inet_ioctl, .close = inet_close, .poll = inet_poll };
+/* Everything that can happen to an Internet socket wakes its one queue (sock_wake). */
+static WaitQueue *inet_pollwq(File *f) { return &((Sock *)f->priv)->wq; }
+
+const FileOps g_inet_fops = { .read = inet_read, .write = inet_write, .ioctl = inet_ioctl, .close = inet_close, .poll = inet_poll, .pollwq = inet_pollwq };
 
 /* ------------------------------------------------------------------ address helpers */
 
@@ -314,6 +317,12 @@ int sk_block(Sock *s, u32 tmo, u64 *deadline) {
 /* ------------------------------------------------------------------ receive */
 
 ssize_t sk_recv(File *f, u8 *buf, size_t n, int mflags, u32 *from_addr, u16 *from_port) {
+    return sk_recv_ex(f, buf, n, mflags, from_addr, from_port, NULL);
+}
+
+/* The same, and for a datagram socket *full (if given) becomes the length of the datagram, which is more than the result when the buffer was too small and the
+ * rest was thrown away: recvmsg reports that as MSG_TRUNC. For a stream it is the byte count. */
+ssize_t sk_recv_ex(File *f, u8 *buf, size_t n, int mflags, u32 *from_addr, u16 *from_port, size_t *full) {
     Sock *s = f->priv;
     bool nb = (f->flags & O_NONBLOCK) || (mflags & MSG_DONTWAIT);
     bool peek = (mflags & MSG_PEEK) != 0;
@@ -346,6 +355,7 @@ ssize_t sk_recv(File *f, u8 *buf, size_t n, int mflags, u32 *from_addr, u16 *fro
                 Dgram *g = s->rq;
                 size_t k = MIN(n, (size_t)g->len);
                 memcpy(buf, g->data, k);
+                if (full) *full = g->len;
                 if (from_addr) *from_addr = g->saddr;
                 if (from_port) *from_port = g->sport;
                 if (!peek) {
@@ -364,6 +374,7 @@ ssize_t sk_recv(File *f, u8 *buf, size_t n, int mflags, u32 *from_addr, u16 *fro
             if (w && !s->rq && !s->err) { rc = w; break; }
         }
     }
+    if (full && s->kind == SK_TCP) *full = rc > 0 ? (size_t)rc : 0;
     net_unlock();
     file_put(f);
     return rc;

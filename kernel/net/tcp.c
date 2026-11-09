@@ -11,6 +11,7 @@
 #include "cpu.h"
 #include "mm.h"
 #include "random.h"
+#include "pollq.h"
 
 #define SEQ_LT(a, b)  ((s32)((a) - (b)) < 0)
 #define SEQ_LEQ(a, b) ((s32)((a) - (b)) <= 0)
@@ -884,15 +885,16 @@ int tcp_poll(Sock *s) {
     int m = 0;
     switch (s->state) {
     case TCPS_LISTEN: return s->naccept ? POLLIN : 0;
-    case TCPS_SYN_SENT: case TCPS_SYN_RCVD: return s->err ? (POLLERR | POLLHUP | POLLOUT) : 0;
+    case TCPS_SYN_SENT: case TCPS_SYN_RCVD: return s->err ? (POLLERR | POLLHUP | POLLOUT | POLLIN | POLLRDHUP) : 0;     /* a connect that failed: tcp_poll shows the shutdown of both sides */
     case TCPS_CLOSED:
         m = POLLOUT | POLLHUP;
         if (s->err) m |= POLLERR;
-        if (tcp_readable(s)) m |= POLLIN;
+        if (tcp_readable(s) || s->err || s->rd_shut || s->wr_shut) m |= POLLIN | POLLRDHUP;                          /* a socket that never connected has neither */
         return m;
     default: break;
     }
     if (tcp_readable(s) || s->rd_shut || s->rd_shut_user) m |= POLLIN;
+    if (s->rd_shut || s->rd_shut_user) m |= POLLRDHUP;                                                              /* the peer's FIN (or our own SHUT_RD) arrived */
     if (s->err) m |= POLLERR;
     if (tcp_send_space(s) > 0) m |= POLLOUT;
     if (s->rd_shut && (s->wr_shut || s->state == TCPS_LAST_ACK || s->state == TCPS_CLOSING || s->state == TCPS_TIME_WAIT)) m |= POLLHUP;

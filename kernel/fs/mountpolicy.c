@@ -9,8 +9,9 @@
  *      boot sector (and the first root-directory cluster) of FAT-typed partitions is READ; nothing else is touched. Other
  *      operating systems' partitions on the owner's disks stay byte-for-byte as they were.
  *   3. When nothing matches, boot continues with the in-RAM tmpfs home directories exactly as before.
- *   4. A volume that was not shut down cleanly is mounted read-only (see fat32.c); `nohumanvillage` on the kernel command
- *      line skips the whole thing.
+ *   4. A volume that was not shut down cleanly is gone through before it is mounted (check_before_mount below, fat_check.c) and is
+ *      mounted read-only when its ledger does not add up (see fat32.c); `nohumanvillage` on the kernel command line skips the whole
+ *      thing. With `hvfsck=safe` the safe repairs of `fsck -a` are made first, on the unmounted volume.
  *
  * The three resident homes (reimu, marisa, sakuya) are created on the volume when they are missing. With the "userdirs"
  * mount option the FAT driver gives each of them to its user with mode 0700, files 0600.
@@ -31,6 +32,7 @@
 #include "cmdline.h"
 #include "bootlog.h"
 #include "fatcheck.h"
+#include "ktime.h"
 
 extern const FsType g_vfat_type, g_fat16_type;
 
@@ -192,39 +194,137 @@ static void mount_options(char *out, size_t cap) {
     }
 }
 
+/* hvfsck=safe on the kernel command line: after a check that found damage, make the repairs of `fsck -a` on the unmounted volume before it is
+ * mounted (fat_repair_device; docs/STORAGE.md, "Mending at boot"). "safe" is the only value there is; anything else is said and ignored. */
+static bool mend_wanted(void) {
+    char v[16];
+    if (!cmdline_value("hvfsck", v, sizeof v)) {
+        if (cmdline_flag("hvfsck")) klog("Keine", "hvfsck needs a value (hvfsck=safe): the volume is checked, not mended");
+        return false;
+    }
+    if (!strcmp(v, "safe")) return true;
+    if (strcmp(v, "off") && strcmp(v, "0") && strcmp(v, "no"))
+        klog("Keine", "hvfsck=%s: this kernel knows only hvfsck=safe: the volume is checked, not mended", v);
+    return false;
+}
+
+/* The clock for the files that a repair makes from lost chains: FAT keeps local time, and the mount is told the offset of the standard time of the
+ * tz= word (mount_options), so the stamp follows the same rule. */
+static u64 volume_clock(void) {
+    char tz[64];
+    s64 minutes = cmdline_value("tz", tz, sizeof tz) ? storage_tz_offset_minutes(tz) : 0;
+    s64 t = (s64)time_now_sec() + minutes * 60;
+    return t > 0 ? (u64)t : 0;
+}
+
+/* "5 repair(s), 2 lost chain(s) of 139 cluster(s) saved in FOUND.000, 3 cluster(s) copied to part cross-linked files" */
+static void mend_summary(const FatCheckReport *r, char *out, size_t cap) {
+    size_t n = (size_t)snprintf(out, cap, "%u repair(s)", r->rp_repaired);
+    if (r->rp_lost_chains && n < cap) n += (size_t)snprintf(out + n, cap - n, ", %u lost chain(s) of %u cluster(s) saved in FOUND.000", r->rp_lost_chains, r->rp_lost_clusters);
+    if (r->rp_copied && n < cap) n += (size_t)snprintf(out + n, cap - n, ", %u cluster(s) copied to part cross-linked files", r->rp_copied);
+}
+
 /* A volume that was not shut down cleanly is gone through, read-only and without any VFS lock held, before it is mounted (fat_check.c): when
  * nothing is out of place it is mounted read-write on that word ("fsck=ok", or "fsck=left" when a power cut left harmless leftovers); when
  * something is, it stays read-only and the log says precisely what. `hvforce` on the kernel command line mounts it read-write whatever the check
- * says (dangerous), `hvcheck=off` skips the check (a dirty volume is then read-only, as it always was). */
+ * says (dangerous), `hvcheck=off` skips the check (a dirty volume is then read-only, as it always was).
+ *
+ * With `hvfsck=safe` a check that found damage (and finished) is followed by the repairs of `fsck -a` on the still unmounted volume and by a
+ * second check that reads the volume again from the device; that second check decides in place of the first. A device that cannot be written
+ * is gone through too (read-only, as always) so that the log can say that the word cannot act there. */
 static void check_before_mount(BlockDev *hv, char *opts, size_t cap) {
     bool force = cmdline_flag("hvforce");
     char v[16];
     bool check = !(cmdline_value("hvcheck", v, sizeof v) && (!strcmp(v, "off") || !strcmp(v, "0") || !strcmp(v, "no")));
-    if (hv->readonly) check = false;                                 /* nothing can be written there anyway */
+    bool mend = mend_wanted();
+    if (mend && !check) {
+        klog("Keine", "hvfsck=safe is ignored: hvcheck=off skips the check that it follows");
+        mend = false;
+    }
+    if (hv->readonly && !mend) check = false;                        /* nothing can be written there anyway */
     if (check) {
         FatCheckReport *rep = kzalloc(sizeof *rep);
         if (rep) {
             int verdict = fat_check_device(hv, rep);
             if (rep->dirty || rep->hard_error || rep->ran) fat_check_publish(rep);
-            if (verdict == 1 || verdict == 2) {
+            if (hv->readonly) {                                      /* only with hvfsck=safe: say that it cannot act, and leave the mount alone */
+                if (rep->dirty || rep->hard_error) {
+                    rep->rp_state = FATREPAIR_READONLY;
+                    fat_check_publish(rep);
+                    klog("Keine", "%s was left untidy and hvfsck=safe is set, but %s cannot be written (blk.ro, and blk.rw= does not name this partition; or the "
+                         "medium is write-protected), so nothing can be mended here. It is mounted read-only", hv->name, hv->name);
+                }
+                kfree(rep);
+                if (force) strlcat(opts, ",force", cap);
+                return;
+            }
+            bool attempted = false;                                  /* the repair ran (to the end or not) */
+            if (mend && verdict == -1 && rep->ran) {
+                if (rep->incomplete) {
+                    rep->rp_state = FATREPAIR_UNVERIFIED;
+                    fat_check_publish(rep);
+                } else if (rep->errors) {
+                    klog("Keine", "%s was left untidy and its ledger does not add up: %u error(s). hvfsck=safe is set: Keine mends what loses nothing "
+                         "(the repairs of fsck -a, never one that costs a name or part of a file) before the volume is mounted", hv->name, rep->errors);
+                    for (u32 i = 0; i < rep->nerr_lines && i < 4; i++) klog("Keine", "  %s", rep->err_line[i]);
+                    if (rep->errors > 4) klog("Keine", "  ... and %u more (cat /proc/fatcheck)", rep->errors - 4);
+                    verdict = fat_repair_device(hv, rep, volume_clock());
+                    attempted = true;
+                    fat_check_publish(rep);
+                }
+            }
+            bool mended = attempted && rep->rp_state == FATREPAIR_DONE;      /* the engine ran to the end and the volume was gone through again */
+            char what[160] = "";
+            if (mended) mend_summary(rep, what, sizeof what);
+            if (verdict == 0 && mended) {
+                klog("Keine", "%s mended with hvfsck=safe in %u ms (%u pass(es)): %s. Keine went through the ledger again, from the device: nothing is out of "
+                     "place and the volume is marked clean, the Human Village may write in it again", hv->name, rep->rp_ms, rep->rp_passes, what);
+            } else if (verdict == 1 || verdict == 2) {
                 strlcat(opts, verdict == 1 ? ",fsck=ok" : ",fsck=left", cap);
-                if (verdict == 1)
+                if (mended && verdict == 1)
+                    klog("Keine", "%s mended with hvfsck=safe in %u ms (%u pass(es)): %s. Keine went through the ledger again, from the device: nothing is out of "
+                         "place, the Human Village may write in it again", hv->name, rep->rp_ms, rep->rp_passes, what);
+                else if (mended)
+                    klog("Keine", "%s mended with hvfsck=safe in %u ms (%u pass(es)): %s. Keine went through the ledger again and found only harmless leftovers "
+                         "(%u lost cluster(s), %u other; the first: %s): it is mounted read-write, and `fsck -a /dev/%s` as root tidies it up",
+                         hv->name, rep->rp_ms, rep->rp_passes, what, rep->after_lost, rep->after_leaks, rep->after_leak[0] ? rep->after_leak : "-", hv->name);
+                else if (verdict == 1)
                     klog("Keine", "%s was left untidy (the power went out before it was closed), but Keine went through the whole ledger in %u ms "
                          "(%u files in %u directories) and nothing is out of place: the Human Village may write in it again", hv->name, rep->ms, rep->files, rep->dirs);
                 else
                     klog("Keine", "%s was left untidy and Keine found only harmless leftovers in the ledger (%u lost cluster(s), %u other; the first: %s): "
                          "it is mounted read-write, and `fsck -a /dev/%s` as root tidies it up", hv->name, rep->lost_clusters, rep->leaks, rep->nleak_lines ? rep->leak_line[0] : "-", hv->name);
             } else if (verdict < 0 && verdict != -2) {
-                if (rep->incomplete)
+                if (mended) {
+                    klog("Keine", "%s mended with hvfsck=safe as far as it goes (%s, %u ms), but %s. It stays read-only so that nothing gets worse. "
+                         "What is left needs a decision, which only fsck -y makes (it cuts chains and removes entries): restart once with nohumanvillage on the "
+                         "kernel command line (nothing is mounted then), run `fsck -y /dev/%s` as root, take the word out again (see /proc/fatcheck)", hv->name, what, rep->rp_ms,
+                         rep->after_incomplete ? "the second look at its ledger could not be finished" : "its ledger does not add up", hv->name);
+                    for (u32 i = 0; i < rep->after_nlines; i++) klog("Keine", "  %s", rep->after_line[i]);
+                    if (rep->after_errors > rep->after_nlines) klog("Keine", "  ... and %u more (cat /proc/fatcheck)", rep->after_errors - rep->after_nlines);
+                } else if (attempted) {
+                    klog("Keine", "%s: hvfsck=safe stopped after %u ms (%s) before the volume was mended. What was written was written one repair at a time; "
+                         "the next start goes on from there. It stays read-only. As root, `umount /HumanVillage` and run `fsck -a /dev/%s` does the same by hand "
+                         "(see /proc/fatcheck)", hv->name, rep->rp_ms,
+                         rep->rp_rc == -5 ? "the device failed" : rep->rp_rc == -12 ? "out of memory" : rep->rp_rc == -62 ? "out of time" : "see above", hv->name);
+                } else if (rep->incomplete) {
                     klog("Keine", "%s was left untidy and the check of its ledger could not be finished (out of time or memory, or the stick failed): "
-                         "it stays read-only. As root, `umount /HumanVillage` and run `fsck -a /dev/%s`", hv->name, hv->name);
-                else
+                         "it stays read-only.%s As root, `umount /HumanVillage` and run `fsck -a /dev/%s`", hv->name,
+                         mend ? " hvfsck=safe does not act on a volume whose ledger could not be gone through." : "", hv->name);
+                } else {
+                    /* the way that needs no hands comes first, the manual way after it (the sentence "As root, ..." is what the tests of fsck itself look for) */
                     klog("Keine", "%s was left untidy and its ledger does not add up: %u error(s). It stays read-only so that nothing gets worse. "
-                         "As root, `umount /HumanVillage` and run `fsck -a /dev/%s` (see /proc/fatcheck)", hv->name, rep->errors, hv->name);
-                for (u32 i = 0; i < rep->nerr_lines && i < 4; i++) klog("Keine", "  %s", rep->err_line[i]);
-                if (rep->errors > 4) klog("Keine", "  ... and %u more (cat /proc/fatcheck)", rep->errors - 4);
+                         "To have the safe repairs made before the volume is mounted, put hvfsck=safe on the kernel command line (cmdline.txt on the EFI partition) "
+                         "and restart. By hand: As root, `umount /HumanVillage` and run `fsck -a /dev/%s` (see /proc/fatcheck)", hv->name, rep->errors, hv->name);
+                }
+                if (!attempted) {
+                    for (u32 i = 0; i < rep->nerr_lines && i < 4; i++) klog("Keine", "  %s", rep->err_line[i]);
+                    if (rep->errors > 4) klog("Keine", "  ... and %u more (cat /proc/fatcheck)", rep->errors - 4);
+                }
                 if (force)
                     klog("Keine", "hvforce: %s is mounted read-write although its ledger does not add up. Files may be lost, and what is written may be too", hv->name);
+                else if (attempted)
+                    strlcat(opts, ",ro", cap);                       /* the flags may say "clean" after a repair that left errors: the mount must not trust them */
             }
             kfree(rep);
         }

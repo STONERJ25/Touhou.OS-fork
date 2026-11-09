@@ -42,7 +42,9 @@ Where the registers are depends on the chipset generation, and the driver finds 
 2. **The kernel** (`kernel/drivers/tcowdt.c`, an init call) finds the timer, reports what the previous start's reset was, clears
    `NO_REBOOT` where the hardware lets it, (re)arms the timer and feeds it from the `Momiji` thread (every quarter of the timeout, at most
    5 s): a kernel whose scheduler stops lets it run out. With an older loader (BootInfo version 4) the kernel arms it here, so a hang
-   before this point is not covered.
+   before this point is not covered. The storage policy runs before the init calls, and the check and the repair of the Human Village
+   (`hvfsck=safe`, [STORAGE](STORAGE.md) "Mending at boot") can take longer than the timer, so they reload it themselves
+   (`tcowdt_boot_feed()`, from every request into the device) until the thread exists.
 3. **User space**: init starts its feeder (`wdt-feeder`, `user/sbin/init.c`) first thing; it opens `/dev/watchdog` and writes a byte
    once a second. From the open on, the kernel no longer feeds: a user space that cannot run its feeder (a hung system) lets the timer run
    out. `SIGTERM` makes the feeder close with the magic `V` (the watchdog stops on purpose); if it dies of anything else, init starts it

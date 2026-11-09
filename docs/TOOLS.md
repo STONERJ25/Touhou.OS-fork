@@ -135,6 +135,17 @@ Small kappabox applets that talk to the process-control side of the kernel; the 
 `jobs`, `fg` and `bg` belong to gapsh and are being built on the stop/continue support by the shell's owner;
 [JOBCONTROL.md](JOBCONTROL.md) lists exactly what the shell has to do.
 
+## Running Linux programs: linux, linuxroot, native
+
+Kappabox applets in `kappabox/linux.c`; the mechanism, the Linux root and the tests are in [COMPAT.md](COMPAT.md).
+
+| Command | What it does |
+|---|---|
+| `linux [-r] PROGRAM [ARG...]` | runs a program built for Linux; with a Linux root mounted on `/linux` the path is read in that tree, `-r` runs it in the real root |
+| `linuxroot FILE.tar[.gz]` / `linuxroot -d` / `linuxroot` | root only: mounts a tmpfs on `/linux` and unpacks the archive into it / empties and unmounts it / says whether it is there |
+| `native PROGRAM [ARG...]` | the way back to the native personality |
+| `tools/make-linux-root.py` (host) | builds `build/linux-inputs/linux-root.tar` (`--gzip` for `.tar.gz`) from the Ubuntu in WSL: the dynamic linker, glibc, bash, dash, coreutils; the archive is third-party data, never committed (copy it to `/HumanVillage/linux-root.tar` on the machine) |
+
 ## Tests
 
 ```

@@ -16,6 +16,7 @@ static Task *g_idle;
 static Task *g_list;
 static int g_next_tid = 1;
 static volatile bool g_need_resched;
+static volatile bool g_tick_pending;    /* sched_tick ran in this interrupt: task_on_trap_return still has to say whether it interrupted user mode */
 static Task *g_reap;
 static u64 g_fs_loaded;                 /* what IA32_FS_BASE holds right now: user threads load their own TLS base when they run */
 static int g_nuser_threads;             /* Tasks that belong to a Process (all user threads, in every process) */
@@ -61,12 +62,25 @@ void thread_unlink(Process *p, Task *t) {
     for (Task **pp = &p->threads; *pp; pp = &(*pp)->thread_next)
         if (*pp == t) { *pp = t->thread_next; break; }
     t->thread_next = NULL;
+    p->dead_ticks += t->cpu_ticks;                  /* the CPU time of the process keeps what this thread used */
+    p->dead_utime += t->utime_ticks;
     p->nthreads--;
     g_nuser_threads--;
     if (p->task == t) p->task = p->threads;
 }
 
 int thread_count(void) { return g_nuser_threads; }
+
+/* The CPU time a process has used, in timer ticks (TIMER_HZ per second): `user` is the part that interrupted user mode, `total` adds the kernel's work for it.
+ * The living threads are added to what the dead ones left behind. The ticks are sampled: a tick is charged to whoever runs when it arrives. */
+void process_cpu_ticks(const Process *p, u64 *user, u64 *total) {
+    u64 f = irq_save();
+    u64 u = p->dead_utime, t = p->dead_ticks;
+    for (const Task *th = p->threads; th; th = th->thread_next) { u += th->utime_ticks; t += th->cpu_ticks; }
+    irq_restore(f);
+    if (user) *user = u;
+    if (total) *total = t;
+}
 
 void task_set_fs_base(Task *t, u64 base) {
     u64 f = irq_save();
@@ -163,6 +177,15 @@ void schedule(void) {
 }
 
 void task_on_trap_return(TrapFrame *tf) {
+    if (g_tick_pending) {                       /* the interrupt that has just been handled was the timer's: its frame says what it interrupted */
+        g_tick_pending = false;
+        Task *c = g_current;
+        if (c->proc) {
+            bool user = (tf->cs & 3) == 3;
+            if (user) c->utime_ticks++;
+            if (c->proc->itimer_virt | c->proc->itimer_prof) ktimers_cpu_tick(c->proc, user);        /* setitimer(ITIMER_VIRTUAL, ITIMER_PROF) */
+        }
+    }
     if (g_need_resched) {
         g_need_resched = false;
         schedule();
@@ -197,6 +220,7 @@ void task_interrupt(Task *t) {
 void sched_tick(void) {
     u64 now = uptime_ms();
     if (g_alarms_armed) alarm_tick(now);
+    if (g_ktimers_armed) ktimers_tick(now);         /* POSIX timers (kernel/linux/timers.c) */
     Task *t = g_list;
     if (t) {
         do {
@@ -211,6 +235,7 @@ void sched_tick(void) {
         } while (t != g_list);
     }
     g_current->cpu_ticks++;
+    g_tick_pending = true;
     if (g_current == g_idle) g_need_resched = true;
     else if (--g_current->slice <= 0) g_need_resched = true;
 }
@@ -370,7 +395,7 @@ Task *task_by_tid(int tid) {
 
 /* ---- wait queues ---- */
 
-void wq_init(WaitQueue *wq) { wq->head = wq->tail = NULL; }
+void wq_init(WaitQueue *wq) { wq->head = wq->tail = NULL; wq->pw = NULL; }
 
 static void wq_enqueue(WaitQueue *wq, Task *t) {
     t->wq = wq;
@@ -410,6 +435,7 @@ void wq_wake_one(WaitQueue *wq) {
         t->wq_next = NULL;
         if (t->state == TASK_BLOCKED) t->state = TASK_READY;
     }
+    if (wq->pw) pollq_fire(wq);
     irq_restore(f);
 }
 
@@ -423,6 +449,7 @@ void wq_wake_all(WaitQueue *wq) {
         if (t->state == TASK_BLOCKED) t->state = TASK_READY;
     }
     wq->tail = NULL;
+    if (wq->pw) pollq_fire(wq);
     irq_restore(f);
 }
 

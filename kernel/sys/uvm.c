@@ -6,7 +6,7 @@
 #include "fb.h"
 
 u64 pte_flags_for(u32 prot, u32 vflags) {
-    u64 f = PTE_U;
+    u64 f = (prot & (PROT_READ | PROT_WRITE | PROT_EXEC)) ? PTE_U : 0;       /* PROT_NONE: a page that is there but that user code may not touch (a guard page that was already in use) */
     if (prot & PROT_WRITE) f |= PTE_W;
     if (!(prot & PROT_EXEC)) f |= PTE_NX;
     if (vflags & VMA_WC) f |= g_fb_force_uc ? (PTE_PCD | PTE_PWT) : pte_wc_flags();     /* write-combining (PAT entry 1), uncached without PAT or with fb.cache=uc */

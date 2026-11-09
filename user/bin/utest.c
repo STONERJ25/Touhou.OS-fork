@@ -309,6 +309,28 @@ static void test_ipc(void) {
     close(cl);
     unlink("/tmp/ut.sock");
 
+    /* The length of a socket address is not looked at: the path is read up to its NUL (the Linux rules for it apply to Linux programs only), so a short length
+     * still binds the whole name and not a piece of it */
+    unlink("/tmp/ut.len");
+    int sl = socket(AF_UNIX, SOCK_STREAM, 0);
+    memset(&sa, 0, sizeof sa);
+    sa.sun_family = AF_UNIX;
+    strcpy(sa.sun_path, "/tmp/ut.len");
+    CHECK(sl >= 0 && bind(sl, (struct sockaddr *)&sa, 5) == 0 && access("/tmp/ut.len", F_OK) == 0);
+    close(sl);
+    /* open() on a socket file makes a file of the file system that is no socket: the socket calls say so (they once took it for a socket and read it from a null pointer) */
+    int of = open("/tmp/ut.len", O_RDWR);
+    char ob[8];
+    struct sockaddr_un on;
+    socklen_t onl = sizeof on;
+    CHECK(of >= 0);
+    CHECK(sendto(of, "x", 1, 0, NULL, 0) < 0 && errno == ENOTSOCK);
+    CHECK(recvfrom(of, ob, sizeof ob, 0, NULL, NULL) < 0 && errno == ENOTSOCK);
+    CHECK(getsockname(of, (struct sockaddr *)&on, &onl) < 0 && errno == ENOTSOCK);
+    CHECK(getsockopt(of, SOL_SOCKET, SO_TYPE, ob, &onl) < 0 && errno == ENOTSOCK);
+    close(of);
+    unlink("/tmp/ut.len");
+
     /* A shared mapping of a tmpfs file is visible to a forked child and survives deleting the file */
     int fd = open("/tmp/ut.shm", O_RDWR | O_CREAT | O_TRUNC, 0600);
     CHECK(fd >= 0 && ftruncate(fd, 8192) == 0);

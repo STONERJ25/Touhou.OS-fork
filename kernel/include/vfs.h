@@ -71,6 +71,7 @@ struct VNodeOps {
     void    (*opened)(VNode *v, File *f);
     void    (*closed)(VNode *v, File *f);
     int     (*poll)(VNode *v, File *f);                              /* POLLIN | POLLOUT readiness */
+    struct WaitQueue *(*pollwq)(VNode *v, File *f);                  /* the queue woken whenever poll() may answer differently (include/pollq.h); NULL: unknown, look again every few ms */
     /* directories */
     int     (*lookup)(VNode *dir, const char *name, VNode **out);    /* 0 + referenced vnode, or -ENOENT */
     int     (*create)(VNode *dir, const char *name, u32 mode, VNode **out);
@@ -118,6 +119,7 @@ typedef struct FileOps {
     int     (*ioctl)(File *f, unsigned long req, void *arg);
     void    (*close)(File *f);
     int     (*poll)(File *f);
+    struct WaitQueue *(*pollwq)(File *f);           /* the queue woken whenever poll() may answer differently (include/pollq.h); NULL: unknown, look again every few ms */
 } FileOps;
 
 struct File {
@@ -128,6 +130,7 @@ struct File {
     const FileOps *fops;    /* overrides the vnode ops (pipes, anonymous files) */
     void *priv;
     char *path;             /* absolute path it was opened by (kmalloc'd; NULL for pipes, sockets and kernel-made files): /proc/<pid>/fd */
+    void *poll_watch;       /* the epoll registrations that watch this file (kernel/fs/epoll.c); file_put removes them when the last reference goes */
 };
 
 /* ---- vnodes and open files ---- */
@@ -158,6 +161,10 @@ VNode *vfs_root(void);
 
 int    vfs_lookup(const char *path, VNode *cwd, const Cred *c, int flags, VNode **out);
 int    vfs_lookup_parent(const char *path, VNode *cwd, const Cred *c, VNode **dir, char *name);
+/* The same with the directory "/" named by the caller instead of taken from the current process (execve resolves the new program in the root it will run in).
+ * A lookup made with credentials by a process that runs in a Linux root (Process.root) starts at that root: see resolve() in vfs.c. */
+int    vfs_lookup_root(VNode *root, const char *path, VNode *cwd, const Cred *c, int flags, VNode **out);
+int    vfs_open_root(VNode *root, const char *path, int flags, u32 mode, const Cred *c, VNode *cwd, File **out);
 int    vfs_access(VNode *v, const Cred *c, int mask);                   /* R_OK | W_OK | X_OK; c == NULL means root */
 
 int    vfs_open(const char *path, int flags, u32 mode, const Cred *c, VNode *cwd, File **out);
@@ -166,6 +173,8 @@ ssize_t vfs_write(File *f, const void *buf, size_t n);
 s64    vfs_lseek(File *f, s64 off, int whence);
 int    vfs_ioctl(File *f, unsigned long req, void *arg);
 int    vfs_poll(File *f);
+struct WaitQueue *vfs_pollwq(File *f);                                  /* the queue to watch for changes of vfs_poll(), or NULL */
+void   pollq_file_released(File *f);                                    /* kernel/fs/epoll.c: the last reference is gone; forget every epoll registration of f */
 int    vfs_readdir(File *f, struct gdirent *out);                       /* 1 entry, 0 end, <0 error */
 int    vfs_ftruncate(File *f, u64 size);
 

@@ -1,0 +1,22 @@
+libm.so.6: opened
+cos(0) = 1.0
+libdynplug.so: opened
+symbols found: all
+plug_add(2, 3) = 5
+after plug_counter = 110: plug_add(2, 3) = 15
+constructor ran 1 time(s)
+plug_name: first second
+plug_apply(doubled, 20) = 41
+thread-local in the main thread: 9 8
+thread-local in another thread: 809
+thread-local in the main thread again: 10
+dlsym of a missing symbol: NULL
+libdynplug among the loaded objects: 1
+opened again gives the same handle: yes
+dlclose: 0
+destructor ran at dlclose: yes
+libdynplug among the loaded objects after dlclose: 0
+missing library: failed
+dlerror: libdoesnotexist.so.9: cannot open shared object file: No such file or directory
+dlopen(NULL): ok, printf found: yes
+exit status: 0

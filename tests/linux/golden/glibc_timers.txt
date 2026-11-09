@@ -1,0 +1,74 @@
+getitimer after setitimer(50 ms, 50 ms): interval 50000 us, value in (0, 50 ms]: 1
+SIGALRM in one second at 50 ms: between 12 and 22: 1, code SI_KERNEL (128): 1
+after stopping it: value 0, interval 0
+no more SIGALRM after it was stopped: 1
+one-shot 100 ms: exactly one SIGALRM: 1
+the old value comes back: between 1.5 and 2 s: 1, no interval: 1
+alarm(5) is visible in getitimer: 1
+alarm(0) returns the seconds left: 5
+SIGVTALRM while sleeping: 0
+SIGVTALRM while computing: at least five: 1, signo 26
+SIGPROF while sleeping: 0
+SIGPROF while computing: at least five: 1, signo 27
+timer_create: 0
+timer_gettime: interval 30 ms, value in (0, 30 ms]: 1
+30 ms timer for half a second: between 10 and 18 signals: 1, SI_TIMER (-2): 1, value 7: 1, si_timerid is the kernel's id: 1, signo SIGRTMIN: 1
+the old setting came back from timer_settime: interval 30 ms
+blocked for 300 ms at 20 ms: the signal was pending: 1, delivered at unblocking: 1, its overrun at least 8: 1, timer_getoverrun agrees: 1
+one-shot 50 ms: exactly one signal: 1, expired: value 0 interval 0
+absolute time 100 ms ahead: fired: 1, after 80 to 400 ms: 1
+an absolute time in the past fires at once: 1
+timer_delete: 0, no signal afterwards: 1
+timer_delete again: -1, errno 22 (EINVAL 1)
+timer_gettime of it: -1, errno 22 (EINVAL 1)
+SIGEV_NONE: no signal: 1, expired: 1
+SIGEV_THREAD_ID: created 0, signals in the worker: at least 5: 1, in other threads: 0
+SIGEV_THREAD (glibc): created 0, between 8 and 17 calls: 1, in a thread of its own: 1, none after it was stopped: 1
+timer_create on clock 0: 0, errno 0
+timer_create on clock 1: 0, errno 0
+timer_create on clock 7: 0, errno 0
+timer_create on clock 11: 0, errno 0
+timer_create on clock 4: -1, errno 95
+timer_create on clock 5: -1, errno 95
+timer_create on clock 6: -1, errno 95
+timer_create on clock 8: -1, errno 1
+timer_create on clock 10: -1, errno 22
+timer_create on clock 12: -1, errno 22
+timer_create with signal 0: -1, errno 22
+timer_create with signal 65: -1, errno 22
+timer_create with notification 9: -1, errno 22
+timer_create for a thread that does not exist: -1, errno 22
+timer_settime of an unknown timer: -1, errno 22
+timer_getoverrun of an unknown timer: -1, errno 22
+timer_settime with 10^9 nanoseconds: -1, errno 22
+timer_settime with a negative interval: -1, errno 22
+setitimer(3): -1, errno 22
+getitimer(3): -1, errno 22
+setitimer with 10^6 microseconds: -1, errno 22
+setitimer with a negative interval: -1, errno 22
+clock_gettime works for 9 of 9 clocks, clock_getres for 9 of 9
+clock_gettime(10): -1, errno 22
+clock_getres(12): -1, errno 22
+clock_getres with no result pointer: 0
+CLOCK_MONOTONIC after a 20 ms sleep: advanced by 15 to 200 ms: 1
+CLOCK_REALTIME agrees with time(): 1
+sleeping 200 ms used under 100 ms of CPU time: process 1, thread 1
+computing for 150 ms: process CPU time grew by 100 to 300 ms: 1, thread: 1
+another thread computing for 200 ms: the process clock saw at least 150 ms of it: 1, this thread's clock almost none: 1, the thread's own clock saw it: 1
+computing for 150 ms: times() grew by 10 to 40 hundredths: 1, getrusage(SELF) by 100 to 300 ms: 1, getrusage(THREAD) too: 1
+a child computed for 200 ms and was waited for: times() shows 15 to 40 hundredths of it: 1, getrusage(CHILDREN) 150 to 300 ms: 1
+getrusage with a bad who: -1, errno 22
+getrusage with no buffer: -1, errno 14
+times(NULL) works: 1
+clock_nanosleep(MONOTONIC, 50 ms): 0, slept 45 ms to 1 s: 1
+clock_nanosleep(MONOTONIC, absolute, 60 ms ahead): 0, slept 45 ms to 1 s: 1
+clock_nanosleep(REALTIME, absolute, in the past): 0
+a 2 s sleep interrupted by SIGALRM after 60 ms: 4 (EINTR 4), the handler ran 1, woke early: 1, the time left is almost two seconds: 1
+clock_nanosleep on clock 4: -1, errno 95
+clock_nanosleep on clock 5: -1, errno 95
+clock_nanosleep on clock 8: -1, errno 1
+clock_nanosleep on clock 10: -1, errno 22
+clock_nanosleep on clock 12: -1, errno 22
+nanosleep with 10^9 nanoseconds: -1, errno 22
+nanosleep with a negative time: -1, errno 22
+exit status: 0

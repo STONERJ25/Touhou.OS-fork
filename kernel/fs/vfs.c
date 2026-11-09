@@ -5,6 +5,7 @@
 #include "cpu.h"
 #include "arch.h"
 #include "initcall.h"
+#include "process.h"
 
 const Cred g_root_cred = { 0, 0 };
 
@@ -132,7 +133,7 @@ int vfs_register_fs(const FsType *t) {
 VNode *vfs_root(void) { return g_root; }
 
 /* Resolves path to a directory vnode, bypassing permissions (used by mount). */
-static int resolve(const char *path, VNode *cwd, const Cred *c, int flags, bool want_parent,
+static int resolve(VNode *root, const char *path, VNode *cwd, const Cred *c, int flags, bool want_parent,
                    VNode **node_out, VNode **parent_out, char *name_out);
 
 int vfs_mount(const char *fstype, const char *source, const char *target, u32 flags) {
@@ -149,7 +150,7 @@ int vfs_mount_opts(const char *fstype, const char *source, const char *target, u
     VNode *covered = NULL;
     mutex_lock(&g_ns);
     if (g_root) {
-        int rc = resolve(target, NULL, NULL, LOOKUP_DIR, false, &covered, NULL, NULL);
+        int rc = resolve(g_root, target, NULL, NULL, LOOKUP_DIR, false, &covered, NULL, NULL);
         if (rc) { mutex_unlock(&g_ns); return rc; }
         if (covered->mounted) { vnode_put(covered); mutex_unlock(&g_ns); return -EBUSY; }
     } else if (strcmp(target, "/")) {
@@ -252,12 +253,33 @@ static int dir_lookup(VNode *dir, const Cred *c, const char *name, VNode **out) 
     return dir->ops->lookup(dir, name, out);
 }
 
-static int resolve(const char *path, VNode *cwd, const Cred *c, int flags, bool want_parent,
+/* The names that a program inside the Linux root finds in the real root instead of in its own tree: the kernel's views of the machine, which a Linux distribution
+ * expects at these places (docs/COMPAT.md, "The Linux root"). A name the real root lacks is looked up in the program's own tree after all (/run, today). */
+static bool is_overlay(const char *name) {
+    static const char *const names[] = { "proc", "dev", "tmp", "sys", "run" };
+    for (unsigned i = 0; i < ARRAY_SIZE(names); i++)
+        if (!strcmp(name, names[i])) return true;
+    return false;
+}
+
+/* What "/" is for a lookup made on behalf of a process (c holds its credentials): the root of the Linux tree it runs in, or the real root. The kernel's own lookups
+ * (c == NULL) always start in the real root. */
+static VNode *root_for(const Cred *c) {
+    Task *t = current;
+    if (c && t && t->proc && t->proc->root) return t->proc->root;
+    return g_root;
+}
+
+/* root is the directory "/" means (NULL: for the caller's process, see root_for). Inside a Linux root (root != g_root) three rules apply: ".." does not leave it, the
+ * overlay names are looked up in the real root, and the real root, reached by going up out of such a directory, reads as the Linux root again. */
+static int resolve(VNode *root, const char *path, VNode *cwd, const Cred *c, int flags, bool want_parent,
                    VNode **node_out, VNode **parent_out, char *name_out) {
     if (!path || !*path) return -ENOENT;
     char buf[PATH_MAX];
     if (strlcpy(buf, path, sizeof buf) >= sizeof buf) return -ENAMETOOLONG;
-    VNode *cur = (buf[0] == '/' || !cwd) ? g_root : cwd;
+    if (!root) root = root_for(c);
+    bool jailed = root != g_root;
+    VNode *cur = (buf[0] == '/' || !cwd) ? root : cwd;
     if (!cur) return -ENOENT;
     vnode_get(cur);
     char *p = buf;
@@ -292,14 +314,34 @@ static int resolve(const char *path, VNode *cwd, const Cred *c, int flags, bool 
         VNode *child = NULL;
         int rc;
         if (!strcmp(comp, "..")) {
-            while (cur->mount && cur == cur->mount->root && cur->mount->covered) {
-                VNode *cv = cur->mount->covered;
-                vnode_get(cv);
-                vnode_put(cur);
-                cur = cv;
+            if (jailed && cur == root) {                        /* the top of a Linux root is its own parent */
+                vnode_get(cur);
+                child = cur;
+                rc = 0;
+            } else {
+                while (cur->mount && cur == cur->mount->root && cur->mount->covered) {
+                    VNode *cv = cur->mount->covered;
+                    vnode_get(cv);
+                    vnode_put(cur);
+                    cur = cv;
+                }
+                rc = dir_lookup(cur, c, "..", &child);
+                if (!rc && jailed && child == g_root) {         /* up and out of an overlay directory (/tmp/..): the real root reads as the Linux root */
+                    vnode_put(child);
+                    child = root;
+                    vnode_get(child);
+                }
             }
-            rc = dir_lookup(cur, c, "..", &child);
         } else {
+            if (jailed && cur == root && is_overlay(comp)) {
+                VNode *probe;
+                if (dir_lookup(g_root, c, comp, &probe) == 0) { /* the real root has this name: the walk continues there */
+                    vnode_put(probe);
+                    vnode_get(g_root);
+                    vnode_put(cur);
+                    cur = g_root;
+                }
+            }
             rc = dir_lookup(cur, c, comp, &child);
         }
         if (rc) { vnode_put(cur); return rc; }
@@ -325,7 +367,7 @@ static int resolve(const char *path, VNode *cwd, const Cred *c, int flags, bool 
             }
             if (target[0] == '/') {
                 vnode_put(cur);
-                cur = g_root;
+                cur = root;
                 vnode_get(cur);
             }
             strcpy(buf, nb);
@@ -344,18 +386,27 @@ static int resolve(const char *path, VNode *cwd, const Cred *c, int flags, bool 
     return 0;
 }
 
-int vfs_lookup(const char *path, VNode *cwd, const Cred *c, int flags, VNode **out) {
+/* root: where "/" is for this lookup (exec names the root the new program will have); NULL means the caller's own, see root_for. */
+int vfs_lookup_root(VNode *root, const char *path, VNode *cwd, const Cred *c, int flags, VNode **out) {
     mutex_lock(&g_ns);
-    int rc = resolve(path, cwd, c, flags, false, out, NULL, NULL);
+    int rc = resolve(root, path, cwd, c, flags, false, out, NULL, NULL);
+    mutex_unlock(&g_ns);
+    return rc;
+}
+
+int vfs_lookup(const char *path, VNode *cwd, const Cred *c, int flags, VNode **out) {
+    return vfs_lookup_root(NULL, path, cwd, c, flags, out);
+}
+
+static int lookup_parent_root(VNode *root, const char *path, VNode *cwd, const Cred *c, VNode **dir, char *name) {
+    mutex_lock(&g_ns);
+    int rc = resolve(root, path, cwd, c, 0, true, NULL, dir, name);
     mutex_unlock(&g_ns);
     return rc;
 }
 
 int vfs_lookup_parent(const char *path, VNode *cwd, const Cred *c, VNode **dir, char *name) {
-    mutex_lock(&g_ns);
-    int rc = resolve(path, cwd, c, 0, true, NULL, dir, name);
-    mutex_unlock(&g_ns);
-    return rc;
+    return lookup_parent_root(NULL, path, cwd, c, dir, name);
 }
 
 /* ------------------------------------------------------------------ open files */
@@ -384,6 +435,7 @@ void file_put(File *f) {
     int r = --f->refs;
     irq_restore(fl);
     if (r > 0) return;
+    if (f->poll_watch) pollq_file_released(f);                       /* an epoll set watching this file lets go of it before it goes */
     if (f->fops && f->fops->close) f->fops->close(f);
     else if (f->vn && f->vn->ops && f->vn->ops->closed) f->vn->ops->closed(f->vn, f);
     if (f->vn) vnode_put(f->vn);
@@ -405,13 +457,17 @@ void file_set_path(File *f, const char *abs_path) {
 }
 
 int vfs_open(const char *path, int flags, u32 mode, const Cred *c, VNode *cwd, File **out) {
+    return vfs_open_root(NULL, path, flags, mode, c, cwd, out);
+}
+
+int vfs_open_root(VNode *root, const char *path, int flags, u32 mode, const Cred *c, VNode *cwd, File **out) {
     VNode *v = NULL;
-    int rc = vfs_lookup(path, cwd, c, (flags & O_NOFOLLOW) ? LOOKUP_NOFOLLOW : 0, &v);
+    int rc = vfs_lookup_root(root, path, cwd, c, (flags & O_NOFOLLOW) ? LOOKUP_NOFOLLOW : 0, &v);
 
     if (rc == -ENOENT && (flags & O_CREAT)) {
         VNode *dir;
         char name[GNAME_MAX + 1];
-        rc = vfs_lookup_parent(path, cwd, c, &dir, name);
+        rc = lookup_parent_root(root, path, cwd, c, &dir, name);
         if (rc) return rc;
         rc = vfs_access(dir, c, W_OK | X_OK);
         if (rc == 0 && !dir->ops->create) rc = -EPERM;
@@ -492,6 +548,12 @@ int vfs_poll(File *f) {
     if (f->fops) return f->fops->poll ? f->fops->poll(f) : (POLLIN | POLLOUT);
     if (f->vn && f->vn->ops && f->vn->ops->poll) return f->vn->ops->poll(f->vn, f);
     return POLLIN | POLLOUT;
+}
+
+WaitQueue *vfs_pollwq(File *f) {
+    if (f->fops) return f->fops->pollwq ? f->fops->pollwq(f) : NULL;
+    if (f->vn && f->vn->ops && f->vn->ops->pollwq) return f->vn->ops->pollwq(f->vn, f);
+    return NULL;
 }
 
 int vfs_ftruncate(File *f, u64 size) {

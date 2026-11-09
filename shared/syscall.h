@@ -124,6 +124,7 @@
 /* System call personalities. A process makes its calls either with the numbers and structures of this header (native) or with those of x86-64 Linux. */
 #define ABI_NATIVE        0
 #define ABI_LINUX         1
+#define ABI_NOROOT        0x100   /* or-ed into the argument of setabi(ABI_LINUX): run that Linux program in the real root, not in the Linux root /linux (docs/COMPAT.md) */
 
 #define FUTEX_WAIT        0       /* sleep while *uaddr == val; timeout is a struct gtimespec* (relative) or NULL */
 #define FUTEX_WAKE        1       /* wake up to val waiters */

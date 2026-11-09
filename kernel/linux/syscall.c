@@ -5,8 +5,8 @@
  * means is routed to it (NATIVE below); every call whose numbers, structures or semantics differ has a handler of its own (OWN).
  *
  * Written from the manual pages (section 2) and the psABI, checked against a real Linux by differential tests (tests/case_linux.py, tests/host/test_linux_abi.py).
- * Not implemented yet: signals (rt_sigaction and the signal frames), clone and threads, the directory calls, sockets, epoll, 32-bit programs. A call with
- * no entry fails with ENOSYS and is named once in the kernel log ("not implemented"); "linux.trace" on the kernel command line logs every call.
+ * Not implemented yet: 32-bit programs, inotify, io_uring, signalfd and the other calls that docs/COMPAT.md lists as missing. A call with no entry fails with
+ * ENOSYS and is named once in the kernel log ("not implemented"); "linux.trace" on the kernel command line logs every call.
  */
 #include "linux.h"
 #include "kernel.h"
@@ -77,6 +77,7 @@ static bool rlimit_of(int res, struct lnx_rlimit *r) {
     case LNX_RLIMIT_NOFILE: r->cur = r->max = MAX_FD; break;
     case LNX_RLIMIT_NPROC:  r->cur = r->max = MAX_PROCS; break;
     case LNX_RLIMIT_MEMLOCK: r->cur = r->max = 64 * 1024; break;
+    case LNX_RLIMIT_SIGPENDING: r->cur = r->max = SIGQ_PER_PROC; break;         /* queued signals per process (kernel/sys/signal.c) */
     case LNX_RLIMIT_NICE: case LNX_RLIMIT_RTPRIO: r->cur = r->max = 0; break;
     default: return res >= 0 && res < LNX_RLIM_NLIMITS;
     }
@@ -382,7 +383,7 @@ static long lnx_readlinkat(TrapFrame *tf) {
 
 /* Copies the path argument of an *at() call and finds the directory it starts from. On success *path is a buffer the caller frees with kfree, and *hold is
  * NULL or a reference the caller releases with file_put once *base is no longer needed. An empty path is ENOENT. */
-static long at_path(int dirfd, u64 upath, char **path, VNode **base, File **hold) {
+long at_path(int dirfd, u64 upath, char **path, VNode **base, File **hold) {
     *path = kmalloc(PATH_MAX);
     if (!*path) return -ENOMEM;
     int n = strncpy_from_user(*path, (const char *)upath, PATH_MAX);
@@ -391,7 +392,7 @@ static long at_path(int dirfd, u64 upath, char **path, VNode **base, File **hold
     return rc;
 }
 
-static void at_done(char *path, File *hold) {
+void at_done(char *path, File *hold) {
     kfree(path);
     if (hold) file_put(hold);
 }
@@ -405,6 +406,12 @@ static long lnx_openat(TrapFrame *tf) {
     if (rc) return rc;
     Process *p = me();
     int flags = (int)A2(tf);
+    if (path[0] == '/' && (!strncmp(path, "/proc/", 6) || !strncmp(path, "/dev/", 5))) {         /* /dev/stdout, /proc/self/fd/N, /dev/fd/N: the open file itself */
+        char abs0[256];
+        path_normalize("/", path, abs0, sizeof abs0);
+        long m = lnx_open_via_proc(abs0, flags);
+        if (m != -ENOSYS) { at_done(path, hold); return m; }
+    }
     rc = vfs_open(path, flags, (u32)A3(tf) & ~p->umask, &p->cred, base, &f);
     if (rc == 0) {
         char abs[256];
@@ -415,6 +422,16 @@ static long lnx_openat(TrapFrame *tf) {
     }
     at_done(path, hold);
     return rc;
+}
+
+/* open(path, flags, mode) is openat(AT_FDCWD, ...): one code path, so that the paths of an open file (/dev/stdout, /proc/self/fd/N) behave the same for old and new C libraries. */
+static long lnx_open(TrapFrame *tf) {
+    TrapFrame t = *tf;
+    t.rdi = (u64)(long)AT_FDCWD;
+    t.rsi = A0(tf);
+    t.rdx = A1(tf);
+    t.r10 = A2(tf);
+    return lnx_openat(&t);
 }
 
 /* creat(path, mode) is open(path, O_CREAT | O_WRONLY | O_TRUNC, mode). */
@@ -741,92 +758,19 @@ static long do_iov(TrapFrame *tf, int native_nr) {
 static long lnx_readv(TrapFrame *tf) { return do_iov(tf, SYS_read); }
 static long lnx_writev(TrapFrame *tf) { return do_iov(tf, SYS_write); }
 
-/* poll(fds, nfds, timeout): the timeout is an int; a negative one arrives zero-extended in the register. */
-static long lnx_poll(TrapFrame *tf) {
-    TrapFrame t = *tf;
-    t.rdx = (u64)(long)(int)A2(tf);
-    SyscallFn f = syscall_native(SYS_poll);
-    return f ? f(&t) : -ENOSYS;
-}
-
-/* nanosleep(req, rem) and clock_nanosleep(clock, flags, req, rem): sleep until a deadline in milliseconds of uptime. A signal that needs attention ends the sleep with
- * EINTR and, for a relative sleep, the time that was left is stored in rem. */
-static long sleep_until(u64 end, u64 urem) {
-    u64 f = irq_save();
-    while (uptime_ms() < end) {
-        if (signal_pending_now(me())) {
-            irq_restore(f);
-            if (urem) {
-                u64 now = uptime_ms(), left = end > now ? end - now : 0;
-                struct { s64 sec, nsec; } r = { (s64)(left / 1000), (s64)(left % 1000) * 1000000 };
-                if (copy_to_user((void *)urem, &r, sizeof r)) return -EFAULT;
-            }
-            return -EINTR;
-        }
-        current->intr = true;
-        current->wake_ms = end;
-        current->state = TASK_SLEEPING;
-        schedule();
-        current->intr = false;
-    }
-    irq_restore(f);
-    return 0;
-}
-
-static long timespec_ms(u64 ureq, u64 *ms) {
-    struct { s64 sec, nsec; } ts;
-    if (copy_from_user(&ts, (void *)ureq, sizeof ts)) return -EFAULT;
-    if (ts.sec < 0 || ts.nsec < 0 || ts.nsec >= 1000000000) return -EINVAL;
-    *ms = (u64)ts.sec * 1000 + (u64)ts.nsec / 1000000 + ((ts.nsec % 1000000) ? 1 : 0);
-    return 0;
-}
-
-static long lnx_nanosleep(TrapFrame *tf) {
-    u64 ms;
-    long rc = timespec_ms(A0(tf), &ms);
-    return rc ? rc : sleep_until(uptime_ms() + ms, A1(tf));
-}
-
-#define LNX_TIMER_ABSTIME 1
-
-static long lnx_clock_nanosleep(TrapFrame *tf) {
-    int clock = (int)A0(tf), flags = (int)A1(tf);
-    if (clock != 0 && clock != 1 && clock != 7) return -EINVAL;               /* real time, monotonic, boot time: the others are not kept */
-    if (flags & ~LNX_TIMER_ABSTIME) return -EINVAL;
-    u64 ms;
-    long rc = timespec_ms(A2(tf), &ms);
-    if (rc) return rc;
-    if (!(flags & LNX_TIMER_ABSTIME)) return sleep_until(uptime_ms() + ms, A3(tf));
-    TrapFrame none;
-    memset(&none, 0, sizeof none);
-    SyscallFn wall = syscall_native(SYS_gettime_ms);
-    u64 now = clock == 0 ? (u64)(wall ? wall(&none) : 0) : uptime_ms();
-    return ms <= now ? 0 : sleep_until(uptime_ms() + (ms - now), 0);
-}
-
-/* clock_gettime(2): the clocks that mean "wall time" and "time since boot" (the coarse, raw and boot-time flavours are the same here). */
-static long lnx_clock_gettime(TrapFrame *tf) {
-    TrapFrame t = *tf;
-    switch ((int)A0(tf)) {
-    case 0: case 5: t.rdi = CLOCK_REALTIME; break;
-    case 1: case 4: case 6: case 7: t.rdi = CLOCK_MONOTONIC; break;
-    default: return -EINVAL;                                   /* the CPU-time clocks of a process and a thread are not kept yet */
-    }
-    SyscallFn f = syscall_native(SYS_clock_gettime);
-    return f ? f(&t) : -ENOSYS;
-}
+/* nanosleep, clock_nanosleep, clock_gettime, clock_getres, the interval timers and the POSIX timers are in timers.c; poll, ppoll, select, pselect6 and epoll are in epoll.c. */
 
 /* ------------------------------------------------------------------ the table */
 
 static const LinuxCall g_calls[LINUX_NSYSCALLS] = {
-    [LNX_read] = NATIVE(SYS_read), [LNX_write] = NATIVE(SYS_write), [LNX_open] = NATIVE(SYS_open), [LNX_close] = NATIVE(SYS_close),
+    [LNX_read] = NATIVE(SYS_read), [LNX_write] = NATIVE(SYS_write), [LNX_open] = OWN(lnx_open), [LNX_close] = NATIVE(SYS_close),
     [LNX_stat] = OWN(lnx_stat), [LNX_fstat] = OWN(lnx_fstat), [LNX_lstat] = OWN(lnx_lstat), [LNX_poll] = OWN(lnx_poll),
     [LNX_lseek] = NATIVE(SYS_lseek), [LNX_mmap] = NATIVE(SYS_mmap), [LNX_mprotect] = NATIVE(SYS_mprotect), [LNX_munmap] = NATIVE(SYS_munmap),
-    [LNX_brk] = NATIVE(SYS_brk), [LNX_ioctl] = NATIVE(SYS_ioctl), [LNX_readv] = OWN(lnx_readv), [LNX_writev] = OWN(lnx_writev),
+    [LNX_brk] = NATIVE(SYS_brk), [LNX_ioctl] = OWN(lnx_ioctl), [LNX_readv] = OWN(lnx_readv), [LNX_writev] = OWN(lnx_writev),
     [LNX_access] = NATIVE(SYS_access), [LNX_pipe] = NATIVE(SYS_pipe), [LNX_sched_yield] = NATIVE(SYS_yield),
     [LNX_dup] = NATIVE(SYS_dup), [LNX_dup2] = NATIVE(SYS_dup2), [LNX_nanosleep] = OWN(lnx_nanosleep), [LNX_clock_nanosleep] = OWN(lnx_clock_nanosleep), [LNX_getpid] = NATIVE(SYS_getpid),
     [LNX_fork] = NATIVE(SYS_fork), [LNX_vfork] = NATIVE(SYS_fork), [LNX_execve] = NATIVE(SYS_execve), [LNX_exit] = OWN(lnx_exit),
-    [LNX_wait4] = NATIVE(SYS_waitpid), [LNX_kill] = NATIVE(SYS_kill), [LNX_uname] = OWN(lnx_uname), [LNX_fcntl] = NATIVE(SYS_fcntl),
+    [LNX_uname] = OWN(lnx_uname), [LNX_fcntl] = OWN(lnx_fcntl),
     [LNX_truncate] = NATIVE(SYS_truncate), [LNX_ftruncate] = NATIVE(SYS_ftruncate), [LNX_chdir] = NATIVE(SYS_chdir),
     [LNX_rename] = NATIVE(SYS_rename), [LNX_mkdir] = NATIVE(SYS_mkdir), [LNX_rmdir] = NATIVE(SYS_rmdir), [LNX_link] = NATIVE(SYS_link),
     [LNX_unlink] = NATIVE(SYS_unlink), [LNX_symlink] = NATIVE(SYS_symlink), [LNX_readlink] = NATIVE(SYS_readlink), [LNX_chmod] = NATIVE(SYS_chmod),
@@ -839,7 +783,7 @@ static const LinuxCall g_calls[LINUX_NSYSCALLS] = {
     [LNX_newfstatat] = OWN(lnx_newfstatat), [LNX_readlinkat] = OWN(lnx_readlinkat),
     [LNX_set_robust_list] = OWN(lnx_unsupported), [LNX_get_robust_list] = OWN(lnx_unsupported), [LNX_rseq] = OWN(lnx_unsupported),
     [LNX_prlimit64] = OWN(lnx_prlimit64), [LNX_getrandom] = OWN(lnx_getrandom),
-    [LNX_pread64] = OWN(lnx_pread64), [LNX_pwrite64] = OWN(lnx_pwrite64), [LNX_madvise] = OWN(lnx_zero), [LNX_clone] = OWN(lnx_clone),
+    [LNX_pread64] = OWN(lnx_pread64), [LNX_pwrite64] = OWN(lnx_pwrite64), [LNX_madvise] = OWN(lnx_madvise), [LNX_mremap] = OWN(lnx_mremap), [LNX_clone] = OWN(lnx_clone),
     [LNX_flock] = OWN(lnx_zero), [LNX_fsync] = OWN(lnx_zero), [LNX_fdatasync] = OWN(lnx_zero), [LNX_getcwd] = NATIVE(SYS_getcwd),
     [LNX_creat] = OWN(lnx_creat), [LNX_gettimeofday] = OWN(lnx_gettimeofday), [LNX_sync] = NATIVE(SYS_sync), [LNX_time] = OWN(lnx_time),
     [LNX_openat] = OWN(lnx_openat), [LNX_mkdirat] = OWN(lnx_mkdirat), [LNX_unlinkat] = OWN(lnx_unlinkat), [LNX_renameat] = OWN(lnx_renameat),
@@ -850,7 +794,38 @@ static const LinuxCall g_calls[LINUX_NSYSCALLS] = {
     [LNX_rt_sigaction] = OWN(lnx_rt_sigaction), [LNX_rt_sigprocmask] = OWN(lnx_rt_sigprocmask), [LNX_rt_sigreturn] = OWN(lnx_rt_sigreturn),
     [LNX_pause] = NATIVE(SYS_pause), [LNX_alarm] = NATIVE(SYS_alarm), [LNX_rt_sigpending] = OWN(lnx_rt_sigpending),
     [LNX_rt_sigtimedwait] = OWN(lnx_rt_sigtimedwait), [LNX_rt_sigsuspend] = OWN(lnx_rt_sigsuspend), [LNX_sigaltstack] = OWN(lnx_sigaltstack),
-    [LNX_tkill] = OWN(lnx_tkill), [LNX_tgkill] = NATIVE(SYS_tgkill), [LNX_futex] = OWN(lnx_futex), [LNX_clone3] = OWN(lnx_unsupported),
+    [LNX_futex] = OWN(lnx_futex), [LNX_clone3] = OWN(lnx_unsupported),
+    /* L2 (linux-loader): dynamic programs, coreutils and a shell; the handlers are in fsops.c */
+    [LNX_msync] = OWN(lnx_hint), [LNX_fadvise64] = OWN(lnx_hint), [LNX_fchdir] = OWN(lnx_fchdir), [LNX_fchmod] = OWN(lnx_fchmod), [LNX_fchown] = OWN(lnx_fchown),
+    [LNX_lchown] = OWN(lnx_lchown), [LNX_getpgrp] = OWN(lnx_getpgrp), [LNX_getsid] = OWN(lnx_getsid),
+    [LNX_statfs] = OWN(lnx_statfs), [LNX_fstatfs] = OWN(lnx_fstatfs), [LNX_fchownat] = OWN(lnx_fchownat), [LNX_linkat] = OWN(lnx_linkat),
+    [LNX_fchmodat] = OWN(lnx_fchmodat), [LNX_utimensat] = OWN(lnx_utimensat),
+    [LNX_mincore] = OWN(lnx_unsupported), [LNX_copy_file_range] = OWN(lnx_unsupported),      /* grep and cp ask, get ENOSYS and carry on (cp falls back to read and write): not worth a log line */
+    [LNX_setxattr] = OWN(lnx_noxattr), [LNX_lsetxattr] = OWN(lnx_noxattr), [LNX_fsetxattr] = OWN(lnx_noxattr), [LNX_getxattr] = OWN(lnx_noxattr),
+    [LNX_lgetxattr] = OWN(lnx_noxattr), [LNX_fgetxattr] = OWN(lnx_noxattr), [LNX_listxattr] = OWN(lnx_noxattr), [LNX_llistxattr] = OWN(lnx_noxattr),
+    [LNX_flistxattr] = OWN(lnx_noxattr), [LNX_removexattr] = OWN(lnx_noxattr), [LNX_lremovexattr] = OWN(lnx_noxattr), [LNX_fremovexattr] = OWN(lnx_noxattr),
+    /* linux-signals (docs/COMPAT.md): sending signals with a siginfo, real-time signals */
+    [LNX_kill] = OWN(lnx_kill), [LNX_tkill] = OWN(lnx_tkill), [LNX_tgkill] = OWN(lnx_tgkill),
+    [LNX_rt_sigqueueinfo] = OWN(lnx_rt_sigqueueinfo), [LNX_rt_tgsigqueueinfo] = OWN(lnx_rt_tgsigqueueinfo), [LNX_waitid] = OWN(lnx_waitid), [LNX_wait4] = OWN(lnx_wait4),
+    /* linux-signals: interval timers, POSIX timers, clocks (timers.c; nanosleep, clock_nanosleep and clock_gettime are in the table above, their code moved there) */
+    [LNX_getitimer] = OWN(lnx_getitimer), [LNX_setitimer] = OWN(lnx_setitimer), [LNX_clock_getres] = OWN(lnx_clock_getres),
+    [LNX_times] = OWN(lnx_times), [LNX_getrusage] = OWN(lnx_getrusage),
+    [LNX_timer_create] = OWN(lnx_timer_create), [LNX_timer_settime] = OWN(lnx_timer_settime), [LNX_timer_gettime] = OWN(lnx_timer_gettime),
+    [LNX_timer_getoverrun] = OWN(lnx_timer_getoverrun), [LNX_timer_delete] = OWN(lnx_timer_delete),
+    /* linux-signals: the id calls the C library's set-id broadcast is made of (ids.c), and the supplementary groups */
+    [LNX_setreuid] = OWN(lnx_setreuid), [LNX_setregid] = OWN(lnx_setregid), [LNX_setresuid] = OWN(lnx_setresuid), [LNX_getresuid] = OWN(lnx_getresuid),
+    [LNX_setresgid] = OWN(lnx_setresgid), [LNX_getresgid] = OWN(lnx_getresgid), [LNX_getgroups] = NATIVE(SYS_getgroups), [LNX_setgroups] = NATIVE(SYS_setgroups),
+    /* sockets (kernel/linux/net.c): the ones whose arguments and results are the native ones go straight to the native handlers */
+    [LNX_socket] = OWN(lnx_socket), [LNX_socketpair] = OWN(lnx_socketpair), [LNX_connect] = NATIVE(SYS_connect), [LNX_accept] = NATIVE(SYS_accept),
+    [LNX_accept4] = OWN(lnx_accept4), [LNX_bind] = NATIVE(SYS_bind), [LNX_listen] = NATIVE(SYS_listen), [LNX_shutdown] = NATIVE(SYS_shutdown),
+    [LNX_getsockname] = NATIVE(SYS_getsockname), [LNX_getpeername] = NATIVE(SYS_getpeername), [LNX_sendto] = NATIVE(SYS_sendto),
+    [LNX_recvfrom] = NATIVE(SYS_recvfrom), [LNX_sendmsg] = OWN(lnx_sendmsg), [LNX_recvmsg] = OWN(lnx_recvmsg), [LNX_sendmmsg] = OWN(lnx_sendmmsg),
+    [LNX_recvmmsg] = OWN(lnx_recvmmsg), [LNX_setsockopt] = NATIVE(SYS_setsockopt), [LNX_getsockopt] = NATIVE(SYS_getsockopt), [LNX_sendfile] = OWN(lnx_sendfile),
+    /* waiting for events (kernel/linux/epoll.c; poll itself is in the table above) */
+    [LNX_ppoll] = OWN(lnx_ppoll), [LNX_select] = OWN(lnx_select), [LNX_pselect6] = OWN(lnx_pselect6), [LNX_epoll_create] = OWN(lnx_epoll_create),
+    [LNX_epoll_create1] = OWN(lnx_epoll_create1), [LNX_epoll_ctl] = OWN(lnx_epoll_ctl), [LNX_epoll_wait] = OWN(lnx_epoll_wait), [LNX_epoll_pwait] = OWN(lnx_epoll_pwait),
+    [LNX_epoll_pwait2] = OWN(lnx_epoll_pwait2), [LNX_eventfd] = OWN(lnx_eventfd), [LNX_eventfd2] = OWN(lnx_eventfd2), [LNX_timerfd_create] = OWN(lnx_timerfd_create),
+    [LNX_timerfd_settime] = OWN(lnx_timerfd_settime), [LNX_timerfd_gettime] = OWN(lnx_timerfd_gettime),
 };
 
 static const char *const g_names[LINUX_NSYSCALLS] = {

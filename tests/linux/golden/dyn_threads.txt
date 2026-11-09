@@ -1,0 +1,11 @@
+4 threads, 20000 locked increments each: counter 80000, return values sum 60
+thread-local storage: the thread saw 107, main still has 7
+condition variable: the waiter returned 1
+pthread_exit value: 42
+the thread's tid differs from the process id: 1, its getpid equals ours: 1
+pthread_cond_timedwait with nobody signalling: 110 (ETIMEDOUT 1)
+semaphore posted by a thread: waited
+16 threads at once: sum of their indexes 120
+detached thread finished: 1
+a signal aimed at one thread: handled 1, the thread returned 7
+exit status: 0

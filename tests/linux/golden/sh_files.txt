@@ -1,0 +1,111 @@
+--- listing
+a
+c
+dangling
+f1
+f2
+hard1
+soft1
+.
+..
+a
+c
+dangling
+f1
+f2
+hard1
+soft1
+b
+f2p
+moved
+.:
+a
+c
+dangling
+f1
+f2
+hard1
+soft1
+
+./a:
+b
+f2p
+moved
+
+./a/b:
+t1
+
+./c:
+--- kinds and permissions
+drwxr-xr-x a
+drwxr-xr-x c
+lrwxrwxrwx dangling
+-rw------- f1
+-rwx---r-- f2
+-rw------- hard1
+lrwxrwxrwx soft1
+drwxr-xr-x a/b
+-rw-r--r-- a/f2p
+-rw-r--r-- a/moved
+f1 regular file 600
+f2 regular file 704
+soft1 symbolic link 777
+a directory 755
+c directory 755
+soft1 -> regular file
+--- links
+f1
+/nowhere
+soft1 is a symbolic link
+dangling points nowhere
+f1 and hard1 are the same file
+hello world
+hello world
+--- read and write
+c
+b
+a
+b
+b
+a
+b
+c
+a
+b
+c
+hello
+world
+12 f1
+4 f2
+   h   e   l   l   o       w   o   r   l   d  \n
+hello wo
+--- moving and removing
+a:
+b
+f2p
+
+a/b:
+moved2
+t1
+a
+c
+dd.out
+f1
+f2
+soft1
+c
+dd.out
+f1
+f2
+soft1
+dd.out
+f1
+f2
+soft1
+made and removed d
+rm of a missing file fails (1)
+cat of a missing file fails (1)
+ls of a missing file fails (2)
+mkdir of an existing name fails (1)
+--- done
+exit status: 0

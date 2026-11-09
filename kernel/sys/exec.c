@@ -8,7 +8,7 @@
 #define AT_NULL   0
 #define AT_PAGESZ 6
 
-static int read_exact(File *f, u64 off, void *buf, size_t n) {
+int exec_read_exact(File *f, u64 off, void *buf, size_t n) {
     f->off = off;
     size_t done = 0;
     while (done < n) {
@@ -20,52 +20,96 @@ static int read_exact(File *f, u64 off, void *buf, size_t n) {
     return 0;
 }
 
-/* img (may be NULL) gets what the Linux personality's auxiliary vector needs: where the program headers ended up in memory, their size and count. */
-static int load_elf(File *f, AddrSpace *as, u64 *entry_out, LinuxImage *img) {
-    Elf64_Ehdr eh;
-    if (read_exact(f, 0, &eh, sizeof eh)) return -ENOEXEC;
-    if (!elf64_check(&eh) || eh.e_type != ET_EXEC || eh.e_phnum == 0 || eh.e_phnum > 32) return -ENOEXEC;
+/* ---- ELF files: the program headers, and the segments mapped at a load bias. The native loader maps an ET_EXEC where it says; the Linux personality (kernel/linux/loader.c)
+ * also maps an ET_DYN at a base it picks, and a second file, the interpreter, beside the program. Written from the ELF specification (program headers, "Program Loading"). */
 
-    Elf64_Phdr *ph = kmalloc(eh.e_phnum * sizeof *ph);
-    if (!ph) return -ENOMEM;
-    int rc = read_exact(f, eh.e_phoff, ph, eh.e_phnum * sizeof *ph);
-    u64 hi = 0;
-    for (int i = 0; !rc && i < eh.e_phnum; i++) {
-        if (ph[i].p_type != PT_LOAD || ph[i].p_memsz == 0) continue;
-        u64 vaddr = ph[i].p_vaddr, memsz = ph[i].p_memsz, filesz = ph[i].p_filesz;
-        if (vaddr < 0x1000 || vaddr >= USER_TOP || memsz > USER_TOP - vaddr || filesz > memsz) { rc = -ENOEXEC; break; }
-        u64 start = ALIGN_DOWN(vaddr, PAGE_SIZE), end = ALIGN_UP(vaddr + memsz, PAGE_SIZE);
-        u32 prot = ((ph[i].p_flags & PF_R) ? PROT_READ : 0) | ((ph[i].p_flags & PF_W) ? PROT_WRITE : 0) |
-                   ((ph[i].p_flags & PF_X) ? PROT_EXEC : 0);
+int elf_read_headers(File *f, bool allow_dyn, ElfFile *e) {
+    memset(e, 0, sizeof *e);
+    if (exec_read_exact(f, 0, &e->eh, sizeof e->eh)) return -ENOEXEC;
+    const Elf64_Ehdr *eh = &e->eh;
+    if (!elf64_check(eh) || eh->e_phnum == 0 || eh->e_phnum > 64) return -ENOEXEC;
+    if (eh->e_type != ET_EXEC && !(allow_dyn && eh->e_type == ET_DYN)) return -ENOEXEC;
+    e->ph = kmalloc(eh->e_phnum * sizeof *e->ph);
+    if (!e->ph) return -ENOMEM;
+    int rc = exec_read_exact(f, eh->e_phoff, e->ph, eh->e_phnum * sizeof *e->ph);
+    e->lo = ~0UL;
+    e->align = PAGE_SIZE;
+    for (int i = 0; !rc && i < eh->e_phnum; i++) {
+        const Elf64_Phdr *ph = &e->ph[i];
+        if (ph->p_type != PT_LOAD || ph->p_memsz == 0) continue;
+        if (ph->p_vaddr >= USER_TOP || ph->p_memsz > USER_TOP - ph->p_vaddr || ph->p_filesz > ph->p_memsz) { rc = -ENOEXEC; break; }
+        e->lo = MIN(e->lo, ALIGN_DOWN(ph->p_vaddr, PAGE_SIZE));
+        e->hi = MAX(e->hi, ALIGN_UP(ph->p_vaddr + ph->p_memsz, PAGE_SIZE));
+        if (ph->p_align > e->align && ph->p_align <= (1UL << 30) && !(ph->p_align & (ph->p_align - 1))) e->align = ph->p_align;
+    }
+    if (!rc && !e->hi) rc = -ENOEXEC;                       /* nothing to load */
+    if (rc) elf_free_headers(e);
+    return rc;
+}
+
+void elf_free_headers(ElfFile *e) {
+    kfree(e->ph);
+    e->ph = NULL;
+}
+
+/* Maps every PT_LOAD segment of f at (its address + bias), fills the pages from the file and says where the entry point and the program headers ended up. */
+int elf_map(File *f, AddrSpace *as, const ElfFile *e, u64 bias, ElfMapped *m) {
+    const Elf64_Ehdr *eh = &e->eh;
+    if (bias >= USER_TOP || e->lo + bias < 0x1000 || e->hi + bias > USER_TOP) return -ENOEXEC;
+    memset(m, 0, sizeof *m);
+    int rc = 0;
+    for (int i = 0; !rc && i < eh->e_phnum; i++) {
+        const Elf64_Phdr *ph = &e->ph[i];
+        if (ph->p_type != PT_LOAD || ph->p_memsz == 0) continue;
+        u64 vaddr = ph->p_vaddr + bias, filesz = ph->p_filesz;
+        u64 start = ALIGN_DOWN(vaddr, PAGE_SIZE), end = ALIGN_UP(vaddr + ph->p_memsz, PAGE_SIZE);
+        u32 prot = ((ph->p_flags & PF_R) ? PROT_READ : 0) | ((ph->p_flags & PF_W) ? PROT_WRITE : 0) |
+                   ((ph->p_flags & PF_X) ? PROT_EXEC : 0);
         if (!prot) prot = PROT_READ;
-        if (img && ph[i].p_offset <= eh.e_phoff && eh.e_phoff + (u64)eh.e_phnum * eh.e_phentsize <= ph[i].p_offset + filesz)
-            img->phdr = vaddr + (eh.e_phoff - ph[i].p_offset);          /* the segment that holds the program headers maps them too */
-        rc = uvm_map(as, start, end - start, prot, 0);
+        if (ph->p_offset <= eh->e_phoff && eh->e_phoff + (u64)eh->e_phnum * eh->e_phentsize <= ph->p_offset + filesz)
+            m->phdr = vaddr + (eh->e_phoff - ph->p_offset);                /* the segment that holds the program headers maps them too */
+        rc = uvm_map(as, start, end - start, prot, VMA_FILE);
         if (rc) { rc = rc == -EEXIST ? -ENOEXEC : rc; break; }
         rc = uvm_populate(as, start, end - start);
         if (rc) break;
-        u64 va = vaddr, remaining = filesz, foff = ph[i].p_offset;
+        u64 va = vaddr, remaining = filesz, foff = ph->p_offset;
         while (remaining && !rc) {
             u64 chunk = MIN(remaining, PAGE_SIZE - (va & (PAGE_SIZE - 1)));
             paddr_t pa = vmm_translate(as->pml4, va, NULL);
-            rc = pa ? read_exact(f, foff, phys_to_virt(pa), (size_t)chunk) : -EFAULT;
+            rc = pa ? exec_read_exact(f, foff, phys_to_virt(pa), (size_t)chunk) : -EFAULT;
             va += chunk;
             foff += chunk;
             remaining -= chunk;
         }
-        if (end > hi) hi = end;
+        if (end > m->hi) m->hi = end;
     }
-    kfree(ph);
     if (rc) return rc;
-    if (eh.e_entry < 0x1000 || eh.e_entry >= USER_TOP) return -ENOEXEC;
-    as->brk_start = as->brk = hi;
-    *entry_out = eh.e_entry;
-    if (img) {
-        img->entry = eh.e_entry;
-        img->phent = eh.e_phentsize;
-        img->phnum = eh.e_phnum;
-    }
+    if (eh->e_entry + bias < 0x1000 || eh->e_entry + bias >= USER_TOP) return -ENOEXEC;
+    m->entry = eh->e_entry + bias;
     return 0;
+}
+
+/* The native loader: a static, fixed-address program. img (may be NULL) gets what the Linux personality's auxiliary vector needs: where the program headers ended up in
+ * memory, their size and count. (A Linux program is loaded by linux_load_elf, which also handles position-independent programs and interpreters.) */
+static int load_elf(File *f, AddrSpace *as, u64 *entry_out, LinuxImage *img) {
+    ElfFile e;
+    int rc = elf_read_headers(f, false, &e);
+    if (rc) return rc;
+    if (e.lo < 0x1000 || e.eh.e_phnum > 32) rc = -ENOEXEC;
+    ElfMapped m;
+    if (!rc) rc = elf_map(f, as, &e, 0, &m);
+    if (!rc) {
+        as->brk_start = as->brk = m.hi;
+        *entry_out = m.entry;
+        if (img) {
+            img->entry = m.entry;
+            img->phdr = m.phdr;
+            img->phent = e.eh.e_phentsize;
+            img->phnum = e.eh.e_phnum;
+        }
+    }
+    elf_free_headers(&e);
+    return rc;
 }
 
 /* Measures one vector: entries and bytes (NULs included). The callers (execve, the kernel itself) keep within the limits already; this
@@ -142,9 +186,17 @@ static const char *base_name(const char *path) {
 
 #define EXEC_SCRIPT_DEPTH 3                     /* #! chains followed before giving up with ELOOP */
 
-static int exec_file(Process *p, const char *path, char *const argv[], char *const envp[], TrapFrame *tf, int depth) {
+/* The personality and the root one execve starts the program with. root is the directory "/" will mean to the new program (a reference the process takes over when the
+ * exec succeeds; NULL for a program in the real root); lookup_root is the same directory for the lookups of this exec (the program, the interpreter, a script's interpreter). */
+typedef struct ExecWorld {
+    u8     abi;
+    VNode *root;
+    VNode *lookup_root;
+} ExecWorld;
+
+static int exec_file(Process *p, const char *path, char *const argv[], char *const envp[], TrapFrame *tf, int depth, const ExecWorld *w) {
     File *f;
-    int rc = vfs_open(path, O_RDONLY, 0, &p->cred, p->cwd, &f);
+    int rc = vfs_open_root(w->lookup_root, path, O_RDONLY, 0, &p->cred, p->cwd, &f);
     if (rc) return rc;
     if (!S_ISREG(f->vn->mode)) { file_put(f); return -EACCES; }
     if (vfs_access(f->vn, &p->cred, X_OK)) { file_put(f); return -EACCES; }
@@ -174,7 +226,7 @@ static int exec_file(Process *p, const char *path, char *const argv[], char *con
         nargv[k++] = (char *)path;
         for (int i = 1; i < argc; i++) nargv[k++] = argv[i];
         nargv[k] = NULL;
-        rc = exec_file(p, line, nargv, envp, tf, depth + 1);
+        rc = exec_file(p, line, nargv, envp, tf, depth + 1, w);
         kfree(nargv);
         return rc;
     }
@@ -185,12 +237,16 @@ static int exec_file(Process *p, const char *path, char *const argv[], char *con
     u64 entry, sp, argv_u, envp_u;
     int argc;
     u32 fmode = f->vn->mode, fuid = f->vn->uid, fgid = f->vn->gid;      /* for setuid/setgid programs */
-    u8 abi = p->exec_abi ? (u8)(p->exec_abi - 1) : p->abi;              /* SYS_setabi asked for a personality, or the process keeps its own */
+    u8 abi = w->abi;
     LinuxImage img = { .secure = (fmode & (S_ISUID | S_ISGID)) != 0,
                        .euid = (fmode & S_ISUID) ? fuid : p->cred.uid, .egid = (fmode & S_ISGID) ? fgid : p->cred.gid };
-    rc = load_elf(f, &nas, &entry, &img);
-    if (!rc) rc = abi == ABI_LINUX ? linux_build_stack(&nas, &img, argv, envp, path, &sp)
-                                   : build_stack(&nas, argv, envp, &sp, &argc, &argv_u, &envp_u);
+    if (abi == ABI_LINUX) {                                             /* position-independent programs and interpreters too (kernel/linux/loader.c) */
+        rc = linux_load_elf(f, &nas, &img, &entry, w->lookup_root, p->cwd, &p->cred);
+        if (!rc) rc = linux_build_stack(&nas, &img, argv, envp, path, &sp);
+    } else {
+        rc = load_elf(f, &nas, &entry, &img);
+        if (!rc) rc = build_stack(&nas, argv, envp, &sp, &argc, &argv_u, &envp_u);
+    }
     file_put(f);
     if (rc) { uvm_destroy(&nas); return rc; }
 
@@ -210,15 +266,13 @@ static int exec_file(Process *p, const char *path, char *const argv[], char *con
 
     for (int i = 0; i < MAX_FD; i++)
         if (p->fds[i] && (p->fd_flags[i] & FD_CLOEXEC)) fd_close(p, i);
-    for (int s = 0; s < NSIG; s++)
-        if (p->sigact[s].handler != SIG_IGN) memset(&p->sigact[s], 0, sizeof p->sigact[s]);
-    p->sig_pending = 0;
-    current->sig_pending = 0;
+    signal_exec_reset(p);                                             /* handlers back to default, nothing pending (kernel/sys/signal.c) */
     current->utid = p->pid;                                           /* the survivor of a threaded process becomes its first thread */
     current->clear_tid = 0;
     task_set_fs_base(current, 0);                                     /* the new program sets up its own TLS */
     strlcpy(p->name, base_name(argv && argv[0] ? argv[0] : path), sizeof p->name);
     path_normalize(p->cwd_path, path, p->exe, sizeof p->exe);              /* /proc/<pid>/exe */
+    linux_root_adopt(p, w->root);                                     /* "/" is the Linux tree's top for a Linux program started from a native one, the real root for a native program */
     p->cmdline[0] = 0;
     size_t cl = 0;
     for (int i = 0; argv && argv[i] && cl < sizeof p->cmdline - 1; i++) {      /* /proc shows the first 127 bytes; stop reading once they are there */
@@ -242,5 +296,11 @@ static int exec_file(Process *p, const char *path, char *const argv[], char *con
 }
 
 int process_exec(Process *p, const char *path, char *const argv[], char *const envp[], TrapFrame *tf) {
-    return exec_file(p, path, argv, envp, tf, 0);
+    ExecWorld w;
+    w.abi = p->exec_abi ? (u8)(p->exec_abi - 1) : p->abi;               /* SYS_setabi asked for a personality, or the process keeps its own */
+    w.root = w.abi == ABI_LINUX ? linux_exec_root(p) : NULL;
+    w.lookup_root = w.root ? w.root : vfs_root();                       /* explicit: a Linux program that runs a native one looks the native program up in the real root */
+    int rc = exec_file(p, path, argv, envp, tf, 0, &w);
+    if (rc && w.root) vnode_put(w.root);                                /* the process did not take the reference over */
+    return rc;
 }

@@ -1,0 +1,41 @@
+eventfd: ok 1, non-blocking 1, close-on-exec 1
+read of an empty counter: -1 errno 11 (EAGAIN 11)
+poll of an empty counter: POLLIN 0 POLLOUT 1
+poll after two writes: POLLIN 1 POLLOUT 1
+read: 8, value 7
+the counter was reset: -1 errno 11
+read into 4 bytes: -1 errno 22 (EINVAL 22)
+write of 4 bytes: -1 errno 22
+write of 0xffffffffffffffff: -1 errno 22
+a counter at its largest value: 8, and one more: -1 errno 11 (EAGAIN 11)
+poll at the largest value: POLLIN 1 POLLOUT 0
+semaphore with initial value 3, reads: 1 1 1 error 11 error 11; after writing 2: 1 1 error 11
+eventfd with stray flags: -1 errno 22
+ping-pong between two threads: 50 rounds, the worker saw 50
+epoll_wait woken by a thread's write: 1 event, user data 42, took at least 190 ms: 1, well before the timeout: 1
+the value written: 7
+timerfd_create with a bad clock: -1 errno 22 (EINVAL 22)
+timerfd_create with stray flags: -1 errno 22
+timerfd_create: ok 1, non-blocking 1, close-on-exec 1
+read of a timer that is not armed: -1 errno 11 (EAGAIN 11)
+timerfd_gettime of a disarmed timer: value 0.000000000 interval 0.000000000
+timerfd_settime with nanoseconds out of range: -1 errno 22
+timerfd_settime with stray flags: -1 errno 22
+timerfd_settime on a descriptor that is not a timer: -1 errno 22 (EINVAL 22)
+arm at 50 ms, interval 50 ms: 0
+timerfd_gettime: the interval is 50 ms 1, time left is at most 50 ms 1
+after about 520 ms: read 8 bytes, between 6 and 14 expirations (about 10): 1
+reading again at once: -1 errno 11
+settime hands back the old setting: interval 50 ms 1, time left at most 50 ms 1
+poll right after arming for 400 ms: 0 ready
+poll with a long timeout: 1 ready, POLLIN 1, took at least 350 ms: 1, well before the timeout: 1
+the one-shot timer fired 1 time
+and not again: -1 errno 11
+timerfd_gettime after it fired: time left is zero 1
+disarm: the old time left was about a minute 1
+absolute deadline 200 ms from now: 0
+a blocking read: 8 bytes, count 1, took at least 150 ms: 1, under 5 s: 1
+an absolute deadline in the past: read 8 bytes, count 1
+epoll_wait on a 100 ms timer: at least 5 expirations counted 1, took at least 450 ms: 1
+CLOCK_REALTIME, an absolute time long ago: read 8 bytes, count 1
+exit status: 0

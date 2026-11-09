@@ -77,8 +77,12 @@ int g_alarms_armed;
 static void alarm_cb(Process *p, void *ctx) {
     u64 now = *(u64 *)ctx;
     if (p->alarm_at && now >= p->alarm_at && p->state == PROC_RUNNING) {
-        p->alarm_at = 0;
-        g_alarms_armed--;
+        if (p->alarm_interval) {                    /* setitimer(ITIMER_REAL) with an interval: the next expiry, on the same beat, skipping any the tick missed */
+            p->alarm_at += (((now - p->alarm_at) / p->alarm_interval) + 1) * p->alarm_interval;
+        } else {
+            p->alarm_at = 0;
+            g_alarms_armed--;
+        }
         signal_send(p, SIGALRM);
     }
 }
@@ -181,6 +185,8 @@ int process_fork_ex(TrapFrame *tf, u64 settid_addr, u64 cleartid_addr) {
     c->nice = par->nice;
     c->cwd = par->cwd;
     if (c->cwd) vnode_get(c->cwd);
+    c->root = par->root;                            /* a child lives in the same Linux root as its parent (docs/COMPAT.md) */
+    if (c->root) vnode_get(c->root);
     memcpy(c->sigact, par->sigact, sizeof c->sigact);
     u64 fl = irq_save();                            /* the table is shared with the parent's other threads */
     for (int i = 0; i < MAX_FD; i++) {
@@ -201,6 +207,7 @@ int process_fork_ex(TrapFrame *tf, u64 settid_addr, u64 cleartid_addr) {
     if (rc) {
         for (int i = 0; i < MAX_FD; i++) if (c->fds[i]) file_put(c->fds[i]);
         if (c->cwd) vnode_put(c->cwd);
+        if (c->root) vnode_put(c->root);
         uvm_destroy(&c->as);
         process_free(c);
         return rc;
@@ -225,6 +232,7 @@ int process_fork_ex(TrapFrame *tf, u64 settid_addr, u64 cleartid_addr) {
         irq_restore(g);
         for (int i = 0; i < MAX_FD; i++) if (c->fds[i]) file_put(c->fds[i]);
         if (c->cwd) vnode_put(c->cwd);
+        if (c->root) vnode_put(c->root);
         uvm_destroy(&c->as);
         process_free(c);
         return -ENOMEM;
@@ -241,8 +249,11 @@ static NORETURN void process_finalize(Process *p, int status) {
     u64 af = irq_save();
     if (p->alarm_at) { p->alarm_at = 0; g_alarms_armed--; }                  /* a dead process gets no SIGALRM */
     irq_restore(af);
+    signal_process_exit(p);                                                  /* the queued signals go back to the pool */
+    ktimers_process_exit(p);                                                 /* and the POSIX timers are dropped */
     for (int i = 0; i < MAX_FD; i++) if (p->fds[i]) fd_close(p, i);
     if (p->cwd) { vnode_put(p->cwd); p->cwd = NULL; }
+    if (p->root) { vnode_put(p->root); p->root = NULL; }
     for (unsigned i = 0; i < ARRAY_SIZE(p->old_cwd); i++) if (p->old_cwd[i]) { vnode_put(p->old_cwd[i]); p->old_cwd[i] = NULL; }
 
     /* Leave the dying address space before freeing it. */
@@ -277,7 +288,14 @@ static NORETURN void process_finalize(Process *p, int status) {
 
     if (wake_init) wq_wake_all(&g_init_proc->wait_wq);
     if (parent) {
-        signal_send(parent, SIGCHLD);
+        if (parent->abi == ABI_LINUX) {                 /* its handler (or sigwaitinfo) is told who died, how, and how long it ran */
+            SigInfo ci;
+            bool exited = (status & 0x7f) == 0;
+            signal_child_info(&ci, p, exited ? CLD_EXITED : CLD_KILLED, exited ? (status >> 8) & 0xff : status & 0x7f);
+            signal_send_info(parent, SIGCHLD, &ci);
+        } else {
+            signal_send(parent, SIGCHLD);
+        }
         wq_wake_all(&parent->wait_wq);
     }
     /* Our leaving can orphan process groups; a group that is orphaned and holds a stopped member gets SIGHUP and SIGCONT,
@@ -340,6 +358,7 @@ NORETURN void thread_leave(void) {
         clear_user((void *)addr, sizeof(u32));
         futex_wake_all_at(addr);
     }
+    signal_thread_exit(t);                          /* its private queue of signals goes back to the pool */
     u64 f = irq_save();
     thread_unlink(p, t);
     bool last = p->nthreads == 0;
@@ -364,6 +383,12 @@ NORETURN void process_exit(int status) {
     }
     irq_restore(f);
     thread_leave();
+}
+
+/* A parent that collects a child also collects the CPU time it and its own waited-for children used (times(2), getrusage(RUSAGE_CHILDREN)). irq off. */
+static void reap_cpu_time(Process *parent, const Process *child) {
+    parent->child_ticks += child->dead_ticks + child->child_ticks;
+    parent->child_utime += child->dead_utime + child->child_utime;
 }
 
 long process_wait(int pid, int *status, int options) {
@@ -398,12 +423,73 @@ long process_wait(int pid, int *status, int options) {
             if (status) *status = c->exit_status;
             for (Process **pp = &p->children; *pp; pp = &(*pp)->sibling)
                 if (*pp == c) { *pp = c->sibling; break; }
+            reap_cpu_time(p, c);
             irq_restore(f);
             process_free(c);
             return cpid;
         }
         if (!have_child) { irq_restore(f); return -ECHILD; }
         if (options & WNOHANG) { irq_restore(f); return 0; }
+        if (signal_pending_now(p)) { irq_restore(f); return -EINTR; }
+        current->intr = true;
+        wq_block(&p->wait_wq);
+        current->intr = false;
+    }
+}
+
+/* waitid(2): like process_wait, but it names the event (exited, killed, stopped, continued) instead of building a status word, it can look without consuming
+ * (WNOWAIT), and it selects children by pid, by process group or all of them. A child that has exited is only reported with WEXITED, a stop with WSTOPPED, a
+ * continue with WCONTINUED. With WNOHANG and nothing to report, out->pid is 0. */
+long process_waitid(int idtype, int id, int options, WaitInfo *out) {
+    Process *p = current->proc;
+    u64 f = irq_save();
+    for (;;) {
+        bool have_child = false;
+        for (Process *c = p->children; c; c = c->sibling) {
+            if (idtype == WAITID_PID && c->pid != id) continue;
+            if (idtype == WAITID_PGID && c->pgid != (id ? id : p->pgid)) continue;
+            have_child = true;
+            int code, status;
+            if (c->state != PROC_ZOMBIE) {
+                if ((options & WAITID_STOPPED) && c->stopped && c->stop_unreported) {
+                    code = CLD_STOPPED;
+                    status = c->stop_sig;
+                    if (!(options & WAITID_NOWAIT)) c->stop_unreported = false;
+                } else if ((options & WAITID_CONTINUED) && c->continued_unreported) {
+                    code = CLD_CONTINUED;
+                    status = SIGCONT;
+                    if (!(options & WAITID_NOWAIT)) c->continued_unreported = false;
+                } else {
+                    continue;
+                }
+            } else if (options & WAITID_EXITED) {
+                bool exited = (c->exit_status & 0x7f) == 0;
+                code = exited ? CLD_EXITED : CLD_KILLED;
+                status = exited ? (c->exit_status >> 8) & 0xff : c->exit_status & 0x7f;
+            } else {
+                continue;
+            }
+            u64 user, total;
+            process_cpu_ticks(c, &user, &total);
+            out->pid = c->pid;
+            out->uid = c->ruid;
+            out->code = code;
+            out->status = status;
+            out->utime = (s64)(user * 100 / TIMER_HZ);              /* in 1/100 s, the unit of times(2) */
+            out->stime = (s64)((total - user) * 100 / TIMER_HZ);
+            if (c->state == PROC_ZOMBIE && !(options & WAITID_NOWAIT)) {
+                for (Process **pp = &p->children; *pp; pp = &(*pp)->sibling)
+                    if (*pp == c) { *pp = c->sibling; break; }
+                reap_cpu_time(p, c);
+                irq_restore(f);
+                process_free(c);
+                return 0;
+            }
+            irq_restore(f);
+            return 0;
+        }
+        if (!have_child) { irq_restore(f); return -ECHILD; }
+        if (options & WAITID_NOHANG) { memset(out, 0, sizeof *out); irq_restore(f); return 0; }
         if (signal_pending_now(p)) { irq_restore(f); return -EINTR; }
         current->intr = true;
         wq_block(&p->wait_wq);
@@ -512,7 +598,16 @@ static bool process_sigpending_hook(void) {
 static void tty_signal(int pgid, int sig) { signal_pgrp(pgid, sig); }
 
 static void signal_self(int sig) {                  /* SIGPIPE and friends: aimed at the thread that caused them */
-    if (current->proc) signal_send_thread(current, sig);
+    Process *p = current->proc;
+    if (!p) return;
+    if (sig == SIGPIPE && p->abi == ABI_LINUX) {    /* Linux sends it with no siginfo of its own, which makes it look like kill(2) from the process itself */
+        SigInfo si;
+        siginfo_clear(&si, sig, SI_USER);
+        siginfo_sender(&si, p->pid, p->ruid);
+        signal_send_thread_info(current, sig, &si);
+        return;
+    }
+    signal_send_thread(current, sig);
 }
 
 /* execve: ask every other thread to leave and wait until none is left. False if the process is already being torn down

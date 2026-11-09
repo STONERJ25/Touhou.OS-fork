@@ -9,8 +9,18 @@
 #include "process.h"
 #include "initcall.h"
 #include "random.h"
+#include "unixsock.h"
+#include "pollq.h"
+
+#ifndef MSG_TRUNC
+#define MSG_TRUNC 0x20
+#endif
 
 static inline bool is_inet(File *f) { return f && f->fops == &g_inet_fops; }
+
+/* A file that is the end of a socket, Internet or UNIX. A file can have a socket for its vnode without being one: open() on the socket file of a bound UNIX socket
+ * makes an ordinary File of the file system with nothing behind it, and the UNIX socket code would find no socket in it (the system call fuzzer found that out). */
+static inline bool is_sock(File *f) { return f && (f->fops == &g_inet_fops || unix_is_sock(f)); }
 
 static File *inet_file_new(Sock *s, int flags) {
     VNode *v = vnode_alloc(&g_inet_vn_ops, NULL, S_IFSOCK | 0600);
@@ -209,31 +219,86 @@ long inet_shutdown(File *f, int how) {
 
 #define SEND_CHUNK 65536
 
-static long unix_like_io(File *f, bool is_send, u64 ubuf, u64 len) {
+/* send and recv on a UNIX-domain socket: the same system calls serve both families. A send goes out completely (or until an error or a signal); a receive is
+ * one read, except that MSG_WAITALL asks for the whole length. */
+static long unix_msg_io(File *f, bool is_send, u64 ubuf, u64 len, int mflags) {
     size_t chunk = MIN((size_t)len, (size_t)SEND_CHUNK);
     u8 *k = kmalloc(chunk ? chunk : 1);
     if (!k) return -ENOMEM;
-    long rc;
+    long total = 0, rc = 0;
     file_get(f);
-    if (is_send) {
-        if (copy_from_user(k, (const void *)ubuf, chunk)) rc = -EFAULT;
-        else rc = vfs_write(f, k, chunk);
-    } else {
-        rc = vfs_read(f, k, chunk);
-        if (rc > 0 && copy_to_user((void *)ubuf, k, (size_t)rc)) rc = -EFAULT;
-    }
+    do {
+        size_t take = MIN((size_t)len - (size_t)total, chunk);
+        ssize_t w;
+        if (is_send) {
+            if (copy_from_user(k, (const u8 *)ubuf + total, take)) { rc = total ? total : -EFAULT; break; }
+            w = unix_send(f, k, take, mflags);
+        } else {
+            w = unix_recv(f, k, take, mflags);
+            if (w > 0 && copy_to_user((u8 *)ubuf + total, k, (size_t)w)) { rc = total ? total : -EFAULT; break; }
+        }
+        if (w < 0) { rc = total ? total : w; break; }
+        total += w;
+        rc = total;
+        if ((size_t)w < take || (!is_send && !(mflags & MSG_WAITALL))) break;
+    } while ((size_t)total < len);
     file_put(f);
     kfree(k);
+    return rc;
+}
+
+/* A receive that has no sender's address to report (a stream, or a datagram from a socket that never had a name) says so by making the length 0. */
+static void unix_no_name(u64 ufromlen) {
+    u32 zero = 0;
+    copy_to_user((void *)ufromlen, &zero, sizeof zero);
+}
+
+/* sendto and recvfrom on a UNIX datagram socket: one message, with the destination or the sender's name. */
+#define UDGRAM_MAX 130000
+
+static long unix_dgram_to(File *f, u64 ubuf, u64 len, int mflags, u64 uto, u64 utolen) {
+    if (len > UDGRAM_MAX) return -EMSGSIZE;
+    u8 *k = kmalloc(len ? (size_t)len : 1);
+    if (!k) return -ENOMEM;
+    long rc;
+    if (len && copy_from_user(k, (const void *)ubuf, (size_t)len)) {
+        rc = -EFAULT;
+    } else {
+        file_get(f);
+        rc = unix_send_msg(f, k, (size_t)len, mflags, uto, utolen, NULL, 0);
+        file_put(f);
+    }
+    kfree(k);
+    return rc;
+}
+
+static long unix_dgram_from(File *f, u64 ubuf, u64 len, int mflags, u64 ufrom, u64 ufromlen) {
+    size_t chunk = (size_t)MIN(len, (u64)UDGRAM_MAX);
+    u8 *k = kmalloc(chunk ? chunk : 1);
+    if (!k) return -ENOMEM;
+    UnixCtl ctl;
+    ctl.want_fds = false;
+    file_get(f);
+    ssize_t r = unix_recv_msg(f, k, chunk, mflags, &ctl);
+    file_put(f);
+    long rc = r;
+    if (r > 0 && copy_to_user((void *)ubuf, k, (size_t)r)) rc = -EFAULT;
+    if (rc >= 0 && (mflags & MSG_TRUNC) && ctl.dgram) rc = (long)ctl.full;
+    kfree(k);
+    if (rc >= 0 && ufrom && ufromlen) {
+        if (ctl.fromlen) unix_store_name(ufrom, ufromlen, ctl.from, ctl.fromlen);
+        else unix_no_name(ufromlen);
+    }
     return rc;
 }
 
 static long sys_sendto(TrapFrame *tf) {
     File *f = fd_get(current->proc, (int)A0(tf));
     if (!f) return -EBADF;
-    if (!(f->vn && S_ISSOCK(f->vn->mode))) return -ENOTSOCK;
+    if (!is_sock(f)) return -ENOTSOCK;
     u64 ubuf = A1(tf), len = A2(tf);
     int mflags = (int)A3(tf);
-    if (!is_inet(f)) return unix_like_io(f, true, ubuf, len);
+    if (!is_inet(f)) return unix_is_dgram(f) ? unix_dgram_to(f, ubuf, len, mflags, A4(tf), A5(tf)) : unix_msg_io(f, true, ubuf, len, mflags);
     bool have = A4(tf) != 0;
     u32 addr = 0;
     u16 port = 0;
@@ -263,10 +328,15 @@ static long sys_sendto(TrapFrame *tf) {
 static long sys_recvfrom(TrapFrame *tf) {
     File *f = fd_get(current->proc, (int)A0(tf));
     if (!f) return -EBADF;
-    if (!(f->vn && S_ISSOCK(f->vn->mode))) return -ENOTSOCK;
+    if (!is_sock(f)) return -ENOTSOCK;
     u64 ubuf = A1(tf), len = A2(tf);
     int mflags = (int)A3(tf);
-    if (!is_inet(f)) return unix_like_io(f, false, ubuf, len);
+    if (!is_inet(f)) {
+        if (unix_is_dgram(f)) return unix_dgram_from(f, ubuf, len, mflags, A4(tf), A5(tf));
+        long rc = unix_msg_io(f, false, ubuf, len, mflags);
+        if (rc >= 0 && A4(tf) && A5(tf)) unix_no_name(A5(tf));
+        return rc;
+    }
     if (!user_range_ok((void *)ubuf, len)) return -EFAULT;
     Sock *s = f->priv;
     size_t chunk = s->kind == SK_TCP ? MIN((size_t)len, (size_t)SEND_CHUNK) : (size_t)MIN(len, (u64)65536);
@@ -274,9 +344,11 @@ static long sys_recvfrom(TrapFrame *tf) {
     if (!k) return -ENOMEM;
     u32 from = 0;
     u16 fport = 0;
-    ssize_t r = sk_recv(f, k, chunk, mflags, &from, &fport);
+    size_t full = 0;
+    ssize_t r = sk_recv_ex(f, k, chunk, mflags, &from, &fport, &full);
     long rc = r;
     if (r > 0 && copy_to_user((void *)ubuf, k, (size_t)r)) rc = -EFAULT;
+    if (rc >= 0 && (mflags & MSG_TRUNC) && s->kind != SK_TCP) rc = (long)full;       /* MSG_TRUNC: the real length of the datagram, not what fitted */
     kfree(k);
     if (rc >= 0 && A4(tf)) {
         if (s->kind == SK_TCP) { net_lock(); from = s->raddr; fport = s->rport; net_unlock(); }
@@ -290,12 +362,8 @@ static long sys_recvfrom(TrapFrame *tf) {
 static long sys_getsockname(TrapFrame *tf) {
     File *f = fd_get(current->proc, (int)A0(tf));
     if (!f) return -EBADF;
-    if (!(f->vn && S_ISSOCK(f->vn->mode))) return -ENOTSOCK;
-    u32 have;
-    if (!is_inet(f)) {                                                   /* UNIX sockets: just the family */
-        if (A2(tf) && !copy_from_user(&have, (void *)A2(tf), sizeof have) && have >= 2) { u16 fam = AF_UNIX; copy_to_user((void *)A1(tf), &fam, 2); have = 2; copy_to_user((void *)A2(tf), &have, sizeof have); }
-        return 0;
-    }
+    if (!is_sock(f)) return -ENOTSOCK;
+    if (!is_inet(f)) return unix_getname(f, false, A1(tf), A2(tf));
     Sock *s = f->priv;
     net_lock();
     u32 a = s->laddr;
@@ -308,8 +376,8 @@ static long sys_getsockname(TrapFrame *tf) {
 static long sys_getpeername(TrapFrame *tf) {
     File *f = fd_get(current->proc, (int)A0(tf));
     if (!f) return -EBADF;
-    if (!(f->vn && S_ISSOCK(f->vn->mode))) return -ENOTSOCK;
-    if (!is_inet(f)) return -ENOTCONN;
+    if (!is_sock(f)) return -ENOTSOCK;
+    if (!is_inet(f)) return unix_getname(f, true, A1(tf), A2(tf));
     Sock *s = f->priv;
     net_lock();
     bool ok = s->kind == SK_TCP ? (s->state >= TCPS_ESTABLISHED && s->state != TCPS_CLOSED && s->state != TCPS_LISTEN && s->state != TCPS_SYN_SENT)
@@ -324,14 +392,14 @@ static long sys_getpeername(TrapFrame *tf) {
 static long sys_setsockopt(TrapFrame *tf) {
     File *f = fd_get(current->proc, (int)A0(tf));
     if (!f) return -EBADF;
-    if (!(f->vn && S_ISSOCK(f->vn->mode))) return -ENOTSOCK;
+    if (!is_sock(f)) return -ENOTSOCK;
     int level = (int)A1(tf), name = (int)A2(tf);
     u64 len = A4(tf);
     u8 val[16];
     memset(val, 0, sizeof val);
     if (len > sizeof val) len = sizeof val;
     if (A3(tf) && len && copy_from_user(val, (const void *)A3(tf), (size_t)len)) return -EFAULT;
-    if (!is_inet(f)) return level == SOL_SOCKET ? 0 : -ENOPROTOOPT;      /* UNIX sockets accept and ignore the generic options */
+    if (!is_inet(f)) return unix_setsockopt(f, level, name, val, (size_t)len);
     Sock *s = f->priv;
     int iv = 0;
     memcpy(&iv, val, MIN((u64)4, len));
@@ -342,7 +410,14 @@ static long sys_setsockopt(TrapFrame *tf) {
         case SO_REUSEADDR: case SO_REUSEPORT: s->reuseaddr = iv != 0; break;
         case SO_BROADCAST: s->broadcast = iv != 0; break;
         case SO_KEEPALIVE: s->keepalive = iv != 0; break;
-        case SO_SNDBUF: case SO_RCVBUF: case SO_LINGER: break;            /* the buffers are fixed-size rings; accepted and ignored */
+        case SO_SNDBUF: case SO_RCVBUF: break;                            /* the buffers are fixed-size rings; accepted and ignored */
+        case SO_LINGER:
+            if (len < 8) { rc = -EINVAL; break; }
+            memcpy(&s->linger_on, val, 4);
+            memcpy(&s->linger_sec, val + 4, 4);
+            break;
+        case 5: case 10: case 11: case 12: case 16: case 18: case 19: case 29: case 32: case 33:
+            break;                                                         /* DONTROUTE, OOBINLINE, NO_CHECK, PRIORITY, PASSCRED, RCVLOWAT, SNDLOWAT, TIMESTAMP, SNDBUFFORCE, RCVBUFFORCE: accepted, no effect */
         case SO_RCVTIMEO: case SO_SNDTIMEO: {
             if (len < sizeof(struct gtimeval)) { rc = -EINVAL; break; }
             struct gtimeval tv;
@@ -358,11 +433,18 @@ static long sys_setsockopt(TrapFrame *tf) {
     } else if (level == IPPROTO_IP) {
         if (name == IP_TTL) { if (iv < 1 || iv > 255) rc = -EINVAL; else s->ttl = (u8)iv; }
         else if (name == IP_TOS) s->tos = (u8)iv;
+        else if (name == 10 || name == 11) { }                              /* IP_MTU_DISCOVER, IP_RECVERR: accepted, no effect */
         else rc = -ENOPROTOOPT;
     } else if (level == IPPROTO_TCP && s->kind == SK_TCP) {
-        if (name == TCP_NODELAY) { s->nodelay = iv != 0; if (s->nodelay) net_kick(); }
-        else if (name == TCP_MAXSEG) { if (iv >= 88 && iv < s->mss) s->mss = (u16)iv; }
-        else rc = -ENOPROTOOPT;
+        switch (name) {
+        case TCP_NODELAY: s->nodelay = iv != 0; if (s->nodelay) net_kick(); break;
+        case TCP_MAXSEG: if (iv >= 88 && iv < s->mss) s->mss = (u16)iv; break;
+        case 4: if (iv < 1 || iv > 32767) rc = -EINVAL; else s->ka_idle = (u16)iv; break;       /* TCP_KEEPIDLE */
+        case 5: if (iv < 1 || iv > 32767) rc = -EINVAL; else s->ka_intvl = (u16)iv; break;      /* TCP_KEEPINTVL */
+        case 6: if (iv < 1 || iv > 127) rc = -EINVAL; else s->ka_cnt = (u8)iv; break;           /* TCP_KEEPCNT */
+        case 3: case 7: case 8: case 9: case 12: case 18: break;           /* CORK, SYNCNT, LINGER2, DEFER_ACCEPT, QUICKACK, USER_TIMEOUT: accepted, no effect */
+        default: rc = -ENOPROTOOPT;
+        }
     } else {
         rc = -ENOPROTOOPT;
     }
@@ -373,7 +455,7 @@ static long sys_setsockopt(TrapFrame *tf) {
 static long sys_getsockopt(TrapFrame *tf) {
     File *f = fd_get(current->proc, (int)A0(tf));
     if (!f) return -EBADF;
-    if (!(f->vn && S_ISSOCK(f->vn->mode))) return -ENOTSOCK;
+    if (!is_sock(f)) return -ENOTSOCK;
     int level = (int)A1(tf), name = (int)A2(tf);
     u32 ulen;
     if (!A4(tf) || copy_from_user(&ulen, (const void *)A4(tf), sizeof ulen)) return -EFAULT;
@@ -383,8 +465,8 @@ static long sys_getsockopt(TrapFrame *tf) {
     int iv = 0;
     long rc = 0;
     if (!is_inet(f)) {
-        if (level != SOL_SOCKET) return -ENOPROTOOPT;
-        iv = name == SO_TYPE ? SOCK_STREAM : 0;
+        rc = unix_getsockopt(f, level, name, out, &olen);
+        if (olen == 4) memcpy(&iv, out, 4);
     } else {
         Sock *s = f->priv;
         net_lock();
@@ -397,6 +479,13 @@ static long sys_getsockopt(TrapFrame *tf) {
             case SO_ERROR: iv = s->err; s->err = 0; break;
             case SO_ACCEPTCONN: iv = s->state == TCPS_LISTEN; break;
             case SO_SNDBUF: case SO_RCVBUF: iv = s->kind == SK_TCP ? TCP_BUF : 131072; break;
+            case 38: iv = s->kind == SK_TCP ? IPPROTO_TCP : s->kind == SK_UDP ? IPPROTO_UDP : IPPROTO_ICMP; break;       /* SO_PROTOCOL */
+            case 39: iv = AF_INET; break;                                                                               /* SO_DOMAIN */
+            case SO_LINGER:
+                memcpy(out, &s->linger_on, 4);
+                memcpy(out + 4, &s->linger_sec, 4);
+                olen = 8;
+                break;
             case SO_RCVTIMEO: case SO_SNDTIMEO: {
                 u32 ms = name == SO_RCVTIMEO ? s->rcvtimeo : s->sndtimeo;
                 struct gtimeval tv = { ms / 1000, (ms % 1000) * 1000 };
@@ -409,7 +498,14 @@ static long sys_getsockopt(TrapFrame *tf) {
         } else if (level == IPPROTO_IP) {
             if (name == IP_TTL) iv = s->ttl; else if (name == IP_TOS) iv = s->tos; else rc = -ENOPROTOOPT;
         } else if (level == IPPROTO_TCP && s->kind == SK_TCP) {
-            if (name == TCP_NODELAY) iv = s->nodelay; else if (name == TCP_MAXSEG) iv = s->mss; else rc = -ENOPROTOOPT;
+            switch (name) {
+            case TCP_NODELAY: iv = s->nodelay; break;
+            case TCP_MAXSEG: iv = s->mss; break;
+            case 4: iv = s->ka_idle ? s->ka_idle : 7200; break;
+            case 5: iv = s->ka_intvl ? s->ka_intvl : 75; break;
+            case 6: iv = s->ka_cnt ? s->ka_cnt : 9; break;
+            default: rc = -ENOPROTOOPT;
+            }
         } else {
             rc = -ENOPROTOOPT;
         }

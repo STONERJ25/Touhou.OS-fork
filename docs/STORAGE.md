@@ -58,7 +58,8 @@ partition name has room for the full text. The mount policy accepts both spellin
 8. **A HUMANVILLAGE volume that was not shut down cleanly is gone through before it is mounted** (read-only, no VFS lock held; the section
    "Dirty volumes" below): nothing out of place -> mounted read-write (`fsck=ok` / `fsck=left`), otherwise read-only with the precise reason
    in the log and in `/proc/fatcheck`. `hvforce` on the kernel command line mounts read-write whatever the check says (dangerous);
-   `hvcheck=off` skips the check, and a dirty volume is then read-only as it always was.
+   `hvcheck=off` skips the check, and a dirty volume is then read-only as it always was. `hvfsck=safe` makes the repairs of `fsck -a` between the
+   check and the mount, and the second check decides ("Mending at boot").
 
 ### Sticks (USB)
 
@@ -183,9 +184,9 @@ write `TOUHOU.LOG`), exactly when the log is needed. So a dirty HUMANVILLAGE vol
 
 ```
  shared/fatck.[ch]    the scanner, freestanding C: the same source runs in the kernel, in /bin/fsck and (as a DLL) in the host tests
- shared/fatfix.[ch]   the repair engine (user space only; an empty file in the kernel build)
- kernel/fs/fat_check.c   kernel adapter: block device in, text out, /proc/fatcheck;  kernel/include/fatcheck.h has the contract
- kernel/fs/mountpolicy.c check_before_mount(): runs it, adds "fsck=ok|left" or "force" to the mount options
+ shared/fatfix.[ch]   the repair engine (/bin/fsck, the host tests, and the kernel with hvfsck=safe: "Mending at boot")
+ kernel/fs/fat_check.c   kernel adapter: block device in, text out, /proc/fatcheck, the repair at boot;  kernel/include/fatcheck.h has the contract
+ kernel/fs/mountpolicy.c check_before_mount(): runs it (and the repair), adds "fsck=ok|left" or "force" to the mount options
  user/bin/fsck/       the command line (fsck, fsck.fat, fsck.vfat)                  initrd/.../patchouli/8/fsck.pw
  tools/fatck_host.py  builds shared/*.c into a host DLL for the tests                tools/fatck_host_rt.c is its little C runtime
 ```
@@ -261,6 +262,163 @@ shared cluster (the innocent one, whichever the scan met second) was deleted ins
 exact copy of an entry needed `-y`; a damaged FSInfo pointer made the repair write over the backup boot sector. `fsck_c_repair_interrupted` (a power cut in
 the middle of `fsck`, see "State when paused") added: the link of a cross-linked file's copy could reach the disk before the copy; and a chain that breaks behind
 everything its file needs (what an interrupted trim leaves) is cut by `-a`, not only by `-y`.
+
+## Mending at boot (`hvfsck=safe`)
+
+Built by the agent `fsck-boot` on 2026-11-08 on the owner's decision. The design was written down before the code; the numbers were measured while it was built.
+
+**Why.** The owner switches the Dell off with the power button after a hang. The next start finds the Human Village flagged dirty, goes through its ledger
+("Dirty volumes" above), and when it finds damage mounts the volume read-only and says: as root, `umount /HumanVillage`, then `fsck -a /dev/nvme0n1p5`. Under
+a running desktop that `umount` says *busy* (the homes live there), so the machine does not heal itself. An **opt-in word on the kernel command line** makes the
+kernel make the safe repairs itself, before the volume is mounted. Without the word nothing changes: check only, as before.
+
+**The word: `hvfsck=safe`.** `hv` as in `hvforce` and `hvcheck=off`; `fsck` because it does what the command does; the value names the level the way `fsck -a`
+and `fsck -y` do. `safe` is the only value and means exactly `FIX_SAFE`, the repairs of `fsck -a`: those that lose no readable data and no file. There is no
+`all`: a repair that cuts a chain, removes an entry or renames a file is never made at boot (it needs a decision; `fsck -y` by hand). Any other value, or the
+bare word, is said in the log and ignored. (The name is not `fsck=`: that is the mount option the policy adds after a check, `fsck=ok|left`.)
+
+**When it acts.** Only on the HUMANVILLAGE volume, in `check_before_mount()` (kernel/fs/mountpolicy.c), after the check, and only for damage:
+
+| the check says | with `hvfsck=safe` |
+|----------------|--------------------|
+| flags clear | nothing, no scan (as before) |
+| dirty flag only, nothing out of place (verdict 1) | as before: read-write, `fsck=ok` |
+| harmless leftovers only (2) | as before: read-write, `fsck=left`. They stay harmless, and tidying them writes `FOUND.000` and rewrites FAT copies for nothing the owner can use; `fsck -a` does it by hand |
+| damage, and the scan finished (-1) | **mend**, see below |
+| the scan could not finish (time, memory, nesting beyond 256, a failing device) | nothing: with no verdict there is nothing to mend; read-only as before, and the log says the word does not act |
+| the boot sector is unusable (-2) | nothing: the FAT driver refuses the volume as before, and `fsck` never repairs a boot sector |
+| the device cannot be written | nothing, and the log says so ("A device that cannot be written" below) |
+
+`hvcheck=off` makes the word moot (the check it follows is skipped; the log says so). `hvforce` composes: the repair runs first, and what is still wrong is then
+mounted over as today.
+
+**What it does, and in what order.** `fat_repair_device()` (kernel/fs/fat_check.c) runs the repair engine of `/bin/fsck`, `fatfix_run()` with `FIX_SAFE` and no
+questions, on the partition *before* it is mounted: no VFS mount of it exists yet, the policy lock is held, and the boot has not started any process. The engine
+runs in a session of its own over the `BlockDev`: reads are `blk_read`, writes `blk_write` in whole device sectors (4096 on a 4Kn disk), the barrier the engine asks
+for is `blk_flush`, memory comes from the kernel heap, the clock is `uptime_ms()`. The order of the writes is the engine's, as `/bin/fsck` has it: passes of *scan,
+repair, flush*, and within a pass the FAT copies first, then cross-links (the second claimant gets a private copy of the shared clusters, flushed before anything
+links to it), `.` and `..`, repeated names, everything else in the order of the scan; lost chains last (`FOUND.000` is made with its `.` and `..` flushed before the
+root names it, then one `FILEnnnn.CHK` entry per chain); FSInfo when a pass changed nothing else; and the dirty flag (FAT[1] of every copy, the boot sector's flag
+byte) only when the last scan finds nothing out of place, followed by a flush. `allow()` refuses every repair above `FIX_SAFE`: the engine says "left alone (needs -y)"
+and goes on. The files made from lost chains carry the time of the volume's own clock (UTC plus the offset of the `tz=` word's standard time, as the mount's
+`tzoffset=` has it).
+
+Then a **second check in a fresh session**, which forces a full scan even though the flags may now say clean and reads everything from the device again, not from
+the engine's cache. Its answer (0 clean, 1 flag only, 2 harmless leftovers, -1 damage or no verdict) decides the mount in place of the first check's: read-write
+for 0, 1 and 2 (`fsck=ok|left` as before for 1 and 2); on -1, or when the engine itself stopped (the device failed, out of memory, out of time), the volume is mounted
+read-only (the policy adds `ro`, because after a repair the flags can say clean while errors remain), and `hvforce` still overrides.
+
+**What the log and `/proc/fatcheck` say.** One `[Keine]` line says what is about to happen (the first four errors follow), a heartbeat says every 15 s that it is
+still at it, and one line says what was done (counts, lost chains saved in `FOUND.000`) and, when something is left, what to do (`fsck -y` by hand needs
+`nohumanvillage`, because under the desktop `umount` says busy):
+
+```
+[Keine] vda1 was left untidy and its ledger does not add up: 1 error(s). hvfsck=safe is set: Keine mends what loses nothing (the repairs of fsck -a, never one that costs a name or part of a file) before the volume is mounted
+[Keine]   /reimu/notes: LFN fragment at slot 2 is not followed by a matching entry
+[Keine] vda1 mended with hvfsck=safe in 213 ms (4 pass(es)): 4 repair(s), 2 lost chain(s) of 13 cluster(s) saved in FOUND.000. Keine went through the ledger again, from the device: nothing is out of place and the volume is marked clean, the Human Village may write in it again
+```
+
+`/proc/fatcheck` keeps the first check's findings, then the repair report (the counts, the first six things the engine said) and what the second check found:
+
+```
+vda1: FAT32, flagged dirty: DAMAGED (102 ms, 47 files in 10 directories, 126754 free clusters, 13 lost)
+  1 error(s), 2 harmless leftover(s), 2 warning(s)
+  error:    /reimu/notes: LFN fragment at slot 2 is not followed by a matching entry
+  leftover: 13 lost cluster(s) (allocated in the FAT but part of no file), first: 24, 25, 26, 27, 28, 29, 30, 31
+  hvfsck=safe: mended in 213 ms, 4 pass(es): 4 repair(s), 2 lost chain(s) of 13 cluster(s) saved in FOUND.000
+    fixed: removed 3 orphaned long-name entries
+    fixed: saved a lost chain of 10 cluster(s) as FOUND.000/FILE0000.CHK
+    fixed: the volume is marked clean
+  afterwards (gone through again from the device, 43 ms): 0 error(s), 0 harmless leftover(s): the ledger is in order and the volume is clean
+```
+
+The same lines are in `TOUHOU.LOG` on the mended volume (the log is written when the volume comes up). Without the word, a damaged volume gets the old lines with the new
+way named first (`put hvfsck=safe on the kernel command line (cmdline.txt on the EFI partition) and restart. By hand: As root, umount /HumanVillage and run fsck -a ...`), and
+`/proc/fatcheck` has a `fix:` line for each.
+
+**A device that cannot be written.** The Dell's command line has `blk.ro` and `blk.rw=<partition GUID>`: the Human Village is writable there. With plain `blk.ro`,
+or on a write-protected medium (a stick's switch, a read-only virtio disk) `BlockDev.readonly` is set and the policy never checked such a volume. With the word
+set it does check it (read-only, as always, so that the report in `/proc/fatcheck` exists) and, when the volume is flagged dirty, logs that `hvfsck=safe` cannot act
+because the device cannot be written; the mount is read-only as before and gets no `fsck=` word.
+
+**Can the engine run in the kernel as it is?** Yes, with one line: the questions of the brief, answered.
+* *Is it in the image?* No: `shared/fatfix.c` was compiled as an empty translation unit in the kernel build (`FATCK_REPAIR` is defined only by `/bin/fsck` and the host
+  DLL). The guard became `defined(FATCK_REPAIR) || defined(KERNEL)`; nothing else in the file changed for the kernel.
+* *Memory.* All of it goes through `FatCkIo.alloc/release` (`kzalloc`/`kfree`, at most 24 live blocks): the scanner's (4 MiB of 16 KiB windows, a 64 KiB read-ahead
+  stage, one cluster, a 2 MiB name arena, a bitmap of one bit per cluster: 740 KB for 5.9 million clusters, 5.9 MB for 47 million) and the repair's (a second bitmap
+  for protected chains, two for lost chains, one cluster, 32 KiB for copying a FAT) and the retained findings (4096 of them, about 1 MiB). Nothing is taken from the stack.
+* *I/O.* `read`, `write` and `flush` callbacks over `blk_read`, `blk_write`, `blk_flush`; every buffer is a window in the kernel heap (the block layer's buffer rule); a
+  write is at most one 16 KiB window, rounded out to whole sectors.
+* *Stack.* Measured with clang's `-Wframe-larger-than` on the kernel flags: `fatfix_run` (the repairs are inlined into it) has a 1928-byte frame and `allow()` 376 bytes;
+  below them are the scanner's frames, which the check has always used (`fatck_scan` 952, `check_fsinfo` 1336). The boot thread has 32 KiB of stack, every other thread 16 KiB.
+* *Floating point.* None (the file compiles with `-mgeneral-regs-only`).
+* *Time.* **Measured** in QEMU's emulated CPU (TCG; sparse images, bare FAT32 volumes of 180 GiB, written by a script that allocates the chains without writing file data; the
+  kernel's own `went through the whole ledger in N ms`): the check costs about 330 to 400 ns per cluster of the volume, the allocated ones and the directory entries
+  included.
+
+  | volume | clusters | allocated | files in directories | the check | the repair (mending one size and one lost chain: 4 passes) | the check after it |
+  |--------|----------|-----------|----------------------|-----------|-----------------------------------------------------------|---------------------|
+  | 12 GiB, 4 KiB clusters (`fsck_kernel_limits`) | 3.1 M | 1 | 2 in 2 | 1.1 s | | |
+  | 180 GiB, 32 KiB clusters (what the installer makes), empty | 5.9 M | 4 | 0 in 3 | 2.0 s | | |
+  | the same with 100 GiB in 40 big files and 60 040 small files | 5.9 M | 3.3 M | 60 040 in 3 003 | 3.4 to 3.8 s | 15.1 s | 3.4 s |
+  | 180 GiB, 4 KiB clusters, the same files | 47.1 M | 26.3 M | 60 040 in 3 003 | 18.8 to 20.3 s | 97.3 s | 18.4 s |
+
+  The repair is a number of full scans: the check, then one scan per pass of the engine (a pass that repairs something is followed by another; the last one finds nothing
+  and clears the flag), then the second check. Mending one size and one lost chain took 4 passes, so 6 scans in all: **about 22 s for the Dell's 180 GB volume (5.9 million
+  32 KiB clusters, what the installer makes) and about 135 s for the same volume with 4 KiB clusters, in QEMU's emulated CPU; the real i5-7500 should be several times
+  faster, but this is not measured on it.** The engine itself is limited to 16 passes. The deadlines are in fat_check.c: 120 s for the first check, 15 minutes for the whole
+  repair, 5 minutes for the second check; a repair that runs out of time stops where it is (every pass ends with a flush), mounts read-only and says so, and the next start goes
+  on.
+* *The watchdog.* The loader arms the TCO watchdog (120 s unless `wdt=` says otherwise) just before the kernel starts, and the kernel's own feeder, the Momiji thread
+  (`kernel/drivers/tcowdt.c`), exists only from the initcalls on, which run *after* the storage policy. The first version of this work therefore **reset the machine in the
+  middle of the repair** of the 4 KiB-cluster volume above (QEMU's `-no-reboot` turns the reset into an exit; on the Dell the next start would have found the volume still
+  dirty and begun again, and after two such starts the loader of an update on trial goes back to the previous kernel). While nobody else feeds the timer, the check and the
+  repair now reload it themselves (`tcowdt_boot_feed()` in `kernel/drivers/tcowdt.c`, called from every request into the device, at most once a second; it does nothing once the
+  kernel or user space feeds the timer, or when the loader did not arm it). That covers the plain check too, which could in principle outlast the timer before. `fsck_boot_watchdog`
+  (`wdt=10`, the disk's writes slowed to one a second) fails with the feeder switched off and passes with it. (The first version kept the function in fat_check.c; the lead moved it
+  to the watchdog's own file, where "the kernel feeds it from boot" is documented as true only from the initcalls on.)
+
+**A power cut during the repair.** The engine is restartable, not atomic: within a pass it writes its cache windows in the order the windows happen to be flushed, with a
+device flush between passes. The dirty flag is the last thing written, so after a cut the volume is always still flagged dirty, and the next start checks it again, finds
+what is left, and takes the path that finding calls for (the same word, the same engine). What a cut can leave, as the tests found it:
+* Any subset of the windows of the current pass can be on the disk (and, on a device that tears writes, any subset of their sectors), after everything the earlier passes
+  wrote. What that looked like to the check at the next start, over all the cuts below: **damage that `fsck -a` mends** (a size or a chain written without its partner, an
+  orphaned long-name set, a copy of a cross-linked tail linked before the rest), **only harmless leftovers** (lost clusters: a chain whose entry was not written yet, a
+  copy that was not linked, a new cluster of `FOUND.000`; FAT copies and FSInfo out of step; a chain longer than its size) or **a bare dirty flag**. In none of the cuts
+  tried was it a volume the kernel refuses, a scan that cannot finish, or damage that only `fsck -y` could mend and that the damage itself did not have.
+* The next start does what that finding calls for, with the same word: damage is mended (and the volume ends clean, flag cleared, mounted read-write); harmless leftovers
+  are mounted read-write as they are, **the flag stays and the lost clusters stay lost until `fsck -a`** (the word does not tidy leftovers, see "When it acts"; the data in
+  them is not lost, it is not named either); a bare dirty flag is cleared at the first idle flush. After a last `fsck -a` the volume is what the uninterrupted repair of the
+  same damage makes of it: every file outside `FOUND.000` byte for byte, every recovered file of the uninterrupted repair present with its exact bytes.
+* A cut repair can leave **extra files in `FOUND.000`** that the uninterrupted repair does not make: a recovered chain made of the repair's own bookkeeping, which the next
+  repair saves like any lost chain: a zeroed cluster that was meant for `FOUND.000`, a cluster of `FOUND.000` itself (its entries, `FILEnnnn.CHK`, or the `.` and `..` of a
+  `FOUND.000` that never got named by the root) that was written before it was linked, or the copy that a cross-linked file was to get, made in part or in full (the data is
+  also in the file it was copied from). The tests allow exactly these and nothing else (`benign_surplus()`).
+* **Tested:** `fsck_boot_cuts_host` cuts the repair of two scenarios (forty files lose their directory entries, 30 sectors written; five kinds of damage at once, 159 sectors)
+  after *every* sector, torn sector by sector in the order the engine hands them over: 191 cuts, after which the kernel would have found damage 157 times, leftovers 26 times,
+  a bare flag 8 times; `fsck_boot_cuts_host_menu` does the same for every entry of the damage menu (155 cuts: 91 damage, 13 leftovers, 51 bare flag); both end as described
+  above every time. `fsck_boot_power_cuts` kills QEMU at the *k*-th write request of the real boot path (the disk's writes slowed to eight a second so that the kill lands
+  between two requests), for every *k* from 0 to the last (18 requests in the first scenario, 23 in the second: 43 kills, 504 s): the images were damage 14 times, leftovers 21
+  times, a bare flag 8 times, and in all 43 the second start mounted the volume read-write and ended as above. (Cuts after the kernel had gone on to mount, write and sync are
+  not part of the repair and were not made.)
+* **Not shown:** a device that acknowledges a flush it did not do, or reorders acknowledged writes behind the engine's barriers (the engine's order is then not what reaches the
+  medium); QEMU keeps every acknowledged write when it is killed, so the VM runs show the order of the requests, not what a real NVMe drive's write cache would lose; sectors torn
+  *within* a request were only tried on the host.
+
+**What the word never does.** Cut a chain, remove an entry, rename a file or touch a volume that was not flagged dirty; mend a boot sector; write to a device that is
+read-only; touch a volume other than the one the policy is about to mount on `/HumanVillage` (a stick's HUMANVILLAGE volume included, if that is the one); tidy harmless leftovers
+(a bare dirty flag and leftovers take the paths they always took; `fsck -a` by hand does it). A volume whose root directory chain is broken cannot be mounted at all, with
+or without the word (the FAT driver cannot read the root directory); the repair does what `fsck -a` does to it and the volume stays unmounted until `fsck -y`.
+
+**Tested** (`tests/case_fsck_boot.py`, prefix `fsck_boot_`; the damage menu and the file lists are those of `tests/case_fsck.py`): `fsck_boot_menu_512` and `_4096`: every entry of the menu
+on FAT32 with 512- and 4096-byte clusters, booted with the word: what `fsck -a` mends is mended before the mount (log, `/proc/fatcheck`, read-write, clean afterwards, every file
+that was not aimed at byte for byte, lost files in `FOUND.000` with their exact bytes, the volume is what the host's run of the same engine makes of the image), what needs `-y`
+stays read-only and says why, leftovers and a bare dirty flag take their old paths, a damaged boot sector is refused untouched; `fsck_boot_without_the_word`: the control, the
+old behaviour with the new advice named first; `fsck_boot_needs_y`: damage that needs `-y`, alone and mixed, then the advice followed by hand (`nohumanvillage`, `fsck -y`);
+`fsck_boot_readonly_device`: a write-protected virtio disk and an NVMe drive under `blk.ro` with and without `blk.rw=` (the Dell's command line); `fsck_boot_4kn`,
+`fsck_boot_fat16`, `fsck_boot_stick` (the volume is on a USB stick, found by the automount thread); `fsck_boot_words`: unknown value, bare word, `hvcheck=off`, `hvforce`, an unfinished check, a clean volume; `fsck_boot_log`: `TOUHOU.LOG` and the time stamps with
+`tz=`; `fsck_boot_watchdog`; `fsck_boot_write_error` (the disk refuses a write in the middle of the repair: it stops, says why, the volume is read-only, the next start goes on);
+`fsck_boot_power_cuts`, `fsck_boot_cuts_host` and `fsck_boot_cuts_host_menu` (above).
 
 
 ## Write ordering
@@ -532,6 +690,9 @@ must match the disk byte for byte.
   chain trimmed on the next write, flag stays), real damage (read-only, the log and `/proc/fatcheck` say what, the image is untouched), `hvforce` and `hvcheck=off`,
   and the limits (nesting beyond 256, a 12 GiB volume with 3 million clusters). Tests that used to expect "dirty means read-only"
   (`storage_dirty_volume_readonly`, `storage_unclean_power_loss`, the bootlog test) run with `hvcheck=off`; `usbstor_hotplug_idle` now expects the check and a writable mount.
+* `fsck_boot_*` (`tests/case_fsck_boot.py`, boot the kernel with `hvfsck=safe`; "Mending at boot" has the list): the whole damage menu on FAT32 with 512- and
+  4096-byte clusters, the same kinds of damage without the word, damage that needs `-y`, a read-only device, a 4Kn disk, the word itself, the log on the volume, the
+  watchdog, and the power cuts (`TOUHOU_FSCKBOOT_CUTS`, `TOUHOU_FSCKBOOT_ONLY`).
 * `fsck_cmd_*` run `/bin/fsck` itself in the guest: `fsck_cmd_options_and_exit_codes` (one disk of ten small FAT12/16/32 volumes, damaged in their own ways, gone through
   with every option from a root shell; afterwards the host compares each volume with its own run of the same repairs), `_not_root`, `_asks` (the questions through
   the serial console), `_4kn` (a 4096-byte-sector disk), `_kernel_advice` and `_kernel_advice_remount` (the flow the kernel's message promises: `umount /HumanVillage`,
@@ -596,10 +757,10 @@ write order was then done on `cloud/fat-ordering` (cloud task 7, 2026-10-24), wh
 * More than 10000 lost chains: the 10001st is not saved (`FILE9999.CHK` is the last name); `-F` frees them.
 
 **Not started**
-* Power cuts *during* `fsck` in a guest (kill the VM at random moments of `fsck -y` on a damaged volume and require that a second `fsck` ends clean); the host test does
-  it per sector, which also tears writes, but with the engine's own model of the device.
-* A way to look at (or mend) the volume the system is running from without leaving the desktop, which the advice of the log line needs on the Dell.
-* `fsck` at boot, before the mount (a command line word), for an installed machine that is only reachable over ssh.
+* Power cuts *during* `/bin/fsck` in a guest (kill the VM at random moments of `fsck -y` on a damaged volume and require that a second `fsck` ends clean); the host test does
+  it per sector, which also tears writes, but with the engine's own model of the device. (The same engine in the kernel at boot is cut in a guest by `fsck_boot_power_cuts`.)
+* A way to look at (or mend) the volume the system is running from without leaving the desktop; `hvfsck=safe` ("Mending at boot", done 2026-11-08) is the answer for the
+  repairs that lose nothing, the rest still needs `nohumanvillage` and `fsck -y` by hand.
 
 ## How to resume
 
@@ -617,3 +778,8 @@ write order was then done on `cloud/fat-ordering` (cloud task 7, 2026-10-24), wh
    counts the extra flushes), and the same test on a USB stick in QEMU (`usb-storage`) instead of virtio-blk.
 5. On the Dell, with the owner's go: switch it off with the power button while something writes (a big copy), start it again, read `/proc/fatcheck` and the `[Keine]`
    line, and try the three commands of REAL_HARDWARE.md, "After a bad shutdown". Note what `umount /HumanVillage` says.
+6. After a change to `kernel/fs/fat_check.c`, `kernel/fs/mountpolicy.c` or the engine: `python tools/qemu-slot.py -- python tests/run_all.py fsck_boot_` (about 40 minutes on a quiet PC: the two
+   menus about 6 and 10 minutes, the power cuts 4 minutes with the default of six points per scenario and 20 minutes with `TOUHOU_FSCKBOOT_CUTS=all`); `fsck_boot_cuts_host` and
+   `fsck_boot_cuts_host_menu` need no VM. A failing run keeps its image as `build/storage-tests/fsck-boot/FAILED-*.img` (look at it with `python tools/fatck_host.py IMAGE:1`).
+7. What could come next for the repair at boot: let the word tidy harmless leftovers too (it then ends clean after a cut repair, at the price of writing `FOUND.000` after every
+   plain power cut), reuse the first check's scan as the engine's first pass and skip the engine's last one (two scans of six), and move the watchdog feeding into `tcowdt.c`.

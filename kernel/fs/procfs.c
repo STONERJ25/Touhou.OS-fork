@@ -145,8 +145,8 @@ typedef struct {
     int which;
 } PidFile;
 
-enum { PF_STAT, PF_STATUS, PF_CMDLINE, PF_THREADS, PF_COUNT };
-static const char *const g_pidfile_names[PF_COUNT] = { "stat", "status", "cmdline", "threads" };
+enum { PF_STAT, PF_STATUS, PF_CMDLINE, PF_THREADS, PF_MAPS, PF_COUNT };
+static const char *const g_pidfile_names[PF_COUNT] = { "stat", "status", "cmdline", "threads", "maps" };
 
 static u64 resident_pages(Process *p, u64 *total) {
     u64 rss = 0, vm = 0;
@@ -201,6 +201,27 @@ static size_t gen_pidfile(const PidFile *pf, char *b, size_t cap) {
                                   (unsigned long)t->cpu_ticks, t->name);
         if (!n) n = (size_t)snprintf(b, cap, "%d Z 0 %s\n", p->pid, p->name);     /* a zombie has no threads left; the process itself is listed */
         break;
+    case PF_MAPS: {                                     /* the mappings as Linux prints them: "start-end perms offset dev inode  name" (docs/COMPAT.md) */
+        Vma *list[128];
+        int nv = 0;
+        for (Vma *v = p->as.vmas; v && nv < 128; v = v->next) list[nv++] = v;
+        for (int i = 1; i < nv; i++) {                  /* the list is newest first: print by address */
+            Vma *key = list[i];
+            int j = i - 1;
+            while (j >= 0 && list[j]->start > key->start) { list[j + 1] = list[j]; j--; }
+            list[j + 1] = key;
+        }
+        for (int i = 0; i < nv && n + 140 < cap; i++) {
+            const Vma *v = list[i];
+            const char *name = (v->flags & VMA_STACK) ? "[stack]" : (v->flags & VMA_HEAP) ? "[heap]" : "";
+            size_t start = n;
+            n += (size_t)snprintf(b + n, cap - n, "%lx-%lx %c%c%c%c 00000000 00:00 0", (unsigned long)v->start, (unsigned long)v->end, (v->prot & PROT_READ) ? 'r' : '-',
+                                  (v->prot & PROT_WRITE) ? 'w' : '-', (v->prot & PROT_EXEC) ? 'x' : '-', (v->flags & VMA_IO) ? 's' : 'p');
+            if (name[0]) while (n - start < 73 && n + 1 < cap) b[n++] = ' ';           /* Linux pads the name to a column; an unnamed mapping ends in one space */
+            n += (size_t)snprintf(b + n, cap - n, "%s\n", name[0] ? name : " ");
+        }
+        break;
+    }
     }
     irq_restore(f);
     return n;

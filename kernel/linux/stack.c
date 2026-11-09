@@ -30,6 +30,7 @@
 #define AT_RANDOM   25
 #define AT_HWCAP2   26
 #define AT_EXECFN   31
+#define AT_MINSIGSTKSZ 51                       /* Linux 5.14: the least a signal stack can be (the dynamic linker asks for it) */
 
 #define LINUX_CLK_TCK 100
 #define AUX_MAX       24                        /* entries (pairs) we may write */
@@ -96,6 +97,7 @@ int linux_build_stack(AddrSpace *as, const LinuxImage *img, char *const argv[], 
     AUX(AT_RANDOM, random_u);
     AUX(AT_HWCAP2, 0);
     AUX(AT_EXECFN, execfn_u);
+    AUX(AT_MINSIGSTKSZ, 2048);                          /* a handler's frame (rt_sigframe, the FXSAVE area, the red zone) takes about 1100 bytes here */
     AUX(AT_NULL, 0);
 #undef AUX
 

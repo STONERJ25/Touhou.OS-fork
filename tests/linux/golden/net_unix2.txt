@@ -1,0 +1,49 @@
+socketpair(SOCK_DGRAM): 0
+SO_TYPE 2
+first read: 3 'one', second read: 6 'second'
+nothing queued: -1 errno 11 (EAGAIN 11)
+poll on the idle end: POLLIN 0 POLLOUT 1
+after a send: POLLIN 1, FIONREAD-like peek length 10
+peek 4: 4 '0123', read 4: 4 '0123' (the rest of the datagram is lost), then -1 errno 11
+recvmsg into 3 bytes: 3 'abc', MSG_TRUNC in msg_flags: 1
+getsockname of a pair end: 0, length 2; getpeername: 0, length 2
+a 60000-byte datagram: sent 60000, received 60000
+a full queue ends the non-blocking sends with EAGAIN after a few messages: 1, 1
+bind the server: 0, the client: 0
+sendto the server: 12
+recvfrom: 12 'hello server', the sender is /tmp/net_unix2_cli.sock (address length 26)
+reply to that address: 12
+the client read: 12 'hello client'
+a sender without a name: 11 bytes, address length 0
+sendto a path that does not exist: -1 errno 2 (ENOENT 2)
+send with no destination: -1 errno 107 (ENOTCONN 107, EDESTADDRREQ 89)
+connect: 0
+send: 9
+the server read: 9 'connected'
+getpeername: 0, the server's path /tmp/net_unix2_srv.sock, length 26
+connect(AF_UNSPEC) disconnects: 0
+send after that: -1 errno 107
+send to a destination that was closed: -1 errno 111 (ECONNREFUSED 111)
+datagram connect to a stream socket: -1 errno 91 (EPROTOTYPE 91)
+listen on a datagram socket: -1 errno 95 (EOPNOTSUPP 95)
+accept on a datagram socket: -1 errno 95
+bind an abstract name: 0
+sendto it: 14
+received: 14 'abstract dgram'
+epoll, nothing sent: 0 events
+epoll, after a send: 1 event, EPOLLIN 1
+send the read end of a pipe: 1
+received: 1 byte, 1 descriptor, MSG_CTRUNC 0, it is a new number: 1
+reading through the received descriptor: 16 'through the pipe'
+send three files: 1
+received 3 descriptors, close-on-exec: 111; contents: alpha beta gamma
+a byte without files: 1, 0 descriptors
+two sent, room for one: 1, 1 descriptor, MSG_CTRUNC 1
+two sent, no control buffer: 1, 0 descriptors, MSG_CTRUNC 1
+sending a descriptor that is not open: -1 errno 9 (EBADF 9)
+the write end was in flight when the receiver closed: the pipe reports hang-up 1 (1 ready)
+a socket passed through a socket: 11 'hello inner'
+a descriptor in a datagram: 1 received, read through it: 5 'dgram'
+SO_PASSCRED: 0
+SCM_CREDENTIALS: pid is ours 1, uid is ours 1, gid is ours 1
+exit status: 0

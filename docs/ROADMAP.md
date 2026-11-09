@@ -33,7 +33,7 @@ since 2026-11-03; see the project notes.)
 - [x] real-hardware preparation: boot-from-stick image, read-only-disks switch, USB boot path tested in QEMU
 - [x] USB mass storage, so `/HumanVillage` lives on the stick the OS booted from, plus `TOUHOU.LOG` on it for debugging a PC without serial (docs/USB.md, docs/REAL_HARDWARE.md)
 - [x] real-hardware audit, rounds 1 and 2 (framebuffer write-combining and the MTRR fallback, xHCI/AHCI/NVMe/PCI/ACPI against the specs, the loader's memory types); the OS booted to the desktop on the target Dell on 2026-10-23 (docs/HARDWARE_AUDIT.md)
-- [ ] real hardware, rest: a network link and the internal disks on the Dell (SATA is in RAID mode there), USB stick quirks (half done, does not compile: the branch `wip/usb-storage-soft-fallbacks`)
+- [ ] real hardware, rest: a network link and the internal disks on the Dell (SATA is in RAID mode there), USB stick quirks (the soft fallbacks are written and tested in QEMU, merged on 2026-11-09, [USB](USB.md) "Sticks that misbehave"; no misbehaving real stick has been tried)
 - [x] networking: NICs (virtio, e1000/e1000e, rtl8139 tested in QEMU; I217-I219 and rtl8168 written but never run on hardware), ARP/IP/UDP/TCP, DHCP/DNS, tools (docs/NETWORK.md)
 - [ ] networking, next: a link on the real PC (the I219 was found on the Dell, no cable was plugged in; RTL8168 never run); IPv6, SACK, a Kappa network panel
 - [x] audio core: Intel HDA / AC97, mixer, `play`, `beep`, `volume`

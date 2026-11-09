@@ -1,10 +1,12 @@
 /*
- * fatfix: see fatfix.h. Compiled only where FATCK_REPAIR is defined (the fsck program and the host test DLL); in the kernel build this file
- * is an empty translation unit.
+ * fatfix: see fatfix.h. Compiled where FATCK_REPAIR is defined (the fsck program and the host test DLL) and in the kernel (KERNEL, which
+ * tools/build.py defines for every kernel file): there kernel/fs/fat_check.c runs it at boot on the unmounted HUMANVILLAGE volume when the
+ * command line says hvfsck=safe (docs/STORAGE.md, "Mending at boot"). Nothing in this file allocates, reads or writes by itself: the
+ * session (FatCkIo) supplies memory, device access and the clock, so the same source runs in all three places.
  */
 typedef int fatfix_translation_unit_is_not_empty;
 
-#ifdef FATCK_REPAIR
+#if defined(FATCK_REPAIR) || defined(KERNEL)
 
 #include "fatfix.h"
 #include <stdarg.h>

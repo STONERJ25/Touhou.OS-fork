@@ -1,0 +1,53 @@
+epoll_create(0): -1 errno 22 (EINVAL 22)
+epoll_create1 with stray flags: -1 errno 22
+epoll_create1(EPOLL_CLOEXEC): ok 1, close-on-exec 1
+epoll_create(8): ok 1, close-on-exec 0
+add a pipe: 0
+add it again: -1 errno 17 (EEXIST 17)
+modify a descriptor that was never added: -1 errno 2 (ENOENT 2)
+delete one: -1 errno 2
+add the epoll descriptor to itself: -1 errno 22 (EINVAL 22)
+epoll_ctl on a descriptor that is not an epoll set: -1 errno 22
+add a descriptor that is not open: -1 errno 9 (EBADF 9)
+an unknown operation: -1 errno 22
+add with no event structure: -1 errno 14 (EFAULT 14)
+add a regular file: -1 errno 1 (EPERM 1)
+epoll_wait with maxevents 0: -1 errno 22
+epoll_wait on a pipe: -1 errno 22
+nothing written yet: 0 events
+after a write: 1 event, EPOLLIN 1, user data 1
+asked again, level-triggered: 1 event
+epoll_wait with no buffer while an event is waiting: -1 errno 14 (EFAULT 14)
+one byte read, two left: 1 event
+all read: 0 events
+after EPOLL_CTL_MOD: user data 77
+EPOLL_CTL_DEL: 0
+after the delete, data waiting: 0 events
+edge-triggered after a write: 1 event
+asked again with the data unread: 0 events
+another write: 1 event
+one-shot: 1 event
+one-shot, more data: 0 events
+after EPOLL_CTL_MOD re-armed it: 1 event
+write end of a pipe: 1 event, EPOLLOUT 1
+the writer closed: 1 event, EPOLLHUP 1 (not asked for)
+socketpair, data: EPOLLIN 1 EPOLLRDHUP 0
+the peer shut down writing: EPOLLIN 1 EPOLLRDHUP 1 EPOLLHUP 0
+the original closed, a duplicate still open: 1 event
+every descriptor of the file closed: 0 events
+TCP, the client closed: EPOLLIN 1 EPOLLRDHUP 1
+TCP, the server closed its end: 0 events
+an epoll set added to another: 0
+nothing happened: 0 events
+data in the inner set's pipe: the outer set reports 1 event, user data 200
+and the inner set: user data 100
+adding the outer set to the inner one: -1 errno 40 (ELOOP 40)
+epoll_wait with 150 ms and nothing to report: 0, took at least 150 ms: 1
+SIGALRM during epoll_wait: -1 errno 4 (EINTR 4), the handler ran 1 time
+epoll_pwait with SIGALRM unblocked for the call: -1 errno 4, the handler ran 2 times in all
+afterwards SIGALRM is blocked again: 1
+epoll_pwait2 with a timespec of 120 ms and nothing to report: 0, took at least 115 ms: 1
+served: 10 accepted, 10 messages answered
+every client got its own message back, in capitals: 10 of 10
+all ten clients hung up and were noticed: 10
+exit status: 0

@@ -1,0 +1,41 @@
+SIGRTMIN 34, SIGRTMAX 64
+pending: min 1 min+1 1 min+2 1 max 1 usr1 0 (nothing ran: 1)
+delivered: [sig 64 code -1 value 4 pid me uid me] [sig 36 code -1 value 1 pid me uid me] [sig 35 code -1 value 5 pid me uid me] [sig 34 code -1 value 2 pid me uid me] [sig 34 code -1 value 3 pid me uid me] [sig 34 code -1 value 6 pid me uid me]
+pending now: min 0 max 0
+five of one number: [sig 34 code -1 value 10 pid me uid me] [sig 34 code -1 value 20 pid me uid me] [sig 34 code -1 value 30 pid me uid me] [sig 34 code -1 value 40 pid me uid me] [sig 34 code -1 value 50 pid me uid me]
+kill: three real-time, three standard: [sig 35 code 0 value 0 pid me uid me] [sig 35 code 0 value 0 pid me uid me] [sig 35 code 0 value 0 pid me uid me] [sig 10 code 0 value 0 pid me uid me]
+sigqueue of a standard signal twice: [sig 10 code -1 value 7 pid me uid me]
+sigwaitinfo: 37, signo 37, code -1 (SI_QUEUE -1), value 77, pid is me 1, uid is me 1
+sigtimedwait with nothing pending and no time: -1, errno 11 (EAGAIN 1)
+sigtimedwait for 100 ms: -1, errno 11 (EAGAIN 1), waited at least 90 ms: 1, at most 2 s: 1
+sigtimedwait woken by the child: 37, value 4242, code -1, from the child 1, fast 1
+SA_NODEFER: [sig 38 code -1 value 3 pid me uid me] [sig 38 code -1 value 2 pid me uid me] [sig 38 code -1 value 1 pid me uid me] [sig 38 code -1 value 0 pid me uid me]
+deepest nesting with SA_NODEFER: 4
+without SA_NODEFER: [sig 38 code -1 value 3 pid me uid me] [sig 38 code -1 value 2 pid me uid me] [sig 38 code -1 value 1 pid me uid me] [sig 38 code -1 value 0 pid me uid me]
+deepest nesting without it: 1
+SA_RESETHAND: handled once, the action is the default again: 1
+SA_RESETHAND: [sig 39 code -1 value 1 pid me uid me]
+siglongjmp out of a real-time handler: jumped 1, the signal is unblocked again: 1
+siglongjmp: [sig 40 code -1 value 55 pid me uid me]
+sigsuspend: -1, errno 4 (EINTR 1)
+sigsuspend: [sig 41 code -1 value 31 pid other uid me]
+read with SA_RESTART: 1, errno 0 (EINTR 0)
+handler: [sig 42 code -1 value 1 pid other uid me]
+read without SA_RESTART: -1, errno 4 (EINTR 1)
+handler: [sig 42 code -1 value 1 pid other uid me]
+process-directed signal taken by the thread that does not block it: other 1, main 0
+thread: [sig 43 code -1 value 9 pid me uid me]
+nothing left pending in the blocked main thread: 1
+after sigfillset: 59 signals blocked of the 61 the library shows (SIGKILL 0, SIGSTOP 0, SIGRTMIN 1, SIGRTMAX 1)
+restored: 0 signals blocked
+child sent SIGRTMIN+10 with the default action: signaled 1, signal is SIGRTMIN+10: 1
+child ignored SIGRTMAX: exited 1 with 7
+kill with signal 65: -1, errno 22 (EINVAL 1)
+kill with signal 0: 0
+sigqueue with signal 65: -1, errno 22 (EINVAL 1)
+kill of a process that does not exist: -1, errno 3 (ESRCH 1)
+rt_sigqueueinfo with SI_USER to another process: -1, errno 1 (EPERM 1)
+rt_sigqueueinfo with SI_QUEUE and signal 0: 0
+tgkill of a thread that does not exist: -1, errno 3 (ESRCH 1)
+tgkill with a bad process id: -1, errno 22 (EINVAL 1)
+exit status: 0
