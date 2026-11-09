@@ -677,6 +677,80 @@ def net_static_config_at_boot():
             assert g.ok("netconf -n /tmp/dhcp.conf").strip() == "", "a dhcp line must not be applied"
 
 
+def wait_seen(vm, pattern, seconds):
+    """Waits until the pattern is anywhere in the guest's output so far (not only after the last match: the lines this looks for come in either order)."""
+    deadline = time.time() + scaled(seconds)
+    while not re.search(pattern, vm.text(), re.S):
+        if not vm.alive():
+            raise RuntimeError("QEMU exited\n" + vm.diagnose())
+        if time.time() > deadline:
+            raise TimeoutError(f"never saw {pattern}\n" + vm.text()[-1500:])
+        time.sleep(0.3)
+
+
+HOLD = "DHCP waits until netconf has run"
+
+
+@test
+def net_dhcp_waits_for_netconf_then_asks():
+    """a kept network.conf with a static line (here for a card that is not in the machine) holds the DHCP client until init says that netconf has run: the kernel
+    announces the wait, says that DHCP may ask now, and only then does the card that has no line get its lease; /proc/net/dhcp shows it bound"""
+    from case_storage import Image, Guest as StorageGuest, hv_part, MIB
+    conf = b"# eth1 is not in this machine; eth0 has no line, so it asks DHCP once netconf is done\neth1 static 10.0.2.99/24 gateway 10.0.2.2\n"
+    with Image("net-wait", 64 * MIB, [hv_part({"/.system/etc/network.conf": conf})]) as img:
+        with Qemu(cmdline="text bootlog=off user=root", disk=img.path, net="e1000", name="t-net-wait") as vm:
+            g = StorageGuest(vm, True)
+            wait_seen(vm, ROOT_PROMPT, 120)
+            wait_seen(vm, LEASE, 120)
+            log = vm.text()
+            hold, release, lease = log.index(HOLD), log.index("DHCP may ask now: init has run netconf"), re.search(LEASE, log).start()
+            assert hold < release < lease, (hold, release, lease)
+            out = g.ok("cat /proc/net/dhcp")
+            assert re.search(r"^eth0 bound 10\.0\.2\.15 255\.255\.255\.0 ", out, re.M), out
+
+
+@test
+def net_dhcp_hold_ends_at_the_limit_without_netconf():
+    """when init never says that netconf has run (here pid 1 is `cat`, which waits for input), the held DHCP client asks anyway, netconf.wait seconds after init
+    started: the lease comes, and the kernel says why it asked"""
+    from case_storage import Image, MIB, hv_part
+    conf = b"eth0 static 10.0.2.77/24 gateway 10.0.2.2\n"
+    with Image("net-limit", 64 * MIB, [hv_part({"/.system/etc/network.conf": conf})]) as img:
+        with Qemu(cmdline="text bootlog=off netconf.wait=4 init=/bin/cat", disk=img.path, net="e1000", name="t-net-limit") as vm:
+            wait_seen(vm, LEASE, 120)
+            log = vm.text()
+            assert "(at most 4 s after init starts" in log, log[-1500:]
+            hold, release, lease = log.index(HOLD), log.index("DHCP may ask now: init did not run netconf within 4 s"), re.search(LEASE, log).start()
+            assert hold < release < lease, (hold, release, lease)
+
+
+@test
+def net_dhcp_asks_at_once_when_there_is_no_init():
+    """with the kernel shell instead of init (init=kshell) nobody will run netconf, so a held DHCP client is released at the end of the boot and asks at once"""
+    from case_storage import Image, MIB, hv_part
+    conf = b"eth0 static 10.0.2.77/24 gateway 10.0.2.2\n"
+    with Image("net-nokshell", 64 * MIB, [hv_part({"/.system/etc/network.conf": conf})]) as img:
+        with Qemu(cmdline="text bootlog=off init=kshell", disk=img.path, net="e1000", name="t-net-kshell") as vm:
+            wait_seen(vm, LEASE, 120)
+            log = vm.text()
+            hold, release, lease = log.index(HOLD), log.index("DHCP may ask now: there is no init to run netconf"), re.search(LEASE, log).start()
+            assert hold < release < lease, (hold, release, lease)
+
+
+@test
+def net_dhcp_wait_can_be_turned_off():
+    """netconf.wait=0 turns the wait off: the kernel says nothing about it, and netconf still gives the card its static address before the first session"""
+    from case_storage import Image, Guest as StorageGuest, hv_part, MIB
+    conf = b"eth0 static 10.0.2.77/24 gateway 10.0.2.2\n"
+    with Image("net-nowait", 64 * MIB, [hv_part({"/.system/etc/network.conf": conf})]) as img:
+        with Qemu(cmdline="text bootlog=off user=root netconf.wait=0", disk=img.path, net="e1000", name="t-net-nowait") as vm:
+            g = StorageGuest(vm, True)
+            vm.expect(r"root@gensokyo \S+ # ", timeout=120)
+            assert HOLD not in vm.text(), "netconf.wait=0 must not hold the DHCP client"
+            out = g.ok("ifconfig eth0")
+            assert "inet 10.0.2.77  netmask 255.255.255.0" in out, out
+
+
 @test
 def net_nicdebug_trace():
     """nicdebug on the command line: the card's driver traces the first frames in both directions (the DHCP exchange with its type and xid), the DHCP client says what it

@@ -31,6 +31,7 @@
 #include <pwd.h>
 #include <grp.h>
 #include <gensokyo.h>
+#include <netabi.h>
 #include <etcstore.h>
 
 /* Milliseconds that never step: how long something has been running or has lived must not depend on the wall clock (sntp or date -s can move it by years). */
@@ -239,16 +240,21 @@ static void sshd_ended(int status) {
     start_sshd();
 }
 
-/* /etc/network.conf (network.conf(5)): a card with a "static" line gets its address before the first session; the others ask DHCP as they always did. */
+/* /etc/network.conf (network.conf(5)): a card with a "static" line gets its address before the first session; the others ask DHCP as they always did. When the kept file has
+ * a static line the kernel's DHCP client waits to be told here that netconf is done, whatever came of it (missing, crashed, finished), so that a card that is static never asks. */
 static void run_netconf(void) {
-    if (access("/bin/netconf", X_OK) != 0) return;
-    pid_t pid = fork();
-    if (pid == 0) {
-        execl("/bin/netconf", "netconf", (char *)NULL);
-        _exit(127);
+    if (access("/bin/netconf", X_OK) == 0) {
+        pid_t pid = fork();
+        if (pid == 0) {
+            execl("/bin/netconf", "netconf", (char *)NULL);
+            _exit(127);
+        }
+        int st;
+        if (pid > 0) waitpid(pid, &st, 0);
     }
-    int st;
-    if (pid > 0) waitpid(pid, &st, 0);
+    struct gnet_if none;
+    memset(&none, 0, sizeof none);
+    gap_netctl(NETCTL_NETCONF_DONE, &none);                               /* (an older kernel says EINVAL: nothing waited) */
 }
 
 /* A start under trial (docs/UPDATE.md): the loader put update.trial=N on the command line because an update is not confirmed yet. Somebody has to

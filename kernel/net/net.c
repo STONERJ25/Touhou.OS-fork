@@ -174,6 +174,7 @@ bool net_cards_disabled(void) {
 }
 
 NetDev *netdev_register(const char *prefix, NetDev *d) {
+    dhcp_hold_init();                                       /* once, before the first card can ask: a static line in the kept network.conf holds the DHCP client back (dhcp.c, "The hold") */
     net_lock();
     int n = 0;
     for (NetDev *o = g_devs; o; o = o->next) if (!strncmp(o->name, prefix, strlen(prefix))) n++;
@@ -1170,9 +1171,13 @@ long net_ctl(unsigned long cmd, void *arg) {
         struct gnet_if *r = arg;
         r->name[sizeof r->name - 1] = 0;
         NetDev *d = netdev_find(r->name);
-        if (!root) rc = -EPERM; else if (!d || (d->flags & NDF_LOOPBACK)) rc = -ENODEV; else dhcp_start(d);
+        if (!root) rc = -EPERM; else if (!d || (d->flags & NDF_LOOPBACK)) rc = -ENODEV; else dhcp_start_now(d);
         break;
     }
+    case NETCTL_NETCONF_DONE:
+        if (!root) rc = -EPERM;
+        else dhcp_hold_release("init has run netconf");
+        break;
     case NETCTL_DHCP_STOP: {
         struct gnet_if *r = arg;
         r->name[sizeof r->name - 1] = 0;
@@ -1223,3 +1228,11 @@ static void net_init(void) {
     klog("Yukari", "the gap-opener is awake: loopback up, 127.0.0.1/8");
 }
 INITCALL(net_init);
+
+/* For the boot code, which has no net lock: no init will run netconf (the kernel shell, or init did not start), so a DHCP client that waited for it may ask. */
+void net_dhcp_release(const char *why) {
+    net_lock();
+    dhcp_hold_release(why);
+    net_unlock();
+    net_kick();
+}

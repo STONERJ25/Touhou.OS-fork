@@ -152,7 +152,11 @@ size_t net_proc_udp(char *buf, size_t cap);
 
 /* ---- configuration / tunables ---- */
 long net_ctl(unsigned long cmd, void *arg);                           /* SYS_netctl backend; arg already in kernel memory */
-void dhcp_start(NetDev *d);
+void dhcp_start(NetDev *d);                                            /* the automatic start (a card appeared, the carrier came, a driver recovered): waits while the hold below is on */
+void dhcp_start_now(NetDev *d);                                        /* a start the user asked for (`ifconfig eth0 dhcp`): never waits */
+void dhcp_hold_init(void);                                             /* once, from the first netdev_register: hold the automatic starts when the kept network.conf has a static line, until netconf has decided (docs/NETWORK.md) */
+void dhcp_hold_release(const char *why);                               /* netconf has decided or will not: the cards that waited ask now (net lock held) */
+void net_dhcp_release(const char *why);                                /* the same for callers without the lock (the boot code: there is no init to run netconf) */
 size_t dhcp_proc(char *buf, size_t cap);                              /* /proc/net/dhcp: one line per card with the state of its lease */
 void dhcp_tick(u64 now);
 void dhcp_stop(NetDev *d);                                            /* an address was set by hand, or the user said so: no lease may replace it */

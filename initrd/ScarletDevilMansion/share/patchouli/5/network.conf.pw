@@ -3,7 +3,7 @@
 # DESCRIPTION
 `/Hakurei/etc/network.conf` says, card by card, whether an address comes from DHCP or is set by hand. A card that is not listed uses DHCP, which is also what every card does while the file holds only comments, as it does out of the box. The file is kept on the HUMANVILLAGE volume across restarts (etckeep(8)).
 
-`init` applies the `static` lines with netconf(8) before the first session (and `sudo netconf` applies the file again by hand); a network panel that edits it is still to come. A card with a static address does not ask DHCP.
+`init` applies the `static` lines with netconf(8) before the first session (and `sudo netconf` applies the file again by hand); a network panel that edits it is still to come. A card with a static address does not ask DHCP: while the kept copy has a static line, the kernel holds the DHCP client back until `init` has run netconf(8) (details there).
 
 One line per card; blank lines and lines starting with `#` are ignored:
 

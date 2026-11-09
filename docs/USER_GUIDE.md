@@ -306,6 +306,7 @@ if the file is missing the loader uses the same two words.
 | `hvfsck=safe` | after a bad shutdown, make the repairs of `fsck -a` on the Human Village before it is mounted, so that it comes up read-write by itself (off by default; [REAL_HARDWARE.md](REAL_HARDWARE.md), section 5) |
 | `bootlog=off` | do not write `TOUHOU.LOG` |
 | `nonet`, `noaudio`, `usbstorage=off`, `usb=off` | leave the network cards, the sound card, USB sticks, or all of USB alone |
+| `netconf.wait=SECONDS` | how long the DHCP client waits for `netconf` when the kept `network.conf` has a static line (20 by default, counted from the start of init; 0: do not wait; `man netconf`) |
 | `ahci=off`, `nvme=off` | leave the SATA controllers, or the NVMe drives, alone |
 
 More words, for diagnosing a PC that does not boot, are in [REAL_HARDWARE.md](REAL_HARDWARE.md) (section 4) and [HARDWARE_AUDIT.md](HARDWARE_AUDIT.md).

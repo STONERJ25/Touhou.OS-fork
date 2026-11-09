@@ -20,6 +20,7 @@
 #include "pci.h"
 #include "acpi.h"
 #include "initcall.h"
+#include "net.h"
 #include "stagemark.h"
 
 void virtio_blk_init(void);
@@ -208,10 +209,13 @@ NORETURN void kmain(BootInfo *bi) {
     struct gstat st;
     if (strcmp(initpath, "kshell") && vfs_stat(initpath, NULL, NULL, 0, &st) == 0) {
         int rc = process_spawn_init(initpath, NULL);
-        if (rc) klog("Gensokyo", "cannot start %s (%d)", initpath, rc);
-        else klog("Alice", "init: %s", initpath);
+        if (rc) {
+            klog("Gensokyo", "cannot start %s (%d)", initpath, rc);
+            net_dhcp_release("init did not start, so nobody runs netconf");
+        } else klog("Alice", "init: %s", initpath);
     } else {
         klog("Alice", "no init program (%s): starting the kernel shell instead", initpath);
+        net_dhcp_release("there is no init to run netconf");
         task_create_detached("kshell", kshell_main, NULL);
     }
     for (;;) task_sleep_ms(1000);

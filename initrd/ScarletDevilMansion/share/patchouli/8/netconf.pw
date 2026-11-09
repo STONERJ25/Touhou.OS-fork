@@ -8,6 +8,8 @@
 
 `init` runs it before the first session. It can be run again by hand, as root, after the file changed. A line that names a `mac` applies only to the card with that hardware address; it beats a line for the same card name without one.
 
+A card with a static address really never asks: when the copy of network.conf kept on the Human Village volume has a `static` line, the kernel does not let any card ask DHCP at boot until `init` has run `netconf` and said so (the kernel log says `DHCP waits until netconf has run`, then `DHCP may ask now`). The cards that have no static address ask then. If nobody says so (an `init=` program that does not know about it), the wait ends 20 seconds after init started; `netconf.wait=SECONDS` on the kernel command line changes that time, and `netconf.wait=0` turns the wait off. Without a static line in the kept file nothing waits.
+
 The addresses must be right for the network the machine is on: nothing checks that nobody else uses the address. The kernel log gets one line per card (`[netconf] eth0: static 192.168.1.185/24, gateway 192.168.1.1, dns 192.168.1.1`).
 
 # OPTIONS

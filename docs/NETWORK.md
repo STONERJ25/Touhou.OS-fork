@@ -26,6 +26,16 @@ machines (the kernel log tag is `[Yukari]`). Everything is IPv4 and polled: no i
 * **Boot.** When a card reports a carrier, the kernel starts a DHCP client on it, in the background (the boot never waits).
   A lease sets the address, the default route and `/etc/resolv.conf`. Under QEMU's user-mode networking that is
   10.0.2.15/24 via 10.0.2.2 with the name server 10.0.2.3. Unplugging and re-plugging the cable restarts DHCP by itself.
+  **A static card never asks.** `netconf` (run by init, after it has put the kept `network.conf` into `/etc`) gives a card its static address, but the DHCP client starts
+  when the carrier comes, long before init, and a lease could arrive first (and a real DHCP server would have heard a machine that was told to be static). So the first card
+  to register (`netdev_register`, after the Human Village is mounted) reads the copy of `network.conf` kept on the volume (`/HumanVillage/.system/etc/network.conf`); when
+  it has a line whose second word is `static`, the automatic starts of the client (a card appears, the carrier comes, a driver recovers) only mark the card as waiting
+  (`held` in `/proc/net/dhcp`) until one of these happens: init says that netconf has run (`NETCTL_NETCONF_DONE`, sent by `run_netconf` in `user/sbin/init.c` whatever came
+  of netconf), the boot finds that no init will run it (`init=kshell`, or init did not start), or `netconf.wait` seconds (20; `netconf.wait=0` turns the wait off) have passed
+  since init started. Then every waiting card that has no address of its own asks; a card that netconf gave an address had its wish cancelled (`dhcp_stop`). `ifconfig eth0 dhcp`
+  never waits. A boot whose kept file has no static line, or that has no such file, is not delayed at all. Limit: a Human Village that is mounted only after the cards (a
+  USB stick) is not seen by this, and the old race remains there. Tests: `net_static_config_at_boot`, `net_dhcp_waits_for_netconf_then_asks`,
+  `net_dhcp_hold_ends_at_the_limit_without_netconf`, `net_dhcp_asks_at_once_when_there_is_no_init`, `net_dhcp_wait_can_be_turned_off`.
   The only other thing that sends a packet unasked is the clock: soon after the lease the kernel asks an NTP server for the time ([NTP.md](NTP.md); the lease's server, `ntp=` on the command line, or a built-in public one; `ntp=off` stops it). Nothing else phones home.
 * **Tools** (all kappabox applets, each with a manual page; start with `man network`):
 
@@ -249,6 +259,7 @@ The "internet" of the QEMU tests is a set of Python servers on the host's loopba
 | `net_sntp_host` | `sntp`/`ntpdate` against a Python NTP responder two hours ahead: offset measured, clock stepped by root, refused for others |
 | `net_link_e1000`, `_virtio`, `_rtl8139` | QEMU's `set_link` pulls and re-plugs the cable: the link goes down without hanging anything, plugging in again brings a new DHCP lease and a working network |
 | `net_ifconfig_set` | root changes address, mask, MTU, routes and neighbours with `ifconfig`, `ip` and `route` |
+| `net_static_config_at_boot`, `net_dhcp_waits_for_netconf_then_asks`, `net_dhcp_hold_ends_at_the_limit_without_netconf`, `net_dhcp_asks_at_once_when_there_is_no_init`, `net_dhcp_wait_can_be_turned_off` | a static line in the kept `network.conf` gives the card its address before the first session and no lease ever shows; the DHCP client waits for init (the log says `DHCP waits until netconf has run`, then `DHCP may ask now: init has run netconf`) and then the card without a line gets its lease; with a pid 1 that never says so (`init=/bin/cat`, `netconf.wait=4`) the wait ends at its limit; with the kernel shell instead of init it ends at once; `netconf.wait=0` turns it off |
 | `linux_net_sockets_match_linux`, `linux_net_events_match_linux`, `linux_net_talks_to_the_host` | static glibc programs under the Linux personality: TCP, UDP and UNIX sockets (streams, datagrams, descriptors in messages), the errors, `poll`/`select`/`epoll`/`eventfd`/`timerfd`, ten TCP clients served by one thread, and a program that talks to Python servers on the host through 10.0.2.2 (TCP, UDP, a hand-made DNS query); the first two are compared line by line with the same programs on a real Linux (`tools/linux-oracle.py`) |
 
 The guest clock can run several times slower than wall time, so no test sleeps and then expects an effect: they wait for

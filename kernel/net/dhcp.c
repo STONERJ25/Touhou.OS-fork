@@ -32,6 +32,7 @@ typedef struct Dhcp {
     int  tries;
     bool resolv_dirty;
     bool silence_logged;                /* "nobody answers" was said once; do not repeat it every minute */
+    bool held;                          /* an automatic start is waiting for netconf (see "The hold" below) */
 } Dhcp;
 
 static u32 g_dns[3];
@@ -60,16 +61,23 @@ static void dhcp_unconfigure(NetDev *d) {
     }
 }
 
-/* An address set by hand (netconf, ifconfig) ends whatever DHCP was doing: a lease that arrived later would silently replace it. */
+/* An address set by hand (netconf, ifconfig) ends whatever DHCP was doing: a lease that arrived later would silently replace it. A start that was waiting for netconf is
+ * cancelled the same way. */
 void dhcp_stop(NetDev *d) {
     Dhcp *c = d->dhcp;
-    if (c) c->state = 0;
+    if (c) { c->state = 0; c->held = false; }
 }
 
-void dhcp_start(NetDev *d) {
-    if (d->flags & NDF_LOOPBACK) return;
+static Dhcp *dhcp_get(NetDev *d) {
     Dhcp *c = d->dhcp;
-    if (!c) { c = kzalloc(sizeof *c); if (!c) return; d->dhcp = c; }
+    if (!c) { c = kzalloc(sizeof *c); if (c) d->dhcp = c; }
+    return c;
+}
+
+static void dhcp_begin(NetDev *d) {
+    Dhcp *c = dhcp_get(d);
+    if (!c) return;
+    c->held = false;
     dhcp_unconfigure(d);
     g_trace = cmdline_flag("nicdebug");
     c->state = D_SELECTING;
@@ -78,6 +86,87 @@ void dhcp_start(NetDev *d) {
     c->next_send = 0;                       /* now */
     c->started = net_now();
     net_kick();
+}
+
+/* A start the user asked for (`ifconfig eth0 dhcp`) never waits. */
+void dhcp_start_now(NetDev *d) {
+    if (d->flags & NDF_LOOPBACK) return;
+    dhcp_begin(d);
+}
+
+/*
+ * The hold. A card that network.conf gives a static address must never ask DHCP, but the client starts the moment there is a carrier (the boot, long before init), while
+ * netconf, a user-space program, applies the static line only after init has started: a lease could arrive first (QEMU answers within milliseconds), and a real DHCP server
+ * would have heard a machine that was told to be static. So the first card to register (netdev_register: the card drivers run before net_init, after the volume is mounted)
+ * looks at the network.conf that is kept on the Human Village volume (/HumanVillage/.system/etc: the file init puts into /etc before it runs netconf). When that has a static
+ * line, the automatic starts only note that a card wants an address (Dhcp.held), and the client waits for one of three things: init says that netconf has run
+ * (NETCTL_NETCONF_DONE), the boot finds that there is no init to run it (the kernel shell, or init did not start), or netconf.wait seconds (20 unless the kernel command line
+ * says otherwise, 0 turns the wait off) pass after init started without it. Then every card that waited and still has no address of its own starts. A boot whose kept file
+ * has no static line, or that has no such file, is not delayed at all.
+ */
+static bool g_hold;
+static u64 g_hold_wait_ms;
+static u64 g_hold_deadline;             /* 0 until init is running: the limit counts from there, so a long repair of the volume at boot does not use it up */
+
+#define NETCONF_KEPT "/HumanVillage/.system/etc/network.conf"
+
+void dhcp_start(NetDev *d) {
+    if (d->flags & NDF_LOOPBACK) return;
+    if (g_hold) {
+        Dhcp *c = dhcp_get(d);
+        if (c && !c->state) c->held = true;             /* (a client that is already running, because the user asked, is left alone) */
+        return;
+    }
+    dhcp_begin(d);
+}
+
+void dhcp_hold_release(const char *why) {
+    if (!g_hold) return;
+    g_hold = false;
+    klog("Yukari", "DHCP may ask now: %s", why);
+    NetDev *d;
+    for (int idx = 0; (d = netdev_by_index(idx)) != NULL; idx++) {
+        Dhcp *c = d->dhcp;
+        if (!c || !c->held) continue;
+        c->held = false;
+        /* a card without a carrier asks when the carrier comes (net_set_link); one that netconf gave an address had its wish cancelled by dhcp_stop */
+        if ((d->flags & NDF_LINK) && !(d->flags & NDF_LOOPBACK) && (!d->addr || (d->flags & NDF_DHCP))) dhcp_begin(d);
+    }
+}
+
+/* A line of network.conf that names a card and says "static" (network.conf(5)). A rough reading is enough here: netconf does the real one, and init says when it is done. */
+static bool has_static_line(char *s) {
+    while (*s) {
+        char *nl = strchr(s, '\n');
+        if (nl) *nl = 0;
+        char *hash = strchr(s, '#');
+        if (hash) *hash = 0;
+        char *p = s;
+        while (*p == ' ' || *p == '\t' || *p == '\r') p++;
+        while (*p && *p != ' ' && *p != '\t' && *p != '\r') p++;                  /* the card's name */
+        while (*p == ' ' || *p == '\t' || *p == '\r') p++;
+        if (!strncmp(p, "static", 6) && (!p[6] || p[6] == ' ' || p[6] == '\t' || p[6] == '\r')) return true;
+        if (!nl) break;
+        s = nl + 1;
+    }
+    return false;
+}
+
+void dhcp_hold_init(void) {
+    static bool done;                                                           /* the first card to register decides, once (the card drivers run before net_init) */
+    if (done) return;
+    done = true;
+    long secs = cmdline_int("netconf.wait", 20);
+    if (secs <= 0 || cmdline_flag("nonet")) return;
+    void *data;
+    size_t size;
+    if (vfs_read_file(NETCONF_KEPT, &data, &size) != 0) return;                 /* no volume, or no kept file: nothing is static */
+    bool wait = has_static_line(data);
+    kfree(data);
+    if (!wait) return;
+    g_hold = true;
+    g_hold_wait_ms = (u64)secs * 1000;
+    klog("Yukari", "network.conf on the volume has a static line: DHCP waits until netconf has run (at most %ld s after init starts; netconf.wait=0 turns the wait off)", secs);
 }
 
 static const char *state_name(int s) {
@@ -116,7 +205,7 @@ size_t dhcp_proc(char *buf, size_t cap) {
             if (!c->ndns) strlcpy(dns, "-", sizeof dns);
         }
         unsigned long left = leased && c->expire > now ? (unsigned long)((c->expire - now) / 1000) : 0;
-        n += (size_t)snprintf(buf + n, cap - n, "%s %s %s %s %s %s %s %u %lu\n", d->name, state_name(st), a, m, s, r, dns, leased ? c->lease_s : 0, left);
+        n += (size_t)snprintf(buf + n, cap - n, "%s %s %s %s %s %s %s %u %lu\n", d->name, c && c->held ? "held" : state_name(st), a, m, s, r, dns, leased ? c->lease_s : 0, left);
     }
     return n;
 }
@@ -251,6 +340,14 @@ static void write_resolv(Dhcp *c, NetDev *d) {
 }
 
 void dhcp_tick(u64 now) {
+    if (g_hold && g_init_proc) {                                              /* the limit counts from the moment init exists */
+        if (!g_hold_deadline) g_hold_deadline = now + g_hold_wait_ms;
+        else if (now >= g_hold_deadline) {
+            char why[64];
+            snprintf(why, sizeof why, "init did not run netconf within %u s", (unsigned)(g_hold_wait_ms / 1000));
+            dhcp_hold_release(why);
+        }
+    }
     NetDev *d;
     for (int idx = 0; (d = netdev_by_index(idx)) != NULL; idx++) {
         Dhcp *c = d->dhcp;
