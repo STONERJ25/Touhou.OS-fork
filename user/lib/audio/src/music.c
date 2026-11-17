@@ -33,7 +33,9 @@ static Kind sniff(const char *path) {
     char head[1084];
     ssize_t r = read(fd, head, sizeof head);
     close(fd);
-    if (r >= 4 && !memcmp(head, "RIFF", 4)) return K_NONE;                       /* a WAV file is never taken for a module */
+    if (r >= 4 && (!memcmp(head, "RIFF", 4) || !memcmp(head, "RF64", 4) || !memcmp(head, "BW64", 4) || !memcmp(head, "fLaC", 4) || !memcmp(head, "FORM", 4) ||
+                   !memcmp(head, ".snd", 4) || !memcmp(head, "ID3", 3)))
+        return K_NONE;                                                           /* a sound file (afile.h) is never taken for a module */
     if (r >= 4 && !memcmp(head, "tms", 3) && (head[3] == ' ' || head[3] == '\n' || head[3] == '\r')) return K_SONG;
     if (r >= 1084 && mod_signature_ok(head + 1080)) return K_MOD;
     return K_NONE;

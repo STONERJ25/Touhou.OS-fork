@@ -2,12 +2,14 @@
 
 # SYNOPSIS
 *jukebox* [*-p*] [*--trace*] [_FILE_ | _DIRECTORY_ ...]
-*jukebox* *--list*
+*jukebox* *--list* [_FILE_ ...]
 
 # DESCRIPTION
-`jukebox` is the desktop's music player. Its window is the Prismriver Concert Hall: Lunasa, Merlin and Lyrica stand on a stage and play whatever the playlist holds, and the three of them jump to the low, middle and high parts of the sound while a row of bars in the orchestra pit shows its spectrum. The playlist on the left is made of the songs that ship with the system (`/ScarletDevilMansion/share/music`, see tms(5)) followed by the `.wav`, `.tms` and `.mod` files in `~/Music`; files named on the command line come first, and *Open music...* adds more. WAV files may be 8, 16, 24 or 32 bits, mono or stereo, at any rate; `.mod` files are ProTracker modules (see audio(7)).
+`jukebox` is the desktop's music player. Its window is the Prismriver Concert Hall: Lunasa, Merlin and Lyrica stand on a stage and play whatever the playlist holds, and the three of them jump to the low, middle and high parts of the sound while a row of bars in the orchestra pit shows its spectrum. The playlist on the left is made of the songs that ship with the system (`/ScarletDevilMansion/share/music`, see tms(5)) followed by the music in `~/Music` and in the folders inside it (an album in its own folder, down to three levels; each folder sorted by name): `.tms` songs, `.mod` ProTracker modules (see audio(7)) and sound files, which are FLAC, WAV (PCM of every size, floating point, A-law, mu-law, IMA and Microsoft ADPCM), AIFF, AIFF-C and Sun `.au` files (see audio-formats(7)). Files and folders named on the command line come first (a folder is searched the same way), and *Open music...* adds more; a file you name yourself is looked into whatever its name is.
 
-Below the stage are the title and mood of the song, a seek bar with the time, the buttons (previous, play and pause, stop, next) and the master volume. The volume is the one of the whole machine, the same as `volume(1)` and the speaker in the panel. When the playlist ends it starts again unless *Repeat* is off.
+For a sound file the list and the window show what the file says about itself: the artist and the title from its tags (a FLAC file's Vorbis comment, a WAV file's `INFO` list, an AIFF file's `NAME` and `AUTH`), else the file name; the second line gives the album and the format (`FLAC 44.1 kHz 16-bit stereo`); the length comes from the file. A file that cannot be played (a codec that is not supported, a damaged header, a sample rate the sound card does not play) stays in the list with a warning sign and the reason, which `--list` prints after two dashes. A damaged spot in the middle of a FLAC file is skipped, said once in the status line, and the music goes on.
+
+Below the stage are the title and mood of the song, a seek bar with the time, the buttons (previous, play and pause, stop, next) and the master volume. The volume is the one of the whole machine, the same as `volume(1)` and the speaker in the panel. When a track ends the next one follows; if it has the same sample rate, channels and sample size as the one that ends (an album, usually), it is opened behind it while the last 0.3 seconds are still queued, so the sound card never runs dry between them: gapless. When the playlist ends it starts again unless *Repeat* is off.
 
 The sound goes through `/dev/audio` like any other program's, so the Jukebox can play while other programs beep. Without a sound device the window still opens, says so, and cannot play.
 
@@ -15,9 +17,9 @@ The sound goes through `/dev/audio` like any other program's, so the Jukebox can
 @ *-p*
     Start playing at once.
 @ *--trace*
-    Print a line on standard output for each thing that happens (`jukebox: playing ...`, `paused at ...`, `seek ...`, `volume ...`).
+    Print a line on standard output for each thing that happens (`jukebox: playing ...`, `finished ...`, `paused at ...`, `seek ...`, `volume ...`, `damaged audio skipped ...`).
 @ *--list*
-    Print the playlist (number, title, length, file) and exit; no window.
+    Print the playlist (number, title, length, file, and the reason for a file that cannot be played) and exit; no window.
 
 # KEYS
 @ Space
@@ -25,7 +27,7 @@ The sound goes through `/dev/audio` like any other program's, so the Jukebox can
 @ S, N, P
     Stop, next, previous (P restarts a song that has played for a few seconds).
 @ Left, Right
-    Five seconds back or forward. Clicking the seek bar jumps there.
+    Five seconds back or forward. Clicking the seek bar jumps there. A file whose length is not known cannot be seeked.
 @ Up, Down, Home, End
     Move through the playlist.
 @ Ctrl+Up, Ctrl+Down, M
@@ -37,4 +39,4 @@ The sound goes through `/dev/audio` like any other program's, so the Jukebox can
 0 normally; 1 if there is no window server; 2 for a usage error.
 
 # SEE ALSO
-play(1), volume(1), tms(5), audio(7)
+play(1), volume(1), tms(5), audio(7), audio-formats(7)

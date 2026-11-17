@@ -59,7 +59,7 @@ static const char *const g_names[KI_COUNT] = {
     "folder", "folder-open", "file", "text", "image", "terminal", "calculator", "clock", "gear", "spellcard", "news", "notebook",
     "trash", "home", "drive", "yinyang", "power", "search", "star", "up", "back", "forward", "plus", "close", "minimize", "maximize",
     "restore", "check", "arrow-down", "arrow-right", "refresh", "game", "monitor", "info", "warning", "error", "question", "torii",
-    "bamboo", "petal", "moon", "lock", "user", "sketch",
+    "bamboo", "petal", "moon", "lock", "user", "sketch", "music",
 };
 
 const char *k_icon_name(KIcon i) { return i >= 0 && i < KI_COUNT ? g_names[i] : "?"; }
@@ -318,6 +318,19 @@ void k_icon(KCanvas *c, KIcon icon, int X, int Y, int s) {
         kc_circle_fill(c, X_(16), Y_(11), U(6), 0xF0CFA8);
         Pt sh[6] = { { X_(5), Y_(29) }, { X_(8), Y_(21) }, { X_(12), Y_(18) }, { X_(20), Y_(18) }, { X_(24), Y_(21) }, { X_(27), Y_(29) } };
         poly(c, sh, 6, red);
+        break;
+    }
+    case KI_MUSIC: {                                              /* a sheet with a pair of eighth notes: the file manager's mark for sound files */
+        kc_fill(c, R_(7, 3, 18, 26), white);
+        kc_outline(c, R_(7, 3, 18, 26), 0x55555F);
+        Pt fold[3] = { { X_(19), Y_(3) }, { X_(25), Y_(9) }, { X_(19), Y_(9) } };
+        poly(c, fold, 3, 0xCFCFD6);
+        const uint32_t note = 0x2B4C9A;
+        kc_ellipse_fill(c, X_(12), Y_(24), U(3), U(2), note);
+        kc_ellipse_fill(c, X_(20), Y_(22), U(3), U(2), note);
+        kc_fill(c, R_(14, 13, 1, 11), note);
+        kc_fill(c, R_(22, 11, 1, 11), note);
+        thick_line(c, X_(14), Y_(13), X_(22), Y_(11), s >= 24 ? 2 : 1, note);
         break;
     }
     case KI_SKETCH: {

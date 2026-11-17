@@ -283,15 +283,15 @@ static void about(KApp *app) {
     k_messagebox(kapp_display(app), "About Reimu's Jukebox",
                  "Reimu's Jukebox\n\nThe Prismriver sisters (Lunasa, Merlin and Lyrica) play in the Concert Hall.\n"
                  "The songs that come with the system are original music for TouhouOS;\n"
-                 "put .wav, .tms or .mod files in your Music folder to add your own.",
+                 "put FLAC, WAV, AIFF, AU, .tms or .mod files in your Music folder to add your own.",
                  KI_INFO, ok, 1);
 }
 
 static void file_chosen(const char *path, void *user) {
     (void)user;
     if (!path) return;
-    int i = playlist_add(path, false);
-    if (i < 0) { snprintf(J.status, sizeof J.status, "%s is not a .wav, .tms or .mod file.", k_basename(path)); return; }
+    int i = playlist_add(path, false, true);
+    if (i < 0) { snprintf(J.status, sizeof J.status, "%s is not music the Jukebox plays (FLAC, WAV, AIFF, AU, .tms, .mod).", k_basename(path)); return; }
     J.list.selected = i;
     trace("added %s", J.tr[i].title);
     player_load(i, 0, true);
@@ -392,7 +392,7 @@ void ui_draw(KApp *app, KUI *ui, void *user) {
         kc_text_in(cv, t2, shown->sub, ui->theme->text_dim, KA_LEFT);
     } else {
         kc_text_in(cv, t1, "Nothing to play yet.", ui->theme->text_dim, KA_LEFT);
-        kc_text_in(cv, t2, "Put .wav, .tms or .mod files in your Music folder.", ui->theme->text_dim, KA_LEFT);
+        kc_text_in(cv, t2, "Put FLAC, WAV, AIFF, AU, .tms or .mod files in your Music folder.", ui->theme->text_dim, KA_LEFT);
     }
 
     /* seek bar and times */
@@ -409,6 +409,8 @@ void ui_draw(KApp *app, KUI *ui, void *user) {
         if (J.minfo.bpm) snprintf(info, sizeof info, "%d bpm, %d voices", J.minfo.bpm, J.minfo.channels);
         else snprintf(info, sizeof info, "%d channels", J.minfo.channels);
         kc_text_in(cv, L.times, info, ui->theme->text_dim, KA_RIGHT);
+    } else if (J.cur >= 0 && J.af) {
+        kc_text_in(cv, L.times, J.fmt_text, ui->theme->text_dim, KA_RIGHT);
     }
 
     /* transport */

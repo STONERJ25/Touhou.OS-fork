@@ -313,6 +313,7 @@ static const char *const k_text_ext[] = {
     "ld", "pw", "rc", "list", "text", "me", "nfo", "desktop", "service", NULL,
 };
 static const char *const k_image_ext[] = { "ppm", "bmp", "pgm", "pbm", "pnm", "png", "jpg", "jpeg", "jpe", "gif", "tga", NULL };    /* what libimg reads (the Gallery opens them) */
+static const char *const k_audio_ext[] = { "flac", "fla", "wav", "wave", "aif", "aiff", "aifc", "au", "snd", "mod", "tms", NULL };       /* what the Jukebox plays */
 static const char *const k_archive_ext[] = { "tar", "gz", "tgz", "zip", "bz2", "xz", "7z", "rar", "z", "zst", NULL };
 static const char *const k_text_names[] = {
     "makefile", "readme", "license", "licence", "copying", "authors", "news", "todo", "changelog", "profile", "motd", "passwd", "group",
@@ -332,6 +333,7 @@ int classify(const char *name, uint32_t mode, int kind) {
     if (exec && !strcasecmp(ext, "sh")) return FT_PROGRAM;
     if (*ext) {
         if (ext_in(ext, k_image_ext)) return FT_IMAGE;
+        if (ext_in(ext, k_audio_ext)) return FT_AUDIO;
         if (ext_in(ext, k_archive_ext)) return FT_ARCHIVE;
         if (ext_in(ext, k_text_ext)) return FT_TEXT;
     }
@@ -365,6 +367,14 @@ const char *type_name(const Entry *e, char *buf, size_t cap) {
         if (!strcasecmp(ext, "gif")) return "GIF image";
         if (!strcasecmp(ext, "tga")) return "TGA image";
         return "Image";
+    case FT_AUDIO:
+        if (!strcasecmp(ext, "flac") || !strcasecmp(ext, "fla")) return "FLAC audio";
+        if (!strcasecmp(ext, "wav") || !strcasecmp(ext, "wave")) return "WAV audio";
+        if (!strcasecmp(ext, "aif") || !strcasecmp(ext, "aiff") || !strcasecmp(ext, "aifc")) return "AIFF audio";
+        if (!strcasecmp(ext, "au") || !strcasecmp(ext, "snd")) return "AU audio";
+        if (!strcasecmp(ext, "mod")) return "Tracker module";
+        if (!strcasecmp(ext, "tms")) return "Song";
+        return "Audio";
     case FT_PROGRAM: return "Program";
     case FT_ARCHIVE: return "Archive";
     case FT_DEVICE: return "Device";
@@ -386,6 +396,7 @@ KIcon icon_for(const Entry *e) {
     switch (e->ftype) {
     case FT_TEXT: return KI_TEXT;
     case FT_IMAGE: return KI_IMAGE;
+    case FT_AUDIO: return KI_MUSIC;
     case FT_PROGRAM: return KI_TERMINAL;
     case FT_DEVICE: case FT_PIPE: case FT_SOCKET: return KI_GEAR;
     default: return KI_FILE;

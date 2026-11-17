@@ -24,12 +24,13 @@ staged in the Prismriver Concert Hall.
 | Song engine: pulse / triangle / saw / noise / 2-operator FM voices, the `.tms` pattern format, parser, sequencer | done, tested (pitch, tempo, bar alignment) |
 | Five original songs (`/ScarletDevilMansion/share/music/*.tms`) | done; **nobody has listened to them**: the checks are measurements, not ears |
 | ProTracker `.mod` player (4 to 32 channels, the usual effects, Amiga panning) | done, tested with generated modules (pitch, panning, seeking and twenty effects, each against a model); **never run on a real tracker tune**. `.s3m`, `.xm`, `.it` and 15-sample modules: **not done** |
-| `beep`, `play` (WAV, raw, songs, modules), `volume` | done |
-| Reimu's Jukebox (playlist, play/pause/stop/seek, volume, level display, `~/Music`) | done, GUI-tested |
+| Sound file formats (`afile`): FLAC (RFC 9639), WAV (PCM, float, A-law, mu-law, IMA and Microsoft ADPCM, extensible, RF64/BW64), AIFF and AIFF-C, Sun `.au` | done; FLAC checked against Microsoft's decoder and the reference libFLAC, see "Sound file formats" below; MP3, Ogg Vorbis, Opus, AAC: **not done** |
+| `beep`, `play` (sound files, raw, songs, modules; `-i`, `-w`, `-V`), `volume` | done |
+| Reimu's Jukebox (playlist, play/pause/stop/seek, volume, level display, `~/Music`, tags of sound files, gapless albums) | done, GUI-tested |
 | System sounds (login, dialog, error, shutdown) in the shell, greeter, lock screen, Kappa dialogs, switch `nosounds` / `HAKUREI_SOUNDS` / `/etc/hakurei/sounds` | done, tested |
 | Volume control in the panel | done, tested |
 | Recording (capture) | not done (the task called it optional) |
-| Tests | `tests/case_audio.py` (19 tests), `tests/audiotools.py`, `tests/modtools.py`, `tests/host/hdatest.c`, `tests/guitext.py` (see Tests) |
+| Tests | `tests/case_audio.py` (19 tests), `tests/case_audio_formats.py` (`audio_fmt_*`, 7 tests), `tests/audiotools.py`, `tests/modtools.py`, `tests/host/hdatest.c`, `tests/guitext.py`; host tests `tests/host/test_flac.py` (52) and `tests/host/test_audio_formats.py` (48) (see Tests) |
 
 ## The device
 
@@ -159,7 +160,8 @@ the current one so the list is circular, and restarts the engine if it halted.
 into every program. `audio_open(flags)` returns NULL when the machine
 has no sound (errno says why, `audio_strerror()` says it in words), `audio_set_format`, `audio_write` (blocking, or
 `AUDIO_NONBLOCK` and it returns what fits), `audio_drain`, `audio_flush`, `audio_status`, `audio_get_master` /
-`audio_set_master`; WAV files (`audio_wav_open` / `_read` / `_seek`, `audio_wav_save`); tone and noise generators; the
+`audio_set_master`; plain PCM WAV files (`audio_wav_open` / `_read` / `_seek`, `audio_wav_save`: the older reader, kept); every kind of
+sampled-sound file through `<afile.h>` (`afile_open` / `_read` / `_seek`, see Sound file formats); tone and noise generators; the
 system sounds (`audio_event`, `audio_event_wait`, `audio_events_enabled`).
 
 ## System sounds
@@ -254,13 +256,131 @@ signature at byte 1080), `music_render()` gives 16-bit stereo frames, `music_see
 `tests/modtools.py` builds the test modules from scratch (`ModBuilder`: a 64-byte sine sample, a short burst, a sample that
 starts with silence, patterns of 64 rows by 4 channels) so that every number a test checks can be worked out by hand.
 
+## Sound file formats
+
+`<afile.h>` (`user/lib/audio/src/afile.c` is the front; `flac.c`, `wavext.c`, `aiff.c`, `au.c` are the formats) reads the sampled-sound
+files that a Touhou music collection or a recording tool leaves on a stick. The kind of a file is found by its first bytes, never by its
+name (`afile_probe`); `afile_open` fills an `AudioFileInfo` (format, codec, rate, channels, significant bits, channel mask, length, tags,
+and the sample format `afile_read` delivers); `afile_read` gives whole frames in the sound device's own sample format; `afile_seek`;
+`afile_render_wav` writes the native decode as a WAV (that is what `play -w` is); `afile_verify` is `play -V`.
+
+The FLAC decoder alone is `<flac.h>`, plain C with no operating-system calls (it reads through a `FlacIO` of a read and an optional seek
+callback, which is how the host tests link it to a file or a block of memory): `flac_open(&io, &err)` reads the metadata and gives the
+stream's `FlacInfo` (rate, channels, bits, length, MD5, tags, channel mask, seek points); `flac_read(f, out, frames, flags)` returns
+interleaved frames as `int32_t` (each sample the plain integer of its bit depth) or, with `FLAC_READ_S16`, as `int16_t`, 0 at the end, or one
+negative `FLAC_E_*` code for each damaged spot (already skipped: call again); `flac_seek`, `flac_tell`, `flac_concealed`, `flac_errors`;
+`flac_verify` (decode everything, compare the MD5 and the sample count); `flac_strerror`; and the MD5 it needs (`flac_md5_*`).
+
+Every format is decoded to integers (compressed and companded ones to 16 bits, floating point to 32 by rounding and clipping), then packed
+into the smallest device format that holds the significant bits: 8-bit unsigned, or signed 16, 24 or 32; a 12-bit sample goes into 16 bits
+shifted up, a 20-bit one into 24. More than two channels are mixed down to stereo for playing (`AFILE_DOWNMIX`) by the speaker positions
+the file names (or the usual layout for the channel count): front pair 1, centre 0.707 to both, back and side 0.707 to their side, back
+centre 0.5 to both, the low frequency channel left out, everything divided by the larger of the two sums so that a loud source cannot clip;
+`play -w` and `play -i` keep every channel. A source that is not at 4000 to 192000 Hz cannot be played (the Jukebox lists it with a
+warning, `play` says so); `play -w` renders it anyway.
+
+| Format | State |
+|---|---|
+| FLAC, RFC 9639 | all channel assignments, 1 to 8 channels, 4 to 32 bits per sample (the 33-bit side channel of 32-bit stereo too), every rate and block size code, fixed and variable block size, CONSTANT / VERBATIM / FIXED / LPC (order 1 to 32, any precision and shift), wasted bits, Rice methods 0 and 1 with every partition order and escape codes, CRC-8 and CRC-16 checked, STREAMINFO / SEEKTABLE / VORBIS_COMMENT read, every other block skipped, an ID3v2 tag in front skipped, a stream cut out of a longer one, no length (0 samples declared); **works**. Not done: Ogg FLAC. Tags read: `TITLE` `ARTIST` `ALBUM` `DATE` `GENRE` `TRACKNUMBER` `WAVEFORMATEXTENSIBLE_CHANNEL_MASK` |
+| WAV: PCM | 8 bits unsigned, 16, 24, 32; containers wider than the significant bits (12 in 16, 20 or 24 in 32 ...) in a plain or an extensible header; **works** |
+| WAV: IEEE float | 32 and 64 bits; **works with a difference**: converted to a 32-bit integer (x * 2^31, rounded, clipped, NaN is silence) because the sound device has no floating point format |
+| WAV: A-law, mu-law | **works**, decoded to 16 bits as ITU-T G.711 defines it |
+| WAV: IMA ADPCM, Microsoft ADPCM | **works**, decoded to 16 bits, seeking by block, the `fact` chunk trims the padded last block; a block the decoder cannot read (a predictor index that does not exist) is replaced by silence and reported. Microsoft ADPCM's predictor is an arithmetic shift (floor), which Windows' own codec confirmed (reading the specification's "/ 256" as C division gave a different sample for a quarter of the samples: see the verification list) |
+| WAV: WAVE_FORMAT_EXTENSIBLE, RF64, BW64 | speaker mask, valid bits, the PCM, float, A-law and mu-law sub formats, a `ds64` chunk; **works**. An extensible header with another sub format is refused with a sentence |
+| WAV: a data chunk of size 0 or 0xFFFFFFFF, odd chunk padding, `LIST`/`INFO` tags, chunks after the data | **works** (`INAM` `IART` `IPRD` `ITRK`/`IPRT` `ICRD`; a tag that is not UTF-8 is taken for Latin-1) |
+| WAV: other codecs (MP3, WMA, AAC, GSM, ...) | **not done**; named in the error message |
+| AIFF, AIFF-C | PCM 1 to 32 bits big endian (left-justified in whole bytes), `NONE` `twos` `in24` `in32` `sowt` `raw ` `fl32` `FL32` `fl64` `FL64` `ulaw` `ULAW` `alaw` `ALAW`; the 80-bit sample rate; `NAME` and `AUTH` as title and artist; **works**. `ima4` and the other compressions: **not done** |
+| Sun .au | encodings 1 (mu-law), 2 to 5 (PCM of 8, 16, 24 and 32 bits), 6 and 7 (float), 27 (A-law); unknown data size; **works**. The G.721 and G.723 ADPCM encodings: **not done** |
+| MP3, Ogg Vorbis, Opus, AAC, WMA | **not done**, on purpose (see below) |
+
+**A bad file.** Every number a file gives is checked before it is used (sizes against the file, counts against the data, channel counts,
+rates, partition orders against block sizes, predictor orders, shifts, escape widths, every reconstructed FLAC sample against its bit
+depth, which also keeps the 64-bit arithmetic of the predictors from overflowing). A truncated file plays what is there. A FLAC frame that
+fails its CRC, a header that is not one or a frame body that is not valid is reported once (`flac_read` returns a negative code, `play`
+and the Jukebox say it once and carry on), the decoder looks for the next frame header that checks out, and the samples that were lost
+stand as silence (known exactly from the sample or frame number of the next good frame) so the position stays right; a damaged *last*
+frame is lost, not replaced. Bytes after the last frame (an ID3v1 or APE tag) are not an error when STREAMINFO says how long the audio is.
+A work limit keeps a file made of frame-like headers from costing a whole frame per byte.
+
+**Memory.** A 128 KiB read buffer (it grows to hold one frame if a stream lies about its frame size, 8 MiB at most) and one decoded block of
+at most 65535 samples of 8 channels in 64 bits (usually tens of KiB). A 4 GiB FLAC needs no more than a small one.
+
+**Speed.** In the QEMU guest on the development PC (software emulation, no hardware virtualization) a 30 s, 16-bit stereo, 44.1 kHz FLAC
+(LPC 8, mid/side, 93 KiB/s of FLAC) is decoded and checked against its MD5 (`play -V`) at 22 to 41 times real time (the PC was busier in
+the slow run), and rendered to a WAV (`play -w`, decoding, packing and writing) at 25 to 40 times (test `audio_fmt_flac_speed`, which asserts
+only 3 times): decoding such a file takes 2.5 to 5 percent of one CPU, before the Jukebox draws anything.
+
+**Gapless.** When the next track of the Jukebox has the same sample rate, channels and sample size as the one that ends, it is opened and
+fed behind what is still queued (the last 300 ms), the counters of the chain go on, and the device stream is never emptied (the title and
+the trace line change up to 300 ms before the new music is heard). FLAC has no encoder delay, so an album plays without a gap; a format
+change (44.1 kHz to 48 kHz, 16 bits to 24) goes the ordinary way, with a pause.
+
+**How it was verified, and what that does and does not show.**
+
+* `tests/host/test_flac.py` (52 tests, built with AddressSanitizer and UBSan by `tests/host/flactool.c`): `tests/host/flacenc.py` is a FLAC
+  *encoder* written from the same RFC that can be told to take every path (all four channel assignments; 4 to 32 bits; 1 to 8 channels;
+  every sample rate form; block sizes 1 to 65535, variable block size; FIXED 0 to 4; LPC order 1 to 32 with every precision 1 to 15 and
+  shifts; Rice methods 0 and 1, partition orders 0 to 15, every parameter, escape partitions of every width 0 to 31 bits; wasted bits;
+  CONSTANT and VERBATIM; silence, one sample, none; full scale noise; 32-bit side channels; SEEKTABLE with placeholders, VORBIS_COMMENT,
+  a 5 MiB PICTURE, ID3v2); the PCM that goes in is the oracle and so is the MD5 the encoder writes (hashlib). Damage: a flipped bit in a
+  frame body, in a header, in the CRC; a damaged first or last frame; many damaged frames; junk between frames; truncation at every kind
+  of place; a lying STREAMINFO (MD5, length, block sizes, frame sizes, channels, bits, rate); absurd metadata; hand-built frames that break one rule
+  each with correct CRCs; tiny inputs; a seek table that lies; 300 random seeks in one open stream checked against a full decode;
+  and a **mutation fuzz** of 8000 random changes of valid streams (bit flips, bytes, truncations, deleted and duplicated chunks, extreme
+  values; each opened, read to the end, seeked in and verified): no fault, no hang.
+* `tests/host/test_audio_formats.py` (the WAV family, AIFF, AU and the front): `tests/host/audiogen.py` makes every kind of file and says
+  what it must decode to; the C reader must give exactly that, bit for bit, in the delivered format, and `afile_render_wav` must write
+  byte for byte the WAV the generator models; seeking, tags, detection by magic bytes, downmixing and damage are checked; a **mutation
+  fuzz** of 40000 changes of files of every kind (it found a signed overflow in the Microsoft ADPCM step, fixed). **Independent references**
+  (class `Independent`): Python's `audioop` computes G.711 and IMA ADPCM, `wave`, `aifc`, `sunau` and `scipy.io.wavfile` read the files the
+  generator writes, so the generator's model of those formats agrees with other implementations. The class `JukeboxScan` runs the Jukebox's
+  own folder scan (`add_directory` in `user/bin/jukebox/playlist.c`, cut out of the source and put in front of a stub that prints the path,
+  sanitizers on) on trees made for it: byte order, hidden entries and other files left out, music in the folders inside a folder down to three
+  levels and no further, the caps (1024 entries read from one folder, 2000 tracks in all), a loop of symbolic links, a missing folder.
+* **`tests/host/flac_reference_check.py`** (Windows only): the part a pair written by one person from one text cannot show. Microsoft's own
+  FLAC decoder (Media Foundation, `flac_mf_decode.ps1`) reads 13 streams of the test encoder and gives the input PCM byte for byte
+  (every channel assignment, LPC 32 at precision 15, both Rice methods, escapes, wasted bits, variable block size, verbatim and constant
+  subframes, 8, 12, 16 and 24 bits, 6 channels). Windows' FLAC *encoder* is the reference libFLAC 1.5.0 (it writes `reference libFLAC
+  1.5.0 20250211` in its comment block): `flac_mf_encode.ps1` encodes 12 generated files (44.1 to 192 kHz, 16 and 24 bits, 1, 2, 3 and 6
+  channels, silence, noise, a sine) and this decoder reads every one with no damage and finds the MD5 libFLAC computed; where the encoder
+  did not resample that MD5 is also the MD5 of the PCM that went in, and 200 random seeks in each stream agree with a full decode. So: known
+  PCM, through the reference encoder, through this decoder, gives the same PCM. A differential fuzz in the same script makes random valid
+  streams (random predictors of every kind with random orders, precisions and shifts, Rice methods, partition orders, escapes, wasted
+  bits, a channel assignment per frame, 1 to 6 channels, 8, 16 and 24 bits, variable block sizes from 16 samples): Microsoft's decoder
+  and this one both give back the input PCM for every one (631 streams in the first run, 185 in the script). The same script has Windows' own IMA ADPCM, Microsoft
+  ADPCM, A-law and mu-law codecs (the same Media Foundation script reads any file Windows knows) decode generated WAV files, mono and
+  stereo, and they agree sample for sample with the generator's model. That check found a mistake: Microsoft ADPCM's predictor is an
+  arithmetic shift (floor), and the first model, which read the specification's "/ 256" as C division, was wrong for a quarter of the
+  samples (fixed in `wavext.c` and `audiogen.py`; the host tests could not have shown it, the reader and the model shared the reading).
+* `tests/case_audio_formats.py` (QEMU, prefix `audio_fmt_`): the same files in the guest. `audio_fmt_flac` and `audio_fmt_wav_family` run
+  `play -w` on about 40 files and compare the md5 of the WAV that came out with the host's model (so: the guest gives back the PCM that made
+  each file, bit for bit, at its own rate), check `play -i`, `play -V`, seeking with `play -s -t -w`; `audio_fmt_damage` (a flipped bit in a frame
+  and in a header, a cut file, an MP3-in-WAV, junk, a damaged ADPCM block, the Jukebox list); `audio_fmt_device` plays six files through the
+  HDA card and the capture backend and finds the tones at the right pitch, level and side; `audio_fmt_jukebox_list`; `audio_fmt_jukebox_gapless`
+  (GUI: two FLAC files are one stretch of sound); `audio_fmt_flac_speed`.
+
+What is **not** shown: nothing here was played on a real sound card or heard by a person; real FLAC files from other encoders than libFLAC
+(1.5.0, through Windows' wrapper) were not available; Windows' ADPCM codec takes only the standard seven coefficient pairs, so a Microsoft
+ADPCM file with a table of its own is checked against the generator only; the downmix gains are a design choice (checked against a model
+of the same formulas); the AIFF 80-bit rate is checked only against the generator (and against `aifc`'s own parsing of the same files).
+AIFF, AU, float WAV, RF64 and the tags have no Windows check (Python's `aifc`, `sunau`, `scipy` and the generator are the references).
+
+**MP3 and Vorbis.** They are not in the Jukebox on purpose: their decoders need long tables (the Huffman tables, the scale factor bands,
+the synthesis window, the IMDCT windows for MP3; the floor and residue codebooks and the window shapes for Vorbis), and a decoder that is
+nearly right is worse than none. On this development PC there is a way to check an MP3 decoder: Windows' Media Foundation has an MP3
+*encoder* (`MediaEncodingProfile.CreateMp3`, tried: it works) and an MP3 *decoder*, so streams of known audio and a reference decode are
+available (MP3 decoding is not bit-exact across implementations; ISO/IEC 11172-4 judges a decoder by its RMS error against the reference
+decoder, which is the bound to test against, and any table typo shows up as a large error). For Vorbis nothing independent is installed
+(no libvorbis, no ffmpeg; the Web Media Extensions are not part of Windows 10/11 by default), so a Vorbis decoder could only be tested
+against an encoder written for the purpose.
+
 ## Reimu's Jukebox
 
 `user/bin/jukebox/` (`jukebox.h` state, `player.c` loading, feeding and analysis, `playlist.c`, `ui.c`, `main.c`); listed in
 the start menu as *Reimu's Jukebox*, window title "Jukebox - <song>". The window is the Prismriver Concert Hall: a stage with
 curtains and spotlights where Lunasa (violin, the low part of the sound), Merlin (trumpet, the middle) and Lyrica (keyboard,
 the high part) bob and glow with the music, and an orchestra pit below that is a 32 band spectrum with peak caps. On the left
-the playlist (the shipped songs, then `~/Music/*.tms`, `*.mod` and `*.wav`, then anything opened with *Open music...*); under the stage
+the playlist (the shipped songs, then `~/Music` and the folders inside it, three levels deep, each sorted by name: `*.tms`, `*.mod`, `*.flac`, `*.wav`, `*.aif`/`*.aiff`/`*.aifc`, `*.au`; then anything opened with *Open music...*); under the stage
 the title and mood, a seek bar with the time, previous / play-pause / stop / next, and the master volume with a mute
 button. Keys and options are in `jukebox(1)`; `--trace` prints one line per event (the tests read those), `--list` prints the
 playlist and exits.
@@ -269,8 +389,12 @@ How it plays: no thread and no helper process. The window's tick (45 ms while pl
 (`AUDIO_GET_STATUS`), renders or reads more until about 450 ms are queued, and writes it with a non-blocking stream. The
 position shown is what has been rendered minus what is still queued and in the hardware ring. Pausing, seeking and stopping
 flush the stream (heard at once) and, on resume, seek the source to the remembered position. The levels come from a 512
-point FFT of the audio around the position being heard. WAV files stream from disk (8/16/24/32-bit, mono or stereo, any
-rate); a song that does not parse stays in the list with a warning icon and the parser's message.
+point FFT of the audio around the position being heard. Sound files (FLAC, WAV in all its kinds, AIFF, AU: see Sound file
+formats) stream from disk through `afile`; their tags give the list entry its title ("Artist - Title") and the album and format
+(`FLAC 44.1 kHz 16-bit stereo`) go on the second line; a file that does not parse stays in the list with a warning icon and
+the decoder's message (a song or module likewise); a file the user names, or opens with *Open music...*, is looked into whatever its name is.
+A damaged spot in a FLAC file is skipped and said once in the status line. When the next track has the same rate, channels and sample
+size, it is opened behind the one that ends and the stream is never emptied (gapless, see above).
 
 ## The panel's volume control
 
@@ -349,12 +473,20 @@ repeats every time. The GUI tests (`audio_jukebox`, `audio_desktop_sounds`, `aud
 * `audio_panel_volume` -- click the speaker in the panel, drag the slider, `volume` agrees; Mute and Unmute.
 * `audio_ac97_tone` -- the AC'97 path, with a 22050 Hz 8-bit client as well.
 
+`python tests/run_all.py audio_fmt_` runs `tests/case_audio_formats.py` (about three minutes; the FLAC files are encoded by the host in pure Python
+the first time and cached in `build/audiofmt-cache`): `audio_fmt_flac`, `audio_fmt_wav_family`, `audio_fmt_damage`, `audio_fmt_device`,
+`audio_fmt_jukebox_list`, `audio_fmt_jukebox_gapless`, `audio_fmt_flac_speed` (see Sound file formats for what each does). The host tests need
+no QEMU: `python tools/hosttest.py discover -s tests/host -p "test_flac.py"` and `-p "test_audio_formats.py"` (WSL's Ubuntu with gcc and Python 3.12,
+which still has `audioop`, `aifc` and `sunau`); `python tests/host/flac_reference_check.py` (Windows) checks the FLAC decoder against Microsoft's
+decoder and the reference libFLAC.
+
 ## Known limits and what is left
 
 * Nothing has run on real hardware (see "Not verified" under Intel HDA). The first thing to do on the Dell is
   `cat /proc/audio`, `dmesg | grep Nitori` and `beep`.
 * The songs were never listened to; they are written to be bar-aligned, in key, and at sane levels, which is what is
   measured. The mix is quiet at the default master volume of 60 (peaks around 0.2 of full scale): turn it up.
+* MP3, Ogg Vorbis, Opus, AAC and WMA files are not read (see Sound file formats for why and how an MP3 decoder could be checked); Ogg FLAC is not either.
 * Only ProTracker `.mod` files are read (see Tracker modules); S3M, XM and IT are not, and the `.mod` player has been
   heard by no one: no real tracker tune has been played through it. One tempo per `.tms` song. Voices are monophonic
   (chords are written as arpeggios or on several channels). No recording, no per-application volume in the panel (the

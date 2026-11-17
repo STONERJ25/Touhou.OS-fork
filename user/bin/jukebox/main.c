@@ -1,7 +1,8 @@
 /*
  * jukebox: Reimu's Jukebox, the music player, in the Prismriver Concert Hall.
  *
- *   jukebox [-p] [FILE.wav|FILE.tms|FILE.mod|DIRECTORY ...]   the window; with files, they come first in the playlist; -p starts playing
+ *   jukebox [-p] [FILE|DIRECTORY ...]                the window; with files, they come first in the playlist; -p starts playing
+ *                                                    (FLAC, WAV, AIFF, AU, FILE.tms songs and FILE.mod modules)
  *   jukebox --list                                   print the playlist (title, length, path) and exit
  *   jukebox --trace ...                              also print one line on stdout for each thing that happens
  *
@@ -19,18 +20,10 @@ static void add_argument(const char *arg) {
     struct stat st;
     if (stat(arg, &st) != 0) { fprintf(stderr, "jukebox: %s: not found\n", arg); return; }
     if (S_ISDIR(st.st_mode)) {
-        DIR *d = opendir(arg);
-        if (!d) return;
-        struct dirent *e;
-        while ((e = readdir(d))) {
-            char path[320];
-            snprintf(path, sizeof path, "%s/%s", arg, e->d_name);
-            if (e->d_name[0] != '.') playlist_add(path, false);
-        }
-        closedir(d);
+        playlist_add_directory(arg, false);
         return;
     }
-    if (playlist_add(arg, false) < 0) fprintf(stderr, "jukebox: %s: not a .wav, .tms or .mod file\n", arg);
+    if (playlist_add(arg, false, true) < 0) fprintf(stderr, "jukebox: %s: not music the Jukebox plays (FLAC, WAV, AIFF, AU, .tms, .mod)\n", arg);
 }
 
 int main(int argc, char **argv) {
@@ -41,7 +34,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[first], "--list")) list_only = true;
         else if (!strcmp(argv[first], "-p") || !strcmp(argv[first], "--play")) autoplay = true;
         else if (!strcmp(argv[first], "--")) { first++; break; }
-        else { fprintf(stderr, "usage: jukebox [-p] [--trace] [--list] [FILE.wav|FILE.tms|FILE.mod|DIRECTORY ...]\n"); return 2; }
+        else { fprintf(stderr, "usage: jukebox [-p] [--trace] [--list] [FILE|DIRECTORY ...]\n"); return 2; }
     }
     for (int i = first; i < argc; i++) add_argument(argv[i]);
     playlist_scan();

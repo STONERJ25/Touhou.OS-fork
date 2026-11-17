@@ -1,0 +1,26 @@
+.page audio-formats 7 the sound file formats of play and the Jukebox
+
+# DESCRIPTION
+`play(1)` and the Jukebox (jukebox(1)) read these sampled-sound formats. The kind of a file is found by its first bytes, never by its name: `fLaC` (also behind an ID3v2 tag), `RIFF`, `RF64` or `BW64` followed by `WAVE`, `FORM` followed by `AIFF` or `AIFC`, `.snd`. Whatever the format, the samples are decoded to integers (compressed and companded formats to 16 bits, floating point to 32), packed into the smallest sample format the sound device has that holds them (8 bits unsigned, or 16, 24 or 32 bits signed; a 12-bit sample goes into 16 bits, shifted up, so nothing is lost or invented), and written to `/dev/audio` at the file's own sample rate. The device accepts 4000 to 192000 Hz and one or two channels: a file outside that is listed with a warning and not played, and one with more channels is mixed down to stereo by the positions of its speakers (`play -w` keeps every channel).
+
+# FLAC
+The decoder follows RFC 9639. It reads the stream's STREAMINFO, SEEKTABLE and VORBIS_COMMENT blocks (the tags `TITLE`, `ARTIST`, `ALBUM`, `TRACKNUMBER`, `DATE`, `GENRE`, and `WAVEFORMATEXTENSIBLE_CHANNEL_MASK`) and skips every other block, however big (a picture of several megabytes costs nothing). All channel assignments (independent, left/side, right/side, mid/side), 1 to 8 channels, 4 to 32 bits per sample, every sample rate and block size the format can say, fixed and variable block size streams, CONSTANT, VERBATIM, FIXED and LPC subframes of every order, wasted bits and both Rice coding methods with every partition order and escape codes are handled. The CRC-8 of every frame header and the CRC-16 of every frame are checked. A frame that fails is reported (once), skipped, and replaced by silence of the same length; the decoder finds the next frame again by its sync code. Memory is bounded: a 4 GiB file needs no more than a small one. Seeking uses the seek table if the file has one and probes the file otherwise. `play -V` decodes a whole file and compares the MD5 of the audio, and the number of samples, with STREAMINFO. Not played: Ogg FLAC (FLAC inside an Ogg container); sample rates above 192000 Hz are decoded (`play -w`) but cannot be played.
+
+# WAV
+RIFF/WAVE files with these codecs: PCM (8 bits unsigned, 16, 24 and 32 bits; a container wider than the significant bits is handled), IEEE floating point (32 and 64 bits), A-law and mu-law (ITU-T G.711), IMA ADPCM and Microsoft ADPCM (seeking is by block). WAVE_FORMAT_EXTENSIBLE with the speaker mask and the valid bits, RF64 and BW64 (a `ds64` chunk carries the 64-bit sizes), a `data` chunk of size 0 or 0xFFFFFFFF (a file that was still being written: the data is what follows), chunks padded to an even length, and the tags in a `LIST`/`INFO` chunk (`INAM`, `IART`, `IPRD`, `ITRK` or `IPRT`, `ICRD`). Other codecs (MP3, WMA, AAC, GSM, ...) are named in the error message and not played.
+
+# AIFF
+AIFF and AIFF-C: big endian PCM of 1 to 32 bits (the sample rate is an 80-bit IEEE number), `NONE` and `twos`, `sowt` (little endian), `in24` and `in32`, `raw ` (8-bit unsigned), `fl32` and `fl64` (floating point), `ulaw` and `alaw`. The chunks `NAME` and `AUTH` become the title and the artist. Compressed AIFF-C (`ima4`, `MAC3`, ...) is not played.
+
+# AU
+Sun's `.au` (`.snd`): mu-law, A-law, linear PCM of 8, 16, 24 and 32 bits, floating point of 32 and 64 bits; a data size of 0xFFFFFFFF means the data runs to the end of the file.
+
+# NOT PLAYED
+MP3, Ogg Vorbis, Opus, AAC and WMA need decoders that cannot be checked here without an independent reference; they are not read. S3M, XM and IT tracker files are not read either (see audio(7) for the `.mod` player).
+
+# FILES
+@ *.flac*, *.fla*, *.wav*, *.wave*, *.aif*, *.aiff*, *.aifc*, *.au*, *.snd*
+    The names the Jukebox picks up from `~/Music` (it opens the file to see what it really is; a file named on the command line or chosen with *Open music...* is looked into whatever its name).
+
+# SEE ALSO
+play(1), jukebox(1), audio(7), tms(5)

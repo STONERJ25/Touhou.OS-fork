@@ -38,6 +38,8 @@ since 2026-11-03; see the project notes.)
 - [ ] networking, next: a link on the real PC (the I219 was found on the Dell, no cable was plugged in; RTL8168 never run); IPv6, SACK, a Kappa network panel
 - [x] audio core: Intel HDA / AC97, mixer, `play`, `beep`, `volume`
 - [x] audio rest: generic HDA codec path walk, Jukebox, songs, `.mod` player, system sounds, panel volume (docs/AUDIO.md; the codec walk is verified in QEMU only)
+- [x] sound file formats: a FLAC decoder (RFC 9639), WAV in all its kinds, RF64, AIFF, AIFF-C, Sun .au; tags, seeking, gapless albums in the Jukebox (docs/AUDIO.md "Sound file formats"; FLAC verified against Microsoft's decoder and reference libFLAC)
+- [ ] audio formats, next: MP3 (checkable on a Windows PC against its MP3 encoder and decoder, by RMS error), Ogg Vorbis and Opus (nothing independent to check against yet), Ogg FLAC, S3M/XM/IT modules, recording
 - [x] threads (clone, futex, pthreads)
 - [x] gzip/tar/zip
 - [x] PNG/JPEG/GIF/BMP/PNM/TGA decoders, PNG/BMP/PPM encoders, the Gallery viewer, wallpaper from a picture, PNG screenshots, thumbnails for file browsers (docs/MEDIA.md)

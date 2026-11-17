@@ -8,6 +8,7 @@
 #include <string.h>
 
 #define TARGET_MS    450                /* keep about this much queued in the kernel; seeking and pausing cut it off at once */
+#define GAPLESS_MS   300                /* when this little of a track is still queued, the next one is opened behind it (if it has the same sample format) */
 #define CHUNK_FRAMES 1024
 #define SONG_RATE    32000
 #define FFT_N        512
@@ -45,14 +46,19 @@ void player_init(void) {
     snprintf(J.status, sizeof J.status, "Ready.");
 }
 
-static void close_source(void) {
+static void drop_source(void) {
     if (J.mus) music_close(J.mus);
     J.mus = NULL;
-    if (J.wav_open) audio_wav_close(&J.wav);
-    J.wav_open = false;
+    if (J.af) afile_close(J.af);
+    J.af = NULL;
+}
+
+static void close_source(void) {
+    drop_source();
     J.carry_n = 0;
     J.source_done = false;
     J.rendered = 0;
+    J.track_base = 0;
 }
 
 void player_shutdown(void) {
@@ -99,24 +105,61 @@ static void push_history(const void *data, size_t frames, unsigned channels, uns
     J.hist_total += frames;
 }
 
+/* Opens the track's source (a song, a module or a sound file) and works out what the device has to be set to for it: J.rate, J.out_channels, J.out_format,
+ * J.bytes_per_frame, and the track's length. */
+static bool open_source(Track *t, char *err, size_t errsz) {
+    if (t->kind == TK_MUSIC) {
+        J.rate = SONG_RATE;
+        J.mus = music_open(t->path, J.rate, &J.minfo, err, errsz);
+        if (!J.mus) return false;
+        t->length = J.minfo.length;
+        J.out_channels = 2;
+        J.out_format = AUDIO_FMT_S16;
+        J.bytes_per_frame = 4;
+        J.fmt_text[0] = 0;
+        return true;
+    }
+    if (afile_open(t->path, AFILE_DOWNMIX, &J.af, &J.ainfo, err, errsz) != 0) { J.af = NULL; return false; }
+    if (J.ainfo.rate < AUDIO_MIN_RATE || J.ainfo.rate > AUDIO_MAX_RATE) {
+        snprintf(err, errsz, "%u Hz is outside the %d to %d Hz the sound device plays", J.ainfo.rate, AUDIO_MIN_RATE, AUDIO_MAX_RATE);
+        afile_close(J.af);
+        J.af = NULL;
+        return false;
+    }
+    J.rate = J.ainfo.rate;
+    J.out_channels = J.ainfo.out_channels;
+    J.out_format = J.ainfo.out_format;
+    J.bytes_per_frame = J.ainfo.out_bytes;
+    t->length = J.ainfo.length_known ? (double)J.ainfo.frames / (double)J.rate : 0;
+    jukebox_format_text(&J.ainfo, J.fmt_text, sizeof J.fmt_text);
+    return true;
+}
+
+/* Points the loaded source at `t` seconds. */
+static void position_source(double t) {
+    J.start_pos = t;
+    if (J.mus) {
+        music_seek(J.mus, t);
+        double left = music_length(J.mus) - t;
+        J.limit_frames = left > 0 ? (uint64_t)(left * J.rate) : 0;
+    } else if (J.af) {
+        uint64_t frame = (uint64_t)(t * J.rate);
+        if (J.ainfo.length_known && frame > J.ainfo.frames) frame = J.ainfo.frames;
+        afile_seek(J.af, frame);
+        J.limit_frames = J.ainfo.length_known ? J.ainfo.frames - frame : ~0ull;
+    }
+}
+
 /* Points the loaded source at `t` seconds and empties the device's queue. */
 static void seek_source(double t) {
     if (J.au) audio_flush(J.au);
     J.carry_n = 0;
     J.source_done = false;
     J.rendered = 0;
-    J.start_pos = t;
+    J.track_base = 0;
     J.hist_total = 0;
-    if (J.mus) {
-        music_seek(J.mus, t);
-        double left = music_length(J.mus) - t;
-        J.limit_frames = left > 0 ? (uint64_t)(left * J.rate) : 0;
-    } else if (J.wav_open) {
-        uint32_t frame = (uint32_t)(t * J.wav.rate);
-        if (frame > audio_wav_frames(&J.wav)) frame = audio_wav_frames(&J.wav);
-        audio_wav_seek(&J.wav, frame);
-        J.limit_frames = audio_wav_frames(&J.wav) - frame;
-    }
+    J.damage = 0;
+    position_source(t);
 }
 
 bool player_load(int index, double at, bool start) {
@@ -131,34 +174,15 @@ bool player_load(int index, double at, bool start) {
         trace("cannot play %s: %s", t->title, t->err);
         return false;
     }
-    unsigned channels = 2, format = AUDIO_FMT_S16;
-    if (t->kind == TK_MUSIC) {
-        char err[200];
-        J.rate = SONG_RATE;
-        J.mus = music_open(t->path, J.rate, &J.minfo, err, sizeof err);
-        if (!J.mus) {
-            snprintf(t->err, sizeof t->err, "%s", err);
-            snprintf(J.status, sizeof J.status, "%s: %s", t->title, err);
-            trace("cannot play %s: %s", t->title, err);
-            return false;
-        }
-        t->length = J.minfo.length;
-        J.bytes_per_frame = 4;
-    } else {
-        if (audio_wav_open(&J.wav, t->path) != 0) {
-            snprintf(t->err, sizeof t->err, "not a WAV file this player understands");
-            snprintf(J.status, sizeof J.status, "%s: %s", t->title, t->err);
-            return false;
-        }
-        J.wav_open = true;
-        J.rate = J.wav.rate;
-        channels = J.wav.channels;
-        format = J.wav.format;
-        J.bytes_per_frame = (unsigned)(J.wav.bits / 8) * J.wav.channels;
-        t->length = (double)audio_wav_frames(&J.wav) / (double)J.rate;
+    char err[200];
+    if (!open_source(t, err, sizeof err)) {
+        snprintf(t->err, sizeof t->err, "%s", err);
+        snprintf(J.status, sizeof J.status, "%s: %s", t->title, err);
+        trace("cannot play %s: %s", t->title, err);
+        return false;
     }
     if (J.au) {
-        int rc = audio_set_format(J.au, J.rate, channels, format);
+        int rc = audio_set_format(J.au, J.rate, J.out_channels, J.out_format);
         if (rc) {
             snprintf(J.status, sizeof J.status, "The sound device cannot play %s (%s).", t->title, audio_strerror(rc));
             close_source();
@@ -262,8 +286,9 @@ void player_set_mute(bool mute) {
 /* ------------------------------------------------------------------ feeding the device */
 
 static size_t next_chunk(uint8_t *buf, size_t cap) {
-    if (J.rendered >= J.limit_frames) return 0;
-    uint64_t left = J.limit_frames - J.rendered;
+    uint64_t done = J.rendered - J.track_base;
+    if (done >= J.limit_frames) return 0;
+    uint64_t left = J.limit_frames - done;
     if (J.mus) {
         size_t want = CHUNK_FRAMES < left ? CHUNK_FRAMES : (size_t)left;
         size_t n = music_render(J.mus, (int16_t *)buf, want);
@@ -271,13 +296,22 @@ static size_t next_chunk(uint8_t *buf, size_t cap) {
         J.rendered += n;
         return n * 4;
     }
-    size_t want = cap < left * J.bytes_per_frame ? cap : (size_t)(left * J.bytes_per_frame);
-    ssize_t got = audio_wav_read(&J.wav, buf, want);
+    size_t want = cap / J.bytes_per_frame;
+    if (want > left) want = (size_t)left;
+    ssize_t got;
+    for (;;) {
+        got = afile_read(J.af, buf, want);
+        if (got >= 0) break;
+        if (J.damage++ == 0) {                                          /* a damaged spot, already skipped: say so once and carry on */
+            snprintf(J.status, sizeof J.status, "%s: damaged audio skipped (%s)", J.tr[J.cur].title, afile_damage_message(J.af));
+            trace("damaged audio skipped in %s: %s", J.tr[J.cur].title, afile_damage_message(J.af));
+        }
+        if (J.damage > 100000) { got = 0; break; }
+    }
     if (got <= 0) return 0;
-    size_t frames = (size_t)got / J.bytes_per_frame;
-    push_history(buf, frames, J.wav.channels, J.wav.format);
-    J.rendered += frames;
-    return frames * J.bytes_per_frame;
+    push_history(buf, (size_t)got, J.out_channels, J.out_format);
+    J.rendered += (uint64_t)got;
+    return (size_t)got * J.bytes_per_frame;
 }
 
 static void feed(const struct audio_status *st0) {
@@ -396,6 +430,51 @@ static void analyse(int64_t heard) {
     }
 }
 
+/* ------------------------------------------------------------------ gapless */
+
+/* The track that follows the current one, if the device needs no change for it (same rate, channels and sample format): -1 if there is none, if the list
+ * ends (repeat off), or if it would have to be set up differently, which is done the ordinary way, with a pause. */
+static int gapless_candidate(void) {
+    if (J.cur < 0 || !J.ntr) return -1;
+    int from = J.cur;
+    for (int tries = 0; tries < J.ntr; tries++) {
+        int next = from + 1;
+        if (next >= J.ntr) {
+            if (!J.repeat) return -1;
+            next = 0;
+        }
+        from = next;
+        const Track *t = &J.tr[next];
+        if (t->err[0]) continue;
+        if (t->rate == J.rate && t->channels == J.out_channels && t->format == J.out_format) return next;
+        return -1;
+    }
+    return -1;
+}
+
+/* Opens the next track and starts feeding it behind what is still queued of the current one. The counters of the chain go on; only the track's own base moves. */
+static bool gapless_switch(int next) {
+    Track *old = &J.tr[J.cur], *t = &J.tr[next];
+    char err[200];
+    trace("finished %s", old->title);
+    drop_source();
+    if (!open_source(t, err, sizeof err)) {                             /* the file changed since the list was made: the ordinary end-of-track code takes over */
+        snprintf(t->err, sizeof t->err, "%s", err);
+        J.source_done = true;
+        return false;
+    }
+    J.cur = next;
+    J.list.selected = next;
+    J.track_base = J.rendered;
+    J.damage = 0;
+    J.source_done = false;
+    J.paused_pos = 0;
+    position_source(0);
+    snprintf(J.status, sizeof J.status, "Playing %s", t->title);
+    trace("playing %s", t->title);
+    return true;
+}
+
 /* ------------------------------------------------------------------ the tick */
 
 void player_tick(uint64_t now_ms) {
@@ -412,12 +491,22 @@ void player_tick(uint64_t now_ms) {
         if (audio_status(J.au, &st) != 0) return;
         int64_t behind = (int64_t)(st.queued_bytes / J.bytes_per_frame) + (int64_t)(J.carry_n / J.bytes_per_frame) +
                          (int64_t)((double)st.pending_hw_frames * J.rate / 48000.0);
-        int64_t heard = (int64_t)J.rendered - behind;
+        int64_t heard = (int64_t)J.rendered - behind;                   /* frames of the whole chain that have reached the speakers */
         if (heard < 0) heard = 0;
-        g_pos = J.start_pos + (double)heard / J.rate;
+        int64_t rel = heard - (int64_t)J.track_base;                    /* ... and of this track (negative while the end of the track before it still plays) */
+        if (rel < 0) rel = 0;
+        g_pos = J.start_pos + (double)rel / J.rate;
         double len = player_length();
         if (len > 0 && g_pos > len) g_pos = len;
         analyse(heard);
+        if (J.source_done && J.carry_n == 0 && behind * 1000 < (int64_t)GAPLESS_MS * (int64_t)J.rate) {
+            int next = gapless_candidate();
+            if (next >= 0 && gapless_switch(next)) {                    /* the next track goes in behind this one: the device never runs dry */
+                struct audio_status st2;
+                if (audio_status(J.au, &st2) == 0) feed(&st2);
+                return;
+            }
+        }
         if (J.source_done && J.carry_n == 0 && st.queued_bytes == 0 && st.pending_hw_frames < 960) {
             trace("finished %s", J.tr[J.cur].title);
             J.playing = false;

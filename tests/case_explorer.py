@@ -748,3 +748,23 @@ def explorer_open_apps():
         time.sleep(4.0)
         assert "gallery" in g.sh("ps"), "the Gallery is not running"
     gui_test("t-explorer-open", body)
+
+
+@test
+def explorer_open_audio():
+    """A sound file (FLAC, WAV, AIFF, AU, a tracker module or a song) is a file type of its own with the music icon, and Enter opens it in the Jukebox, which starts playing it."""
+    def body(vm, g):
+        g.sh("mkdir -p /tmp/au; echo 'not really sound' > /tmp/au/song.wav")
+        launch(vm, g, "/tmp/au", items=1)
+        click_wait(vm, g, row(0), r"ex: sel 1 first=song.wav")
+        m = mark(vm)
+        g.key("ret")
+        wait_after(vm, m, r"ex: open /tmp/au/song.wav with jukebox")
+        deadline = time.time() + scaled(40)
+        while time.time() < deadline and "jukebox" not in g.sh("ps"):
+            time.sleep(1.0)
+        assert "jukebox" in g.sh("ps"), "the Jukebox is not running"
+        time.sleep(1.0)
+        g.shot("jukebox")
+        g.key("q", ctrl=True)
+    gui_test("t-explorer-audio", body, tree=False)

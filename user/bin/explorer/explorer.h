@@ -45,7 +45,7 @@
 /* ---------------------------------------------------------------- entries and the folder model */
 
 enum { EK_DIR, EK_FILE, EK_LINK, EK_OTHER };
-enum { FT_GENERIC, FT_TEXT, FT_IMAGE, FT_PROGRAM, FT_ARCHIVE, FT_DEVICE, FT_PIPE, FT_SOCKET };
+enum { FT_GENERIC, FT_TEXT, FT_IMAGE, FT_AUDIO, FT_PROGRAM, FT_ARCHIVE, FT_DEVICE, FT_PIPE, FT_SOCKET };
 enum { COL_NAME, COL_SIZE, COL_MTIME, COL_TYPE, COL_PERM, COL_OWNER, COL_COUNT };
 
 typedef struct Entry {

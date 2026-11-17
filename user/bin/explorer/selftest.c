@@ -206,6 +206,9 @@ static void test_format(void) {
     CHECK(classify("a.c", 0100644, EK_FILE) == FT_TEXT && classify("Makefile", 0100644, EK_FILE) == FT_TEXT && classify(".gaprc", 0100644, EK_FILE) == FT_TEXT, "classify text");
     CHECK(classify("run", 0100755, EK_FILE) == FT_PROGRAM && classify("x.sh", 0100755, EK_FILE) == FT_PROGRAM && classify("x.txt", 0100755, EK_FILE) == FT_TEXT, "classify program");
     CHECK(classify("a.tar", 0100644, EK_FILE) == FT_ARCHIVE && classify("blob", 0100644, EK_FILE) == FT_GENERIC, "classify other");
+    CHECK(classify("a.flac", 0100644, EK_FILE) == FT_AUDIO && classify("B.WAV", 0100644, EK_FILE) == FT_AUDIO && classify("c.aiff", 0100644, EK_FILE) == FT_AUDIO &&
+          classify("d.au", 0100644, EK_FILE) == FT_AUDIO && classify("e.mod", 0100644, EK_FILE) == FT_AUDIO && classify("f.tms", 0100644, EK_FILE) == FT_AUDIO, "classify audio");
+    CHECK(classify("g.mp3", 0100644, EK_FILE) == FT_GENERIC && classify("h.ogg", 0100644, EK_FILE) == FT_GENERIC, "classify audio the Jukebox cannot play");
     CHECK(classify("tty", 020666, EK_OTHER) == FT_DEVICE, "classify device");
 }
 

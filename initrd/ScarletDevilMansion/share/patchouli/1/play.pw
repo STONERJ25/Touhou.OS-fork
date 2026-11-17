@@ -1,16 +1,19 @@
-.page play 1 play WAV files, songs and raw audio
+.page play 1 play sound files, songs and raw audio
 
 # SYNOPSIS
-*play* [*-q*] [*-v* _PERCENT_] [*-g* _MS_] _FILE.wav_ | _FILE.tms_ | _FILE.mod_ ...
+*play* [*-q*] [*-v* _PERCENT_] [*-g* _MS_] _FILE_ ...
 *play* *-r* _RATE_ *-c* _1|2_ *-b* _BITS_ [*-q*] _FILE_ ...
-*play* [*-s* _SECONDS_] [*-t* _SECONDS_] [*-L*] _SONG_
-*play* *-i* [*-t* _SECONDS_] _SONG_ ...
-*play* *-w* _OUT.wav_ [*-s* _SECONDS_] [*-t* _SECONDS_] _SONG_
+*play* [*-s* _SECONDS_] [*-t* _SECONDS_] [*-L*] _FILE_
+*play* *-i* [*-t* _SECONDS_] _FILE_ ...
+*play* *-w* _OUT.wav_ [*-s* _SECONDS_] [*-t* _SECONDS_] _FILE_
+*play* *-V* _FILE.flac_ ...
 
 # DESCRIPTION
-`play` sends audio files to the sound card through `/dev/audio` and returns when the last one has been heard. A file that starts like a WAV file is played with the format its header gives (PCM, 8, 16, 24 or 32 bits, mono or stereo, any rate from 4000 to 192000 Hz). A file that is named `*.tms` or starts with the word `tms` is a song (see tms(5)) and is synthesized as it plays. A file that is named `*.mod`, or has a ProTracker signature such as `M.K.` at byte 1080, is a module: the usual 4 to 32 channel kinds are mixed as they play (see audio(7) for what is and is not understood). In this page _SONG_ means either kind. Anything else is taken to be raw samples: little endian, with the format named by `-r`, `-c` and `-b` (44100 Hz, stereo, 16 bits if they are left out). The file name `-` reads raw samples from standard input.
+`play` sends audio files to the sound card through `/dev/audio` and returns when the last one has been heard. The kind of a file is found by its first bytes, not by its name: a *sound file* (FLAC, WAV, AIFF, AIFF-C or Sun `.au`; see audio-formats(7) for every codec and what is and is not understood), a *song* (a file named `*.tms` or starting with `tms`, see tms(5), synthesized as it plays) or a ProTracker *module* (named `*.mod` or with a signature such as `M.K.` at byte 1080, see audio(7)). In this page _FILE_ means any of them. Anything else is taken to be raw samples: little endian, with the format named by `-r`, `-c` and `-b` (44100 Hz, stereo, 16 bits if they are left out). The file name `-` reads raw samples from standard input.
 
-The kernel mixes `play` with every other program that is making sound, converts the rate and the sample size, and applies the master volume (see `volume(1)`). Ctrl+C stops the sound at once. If the machine has no sound device `play` says so and exits with status 1, except for `-i` and `-w`, which do not need one.
+A sound file is played at its own rate and sample size (the kernel converts to what the card runs at); a sample of 12 bits is played as 16, one of 20 as 24, so nothing is lost. Files with more than two channels are mixed down to stereo by the positions of their speakers. If a FLAC frame or an ADPCM block is damaged, `play` says so once, skips it (a stretch of silence stands in for it, so the rest stays in time), plays on and exits with status 1 at the end.
+
+The kernel mixes `play` with every other program that is making sound, converts the rate and the sample size, and applies the master volume (see `volume(1)`). Ctrl+C stops the sound at once. If the machine has no sound device `play` says so and exits with status 1, except for `-i`, `-w` and `-V`, which do not need one.
 
 # OPTIONS
 @ *-q*
@@ -22,25 +25,30 @@ The kernel mixes `play` with every other program that is making sound, converts 
 @ *-r* _RATE_, *-c* _CHANNELS_, *-b* _BITS_
     Raw input: frames per second, 1 or 2 channels, 8 (unsigned), 16, 24 or 32 (signed) bits.
 @ *-s* _SECONDS_, *-t* _SECONDS_
-    For a song: start this far into it, and play (or measure, or render) only this long.
+    Start this far into the file, and play (or measure, or render) only this long. For a sound file this seeks (FLAC by its seek table or by searching, ADPCM by block).
 @ *-L*
-    Repeat a song for ever instead of playing it once.
+    Repeat the file for ever instead of playing it once.
 @ *-i*
-    Describe a song instead of playing it: title, tempo, channels and their instruments (for a module: its title, channel count and length), anything the parser had to fix, and, from rendering the first 30 seconds (or `-t`), its peak level, loudness and how much of it is silence.
+    Describe the file instead of playing it. A sound file: its format, rate, bits, channels, length, the number of frames and the tags it carries (title, artist, album, track, date). A song or module: its title, tempo, channels and instruments, anything the parser had to fix, and, from rendering the first 30 seconds (or `-t`), its peak level, loudness and how much of it is silence.
 @ *-w* _OUT.wav_
-    Render a song to a 44100 Hz stereo WAV file instead of playing it.
+    Render the file to a WAV file instead of playing it. A song is rendered at 44100 Hz in stereo. A sound file is rendered exactly as it is stored, with all its channels and its own sample rate (no resampling, no mixing down): plain PCM for mono and stereo of 8 or 16 bits, WAVE_FORMAT_EXTENSIBLE with the speaker mask and the valid bits for the rest. Samples go into 8, 16, 24 or 32 bits (a 12-bit sample is shifted up into 16); compressed and companded files come out as 16-bit PCM, floating point as 32-bit integers. With `-s` and `-t` only that part is rendered.
+@ *-V*
+    Decode a FLAC file completely and compare the MD5 of the audio and the number of samples with what its header promises. Prints `OK, MD5 matches` or `FAILED` and the reason (a damaged frame, a checksum that does not match, a file that ends early). For the other formats it only shows that every frame can be read. No sound device is needed.
 
 # EXIT STATUS
-0 on success; 1 if there is no sound device or a file could not be played; 2 for a usage error.
+0 on success; 1 if there is no sound device, a file could not be played, or a sound file had damaged audio; 2 for a usage error.
 
 # EXAMPLES
-    play ~/Music/shrine.wav
-    play -q -v 40 a.wav b.wav
+    play ~/Music/shrine.flac
+    play -q -v 40 a.wav b.aiff
     play /ScarletDevilMansion/share/music/moonlit-lake.tms
     play ~/Music/tune.mod
+    play -i song.flac
+    play -s 90 -t 10 song.flac
+    play -w /tmp/song.wav song.flac
+    play -V ~/Music/*.flac
     play -i -t 10 mysong.tms
-    play -w /tmp/mysong.wav mysong.tms
     play -r 22050 -c 1 -b 8 voice.raw
 
 # SEE ALSO
-beep(1), volume(1), jukebox(1), tms(5), audio(7)
+beep(1), volume(1), jukebox(1), tms(5), audio(7), audio-formats(7)

@@ -565,6 +565,7 @@ void ex_open_path_with(const char *path, int how) {
     if (kind == 0) {
         int ft = classify(path_base(path), st.st_mode, S_ISREG(st.st_mode) ? EK_FILE : EK_OTHER);
         if (ft == FT_IMAGE) kind = 4;                                    /* a viewer; "Open with Sketchbook" edits it */
+        else if (ft == FT_AUDIO) kind = 5;                               /* the Jukebox plays it */
         else if (ft == FT_PROGRAM) kind = 3;
         else if (ft == FT_TEXT) kind = 1;
         else if (S_ISREG(st.st_mode) && sniff_text(path)) kind = 1;
@@ -583,6 +584,12 @@ void ex_open_path_with(const char *path, int how) {
             return;
         }
         run_in_terminal(path);
+        return;
+    }
+    if (kind == 5) {                                                     /* a sound file: the Jukebox, which starts playing it */
+        char *jargv[4] = { "jukebox", "-p", (char *)path, NULL };
+        ex_trace("open %s with jukebox", path);
+        spawn("/bin/jukebox", jargv);
         return;
     }
     const char *prog = kind == 4 ? "gallery" : kind == 2 ? "sketchbook" : "notebook";
@@ -608,7 +615,7 @@ static void open_selection(void) {
     bool viewer = false;                                                 /* one Gallery walks the whole folder: no window per picture */
     for (int i = 0; i < X.m.nshown && opened < 8; i++)
         if (X.m.shown[i]->sel && !X.m.shown[i]->is_dir) {
-            if (X.m.shown[i]->ftype == FT_IMAGE) { if (viewer) continue; viewer = true; }
+            if (X.m.shown[i]->ftype == FT_IMAGE || X.m.shown[i]->ftype == FT_AUDIO) { if (viewer) continue; viewer = true; }      /* one viewer, one Jukebox */
             ex_open_entry(X.m.shown[i]);
             opened++;
         }

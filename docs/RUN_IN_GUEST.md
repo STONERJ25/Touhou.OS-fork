@@ -5,6 +5,12 @@ whether it ran out of time. The shell cannot say that (it folds a death by signa
 test program takes half a minute. `tools/run-in-guest.py` boots one guest, hands it as many programs as you like, and prints one JSON line per program. The first user is the
 ShrineC compiler's test runner (its target `gensokyo-x86_64`); nothing in the tool knows about ShrineC.
 
+**What it has been used for (2026-11-17).** The ShrineC test runner ran every test case that can run on a guest through it: 440 of 440, later 545 of 545, in one boot each (output and exit codes, a failed check with
+its message on stderr, a division by zero as signal 8, files, `mmap` arenas). Then the compiler itself ran on TouhouOS: `marisa1` built for the native target (a 614 KB static ELF with a 372 MiB `.bss`, which
+costs only what it touches since the loader leaves a `.bss` demand-zero, `9d69965`) was handed to the guest as a data file next to its own source (35 files); a driver program, itself written in ShrineC and run
+with `--split` in the default 512 MB guest, copied the compiler to a 0755 file, `fork`ed and `execve`d it, ran the programs it wrote, and had it compile its own source into `marisa2`, which is byte for byte
+the file it started from (the fixed point, found on Linux by their `tools/fixed_point.py --elf`): 4.3 s in the guest, no kernel report, no signal. Their driver is `tools/run_guest_selfhost.py` in the ShrineC repository.
+
 ## Using it
 
 Build the system first (the tool boots `build/esp`; it does not build anything):

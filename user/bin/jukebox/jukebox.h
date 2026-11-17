@@ -2,8 +2,10 @@
  * jukebox: Reimu's Jukebox, the music player of HakureiDE, staged in the Prismriver Concert Hall.
  *
  * The Prismriver sisters (Lunasa, Merlin and Lyrica) play whatever the playlist holds: the songs that ship with the
- * system (the .tms files in /ScarletDevilMansion/share/music, see tms(5)) and the .wav, .tms and .mod files in ~/Music. The sound goes
- * through /dev/audio like any other program's; the window is one KApp whose tick keeps the device fed.
+ * system (the .tms files in /ScarletDevilMansion/share/music, see tms(5)) and the .tms, .mod, FLAC, WAV, AIFF and AU files in ~/Music. The sound goes
+ * through /dev/audio like any other program's; the window is one KApp whose tick keeps the device fed. Sound files are read by libaudio's afile (FLAC with
+ * its Vorbis comments for the title and the artist, WAV in all its kinds, AIFF, AU); when the next track has the same sample format as the one that ends,
+ * the device stream is not stopped in between, so an album plays gapless.
  *
  *   player.c    what is loaded, the stream to the sound device, play / pause / seek, the picture of the sound
  *   playlist.c  finding the music
@@ -16,19 +18,21 @@
 #include <stdio.h>
 #include <kappa.h>
 #include <audio.h>
+#include <afile.h>
 #include <chip.h>
 #include <music.h>
 
-typedef enum { TK_MUSIC, TK_WAV } TrackKind;           /* a song or module (libaudio's Music), or a WAV file */
+typedef enum { TK_MUSIC, TK_FILE } TrackKind;          /* a song or module (libaudio's Music), or a sampled sound file (libaudio's AudioFile) */
 
 typedef struct Track {
     char path[256];
-    char title[72];
-    char sub[100];                      /* the mood of a song, or the format of a WAV file */
+    char title[96];                     /* what the list shows: "Artist - Title" from the file's tags, else the title, else the file name */
+    char sub[120];                      /* the mood of a song, or the album and the format of a file */
     TrackKind kind;
     double length;                      /* seconds, 0 when unknown */
     bool shipped;                       /* part of the system, not the user's own */
     char err[100];                      /* why it cannot be played, or "" */
+    uint32_t rate, channels, format;    /* what the device is set to for it (to see whether the next track can follow without a gap); 0 if it cannot be played */
 } Track;
 
 #define SPEC_BANDS 32
@@ -50,15 +54,18 @@ typedef struct Jukebox {
     bool playing, paused;
     bool repeat;
     char status[160];
-    Music *mus;                         /* the loaded song or module, NULL for a WAV file */
+    Music *mus;                         /* the loaded song or module, NULL for a sound file */
     MusicInfo minfo;
-    AudioWav wav;
-    bool wav_open;
-    unsigned rate;
+    AudioFile *af;                      /* the loaded sound file, NULL for a song or module */
+    AudioFileInfo ainfo;
+    char fmt_text[64];                  /* "FLAC 44.1 kHz 16-bit stereo" for the window */
+    unsigned rate, out_channels, out_format;
     unsigned bytes_per_frame;
-    double start_pos;                   /* the source position that `rendered` counts from, in seconds */
-    uint64_t rendered;                  /* source frames pushed to the device since then */
+    double start_pos;                   /* the source position that the current track's frames count from, in seconds */
+    uint64_t rendered;                  /* source frames pushed to the device since the stream was last emptied (a gapless chain counts on across tracks) */
+    uint64_t track_base;                /* the value of `rendered` where the current track's first frame is */
     uint64_t limit_frames;              /* frames to render in all (one pass of a song) */
+    uint32_t damage;                    /* damaged spots skipped in the current track */
     double paused_pos;
     bool source_done;
     uint8_t *carry;                     /* bytes the device did not take yet */
@@ -78,8 +85,10 @@ extern Jukebox J;
 
 /* playlist.c */
 void playlist_scan(void);
-int  playlist_add(const char *path, bool shipped);              /* index of the new (or existing) track, -1 if it is not music */
+int  playlist_add(const char *path, bool shipped, bool named);  /* index of the new (or existing) track, -1 if it is not music; a file the user named is judged by its first bytes when its name says nothing */
+void playlist_add_directory(const char *dir, bool shipped);     /* the music in a folder and in the folders inside it (three levels), sorted by name */
 void playlist_free(void);
+void jukebox_format_text(const AudioFileInfo *in, char *out, size_t n);   /* "FLAC 44.1 kHz 16-bit stereo" */
 
 /* player.c */
 void player_init(void);

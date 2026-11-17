@@ -11,6 +11,7 @@ tools built on them, the picture viewer, and the places where the desktop uses p
 | `gzip` `gunzip` `zcat` `tar` `zip` `unzip` | `user/bin/kappabox/{gzip,tar,zip}.c` | archive tools (kappabox applets) |
 | `imginfo` `convert` `wallpaper` `screenshot` | `user/bin/kappabox/media.c` | picture tools (kappabox applets) |
 | Gensokyo Gallery | `user/bin/gallery/` | the picture viewer (`gallery`) |
+| sound files | `user/lib/audio`, `<afile.h>` | FLAC, WAV (PCM, float, A-law, mu-law, IMA and Microsoft ADPCM, extensible, RF64/BW64), AIFF, AIFF-C, Sun .au: `play`, `play -i`, `play -w`, `play -V` and Reimu's Jukebox read them (see below and docs/AUDIO.md) |
 | `SYS_utimes` | `kernel/fs/utimes.c`, `<utime.h>` | set file times (tar, unzip and gunzip restore them) |
 | tests | `tests/case_media.py`, `tests/imgdata.py`, `tests/host/` | see the end of this page |
 
@@ -70,6 +71,21 @@ large photograph is decoded in full (a 24 megapixel 4:2:0 JPEG needs about 36 MB
 **Speed** (`imginfo -t`, in QEMU on the development PC, so only an order of magnitude): a 1920x1080 JPEG (4:2:0) decodes in 0.4 to 0.7 s, a 3840x2160 one in 1.4 s,
 a 12 megapixel one in 2.2 s, a 3.8 MB 1920x1080 PNG in 0.4 s, a BMP in 60 ms. The Gallery and the wallpaper code decode in the event loop and the desktop shell, so a
 photograph of that size makes the window (or the shell, once, when the wallpaper changes) wait for about that long.
+
+## Sound files
+
+Pictures and archives are above; the sampled-sound formats live in `libaudio` (`user/lib/audio`, `<afile.h>`) and are described in `docs/AUDIO.md` ("Sound file
+formats"). The Explorer does not open them yet by double click (it has no music type); the programs that read them:
+
+| Type | Names | What reads it |
+|---|---|---|
+| FLAC | `.flac`, `.fla` (also found by the `fLaC` marker, behind an ID3v2 tag too) | `play FILE`, `play -i` (format, length, tags), `play -w OUT.wav` (renders), `play -V` (checks the MD5), the Jukebox (title, artist, gapless) |
+| WAV | `.wav`, `.wave`; RIFF, RF64, BW64 | the same; PCM 8 to 32 bits, float, A-law, mu-law, IMA and Microsoft ADPCM, WAVE_FORMAT_EXTENSIBLE |
+| AIFF, AIFF-C | `.aif`, `.aiff`, `.aifc` | the same; big and little endian PCM, float, mu-law, A-law |
+| Sun .au | `.au`, `.snd` | the same; PCM, float, mu-law, A-law |
+| songs, modules | `.tms`, `.mod` | `play`, the Jukebox (tms(5), audio(7)) |
+
+The kind of a file is found by its first bytes, not by its name; `play -i FILE` says what a file is.
 
 ## Tools
 

@@ -72,10 +72,19 @@ def main(argv=None):
     lock = acquire(d, opts.slots, opts.wait, " ".join(cmd)[:80])
     stop = threading.Event()
 
+    def mine():
+        """Is the lock file still ours? Its first word is the pid of the holder. A holder whose heartbeat was starved for 90 s loses its slot to a waiter (acquire takes over a
+        stale file); when it ends later it must not delete the file of the new holder, nor keep that file fresh."""
+        try:
+            return lock.read_text().split()[0] == str(os.getpid())
+        except (OSError, IndexError):
+            return False
+
     def beat():
         while not stop.wait(15):
             try:
-                os.utime(lock)
+                if mine():
+                    os.utime(lock)
             except OSError:
                 pass
 
@@ -84,7 +93,8 @@ def main(argv=None):
     def release():
         stop.set()
         try:
-            lock.unlink()
+            if mine():
+                lock.unlink()
         except OSError:
             pass
 
