@@ -145,8 +145,22 @@ def argv_lines():
     return elf(code, b"\n")
 
 
+def big_bss():
+    """A .bss of 2 GiB, more than the RAM of the test guests: the loader must leave it demand-zero. The program makes the kernel read 8 bytes of a page of untouched .bss (write: they are
+    zeros), touches one byte a gigabyte further on, makes the kernel read that back, and exits 0."""
+    def code(d, b):
+        far = b + (1 << 30)
+        return (write_(1, b + 0x1000, 8) +                                           # a page that holds no file data: demand-zero
+                bytes([0x48, 0xB8]) + struct.pack("<Q", far) +                       # mov rax, far
+                bytes([0xC6, 0x00, 0x41]) +                                          # mov byte [rax], 'A'
+                bytes([0x48, 0x89, 0xC6]) + mov_edi(1) + mov_edx(1) + mov_eax(2) + SYSCALL +   # write(1, rax, 1)
+                exit_(0))
+    return elf(code, bss=2 << 30)
+
+
 def programs():
     return {
+        "big_bss": big_bss(),
         "exit_7": exit_with(7), "exit_0": exit_with(0), "exit_200": exit_with(200),
         "exit_argc": exit_argc(), "three_lines": three_lines(), "divide_by_zero": divide_by_zero(), "null_read": null_read(),
         "undefined_instruction": undefined_instruction(), "spin": spin(), "flood": flood(), "cat": cat(), "argv_lines": argv_lines(),

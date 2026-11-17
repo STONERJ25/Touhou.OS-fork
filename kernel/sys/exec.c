@@ -74,7 +74,12 @@ int elf_map(File *f, AddrSpace *as, const ElfFile *e, u64 bias, ElfMapped *m) {
         if (rc) { rc = rc == -EEXIST ? -ENOEXEC : rc; break; }
         uvm_set_file(as, start, end - start, f->path, true, f->vn->mount ? f->vn->mount->id : 0, f->vn->ino,
                      ph->p_offset >= vaddr - start ? ph->p_offset - (vaddr - start) : 0);       /* what /proc/<pid>/maps names the segment */
-        rc = uvm_populate(as, start, end - start);
+        /* Only the pages that hold file data are allocated now. What lies beyond them (the .bss: p_memsz - p_filesz) stays demand-zero like any mmap region: a page
+         * is allocated, zeroed and mapped by uvm_fault the first time it is touched (by the program or by a system call that reads or writes it), and a fork does not copy
+         * the pages that were never touched. A program with a .bss of hundreds of megabytes costs what it uses; before this, every page of it was allocated at exec. The page
+         * that holds the end of the file data and the start of the .bss is among the populated ones, so the bytes after the data in it are zero. */
+        u64 data_end = filesz ? ALIGN_UP(vaddr + filesz, PAGE_SIZE) : start;
+        rc = data_end > start ? uvm_populate(as, start, data_end - start) : 0;
         if (rc) break;
         u64 va = vaddr, remaining = filesz, foff = ph->p_offset;
         while (remaining && !rc) {

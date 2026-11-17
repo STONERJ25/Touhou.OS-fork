@@ -153,6 +153,22 @@ def rig_batch_tool():
 
 
 @test
+def rig_big_bss():
+    """a program whose .bss (2 GiB) is larger than the guest's RAM (512 MB) loads and runs: the part of a segment beyond its file data is demand-zero, and a system call can read it untouched"""
+    d, p = make_programs("rig-test-bss")
+    entries = [{"name": "big", "file": p["big_bss"]}, {"name": "after", "file": p["exit_7"]}]
+    (d / "manifest.json").write_text(json.dumps(entries), encoding="utf-8")
+    rc, out, err = run_tool(["--batch", str(d / "manifest.json")])
+    assert rc == 0, f"the tool failed ({rc}):\n{err}"
+    got = {r["name"]: r for r in (json.loads(l) for l in out.decode("utf-8").splitlines())}
+    r = got["big"]
+    assert "error" not in r, f"the loader allocated the whole .bss: {r}"
+    assert (r["exit"], r["signal"]) == (0, None), r
+    assert r["output"] == "\0" * 8 + "A", f"untouched .bss reads as zeros, a touched byte keeps its value: {r['output']!r}"
+    assert (got["after"]["exit"], got["after"]["signal"]) == (7, None), got["after"]
+
+
+@test
 def rig_split_streams():
     """--split: standard output and standard error come back apart, as the program wrote them (a runner that compares them separately needs this); input from a file, an exit code and a signal"""
     d, p = make_programs("rig-test-split")
