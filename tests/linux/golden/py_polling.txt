@@ -1,0 +1,67 @@
+--- select
+nothing to read: ([], [], [])
+writable: True
+readable: True
+time-out: True
+time-out took a while: True
+EOF is readable: True
+negative time-out: timeout must be non-negative
+socket select: ([], True)
+socket readable: True
+three lists: (True, False, 2, [])
+--- poll
+poll pipe: [(False, 'POLLOUT')]
+poll after a write: [(False, 'POLLOUT'), (True, 'POLLIN')]
+modified: [(True, 'POLLIN')]
+hangup: [(False, 'POLLNVAL'), (True, 'POLLIN|POLLHUP')]
+hangup after reading: ['POLLHUP']
+unregister twice: KeyError
+POLLNVAL: ['POLLNVAL']
+listener idle: []
+listener with a pending connection: ['POLLIN']
+peer closed: ['POLLIN|POLLRDHUP']
+--- epoll
+epoll object: (True, False)
+level-triggered: [(True, 'POLLOUT')]
+readable too: ['POLLIN', 'POLLOUT']
+level-triggered repeats: 2
+still data left: ['POLLIN']
+drained: []
+edge-triggered, first: ['POLLOUT']
+edge-triggered, second: []
+EOF: ['POLLHUP']
+edge-triggered socket: ['POLLIN']
+no new edge: []
+a new edge after more data: ['POLLIN']
+one-shot: ['POLLIN']
+one-shot is disarmed: []
+re-armed: ['POLLIN']
+registered twice: 17
+modify of an unregistered descriptor: 2
+epoll with a time-out: []
+maxevents: []
+closed: True
+poll on a closed epoll: I/O operation on closed epoll object
+CLOEXEC: False
+an epoll inside an epoll: []
+--- selectors
+default selector: EpollSelector
+SelectSelector idle: []
+SelectSelector ready: [('payload', 1)]
+SelectSelector read and write: [3]
+SelectSelector get_key: changed
+SelectSelector unregistered: KeyError
+PollSelector idle: []
+PollSelector ready: [('payload', 1)]
+PollSelector read and write: [3]
+PollSelector get_key: changed
+PollSelector unregistered: KeyError
+EpollSelector idle: []
+EpollSelector ready: [('payload', 1)]
+EpollSelector read and write: [3]
+EpollSelector get_key: changed
+EpollSelector unregistered: KeyError
+--- an event loop serving ten clients from one thread
+served: (10, ['CLIENT 0\n', 'CLIENT 1\n', 'CLIENT 2\n', 'CLIENT 3\n', 'CLIENT 4\n', 'CLIENT 5\n', 'CLIENT 6\n', 'CLIENT 7\n', 'CLIENT 8\n', 'CLIENT 9\n'])
+--- done
+exit status: 0

@@ -313,6 +313,7 @@ static int resolve(VNode *root, const char *path, VNode *cwd, const Cred *c, int
 
         VNode *child = NULL;
         int rc;
+        bool overlay_hop = false;                               /* this component is one of the overlay names, looked up in the real root */
         if (!strcmp(comp, "..")) {
             if (jailed && cur == root) {                        /* the top of a Linux root is its own parent */
                 vnode_get(cur);
@@ -340,6 +341,7 @@ static int resolve(VNode *root, const char *path, VNode *cwd, const Cred *c, int
                     vnode_get(g_root);
                     vnode_put(cur);
                     cur = g_root;
+                    overlay_hop = true;
                 }
             }
             rc = dir_lookup(cur, c, comp, &child);
@@ -352,7 +354,9 @@ static int resolve(VNode *root, const char *path, VNode *cwd, const Cred *c, int
             child = m;
         }
 
-        if (S_ISLNK(child->mode) && (!last || slash || !(flags & LOOKUP_NOFOLLOW))) {
+        /* An overlay name is the real directory, never a link to it: the real /tmp is a symbolic link (to /BambooForest), which a Linux program must not see, or it reads
+         * the link and then cannot find the target in its own tree (SQLite resolves every component of a path that way and could not create a database in /tmp). */
+        if (S_ISLNK(child->mode) && (!last || slash || !(flags & LOOKUP_NOFOLLOW) || overlay_hop)) {
             if (++links > 8) { vnode_put(child); vnode_put(cur); return -ELOOP; }
             char target[PATH_MAX];
             ssize_t tn = child->ops->readlink ? child->ops->readlink(child, target, sizeof target - 1) : -EINVAL;

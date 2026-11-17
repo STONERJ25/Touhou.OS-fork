@@ -1,0 +1,51 @@
+library: (True, 3, 'qmark')
+--- in memory
+count: (6,)
+select: [('Sakuya', 21), ('Youmu', 18), ('Marisa', 17), ('Reimu', 17)]
+group by: [('Forest', 1, 17, 17.0), ('Hakurei', 1, 17, 17.0), ('Mansion', 2, 500, 260.5), ('Netherworld', 2, 1000, 509.0)]
+like: [('Reimu',), ('Remilia',)]
+subquery: [('Remilia',), ('Yuyuko',)]
+join: [('Reimu', 1), ('Marisa', 0), ('Sakuya', 1), ('Remilia', 2), ('Youmu', 0), ('Yuyuko', 0)]
+Row: ('Marisa', 17, ['id', 'name', 'age', 'city'], (2, 'Marisa', 17, 'Forest'))
+update: (2, 12)
+delete: (1, 5)
+lastrowid: 6
+IntegrityError: UNIQUE constraint failed: people.id
+NOT NULL: NOT NULL constraint failed: people.name
+OperationalError: near "nothing": syntax error
+syntax error: near "SELEC": syntax error
+types: ('integer', 'real', 'text', 'blob', 'null')
+round trip: (256, 255, 'héllo wörld ☃', 0.0025, (13, 17))
+big integer: (4611686018427387904,)
+too big: OverflowError
+function: ('REIMU!',)
+aggregate: (24,)
+collation: [('Youmu',), ('Sakuya',), ('Remilia',)]
+pragma: ((0,), ('UTF-8',))
+window function: [('Marisa', 1), ('Reimu', 1), ('Youmu', 3)]
+cte: (55,)
+json: (3,)
+full-text search: [('jumps over the lazy dog',), ('the dog barks',)]
+dump: ['BEGIN TRANSACTION;', 'CREATE TABLE blobs (b BLOB, t TEXT, f REAL);', 'INSERT INTO "blobs" VALUES(X\'000102030405060708090A0B0C0D0E0']
+--- a file
+file size is a multiple of the page size: True
+rows: (1000, 'row 0', 1000)
+in a transaction: True
+other connection does not see it: (1000,)
+the writer holds the lock: database is locked
+rollback: (1000,)
+other connection sees the commit: (1001, 'row 999')
+and the first one sees theirs: (1002,)
+journal mode: ('delete',)
+wal: ('wal',)
+reader in WAL mode: (1003,)
+synchronous: (2,)
+four writers: (80,)
+vacuum: ('ok',)
+backup: (1083,)
+files: ['backup.db', 'test.db']
+reopened: (1083,)
+missing directory: unable to open database file
+read-only: attempt to write a readonly database
+--- done
+exit status: 0

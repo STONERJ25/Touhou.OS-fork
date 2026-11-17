@@ -610,7 +610,9 @@ static void tcp_segment(Sock *s, const Seg *g) {
     s->nprobes = 0;                                               /* the peer is there: its answer to a probe */
     /* 2. RST (RFC 5961: only an exact match tears the connection down) */
     if (flags & TH_RST) {
-        if (seq == rnxt) tcp_abort(s, s->state == TCPS_SYN_RCVD ? ECONNREFUSED : ECONNRESET, false);
+        /* The error the application sees is the one a real Linux reports (observed: tests/linux/py/sockets.py): a reset in the middle of a handshake is a refusal, a reset
+         * after the peer's FIN (CLOSE_WAIT: the peer closed, we kept sending) is a broken pipe, any other reset is a reset */
+        if (seq == rnxt) tcp_abort(s, s->state == TCPS_SYN_RCVD ? ECONNREFUSED : s->state == TCPS_CLOSE_WAIT ? EPIPE : ECONNRESET, false);
         else tcp_ack_now(s);
         return;
     }

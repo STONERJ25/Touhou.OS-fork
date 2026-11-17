@@ -1,0 +1,61 @@
+loop class: _UnixSelectorEventLoop
+selector: EpollSelector
+--- tasks and timers
+gather keeps the order of the arguments: [1, 4, 9]
+the order of completion: [2, 3, 1]
+task: ('named', False)
+result: 16
+call_soon before call_later: ['soon', 'later']
+cancelled handle: (True, ['soon', 'later'])
+loop.time advances: True
+wait_for: TimeoutError
+cancel: (True, True)
+return_exceptions: ['ValueError', 25]
+asyncio.timeout: TimeoutError
+TaskGroup: (36, 49)
+wait FIRST_COMPLETED: (1, 1)
+as_completed: [1, 4, 9, 16]
+--- queues, locks, events
+bounded queue: ([0, 1, 2, 3, 4, 5], [0, 1, 2, 3, 4, 5])
+lock: ['in 0', 'out 0', 'in 1', 'out 1', 'in 2', 'out 2']
+event: ['released', 'released', 'released']
+semaphore limits concurrency: 2
+condition: condition met
+--- TCP streams
+server sockets: ['127.0.0.1']
+echo: b'HELLO\n'
+three lines: [b'ONE\n', b'TWO\n', b'THREE\n']
+100 kB line: 100001
+after write_eof: (b'PARTIAL', False)
+server saw the close: ['closed']
+ten clients: [b'CLIENT 0\n', b'CLIENT 1\n', b'CLIENT 2\n', b'CLIENT 3\n', b'CLIENT 4\n', b'CLIENT 5\n', b'CLIENT 6\n', b'CLIENT 7\n', b'CLIENT 8\n', b'CLIENT 9\n']
+refused: 111
+--- UNIX-domain server
+unix echo: b'OVER A PATH\n'
+--- protocols and sockets
+protocol exit: None
+protocol data: b'greetinglocotorp eht morf olleh'
+sock_recv: b'raw sockets'
+datagram: [b'udp datagram']
+--- subprocesses
+echo: (b'hello from echo\n', 0)
+shell: (b'to-out\n', b'to-err\n', 3)
+communicate with input: b'through cat\nthrough cat\nthrough cat\n'
+conversation: b'got one\n'
+conversation, second: b'got two\n'
+exit after EOF: 0
+terminate: -15
+kill: -9
+four at once: [(b'0\n', 0), (b'1\n', 1), (b'2\n', 2), (b'3\n', 3)]
+missing program: 2
+python child: (b'child python\n', 2)
+--- signals, threads, executors
+add_signal_handler: True
+SIGTERM handled: True
+to_thread: 499500
+run_in_executor: 1267650600228229401496703205376
+eight blocking calls: 8
+call_soon_threadsafe: from another thread
+add_reader: b'through add_reader'
+--- done
+exit status: 0

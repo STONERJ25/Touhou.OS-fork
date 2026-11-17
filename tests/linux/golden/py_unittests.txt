@@ -1,0 +1,28 @@
+tests found: (13, ['test_add', 'test_assertions', 'test_diff'])
+ran: 13
+outcome: (3, 1, 2, 1, 1, False)
+  test_add ... ok
+  test_assertions ... ok
+  test_diff ... FAIL
+  test_divide ... ok
+  test_errors ... ERROR
+  test_fails ... FAIL
+  test_fixed_bug ... unexpected success
+  test_known_bug ... expected failure
+  test_mocks ... ok
+  test_skipped ... skipped 'not today'
+  test_skipped_if ... skipped 'condition holds'
+  test_subtests ... 
+    test_subtests ... FAIL
+  test_zero ... ok
+failure of test_diff: ['AssertionError: Lists differ: [1, 2, 3, 4] != [1, 2, 4, 3]', '- [1, 2, 3, 4]', '?         ---', '+ [1, 2, 4, 3]', '?        +++']
+failure of test_fails: ['AssertionError: 4 != 5 : arithmetic is broken']
+failure of runTest: ['AssertionError: 2 == 2 : 2 is 2 mod 3']
+error of test_errors: AttributeError: 'Calculator' object has no attribute 'nothing'
+skip reasons: ['condition holds', 'not today']
+fixture order: ['setUpClass', 'setUp test_add', 'tearDown test_add', '...', 'tearDown test_zero', 'tearDownClass']
+setUp and tearDown pairs: (11, 11)
+a passing suite: (True, 2, '----------------------------------------------------------------------', 'OK')
+FunctionTestCase: True
+--- done
+exit status: 0

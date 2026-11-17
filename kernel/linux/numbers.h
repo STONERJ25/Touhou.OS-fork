@@ -207,6 +207,29 @@
 #define LNX_utimensat           280
 #define LNX_copy_file_range     326
 
+/* L3 (Python and its library, kernel/linux/l3.c) */
+#define LNX_mknod               133
+#define LNX_getpriority         140
+#define LNX_setpriority         141
+#define LNX_sched_setparam      142
+#define LNX_sched_getparam      143
+#define LNX_sched_setscheduler  144
+#define LNX_sched_getscheduler  145
+#define LNX_sched_get_priority_max 146
+#define LNX_sched_get_priority_min 147
+#define LNX_sched_rr_get_interval 148
+#define LNX_splice              275
+#define LNX_fallocate           285
+#define LNX_mknodat             259
+#define LNX_preadv              295
+#define LNX_pwritev             296
+#define LNX_getcpu              309
+#define LNX_memfd_create        319
+#define LNX_preadv2             327
+#define LNX_pwritev2            328
+#define LNX_close_range         436
+#define LNX_fchmodat2           452
+
 /* arch_prctl(2) */
 #define LNX_ARCH_SET_GS     0x1001
 #define LNX_ARCH_SET_FS     0x1002

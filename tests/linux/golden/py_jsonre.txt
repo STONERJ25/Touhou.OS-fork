@@ -1,0 +1,97 @@
+--- json
+dumps: {"name": "Reimu", "age": 17, "tags": ["shrine", "maiden"], "nested": {"a": [1, 2.5, null, true], "b": {}}, "unicode": "\u65e5\u672c\u8a9e \u2603 \u00e9", "float": 1e-07, "big": 1180591620717411303424}
+sorted and indented: {
+  "age": 17,
+  "big": 1180591620717411303424,
+  "float": 1e-07,
+  "name": "Reimu",
+  "nested": {
+    "a": [
+      1,
+ 
+compact: {"name":"Reimu","age":17,"tags":["shrine","maiden"],"nested":{"a":[1,2.5,null,true],"b":{}},"unicode
+round trip: True
+loads: [1, 2.0, 'three', {'four': [5, None, False]}, 1000.0, 0, 123456789012345678901234567890]
+float repr: ('0.30000000000000004', '1e+22', '1e-05', 'Infinity', True)
+error in '{"a": }': ('Expecting value', 1, 7, 6)
+error in '[1, 2,]': ('Expecting value', 1, 7, 6)
+error in "{'single': 1}": ('Expecting property name enclosed in double quotes', 1, 2, 1)
+error in '{"unterminated": "x': ('Unterminated string starting at', 1, 18, 17)
+error in '': ('Expecting value', 1, 1, 0)
+error in 'tru': ('Expecting value', 1, 1, 0)
+escapes: ('"quote\\" back\\\\ nl\\n tab\\t ctrl\\u0001 \\u2028 \\ud83d\\ude00"', 'é😀\n')
+object_hook: [('a', [('b', 1)])]
+default: {"s": [1, 2], "c": "(3+4j)"}
+keys: {"1": "bool", "2.5": "float", "null": "none"}
+dump/load: ('{"stream": [1, 2]}', {'stream': [1, 2]})
+a large document: 279112
+deep: 400
+--- re
+search: [(4, 9), (10, 15), (16, 21)]
+groups: {'year': '2026', 'month': '11', 'day': '17'}
+sub: ('world hello', 'a2 b44 c666', ('f00 b00', 4))
+split: (['a', 'b', 'c', 'd'], ['a', '1', 'b', '2', 'c'], ['', 'leading', 'and', 'trailing', ''])
+flags: (['one', 'two', 'three'], ['a\nc', 'abc'], ['Hello', 'hello'], ['ab'])
+greedy: (['<a><b>'], ['<a>', '<b>'], ['aa', 'aaa', 'aaa'])
+lookaround: (['hi', 'wow'], ['15', '20'], ['cat', 'dog'])
+backrefs: (['a', 'b'], "'quoted'")
+compile: ('\\d+', 34, 'a\\.b\\*c', True, None)
+conditional: ['(', '', '']
+unicode classes: (['日本語', 'abc', 'ñ'], ['ab', 'cd'])
+bytes pattern: [b'1', b'22']
+re.error: ('missing ), unterminated subpattern', 0)
+catastrophic but bounded: True
+long text: 100000
+named group sub: two one four three
+--- csv, struct, pickle, copy
+csv written: name,note
+Reimu,"says ""hi"", twice"
+日本,"line
+break"
+,
+
+csv read: [['name', 'note'], ['Reimu', 'says "hi", twice'], ['日本', 'line\nbreak'], ['', '']]
+DictReader: [{'a': '1', 'b': '2'}, {'a': '3', 'b': '4'}]
+struct: ('000100000002fffffffffffffffd', (b'abc', 7, 1.5), 15, 16, b'ab\x00\x00', [(1,), (2,)])
+pickle protocol 0: (326, True)
+pickle protocol 2: (291, True)
+pickle protocol 4: (186, True)
+pickle protocol 5: (186, True)
+pickle keeps sharing and cycles: (True, True)
+copy: (True, False, True)
+pickle of a class: OrderedDict({'a': 1, 'b': 2})
+--- collections, dataclasses, enum, typing, functools
+Counter: ([('i', 4), ('s', 4), ('p', 2)], 4, ['i', 'i', 'i', 'i'], [('i', 3), ('s', 2)])
+defaultdict: {'a': [1, 3], 'b': [2]}
+deque: ([4, 2, 3], 3)
+namedtuple: (P(x=1, y=2), P(x=1, y=5), ('x', 'y'), {'x': 3, 'y': 4})
+ChainMap: 3
+dataclass: (Item(name='a', price=2.5, tags=[]), True, {'name': 'x', 'price': 1, 'tags': ['t']}, Item(name='a', price=9, tags=[]), ['name', 'price', 'tags'])
+enum: (<Color.RED: 1>, <Color.GREEN: 2>, 2, [<Color.RED: 1>, <Color.GREEN: 2>], <Flag.A|C: 5>, <Flag.A|B|C: 7>, False)
+typing: (<class 'float'>, typing.Optional[int], typing.Union[int, str], typing.List[int])
+lru_cache: (23416728348467685, 78, 2432902008176640000, 10)
+heapq/bisect: ([1, 3, 5], ['o', 'l'], 2, [1, 2, 3, 4])
+--- argparse, logging, configparser, shlex
+argparse: {'files': ['a.txt', 'b.txt'], 'verbose': 2, 'n': 5, 'mode': 'slow'}
+usage: tool [-h] [-v] [-n N] [--mode {fast,slow}] [files ...]
+tool: error: argument --mode: invalid choice: 'bogus' (choose from 'fast', 'slow')
+argparse error exits with: 2
+usage: usage: tool [-h] [-v] [-n N] [--mode {fast,slow}] [files ...]
+
+logging: ['DEBUG:demo:debug 1', 'WARNING:demo:careful', 'ERROR:demo.child:child error']
+configparser: ('value', 42, True, ['main', 'other'])
+shlex: (['a', 'b c', 'd e', 'f g'], '\'it\'"\'"\'s here\'', "'a b' c")
+--- paths
+glob: ['a.txt', 'sub/c.txt']
+rglob: ['b.py', 'd.py']
+iterdir: ['a.txt', 'b.py', 'sub']
+pathlib: ('sub/c.txt', 5, True, False, '.txt', 'sub', 'a.md')
+glob module: ['sub/c.txt']
+tempfile names: (True, True)
+NamedTemporaryFile: temp data
+TemporaryFile: b'anonymous'
+temp dir gone: False
+fnmatch: (True, ['a.py', 'c.py'], '(?s:.*\\.py)\\Z')
+gettempdir: ('/tmp', '/tmp')
+--- done
+exit status: 0

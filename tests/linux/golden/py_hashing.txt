@@ -1,0 +1,99 @@
+--- digests of fixed inputs
+md5(b''...): d41d8cd98f00b204e9800998ecf8427e
+md5(b'abc'...): 900150983cd24fb0d6963f7d28e17f72
+md5(b'The'...): 9e107d9d372bb6826bd81d3542a419d6
+md5 sizes: (16, 64, 'md5')
+sha1(b''...): da39a3ee5e6b4b0d3255bfef95601890afd80709
+sha1(b'abc'...): a9993e364706816aba3e25717850c26c9cd0d89d
+sha1(b'The'...): 2fd4e1c67a2d28fced849ee1bb76e7391b93eb12
+sha1 sizes: (20, 64, 'sha1')
+sha224(b''...): d14a028c2a3a2bc9476102bb288234c415a2b01f828ea62ac5b3e42f
+sha224(b'abc'...): 23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7
+sha224(b'The'...): 730e109bd7a8a32b1cb9d9a09aa2325d2430587ddbc0c38bad911525
+sha224 sizes: (28, 64, 'sha224')
+sha256(b''...): e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+sha256(b'abc'...): ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+sha256(b'The'...): d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592
+sha256 sizes: (32, 64, 'sha256')
+sha384(b''...): 38b060a751ac96384cd9327eb1b1e36a21fdb71114be07434c0cc7bf63f6e1da274edebfe76f65fbd51ad2f14898b95b
+sha384(b'abc'...): cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7
+sha384(b'The'...): ca737f1014a48f4c0b6dd43cb177b0afd9e5169367544c494011e3317dbf9a509cb1e5dc1e85a941bbee3d7f2afbc9b1
+sha384 sizes: (48, 128, 'sha384')
+sha512(b''...): cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e
+sha512(b'abc'...): ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f
+sha512(b'The'...): 07e547d9586f6a73f73fbac0435ed76951218fb7d0c8d788a309d785436bbb642e93a252a954f23912547d1e8a3b5ed6e1bfd7097821233fa0538f3db854fee6
+sha512 sizes: (64, 128, 'sha512')
+sha512_224(b''...): 6ed0dd02806fa89e25de060c19d3ac86cabb87d6a0ddd05c333b84f4
+sha512_224(b'abc'...): 4634270f707b6a54daae7530460842e20e37ed265ceee9a43e8924aa
+sha512_224(b'The'...): 944cd2847fb54558d4775db0485a50003111c8e5daa63fe722c6aa37
+sha512_224 sizes: (28, 128, 'sha512_224')
+sha512_256(b''...): c672b8d1ef56ed28ab87c3622c5114069bdd3ad7b8f9737498d0c01ecef0967a
+sha512_256(b'abc'...): 53048e2681941ef99b2e29b76b4c7dabe4c2d0c634fc6d46e0e2f13107e7af23
+sha512_256(b'The'...): dd9d67b371519c339ed8dbd25af90e976a1eeefd4ad3d889005e532fc5bef04d
+sha512_256 sizes: (32, 128, 'sha512_256')
+sha3_224(b''...): 6b4e03423667dbb73b6e15454f0eb1abd4597f9a1b078e3f5b5a6bc7
+sha3_224(b'abc'...): e642824c3f8cf24ad09234ee7d3c766fc9a3a5168d0c94ad73b46fdf
+sha3_224(b'The'...): d15dadceaa4d5d7bb3b48f446421d542e08ad8887305e28d58335795
+sha3_224 sizes: (28, 144, 'sha3_224')
+sha3_256(b''...): a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a
+sha3_256(b'abc'...): 3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532
+sha3_256(b'The'...): 69070dda01975c8c120c3aada1b282394e7f032fa9cf32f4cb2259a0897dfc04
+sha3_256 sizes: (32, 136, 'sha3_256')
+sha3_384(b''...): 0c63a75b845e4f7d01107d852e4c2485c51a50aaaa94fc61995e71bbee983a2ac3713831264adb47fb6bd1e058d5f004
+sha3_384(b'abc'...): ec01498288516fc926459f58e2c6ad8df9b473cb0fc08c2596da7cf0e49be4b298d88cea927ac7f539f1edf228376d25
+sha3_384(b'The'...): 7063465e08a93bce31cd89d2e3ca8f602498696e253592ed26f07bf7e703cf328581e1471a7ba7ab119b1a9ebdf8be41
+sha3_384 sizes: (48, 104, 'sha3_384')
+sha3_512(b''...): a69f73cca23a9ac5c8b567dc185a756e97c982164fe25859e0d1dcc1475c80a615b2123af1f5f94c11e3e9402c3ac558f500199d95b6d3e301758586281dcd26
+sha3_512(b'abc'...): b751850b1a57168a5693cd924b6b096e08f621827444f70d884f5d0240d2712e10e116e9192af3c91a7ec57647e3934057340b4cf408d5a56592f8274eec53f0
+sha3_512(b'The'...): 01dedd5de4ef14642445ba5f5b97c15e47b9ad931326e4b0727cd94cefc44fff23f07bf543139939b49128caf436dc1bdee54fcb24023a08d9403f9b4bf0d450
+sha3_512 sizes: (64, 72, 'sha3_512')
+blake2b(b''...): 786a02f742015903c6c6fd852552d272912f4740e15847618a86e217f71f5419d25e1031afee585313896444934eb04b903a685b1448b755d56f701afe9be2ce
+blake2b(b'abc'...): ba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d17d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923
+blake2b(b'The'...): a8add4bdddfd93e4877d2746e62817b116364a1fa7bc148d95090bc7333b3673f82401cf7aa2e4cb1ecd90296e3f14cb5413f8ed77be73045b13914cdcd6a918
+blake2b sizes: (64, 128, 'blake2b')
+blake2s(b''...): 69217a3079908094e11121d042354a7c1f55b6482ca1a51e1b250dfd1ed0eef9
+blake2s(b'abc'...): 508c5e8c327c14e2e1a72ba34eeb452f37458b209ed63a294d999b4c86675982
+blake2s(b'The'...): 606beeec743ccbeff6cbcdf5d5302aa855c256c29b88c8ed331ea1a6bf3c8812
+blake2s sizes: (32, 64, 'blake2s')
+shake_128: 5881092dd818bf5cf8a3ddb793fbcba74097d5c526a6d35f97b83351940f2cc8
+shake_256: 483366601360a8771c6863080cc4114d8db44530f8f1e1ee4f94ea37e78b5739d5a15bef186a5386c75744c0527e1faa
+--- constructors, updates and copies
+constructor: True
+incremental: True
+copy: (True, True)
+digest and hexdigest: (True, 64)
+a million a's: ('34aa973cd4c4daa4f61eeb2bdbad27316534016f', 'cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0')
+sha3 of a million a's: 5c8875ae474a3634ba4fd55ec85bffd661f32aca75c6d699d0cdcb6c115891c1
+blake2b of 10 MB: e6457602f422f612a34f886543f103c792eee8f8
+memoryview and bytearray: ('900150983cd24fb0d6963f7d28e17f72', '900150983cd24fb0d6963f7d28e17f72')
+strings are refused: Strings must be encoded before hashing
+unknown algorithm: unsupported hash type no-such-algorithm
+algorithms: (True, True, ['blake2b', 'blake2s', 'md5', 'sha1', 'sha224', 'sha256', 'sha384', 'sha3_224', 'sha3_256', 'sha3_384', 'sha3_512', 'sha512', 'shake_128', 'shake_256'])
+file_digest: 22c27b021752596140145a93194d9cdf33b0b1b454f50fd1b430491eb3eb3cb9
+blake2 with a key and salt: 332130cc6122305c3d7d4523a6235ba3
+blake2s tree parameters: a2d77ee7bef1287d4c7d144fac5ae6d3af1e9a09834793b9596f9ab5e660dda9
+usedforsecurity: 900150983cd24fb0d6963f7d28e17f72
+--- key derivation and codes
+pbkdf2_hmac: 632c2812e46d4604102ba7618e9d6d7d2f8128f6266b4a03264d2a0460b7dcb3
+pbkdf2_hmac sha1: 0c60c80f961f0e71f3a9b524af6012062fe037a6
+scrypt: 27b418c674c769d12501fbb1f53bac32df6514c0f28d043872b148b348961a79
+hmac sha256: f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8
+hmac md5: 80070713463e7749b90c2dc24911e275
+hmac.digest: e477384d7ca229dd1426e64b63ebf2d3
+hmac incremental: (True, 20, 'hmac-sha1')
+compare_digest: (True, False, True)
+long key: e2adadca233bc31c6e6126c865132c3e945f9dedd44797a1e5acc3c037bc21fc
+--- encodings and checksums
+base64: (b'AAECAwQFBgcICQoLDA0ODxAREhM=', b'\x00\x01\x02\x03\x04\x05\x06\x07\x08\t', b'-__-')
+base32/16/85: (b'NBSWY3DP', b'68656C6C6F', b'BOu!rDZ', b'Xk~0{Zv')
+base64 round trip of 1 MB: True
+binascii: (b'01ab', b'\x01\xab', 907060870, b'":&D \n')
+zlib checksums: (222957957, 436929629, 467860103)
+crc32 incremental: True
+--- randomness
+lengths: (16, 16, 16, True)
+two draws differ: True
+choice: True
+compare: True
+--- done
+exit status: 0

@@ -11,6 +11,8 @@ This script runs ON a Linux (WSL on the development PC). Two kinds of program:
   * user/linuxtest/*.c: freestanding, no C library, only system calls (user/linuxtest/lnx.h). These are built into the initrd for TouhouOS as well.
   * tests/linux/src/*.c: ordinary C programs, linked statically with the C library of the machine this runs on. The binaries are test inputs: they are built into
     build/linux-inputs (git-ignored), never committed and never put into an image, and the guest test downloads them from the host (docs/COMPAT.md, "Test inputs").
+  * tests/linux/py/*.py (L3): Python scripts, run by the python3 of this machine with a fixed environment (the PY_PROGRAMS table below); the scripts are copied to
+    build/linux-inputs/py for the guest tests to download (tests/case_linux_py.py). ORACLE_ONLY=py_arith limits a run to one script.
 
 The programs print only facts that the Linux manual pages promise, so the output of a real Linux is the specification of what the Linux personality of TouhouOS
 must print for the same program: tests/case_linux.py compares them line by line, and tests/host/test_linux_abi.py re-runs --check so that a stored file cannot
@@ -120,6 +122,41 @@ SCRIPT_ENV = {"PATH": "/usr/bin:/bin"}
 INPUT_ONLY = ["root_paths"]
 SCRIPTS_DIR = ROOT / "tests" / "linux" / "scripts"
 
+# L3 (docs/COMPAT.md, "State: L3"): Python scripts in tests/linux/py, one per area of what a real program uses. name -> (arguments, extra environment). Each is run by the python3 of
+# this machine (3.12.3 on the development PC) in an empty working directory with exactly this environment: the hash seed, the locale, the zone and the buffering are fixed so that the
+# same script prints the same text on any Linux with the same Python; standard error is mixed into standard output. The guest runs the same file with the python3 of the Linux root
+# (tests/case_linux_py.py) and compares. The stored output is tests/linux/golden/py_NAME.txt. The scripts print only what the Python documentation promises (no addresses, process ids,
+# times, paths of the machine or numbers that depend on the kernel's version, the number of processors or the user running them).
+PY_DIR = ROOT / "tests" / "linux" / "py"
+PYTHON = "/usr/bin/python3"
+PY_VERSION = "Python 3.12.3"                       # the stored outputs are this Python's; another one makes the oracle skip the scripts (a check on a machine with a different Python is no failure)
+PY_ENV = {"PATH": "/usr/bin:/bin", "LC_ALL": "C.UTF-8", "PYTHONHASHSEED": "0", "PYTHONUNBUFFERED": "1", "HOME": "/tmp", "TZ": "UTC"}
+PY_PROGRAMS = {name: ([], {}) for name in (
+    "hello",                                       # the interpreter starts, finds its library, imports what a program imports
+    "arith", "strfmt", "jsonre", "dates", "rng",   # the language and the pure-Python library: numbers, text, structured data, time, random numbers
+    "hashing", "compress", "unittests",            # hashlib and friends, zlib/gzip/bz2/lzma/zipfile/tarfile, unittest
+    "ffi", "sqldb",                                # ctypes (libffi) and sqlite3: shared libraries and database files
+    "osops", "oscalls", "subproc",                 # the os module (files, descriptors, fork, exec), the less common calls, subprocess
+    "signals", "clock", "mmaps",                   # signals and timers, time passing, mmap
+    "threads", "procs",                            # threading and concurrent.futures, multiprocessing
+    "sockets", "polling", "aio",                   # sockets over loopback, select/selectors/epoll, asyncio
+)}
+
+
+# L3, the C compiler (docs/COMPAT.md, "State: L3"; tests/case_linux_py.py, linux_py_gcc_*): the sources in tests/linux/src are compiled by the gcc of this machine in an empty directory and
+# the stored text says what came out: the status, the size and the sha256 of the file the command makes (gcc is deterministic: the object file, the assembly and the linked program
+# are the same bytes whenever the same gcc, binutils and C library make them), and the output of the program when it is run. name -> (arguments of gcc, the file it makes, the
+# arguments to run that file with or None). The guest runs the same commands with the gcc of the Linux root and must get the same text.
+GCC_VERSION = "gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0"       # the first line of `gcc --version`: the stored text is this compiler's
+GCC_SOURCES = ["cc_hello.c", "cc_calc.c"]
+GCC_CASES = {
+    "gcc_hello_object": (["-c", "cc_hello.c", "-o", "cc_hello.o"], "cc_hello.o", None),
+    "gcc_calc_object": (["-O2", "-c", "cc_calc.c", "-o", "cc_calc.o"], "cc_calc.o", None),
+    "gcc_calc_assembly": (["-O1", "-S", "cc_calc.c", "-o", "cc_calc.s"], "cc_calc.s", None),
+    "gcc_hello_program": (["cc_hello.c", "-o", "cc_hello"], "cc_hello", ["alpha", "beta gamma"]),
+    "gcc_calc_program": (["-O2", "cc_calc.c", "-o", "cc_calc", "-lm"], "cc_calc", []),
+}
+
 
 def source_of(name, hosted):
     if hosted:
@@ -198,7 +235,85 @@ def main():
             r = subprocess.run(["/bin/sh", str(SCRIPTS_DIR / script)], cwd=work, env=dict(SCRIPT_ENV), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                stderr=subprocess.STDOUT, timeout=120)
             bad += record(name, r.stdout.decode("utf-8", "replace").replace("\r", "") + f"exit status: {r.returncode}\n", check, r.returncode)
+        (INPUTS / "py").mkdir(parents=True, exist_ok=True)
+        for name in PY_PROGRAMS:                                    # the guest downloads the scripts it runs (build/linux-inputs/py/NAME.py)
+            (INPUTS / "py" / f"{name}.py").write_bytes((PY_DIR / f"{name}.py").read_bytes())
+        if not inputs_only:
+            version = python_version()
+            if version != PY_VERSION:
+                print(f"linux-oracle: the python3 of this machine is {version!r}, the stored outputs of the scripts are those of {PY_VERSION!r}: the Python scripts are not run")
+            else:
+                for name, (args, extra) in PY_PROGRAMS.items():
+                    if only and f"py_{name}" not in only:
+                        continue
+                    work = Path(tmp) / f"work-py-{name}"
+                    work.mkdir()
+                    out, rc = run_python(PY_DIR / f"{name}.py", args, extra, work)
+                    bad += record(f"py_{name}", out + f"exit status: {rc}\n", check, rc)
+        (INPUTS / "cc").mkdir(parents=True, exist_ok=True)
+        for src in GCC_SOURCES:                                     # the guest compiles these
+            (INPUTS / "cc" / src).write_bytes((HOSTED / src).read_bytes())
+        if not inputs_only:
+            version = gcc_version()
+            if version != GCC_VERSION:
+                print(f"linux-oracle: the gcc of this machine is {version!r}, the stored outputs of the compiler tests are those of {GCC_VERSION!r}: they are not run")
+            else:
+                for name, (args, produces, run_args) in GCC_CASES.items():
+                    if only and name not in only:
+                        continue
+                    work = Path(tmp) / f"work-{name}"
+                    work.mkdir()
+                    bad += record(name, run_gcc_case(args, produces, run_args, work), check, 0)
     return 1 if bad else 0
+
+
+def gcc_version():
+    """The first line of `gcc --version`, or "" when there is no gcc."""
+    try:
+        r = subprocess.run(["gcc", "--version"], capture_output=True, text=True, timeout=60)
+        return r.stdout.splitlines()[0].strip() if r.returncode == 0 and r.stdout else ""
+    except OSError:
+        return ""
+
+
+def run_gcc_case(args, produces, run_args, work):
+    """Compiles the sources of GCC_SOURCES in `work` as `gcc ARGS` and describes what came out, as the guest describes what it got: the command, its status and messages, the size and
+    sha256 of the file it made, and for a program the command that ran it, its output and its status."""
+    import hashlib
+    for src in GCC_SOURCES:
+        (work / src).write_bytes((HOSTED / src).read_bytes())
+    env = {"PATH": "/usr/bin:/bin", "LC_ALL": "C"}
+    r = subprocess.run(["gcc", *args], cwd=work, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=600)
+    lines = [f"$ gcc {' '.join(args)}", f"status: {r.returncode}"] + (r.stdout + r.stderr).splitlines()
+    made = work / produces
+    if made.is_file():
+        data = made.read_bytes()
+        lines.append(f"{produces}: {len(data)} bytes, sha256 {hashlib.sha256(data).hexdigest()}")
+        if run_args is not None:
+            made.chmod(0o755)
+            p = subprocess.run([f"./{produces}", *run_args], cwd=work, env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
+            shown = " ".join("'" + a + "'" if " " in a else a for a in run_args)
+            lines.append(f"$ ./{produces} {shown}".rstrip())
+            lines += p.stdout.decode("utf-8", "replace").replace("\r", "").splitlines()
+            lines.append(f"exit status: {p.returncode}")
+    return "\n".join(lines) + "\n"
+
+
+def python_version():
+    """What the python3 of this machine calls itself ("Python 3.12.3"), or "" when there is none."""
+    try:
+        r = subprocess.run([PYTHON, "--version"], capture_output=True, text=True, timeout=60)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except OSError:
+        return ""
+
+
+def run_python(script, args, extra, work):
+    """Runs a script of tests/linux/py with the fixed environment of PY_ENV in the directory `work`: (standard output and standard error mixed, exit status)."""
+    env = dict(PY_ENV)
+    env.update(extra)
+    r = subprocess.run([PYTHON, str(script), *args], cwd=work, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=300)
+    return r.stdout.decode("utf-8", "replace").replace("\r", ""), r.returncode
 
 
 def record(name, text, check, rc):

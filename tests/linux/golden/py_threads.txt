@@ -1,0 +1,50 @@
+--- threads
+before start: (False, 'worker-1', False)
+after join: (['ran'], False)
+main thread: (True, 'MainThread', 1)
+arguments: {'sum': 7}
+identities: (True, True)
+join with a time-out: (None, True)
+daemon: True
+excepthook: [('ValueError', 'boom in a thread', 'failing-thread')]
+--- locks
+8 threads x 2000 increments: 16000
+lock states: (False, True, False, True)
+RLock twice: True
+acquire with a time-out: (True, False)
+release of a free lock: release unlocked lock
+--- events, conditions, semaphores, barriers
+event is clear: (False, False)
+event released: ([0, 1, 2, 3], True)
+condition: ['item', 'seen']
+notify_all: [0, 1, 2]
+semaphore: (True, True, False)
+semaphore released: True
+BoundedSemaphore: Semaphore released too many times
+barrier: (['before', 'before', 'before'], ['after', 'after', 'after'], 0, 3)
+thread-local: ('main', ['thread 0', 'thread 1', 'thread 2', 'thread 3'])
+Timer: ['fired']
+cancelled Timer: ['fired']
+--- queues
+producer and consumer: [0, 1, 4, 9, 16]
+queue full: 2
+queue empty: Empty
+priority queue: [1, 3, 5]
+lifo queue: [3, 2, 1]
+task_done and join: [0, 1, 2, 3, 4, 5]
+--- executors
+map: [0, 1, 4, 9, 16, 25, 36, 49, 64, 81]
+submit: [1, 2, 4, 8, 16, 32, 64, 128]
+exception: ('ZeroDivisionError', True)
+as_completed: [100, 101, 102, 103, 104]
+wait: (3, 0)
+submit after shutdown: cannot schedule new futures after shutdown
+thread names: ['pool']
+Future: late
+cancel: (True, True)
+--- many threads
+40 threads released together: (40, True, 1)
+busy threads: [20000, 20000]
+stack size: True
+--- done
+exit status: 0

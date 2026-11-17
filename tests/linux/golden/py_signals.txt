@@ -1,0 +1,53 @@
+--- handlers
+previous handler: True
+handler ran: [('USR1', 10, True)]
+raise_signal: ('USR2', 12)
+getsignal: (True, True, True)
+ignored: 2
+cannot catch SIGKILL: 22
+cannot catch SIGSTOP: 22
+bad number: signal number out of range
+names: ('SIGINT', 15, 'Terminated', 'Segmentation fault', <Signals.SIGRTMIN: 34>, <Signals.SIGRTMAX: 64>)
+valid_signals: (62, True, False)
+numbers: [1, 2, 3, 4, 6, 7, 8, 11, 13, 14, 15, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
+--- KeyboardInterrupt and exceptions from handlers
+SIGINT: KeyboardInterrupt
+handler exception: raised by the handler of SIGUSR1
+--- alarm and timers
+alarm left: True
+pause woke up: (['alarm'], True)
+sleep after the handler: (['alarm', 'alarm'], True)
+handler ends the sleep: the alarm ended the sleep
+setitimer interval: (['tick', 'tick', 'tick', 'tick', 'tick'], True)
+setitimer returns the old: True
+timer stopped: (0.0, 0.0)
+ITIMER_VIRTUAL fired: [26]
+--- blocking and waiting
+mask: True
+blocked: pending: (True, False)
+sigwait: True
+after sigwait: (False, False)
+unblocked: delivered: True
+sigtimedwait: (12, False, True)
+sigtimedwait time-out: None
+real-time signals queue: 3
+--- threads
+pthread_kill runs the Python handler in the main thread: ['MainThread']
+signal() in a thread: ['signal only works in main thread of the main interpreter']
+--- between processes
+signal to a child: b'child ready\nchild got USR1\n'
+child status: 0
+SIGCHLD: [17]
+SIGTERM kills: -15
+abort: -6
+SIGPIPE with the default action: -13
+stopped: (True, 19)
+continued and exited: 8
+SIGPIPE is ignored by Python: EPIPE: 32
+kill of a missing process: 3
+kill with a bad signal: 22
+--- the wake-up descriptor
+wake-up byte: b'\n'
+siginterrupt: None
+--- done
+exit status: 0

@@ -1,0 +1,37 @@
+--- sleeping
+sleep(0.001): True
+sleep(0.01): True
+sleep(0.05): True
+sleep(0.2): True
+sleep(0): True
+negative sleep: sleep length must be non-negative
+wall clock advances: True
+ns functions: (True, True, True)
+--- clocks
+monotonic never goes back: True
+perf_counter never goes back: True
+time is recent: True
+monotonic and monotonic_ns agree: True
+process_time counts a busy loop: True
+process_time does not count a sleep: True
+thread_time counts work: True
+os.times: (True, True, True)
+a longer job uses more CPU: True
+CLOCK_REALTIME: (True, True, True)
+CLOCK_MONOTONIC: (True, True, True)
+CLOCK_BOOTTIME: (True, True, True)
+CLOCK_MONOTONIC_RAW: (True, True, True)
+CLOCK_PROCESS_CPUTIME_ID: (True, True, True)
+CLOCK_THREAD_CPUTIME_ID: (True, True, True)
+realtime and time agree: True
+--- sleeping in parallel
+ten threads sleeping 0.5 s take about 0.5 s, not 5: True
+sleeps end in order: [1, 2, 3, 4]
+--- time-outs
+lock time-out: (False, True)
+event time-out: (False, True)
+condition time-out: (False, True)
+join time-out: (True, True)
+a ticker: (6, True, True)
+--- done
+exit status: 0

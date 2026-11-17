@@ -1,0 +1,108 @@
+--- a tree
+tree: dirs=['a', 'd'] files=['top.txt']
+tree/a: dirs=['b'] files=['one.txt']
+tree/a/b: dirs=['c'] files=['two.bin']
+tree/a/b/c: dirs=[] files=['deep.txt']
+tree/d: dirs=[] files=['empty']
+bottom-up: ['tree/a/b/c', 'tree/a/b', 'tree/a', 'tree/d', 'tree']
+listdir: ['a', 'd', 'top.txt']
+scandir: [('b', True, False, False), ('one.txt', False, True, False)]
+stat: (12, True, '-rw-r--r--', 1, True, True)
+dir mode: drwxr-xr-x
+chmod: 0o600
+rename: (False, True)
+replace: (False, 'top\n')
+symlink: ('a/one.txt', True, True, 3)
+dangling: (True, False, True)
+hard link: (2, True)
+utime: (1000000000, 1500000000)
+truncate: (5, 'one\no')
+realpath: tree/a/one.txt
+access: (True, True, False)
+chdir: tree/a/b
+relative: (True, True, ['deep.txt'])
+rmdir: ['two.bin']
+--- errors
+open missing: FileNotFoundError errno=ENOENT No such file or directory
+mkdir exists: FileExistsError errno=EEXIST File exists
+rmdir not empty: OSError errno=ENOTEMPTY Directory not empty
+rmdir a file: NotADirectoryError errno=ENOTDIR Not a directory
+listdir a file: NotADirectoryError errno=ENOTDIR Not a directory
+open a directory: IsADirectoryError errno=EISDIR Is a directory
+unlink a directory: IsADirectoryError errno=EISDIR Is a directory
+readlink a file: OSError errno=EINVAL Invalid argument
+symlink exists: FileExistsError errno=EEXIST File exists
+stat missing: FileNotFoundError errno=ENOENT No such file or directory
+rename missing: FileNotFoundError errno=ENOENT No such file or directory
+bad descriptor: OSError errno=EBADF Bad file descriptor
+close twice: OSError errno=EBADF Bad file descriptor
+long name: OSError errno=ENAMETOOLONG File name too long
+not a directory: NotADirectoryError errno=ENOTDIR Not a directory
+link loop: OSError errno=ELOOP Too many levels of symbolic links
+seek on a pipe: OSError errno=ESPIPE Illegal seek
+write to a read end: OSError errno=EBADF Bad file descriptor
+--- descriptors
+write: 16
+lseek: (4, b'4567', 8, 14, b'ef')
+pread: (b'abc', 16)
+pwrite: (2, b'0XY345')
+ftruncate: (8, b'0XY34567')
+dup shares the offset: (b'Y3', False, False)
+inheritable: (True, True)
+O_EXCL: FileExistsError errno=EEXIST File exists
+append: b'0XY34567++'
+O_TRUNC: 0
+O_DIRECTORY: True
+O_NOFOLLOW: OSError errno=ELOOP Too many levels of symbolic links
+utf-8 bytes: b'h\xc3\xa9llo\nw\xc3\xb6rld\n'
+lines: ['héllo\n', 'wörld\n']
+r+: ('héllo\nwörld\nend', 17)
+pipe: (14, b'through a pipe')
+end of file: b''
+nonblocking read: BlockingIOError errno=EAGAIN Resource temporarily unavailable
+writev: 6
+readv: (6, b'ab', b'cdef')
+fstat of a pipe: True
+isatty: (False, False)
+terminal size: OSError errno=ENOTTY Inappropriate ioctl for device
+devnull: (4, 16, 16, 8)
+statvfs: (True, True)
+uname: ('Linux', 'x86_64')
+environ copy: True
+environ: ('2', None, 'default')
+get_exec_path: ['/usr/bin', '/bin']
+cpu: (True, True)
+times: True
+ids: (True, True, True, True, True, True)
+getlogin/umask: (18, 63)
+nice: (0, 0, 2, 2, 2)
+system directories: [('/tmp', True, False, '/tmp'), ('/dev', True, False, '/dev'), ('/proc', True, False, '/proc'), ('/sys', True, False, '/sys'), ('/run', True, False, '/run')]
+a path through /tmp: ('/tmp', True)
+--- fork, wait, exit statuses
+exit 7: (True, 7, False)
+killed: (False, True, 9)
+terminated: (True, 15)
+wait without children: ChildProcessError errno=ECHILD No child processes
+through the fork: b'child says True'
+child output goes to the shared descriptor
+three children: [10, 11, 12]
+wait4: (True, 3, True)
+waitid: (True, True, 4)
+setsid in the child: 1
+execv: b'hello from exec with arguments\n'
+execv status: 0
+ONLY=this
+PATH=/usr/bin
+execvp: b'via execvp\n'
+execvp status: 5
+exec of a missing file: 41
+posix_spawn: 0
+posix_spawnp: 9
+from system
+system: (3, 0, 0)
+popen: popen output
+second
+
+popen close: 512
+--- done
+exit status: 0

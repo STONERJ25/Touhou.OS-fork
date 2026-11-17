@@ -141,6 +141,12 @@ static void master_close(File *f) {
 }
 
 static const FileOps master_fops = { .read = master_read, .write = master_write, .ioctl = master_ioctl, .close = master_close, .poll = master_poll };
+
+/* The number N of the slave /dev/pts/N that belongs to the master file f, or -1 when f is no pseudo-terminal master. The Linux personality opens /dev/ptmx through SYS_ptyopen and
+ * answers TIOCGPTN with this (kernel/linux/l3.c, ioctl.c). */
+int pty_master_index(File *f) {
+    return f && f->fops == &master_fops && f->priv ? ((Pty *)f->priv)->index : -1;
+}
 static const VNodeOps anon_ops = { 0 };
 
 /* ---------------------------------------------------------------- slave side (/dev/pts/N) */

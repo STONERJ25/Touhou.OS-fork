@@ -133,10 +133,45 @@ static long with_path_vnode(int dirfd, u64 upath, bool nofollow, long (*fn)(VNod
 }
 
 static long do_chmod(VNode *v, void *arg) { return chmod_vnode(v, *(u32 *)arg); }
+static long do_chmod_not_a_link(VNode *v, void *arg) { return S_ISLNK(v->mode) ? -EOPNOTSUPP : chmod_vnode(v, *(u32 *)arg); }   /* a link has no mode of its own */
 static long do_chown(VNode *v, void *arg) { u32 *ids = arg; return chown_vnode(v, ids[0], ids[1]); }
 
 long lnx_fchmod(TrapFrame *tf) { u32 mode = (u32)A1(tf); return with_fd_vnode((int)A0(tf), do_chmod, &mode); }
 long lnx_fchmodat(TrapFrame *tf) { u32 mode = (u32)A2(tf); return with_path_vnode((int)A0(tf), A1(tf), false, do_chmod, &mode); }
+/* fchmodat2(dirfd, path, mode, flags) (L3: the C library's fchmodat asks it for AT_SYMLINK_NOFOLLOW, and Python's os.chmod(follow_symlinks=False) went through it): fchmodat with the
+ * flags that fchmodat lacks. Changing the mode of a link itself is EOPNOTSUPP. */
+long lnx_fchmodat2(TrapFrame *tf) {
+    int flags = (int)A3(tf);
+    u32 mode = (u32)A2(tf);
+    if (flags & ~(LNX_AT_SYMLINK_NOFOLLOW | LNX_AT_EMPTY_PATH)) return -EINVAL;
+    if ((flags & LNX_AT_EMPTY_PATH) && A1(tf)) {
+        char c;
+        if (copy_from_user(&c, (void *)A1(tf), 1)) return -EFAULT;
+        if (!c) return with_fd_vnode((int)A0(tf), do_chmod, &mode);
+    }
+    bool nofollow = (flags & LNX_AT_SYMLINK_NOFOLLOW) != 0;
+    return with_path_vnode((int)A0(tf), A1(tf), nofollow, nofollow ? do_chmod_not_a_link : do_chmod, &mode);
+}
+
+/* close_range(first, last, flags) (L3: Python's subprocess closes every descriptor above the ones it passes with it in the child; without this call it lists /proc/self/fd): closes
+ * the descriptors from first to last, or with CLOSE_RANGE_CLOEXEC only sets their close-on-exec flag. CLOSE_RANGE_UNSHARE has nothing to do here: a process owns its table. */
+#define LNX_CLOSE_RANGE_UNSHARE 2u
+#define LNX_CLOSE_RANGE_CLOEXEC 4u
+
+long lnx_close_range(TrapFrame *tf) {
+    u64 first = A0(tf), last = A1(tf);
+    u32 flags = (u32)A2(tf);
+    if (flags & ~(LNX_CLOSE_RANGE_UNSHARE | LNX_CLOSE_RANGE_CLOEXEC)) return -EINVAL;
+    if (first > last) return -EINVAL;
+    if (last >= MAX_FD) last = MAX_FD - 1;
+    for (u64 fd = first; fd <= last && fd < MAX_FD; fd++) {
+        if (!fd_get(me(), (int)fd)) continue;
+        if (flags & LNX_CLOSE_RANGE_CLOEXEC) me()->fd_flags[fd] |= FD_CLOEXEC;
+        else fd_close(me(), (int)fd);
+    }
+    return 0;
+}
+
 long lnx_fchown(TrapFrame *tf) { u32 ids[2] = { (u32)A1(tf), (u32)A2(tf) }; return with_fd_vnode((int)A0(tf), do_chown, ids); }
 long lnx_lchown(TrapFrame *tf) {
     u32 ids[2] = { (u32)A1(tf), (u32)A2(tf) };
@@ -292,6 +327,11 @@ long lnx_getsid(TrapFrame *tf) {
 #define LNX_F_SETLK  6
 #define LNX_F_SETLKW 7
 #define LNX_F_UNLCK  2
+#define LNX_F_OFD_GETLK  36                 /* L3: open file description locks: advisory like the others, so they always succeed */
+#define LNX_F_OFD_SETLK  37
+#define LNX_F_OFD_SETLKW 38
+#define LNX_F_ADD_SEALS  1033               /* L3: memfd seals are accepted and not enforced; no seal is ever reported */
+#define LNX_F_GET_SEALS  1034
 
 /* fcntl(fd, cmd, arg): the native commands (duplicate, descriptor flags, status flags) and what a shell adds: a close-on-exec duplicate, and the advisory record locks, which
  * always succeed here (nothing else can compete for a lock on a system whose programs share no files across machines). */
@@ -305,12 +345,14 @@ long lnx_fcntl(TrapFrame *tf) {
         if (n < 0) file_put(f);
         return n;
     }
-    case LNX_F_GETLK: {
+    case LNX_F_GETLK: case LNX_F_OFD_GETLK: {
         if (!fd_get(me(), fd)) return -EBADF;
         short unlocked = LNX_F_UNLCK;
         return copy_to_user((void *)A2(tf), &unlocked, sizeof unlocked);        /* l_type is the first member of struct flock */
     }
-    case LNX_F_SETLK: case LNX_F_SETLKW:
+    case LNX_F_SETLK: case LNX_F_SETLKW: case LNX_F_OFD_SETLK: case LNX_F_OFD_SETLKW:
+        return fd_get(me(), fd) ? 0 : -EBADF;
+    case LNX_F_ADD_SEALS: case LNX_F_GET_SEALS:
         return fd_get(me(), fd) ? 0 : -EBADF;
     case LNX_F_GETPIPE_SZ: case LNX_F_SETPIPE_SZ: {                 /* a pipe holds 16 KiB and its size cannot change; anything else is not a pipe */
         File *f = fd_get(me(), fd);

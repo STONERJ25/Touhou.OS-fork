@@ -1,0 +1,18 @@
+2
+(3, 12, 3) cpython little 9223372036854775807
+Linux x86_64 posix linux
+utf-8 utf-8 utf-8 utf-8
+/ : True . .. /dev/null
+HOME=/tmp
+LC_ALL=C.UTF-8
+PATH=/usr/bin:/bin
+PYTHONHASHSEED=0
+PYTHONUNBUFFERED=1
+TZ=UTC
+/usr /usr /usr
+['/usr/lib/python312.zip', '/usr/lib/python3.12', '/usr/lib/python3.12/lib-dynload', '/usr/local/lib/python3.12/dist-packages', '/usr/lib/python3/dist-packages']
+0 0 0
+__main__ 1 hello.py
+['_abc', '_ast', '_bisect', '_blake2', '_codecs', '_collections', '_csv', '_datetime', '_elementtree', '_functools', '_heapq', '_imp']
+imported True
+exit status: 0

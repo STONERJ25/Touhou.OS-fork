@@ -1,0 +1,50 @@
+loaded: ('libc.so.6', 'libm.so.6')
+--- calling C functions
+strlen: 12
+abs: (42, 7)
+toupper: Q
+atoi: 12345
+strtol with an end pointer: (255, b' rest')
+libm: (1.0, 1024.0, True)
+sqrt: True
+float: 1.5
+getpid: True
+sprintf (variadic): b'42-text-3.14'
+getenv: (b'UTC', None)
+setenv: b'set through ctypes'
+errno: (2, 'No such file or directory')
+written by write(2) through ctypes
+--- types, structures, arrays
+sizes: (4, 8, 8, 8, 7)
+c_int wraps: -2147483648
+c_ubyte: 44
+c_char_p: (b'text', 'wide')
+structure: (1, 4, b'label', 2.5, 32, 24, 16)
+bytes of a structure: b'\x01\x00\x00\x00\x02\x00\x00\x00'
+from_buffer_copy: (5, 6)
+array: ([5, 4, 3, 2, 1], 5, 3, 15)
+array slice: [4, 3, 2]
+pointer: (20, 20)
+cast: (5, 1, True)
+union: ('0x3f800000', [0, 0, 128, 63])
+bit fields: (5, 17, 200, 4, b'\x8d\xc8\x00\x00')
+create_string_buffer: (b'abcdef', 16, b'abcdef\x00\x00')
+memset and memmove: b'xxxYZf'
+string_at: (b'xxxY', 'wide')
+1 MB buffer: (b'\x07', b'\x07', 7000)
+--- callbacks
+qsort with a Python comparison: ([1, 2, 3, 4, 5, 7, 8, 9], True)
+sorted words: [b'apple', b'banana', b'fig', b'pear']
+50 callbacks: 50
+bsearch: 3
+an exception in a callback does not crash: ok
+--- the interpreter's C API
+Py_GetVersion: b'3.12.3'
+PyLong_FromLong: 1099511627776
+py_object: ([1, 2, 3], 8)
+PyObject_Repr: {'a': (1, 2)}
+find_library: True
+missing library: libnothing-at-all.so
+missing symbol: AttributeError
+--- done
+exit status: 0

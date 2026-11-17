@@ -24,6 +24,8 @@ long lnx_fstatfs(TrapFrame *tf);
 long lnx_fchdir(TrapFrame *tf);
 long lnx_fchmod(TrapFrame *tf);
 long lnx_fchmodat(TrapFrame *tf);
+long lnx_fchmodat2(TrapFrame *tf);
+long lnx_close_range(TrapFrame *tf);
 long lnx_fchown(TrapFrame *tf);
 long lnx_lchown(TrapFrame *tf);
 long lnx_fchownat(TrapFrame *tf);
@@ -105,5 +107,34 @@ long lnx_timer_settime(TrapFrame *tf);
 long lnx_timer_gettime(TrapFrame *tf);
 long lnx_timer_getoverrun(TrapFrame *tf);
 long lnx_timer_delete(TrapFrame *tf);
+
+/* kernel/linux/syscall.c: the readv/writev loop (the native read or write per element) that preadv and pwritev reuse */
+long lnx_iov(TrapFrame *tf, int native_nr);
+
+/* kernel/linux/l3.c (L3: what Python and its library ask for) */
+long lnx_mmap(TrapFrame *tf);
+long lnx_lseek(TrapFrame *tf);
+long lnx_fallocate(TrapFrame *tf);
+long lnx_preadv(TrapFrame *tf);
+long lnx_pwritev(TrapFrame *tf);
+long lnx_preadv2(TrapFrame *tf);
+long lnx_pwritev2(TrapFrame *tf);
+long lnx_copy_file_range(TrapFrame *tf);
+long lnx_splice(TrapFrame *tf);
+long lnx_mknod(TrapFrame *tf);
+long lnx_mknodat(TrapFrame *tf);
+long lnx_memfd_create(TrapFrame *tf);
+long lnx_sched_getscheduler(TrapFrame *tf);
+long lnx_sched_getparam(TrapFrame *tf);
+long lnx_sched_setparam(TrapFrame *tf);
+long lnx_sched_setscheduler(TrapFrame *tf);
+long lnx_sched_get_priority_max(TrapFrame *tf);
+long lnx_sched_get_priority_min(TrapFrame *tf);
+long lnx_sched_rr_get_interval(TrapFrame *tf);
+long lnx_getcpu(TrapFrame *tf);
+void linux_make_shm_dir(void);
+long lnx_open_ptmx(int flags);                          /* open("/dev/ptmx"): a new pseudo-terminal */
+long lnx_pty_ioctl(int fd, u64 req, u64 arg);           /* TIOCGPTN, TIOCSPTLCK, TIOCGPTLCK */
+int  pty_master_index(File *f);                         /* kernel/drivers/pty.c: N of /dev/pts/N for a master, else -1 */
 
 #endif

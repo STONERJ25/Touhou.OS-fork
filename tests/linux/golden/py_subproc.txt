@@ -1,0 +1,71 @@
+run echo: (0, 'hello world\n', '')
+run sh: (3, b'out\n', b'err\n')
+shell=True: (0, ['42', '/bin/sh'])
+a shell pipeline: A
+
+check_output: b'checked\n'
+CalledProcessError: (4, b'before\n', 'echo before; exit 4')
+check=True: 1
+getoutput: hi
+there
+getstatusoutput: (6, 'x')
+call: (0, 1, 17)
+--- input and output
+cat: some input
+second line
+
+wc -c of 100000 bytes: b'100000'
+1 MB through cat: (1048576, True)
+stderr into stdout: b'indone\n'
+stdout to a file: to a file
+
+stdin from a file: to a file
+
+stdin from /dev/null: b''
+env: one two
+
+cwd: sub
+
+ls of an empty directory: ''
+--- Popen
+readline: b'line one\n'
+rest: b'line two\n'
+wait: 0
+poll of a running process: None
+terminate: -15
+kill: -9
+killed itself: -9
+trap: 33
+SIGINT: -2
+a pipeline of three: (b'apple\nbanana\n', 0, 0)
+communicate: ('to-stdout\n', 'to-stderr\n')
+returncode before and after: (None, 12, 12)
+with: context manager
+
+pid: True
+--- time-outs
+TimeoutExpired: (True, ['sleep', '30'])
+wait with a time-out: expired
+--- errors
+run /nonexistent/program: FileNotFoundError errno=2
+run nonexistent-program-name: FileNotFoundError errno=2
+run /etc: PermissionError errno=13
+run /etc/passwd: PermissionError errno=13
+missing cwd: FileNotFoundError
+shell: command not found: (127, True)
+--- descriptors
+pass_fds: b'through-fd\n'
+close_fds (the default): closed
+
+the parent is there: parent-alive
+
+start_new_session: True
+process_group: True
+umask: 0077
+python in python: a child python
+python exit code: 5
+python SystemExit: (1, 'message\n')
+python traceback: (1, 'ZeroDivisionError: division by zero')
+python killed by SIGSEGV: -11
+--- done
+exit status: 0

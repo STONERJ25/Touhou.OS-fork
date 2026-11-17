@@ -1,0 +1,77 @@
+--- TCP
+bound to: ('127.0.0.1', True, 'AF_INET', 'SOCK_STREAM')
+peer: (True, '127.0.0.1')
+echo: b'HELLO SERVER'
+two sends: b'SECOND MESSAGE'
+1 MB echo: (1048576, True)
+end of file after shutdown: b''
+--- TCP errors and options
+refused: 111
+accept time-out: TimeoutError
+recv time-out: TimeoutError
+non-blocking recv: 11
+gettimeout: (0.0, None)
+MSG_PEEK: (b'abc', b'abcdef')
+MSG_DONTWAIT: 11
+MSG_WAITALL: b'0123456789'
+recv_into: (8, b'into a b', b'uffer')
+TCP_NODELAY: True
+SO_KEEPALIVE: True
+SO_TYPE: (True, 0)
+fileno: (True, False)
+makefile readline: (b'line one\n', b'line two\n')
+makefile write: b'from makefile\n'
+peer closed: b''
+send to a closed peer: BrokenPipeError
+closed socket: 9
+dup: (True, True)
+--- UDP
+recvfrom: (b'datagram one', '127.0.0.1', True)
+reply: b'reply'
+truncated: b'xxxx'
+connected udp: b'connected udp'
+empty datagram queue: 11
+broadcast option: 0
+--- socketpair and UNIX-domain sockets
+socketpair: ('AF_UNIX', 'SOCK_STREAM', True)
+pair recv: b'ping'
+pair reply: b'pong'
+pair eof: b''
+unix datagrams: (b'dgram 1', b'dgram 2')
+socket file: (True, '0o140000')
+getsockname: unix.sock
+unix stream: (b'over a path', "''")
+SO_PEERCRED: (True, True, True)
+connect to a stale socket file: ConnectionRefusedError
+connect to a missing path: 2
+abstract name: b'\x00abstract-name-for-the-test'
+abstract stream: b'abstract'
+bind twice: EADDRINUSE
+--- passing descriptors
+send_fds: (b'here are two descriptors', 2, True)
+the passed descriptor works: b'through the passed pipe'
+--- addresses and names
+getaddrinfo: [('127.0.0.1', 8080)]
+gethostbyname: 127.0.0.1
+services and protocols: (80, 443, 'smtp', 6, 17)
+getaddrinfo numeric: ('127.0.0.1', 80)
+AI_PASSIVE: ('0.0.0.0', 9)
+gaierror: gaierror
+inet_aton/ntoa: (b'\n\x01\x02\x03', '192.168.0.1')
+inet_pton/ntop: (b'\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01', '::1')
+byte order: (256, 1, 16777216, 1)
+constants: (<AddressFamily.AF_INET: 2>, <AddressFamily.AF_UNIX: 1>, <SocketKind.SOCK_STREAM: 1>, <SocketKind.SOCK_DGRAM: 2>, True, True)
+hostname: True
+bad address: OSError
+create_server: 127.0.0.1
+--- sendfile and files
+sendfile: ([256000], 256000, True)
+--- socketserver and an HTTP server
+socketserver: LINE ONE
+LINE TWO
+
+GET: (200, 'text/plain', b'you asked for /hello/world?x=1')
+POST: (201, b'em esrever')
+big POST: (201, 300000)
+--- done
+exit status: 0

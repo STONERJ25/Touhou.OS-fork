@@ -4,6 +4,10 @@
 #include "fbcon.h"
 #include "process.h"
 
+#ifndef TIOCSCTTY
+#define TIOCSCTTY 0x540E                                    /* the number Linux gives it (make this the controlling terminal) */
+#endif
+
 void (*g_tty_signal_hook)(int pgid, int sig);
 
 static Tty g_console;
@@ -270,6 +274,17 @@ int tty_ioctl(Tty *t, unsigned long req, void *arg) {
         t->fg_pgid = want;
         if (p) t->session = p->sid;
         pgrp_terminal_granted(t->fg_pgid);                  /* members that stopped waiting for the terminal have it now */
+        return 0;
+    }
+    case TIOCSCTTY: {                                       /* login_tty() and forkpty(): this terminal becomes the caller's controlling terminal */
+        Process *p = current ? current->proc : NULL;
+        if (!p) return -ENOTTY;
+        if (p->ctty == t) return 0;
+        if (p->sid != p->pid || p->ctty) return -EPERM;     /* only a session leader that has no controlling terminal yet ... */
+        if (t->session && t->session != p->sid) return -EPERM;     /* ... and only a terminal that no other session owns */
+        p->ctty = t;
+        t->session = p->sid;
+        t->fg_pgid = p->pgid;
         return 0;
     }
     case FIONREAD:

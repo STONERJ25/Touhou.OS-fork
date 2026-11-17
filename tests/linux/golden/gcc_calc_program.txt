@@ -1,0 +1,18 @@
+$ gcc -O2 cc_calc.c -o cc_calc -lm
+status: 0
+cc_calc: 24840 bytes, sha256 f4b68fde540a5d825dcab5a026a6d3c9975ec0306916085e9dffc45987b96766
+$ ./cc_calc
+tree: 15 nodes, height 5, in order: 5 10 20 30 35 40 45 50 60 65 70 80 85 90 95
+descending: 95 90 85 ... 5
+crc32 of the table: 78825239
+popcount/clz/ctz: 8 11 11
+format: [tag-007-2.500-z-ff] 18
+COMPILED AND LINKED | medium
+classify(-1) = negative
+classify(2) = small
+classify(5) = medium
+classify(8) = large
+series(1000) = 3.140593, sqrt(2) = 1.414213562, cbrt(27) = 3.0, pow(2, 0.5) = 1.414213562
+limits: 2147483647 4294967295 -9223372036854775808 16
+strtol overflow: 1, errno is ERANGE: 1
+exit status: 0

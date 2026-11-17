@@ -24,6 +24,10 @@ static const struct { u32 lnx, nat; } g_oflag[] = { { 01, OPOST }, { 04, ONLCR }
 static const struct { u32 lnx, nat; } g_lflag[] = { { 01, ISIG }, { 02, ICANON }, { 010, ECHO }, { 020, ECHOE }, { 040, ECHOK }, { 0400, TOSTOP } };
 static const struct { int lnx, nat; } g_cc[] = { { 0, VINTR }, { 1, VQUIT }, { 2, VERASE }, { 3, VKILL }, { 4, VEOF }, { 5, VTIME }, { 6, VMIN }, { 10, VSUSP } };
 
+#define LNX_TCSBRK   0x5409        /* L3: drain, flow control, flush, break */
+#define LNX_TCXONC   0x540A
+#define LNX_TCFLSH   0x540B
+#define LNX_TCSBRKP  0x5425
 #define LNX_IXON     02000
 #define LNX_IUTF8    040000
 #define LNX_CFLAG    0x4bf          /* CS8 | CREAD | HUPCL | B38400: what a console starts with */
@@ -68,6 +72,22 @@ long lnx_ioctl(TrapFrame *tf) {
         if (!fd_get(current->proc, fd)) return -EBADF;
         if (req == LNX_FIOCLEX) current->proc->fd_flags[fd] |= FD_CLOEXEC; else current->proc->fd_flags[fd] &= (u8)~FD_CLOEXEC;
         return 0;
+    }
+    if (req == 0x80045430u || req == 0x40045431u || req == 0x80045439u) return lnx_pty_ioctl((int)A0(tf), req, A2(tf));      /* TIOCGPTN, TIOCSPTLCK, TIOCGPTLCK (l3.c) */
+    if (req == LNX_TCSBRK || req == LNX_TCXONC || req == LNX_TCFLSH || req == LNX_TCSBRKP) {
+        /* tcdrain, tcflow, tcflush and tcsendbreak (L3: Python's termios, readline and getpass call them). The output of this terminal is never queued, so draining takes no time; a
+         * break and flow control have no line to act on. tcflush of the input (TCIFLUSH, TCIOFLUSH) is a TCSETSF with the attributes as they are, which drops the typed-ahead input. */
+        File *f = fd_get_ref(current->proc, (int)A0(tf));
+        if (!f) return -EBADF;
+        u8 buf[256];
+        memset(buf, 0, sizeof buf);
+        long rc = vfs_ioctl(f, TCGETS, buf);                  /* the check that this is a terminal */
+        if (rc >= 0 && req == LNX_TCFLSH) {
+            if (A2(tf) > 2) rc = -EINVAL;
+            else if (A2(tf) != 1) rc = vfs_ioctl(f, TCSETSF, buf);
+        }
+        file_put(f);
+        return rc < 0 ? rc : 0;
     }
     if (req != TCGETS && req != TCSETS && req != TCSETSW && req != TCSETSF) {
         SyscallFn native = syscall_native(SYS_ioctl);

@@ -1,0 +1,78 @@
+input: (15720, 1659426408)
+--- zlib
+level 0: (15731, True)
+level 1: (503, True)
+level 6: (443, True)
+level 9: (443, True)
+known output: 789ccb48cdc9c957c8402701680308b1
+decompress: True
+raw deflate streaming: (True, True)
+decompress in 7-byte pieces: (True, True, b'')
+max_length: 100
+zlib.error: Error -3 while decompressing data
+zlib.error: Error -5 while decompressing data
+zlib.error: Error -3 while decompressing data
+version: ('1.', 9)
+10 MB: (75068, True)
+--- gzip
+gzip bytes: (455, '1f8b0800', '68d6e862', True)
+gzip file: line one
+line two
+
+readline and seek: (b'line one\n', 9, 0, b'line')
+two members: b'line one\nline two\nthird\n'
+truncated gzip: EOFError
+not gzip: Not a gzipped file (b'pl')
+size on disk: True
+--- bz2 and lzma
+bz2: (830, b'BZh', True)
+bz2 streaming: (True, True)
+bz2 file: (1100, True)
+lzma: (388, 'fd377a585a00', True)
+lzma raw: True
+xz file: True
+bz2 error: OSError
+lzma error: LZMAError
+--- zip
+namelist: ['src/a.txt', 'src/sub/b.bin', 'src/sub/deeper/c.txt', 'src/empty', 'generated.txt', 'fixed-date.txt', 'dir-entry/']
+sizes: [('src/a.txt', 600, 8), ('src/sub/b.bin', 2560, 8), ('src/sub/deeper/c.txt', 5, 8), ('src/empty', 0, 8)]
+read: (b'gamma', b'made in memory')
+testzip: None
+date_time: (2020, 2, 29, 12, 34, 56)
+unix mode: 0o755
+extracted: ['fixed-date.txt', 'generated.txt', 'src/a.txt', 'src/empty', 'src/sub/b.bin', 'src/sub/deeper/c.txt']
+extracted content: True
+stored size: (170, True, False)
+bzip2 and lzma members: (b'bzip ', b'lzma ')
+damaged zip: no error
+zip in memory: (True, ['in/memory.txt'])
+--- tar
+names: ['src', 'src/a.txt', 'src/empty', 'src/hard', 'src/link', 'src/sub', 'src/sub/b.bin', 'src/sub/deeper', 'src/sub/deeper/c.txt']
+modes: [('src/a.txt', '0o640'), ('src/sub/b.bin', '0o755'), ('src/sub', '0o755')]
+types: [('src/a.txt', True, False, False, False), ('src/sub', False, True, False, False), ('src/link', False, False, True, False), ('src/hard', False, False, False, True)]
+link names: ('a.txt', 'src/a.txt')
+mtime: 1700000000.0
+extractfile: b'gamma'
+untarred tree: ['src/a.txt', 'src/empty', 'src/hard', 'src/link', 'src/sub/b.bin', 'src/sub/deeper/c.txt']
+extracted modes: ('0o640', '0o755')
+extracted link: ('a.txt', 2, 1700000000)
+plain.tar: (['src/sub', 'src/sub/b.bin', 'src/sub/deeper', 'src/sub/deeper/c.txt'], True)
+t.tar.bz2: (['src/sub', 'src/sub/b.bin', 'src/sub/deeper', 'src/sub/deeper/c.txt'], True)
+t.tar.xz: (['src/sub', 'src/sub/b.bin', 'src/sub/deeper', 'src/sub/deeper/c.txt'], True)
+tar in memory: (10240, b'virtual/file.txt', b'hello world')
+streaming: ['src/a.txt']
+not a tar file: ReadError
+the data filter refuses ..: OutsideDestinationError
+--- shutil
+make_archive: ['.', './a.txt', './empty']
+zip archive: ['a.txt', 'empty', 'hard', 'link', 'sub/', 'sub/b.bin', 'sub/deeper/', 'sub/deeper/c.txt']
+unpack_archive: ['a.txt', 'empty', 'hard', 'link', 'sub']
+copytree: (['a.txt', 'empty', 'hard', 'link', 'sub'], '0o640', False)
+copy2 keeps the time: 1700000000
+move: (False, True)
+rmtree: False
+disk_usage: True
+which: ('/usr/bin/sh', None)
+get_terminal_size: (80, 24)
+--- done
+exit status: 0

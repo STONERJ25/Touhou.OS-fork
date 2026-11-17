@@ -2,8 +2,14 @@
 
 /* Bodies of the mem* functions are inline asm so the compiler cannot turn them into calls to themselves. */
 
+/* memcpy and memset move whole 64-bit words and then the last 0 to 7 bytes. Under QEMU's TCG a `rep` string instruction costs one step per element whatever the size
+ * of the element, so a byte-wise copy of a page is eight times the work of a word-wise one: a fork and the start of a program are 2 to 3 times faster (measured by the
+ * linux-python agent, docs/COMPAT.md "An experiment on memcpy"). On real hardware with fast string operations (ERMS, the Dell's i5-7500) both forms are fast. */
 void *memcpy(void *dst, const void *src, size_t n) {
     void *ret = dst;
+    size_t words = n >> 3;
+    __asm__ volatile ("rep movsq" : "+D"(dst), "+S"(src), "+c"(words) : : "memory");
+    n &= 7;
     __asm__ volatile ("rep movsb" : "+D"(dst), "+S"(src), "+c"(n) : : "memory");
     return ret;
 }
@@ -21,6 +27,10 @@ void *memmove(void *dst, const void *src, size_t n) {
 
 void *memset(void *dst, int c, size_t n) {
     void *ret = dst;
+    u64 word = (u64)(u8)c * 0x0101010101010101ULL;
+    size_t words = n >> 3;
+    __asm__ volatile ("rep stosq" : "+D"(dst), "+c"(words) : "a"(word) : "memory");
+    n &= 7;
     __asm__ volatile ("rep stosb" : "+D"(dst), "+c"(n) : "a"(c) : "memory");
     return ret;
 }

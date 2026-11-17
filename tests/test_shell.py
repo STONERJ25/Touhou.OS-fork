@@ -135,6 +135,11 @@ CHECKS = [
     ("(echo to-file > /tmp/sub3); cat /tmp/sub3", "to-file", 0),
     ("{ echo brace-out; } > /tmp/sub4; cat /tmp/sub4", "brace-out", 0),
     ("echo w | (cat) | (cat)", "w", 0),
+    # a subshell or a brace group that is a pipeline stage and starts with an external command ran only that command (the stage exec'd in place; found by the linux-python agent)
+    ("(/bin/true; echo after-true) | cat", "after-true", 0),
+    ("{ /bin/echo one; /bin/echo two; } | cat", "one\ntwo", 0),
+    ("(/bin/echo first; /bin/echo second) | wc -l", "2", 0),
+    ("/bin/echo lone | cat", "lone", 0),
 ]
 
 

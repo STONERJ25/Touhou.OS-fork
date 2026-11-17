@@ -1,0 +1,111 @@
+--- files
+mknod regular: ok
+mknod regular is a file: ok True
+chown to self: ok
+lchown: ok
+fchown: ok
+fchmod: ok
+chmod follow_symlinks=False: ok
+chmod of the link itself: NotImplementedError: chmod: follow_symlinks unavailable on this platform
+chmod through the link: ok '0o640'
+closerange: ok ['open', 'EBADF', 'EBADF', 'open', 'open']
+fsync: ok
+fdatasync: ok
+sync: ok
+posix_fallocate: ok
+size after fallocate: ok 8192
+posix_fadvise: ok
+preadv: ok (8, b'01234567')
+pwritev: ok 4
+utime with a descriptor: ok
+utime ns: ok (None, 1600000000)
+utime follow_symlinks=False: ok
+statvfs of a descriptor: ok True
+lseek SEEK_DATA: ok 0
+lseek SEEK_HOLE: ok True
+sendfile: ok 100
+copy_file_range: ok 50
+memfd_create: ok (6, 0, b'memory')
+pipe2 flags: ok (False, False)
+eventfd: ok (None, 5)
+splice: ok (22, 9, 8, b'iced thr', 0, 'spliced through a pipe and more')
+splice of two files: OSError EINVAL
+fwalk: ok ['.']
+scandir of a descriptor: ok ['copy', 'copy2', 'copy3']
+listdir of a descriptor: ok ['copy', 'copy2', 'copy3']
+stat with dir_fd: ok 8192
+mkdir with dir_fd: ok
+rename with dir_fds: ok
+symlink with dir_fd: ok
+readlink with dir_fd: ok 'f'
+unlink with dir_fd: ok
+access with dir_fd: ok True
+open with dir_fd: ok 8192
+fchmodat: ok
+link with dir_fd: ok
+rmdir with dir_fd: ok
+fchdir: ok True
+--- locks and fcntl
+flock: ok (None, None)
+flock non-blocking: ok
+lockf: ok (None, None)
+F_GETFL: ok True
+F_SETFL O_NONBLOCK: ok (0, False)
+F_DUPFD: ok 40
+F_DUPFD_CLOEXEC: ok (50, False)
+F_GETFD/F_SETFD: ok (0, 1)
+F_GETPIPE_SZ: ok True
+F_SETLK: ok 28
+FIONREAD: ok 5
+F_SETSIG/O_ASYNC: ok 0
+--- process and scheduling
+nice: ok 0
+getpriority: ok 0
+setpriority: ok
+sched_getscheduler: ok 0
+sched_getparam: ok 0
+sched_get_priority_max: ok 99
+sched_yield: ok
+sched_getaffinity: ok True
+sched_setaffinity: ok
+sched_rr_get_interval: ok True
+getloadavg: ok 3
+sysconf: ok (4096, 100, True, True)
+confstr: ok '/bin:/usr/bin'
+pathconf: ok (255, 4096)
+getgroups: ok True
+getresuid: ok 3
+setuid to its own: ok
+setegid to its own: ok
+getpgid: ok True
+setpgid: ok
+setpgrp: ok
+killpg: ok
+wait3: ok True
+ctermid: ok '/dev/tty'
+getrlimit NOFILE: ok True
+setrlimit NOFILE: ok
+getrlimit STACK: ok True
+prlimit: ok True
+getrusage: ok (True, True, True)
+getpagesize: ok 4096
+max RSS is reported: ok True
+clock_nanosleep: ok
+alarm remaining: ok True
+sigaltstack via faulthandler: ok
+faulthandler dump: ok
+--- terminals
+openpty: ok (True, True, True)
+tcgetattr: ok 7
+tcsetattr: ok
+echo through a pty: ok b'typed\r\n'
+TIOCGWINSZ: ok 8
+TIOCSWINSZ: ok b'\x18\x00P\x00\x00\x00\x00\x00'
+window size read back: ok os.terminal_size(columns=80, lines=24)
+tcflush: ok
+tcdrain: ok
+setraw: ok 7
+not a terminal: error: (25, 'Inappropriate ioctl for device')
+pty.fork: (b'hello from the pty child\r\n', 3)
+--- done
+exit status: 0

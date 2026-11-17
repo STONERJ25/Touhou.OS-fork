@@ -831,7 +831,7 @@ static int run_pipeline(Node *n, int background, const char *text) {
             if (prev_read >= 0) { dup2(prev_read, 0); close(prev_read); }
             if (fds[1] >= 0) { dup2(fds[1], 1); close(fds[1]); }
             if (fds[0] >= 0) close(fds[0]);
-            g_stage_child = 1;
+            g_stage_child = stages[i]->kind == N_SIMPLE;     /* a lone external command can exec in place; a subshell or a group has more to run after it */
             g_interactive = 0;
             int st = run_node(stages[i]);
             fflush(NULL);

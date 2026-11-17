@@ -1,0 +1,66 @@
+start method: ('fork', 'fork', ['fork', 'forkserver', 'spawn'])
+cpu_count: True
+--- processes
+before: ('seven', False, None, None)
+after: (False, 7, True)
+an exception ends the process with 1: 1
+running: (True, None)
+terminate: True
+kill: -9
+join with a time-out: True
+close: ok
+current_process: ('MainProcess', None)
+three children, three pids: (3, False, True)
+--- queues and pipes
+queue: [(0, True), (1, True), (2, True), (3, True), (4, True)]
+empty queue: Empty
+full queue: Full
+qsize: (2, False, True)
+SimpleQueue: {'a': [1, 2, 3]}
+a large message through the queue: 100001
+pipe: 1
+pipe: 'two'
+pipe: [3, 3, 3]
+pipe: {'four': 4}
+EOF on the pipe: (True, 0)
+recv after the peer left: EOFError
+send_bytes: (True, b'raw bytes')
+--- pools
+map: [0, 1, 4, 9, 16, 25, 36, 49, 64, 81, 100, 121]
+imap: [0, 1, 4, 9, 16, 25]
+imap_unordered: [0, 1, 4, 9, 16, 25]
+starmap: [8, 9, 1000]
+apply_async: (81, True)
+exception from a worker: boom in a process
+chunks: [9409, 9604, 9801]
+many tasks: 332833500
+pool closed: ok
+--- shared memory, locks, synchronization
+Value with a lock: 2000
+Array: [0.0, 1.5, 3.0, 4.5, 6.0, 7.5, 9.0, 10.5]
+RawValue: 10
+char array: b'shared'
+Event: (False, False)
+set by a child: True
+Semaphore: (True, True, False, 0)
+released: 1
+BoundedSemaphore: semaphore or lock released too many times
+Lock: (True, False, False)
+RLock: (True, True, None, None)
+Barrier: [0, 1, 2]
+Condition: True
+shared_memory: (b'hello there', True)
+--- the other start methods
+spawn queue: ('spawn', True)
+spawn exit code: 0
+spawn pool: [0, 1, 4, 9, 16]
+forkserver queue: ('forkserver', True)
+forkserver exit code: 0
+forkserver pool: [0, 1, 4, 9, 16]
+--- a manager
+managed dict: {0: 0, 1: 1, 2: 4, 3: 9}
+managed list: [0, 1, 2, 3]
+namespace: 42
+managed queue: through the manager
+--- done
+exit status: 0

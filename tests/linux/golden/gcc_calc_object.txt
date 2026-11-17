@@ -1,0 +1,3 @@
+$ gcc -O2 -c cc_calc.c -o cc_calc.o
+status: 0
+cc_calc.o: 15776 bytes, sha256 33873afdf1053cdc6d0500bfa66f6f6a1e1df936af81f62fc80ef906ac354f36

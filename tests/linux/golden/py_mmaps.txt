@@ -1,0 +1,45 @@
+page size: (4096, 4096)
+--- anonymous
+size: (4096, False, 0)
+write and read back: (5, b'hello', b'\x00\x00\x00', 8)
+read: (b'line ', b'one\n', b'line two\n', 18)
+slice assignment: (b'\x00\x00world\x00\x00', 100, -1, 101, 9)
+item: (65, 0)
+tell/seek: (None, 20, None, None)
+seek beyond the end: seek out of range
+index out of range: mmap index out of range
+slice of another size: IndexError
+written to the end: 4096
+write past the end: data out of range
+move: b'abababababab'
+zero page: b'\x00\x00\x00\x00\x00'
+resize: (8192, b'abcd', b'123456\x00\x00\x00\x00', b'\x00\x00\x00\x00')
+shrink: (2048, b'abcd')
+closed: True
+use after close: mmap closed or invalid
+zero length: ('OSError', 22)
+1 MB: (b'head', b'tail', 0)
+--- a file
+read-only: (8192, b'0123456789abcdef', b'ef', 12)
+write to a read-only map: mmap can't modify a readonly memory map.
+the file position is not used: (0, b'567')
+write through the map, read through the file: b'CHANGE6789'
+write through the file, read through the map: b'0123BYFILEabcd'
+copy-on-write: (b'COPYGE67', b'CHANGE67')
+offset: (True, 100)
+unaligned offset: OSError
+longer than the file: mmap length is greater than file size
+file shrunk below the map: ok
+file grown: (16384, 16384)
+empty file: cannot mmap an empty file
+struct: True
+madvise: ok
+written to the file: True
+--- shared with a child
+anonymous memory is shared: (b'child   ', 1234)
+MAP_PRIVATE memory is copied: b'parent  '
+a mapped file is shared with the child: (b'child', b'child')
+four children, four slots: [100, 100, 100, 100]
+a flag set after the fork reaches the child: 42
+--- done
+exit status: 0

@@ -1,0 +1,85 @@
+--- methods
+strip/case: ('The Quick Brown Fox', 'The Quick Brown Fox  ', '  The Quick Brown Fox', '  THE QUICK BROWN FOX  ', '  the quick brown fox  ', '  The Quick Brown Fox  ', '  tHE qUICK bROWN fOX  ', 'The quick brown fox', 'SS', 'i̇', 'ǅ')
+split: (['a', 'b', '', 'c'], ['a', 'b', 'c'], ['a,b', 'c'], ['line1', 'line2', 'line3'], ('a', '=', 'b=c'), ('a=b', '=', 'c'))
+find: (2, 3, -1, 1, 2, True, True)
+replace/translate: ('bba', 'hippo', 'heo', 'tab here')
+justify: ('***x***', 'x...', '...x', '000042', '-00042')
+predicates: (True, True, True, True, False, True, True, True, True, True, True, True)
+join/repeat: ('a-b-c', 'ababab', 'desserts', 'abb')
+compare: (True, True, True, True, True, ['A', 'B', 'a', 'b', 'z', 'é'])
+casefold: (True, 'ας', 'ας ')
+removeprefix: ('case', 'file')
+len and slicing: (5, 3, '本', 'olleh', 'ell', 'llo', 'hlo', 1, 2)
+--- formatting
+f-strings: ('Reimu 42 3.14', "   'Reimu'", '00042', '2a 0b101010', ' 3.142e+00|', 'n=42', 'nested Reimu', '{literal}', '42', '25.6%')
+format spec: ('       r|l       |   c    |', '***mid***', 'a b a', 'key=1', '+2.500', '-002.500')
+format types: ('65 101 ff FF 101 A', '1.234568e+04 12345.7 1E-10', 'text', '50.000000%')
+format attributes: ('3.0 4.0', '20 10', 'dict')
+percent: ("3 items, 99.50%, str, 'repr', ff, 10, 1.234500e+03, A, 7     |, 000042", '1-2', '    42', 'tru')
+repr/ascii: ('\'quote\\\'dq"nl\\ntab\\t\\x00é日\'', "'\\xe9\\u65e5'", "b'bytes\\xff\\n'", "b'x'", "'🎌'")
+templates: ('Marisa likes mushrooms', '1 $b')
+string module: ('abcde', '0123456789', 'Hello Big World', '!"#$%&\'(', 100)
+round trip of floats: [True, True, True, True]
+large format: 402
+column 1: a|x|
+column 5: abcde|    x|
+column 10: abcdefghij|         x|
+column 40: abcdefghijabcdefghijabcdefghijabcdefghij|                                       x|
+--- unicode
+NFC: (16, ['0x43', '0x61', '0x66', '0xe9', '0x20', '0xe9', '0x20', '0xc5'])
+NFD: (20, ['0x43', '0x61', '0x66', '0x65', '0x301', '0x20', '0x65', '0x301'])
+NFKC: (17, ['0x43', '0x61', '0x66', '0xe9', '0x20', '0xe9', '0x20', '0xc5'])
+NFKD: (21, ['0x43', '0x61', '0x66', '0x65', '0x301', '0x20', '0x65', '0x301'])
+category/name: [('a', 'Ll', 'LATIN SMALL LETTER A'), ('Z', 'Lu', 'LATIN CAPITAL LETTER Z'), ('5', 'Nd', 'DIGIT FIVE'), (' ', 'Zs', 'SPACE'), ('\n', 'Cc', '?'), ('日', 'Lo', 'CJK UNIFIED IDEOGRAPH-65E5'), ('é', 'Ll', 'LATIN SMALL LETTER E WITH ACUTE'), ('😀', 'So', 'GRINNING FACE'), ('́', 'Mn', 'COMBINING ACUTE ACCENT')]
+lookup: ('☃', 'SNOWMAN', 0.5, 3, 2, 'R', 'W', 230)
+version: 15.0.0
+case mapping: ('Ǉ', 'FI', 'ʼN', b'i\xcc\x87', 'Ꭰ', 'σ', 'Σ')
+sorting by code point: ['E', 'a', 'z', 'Ä', 'ä', 'é', '日']
+surrogates: (True, b'=\xd8\x00\xde', 4, 'fffe3dd800de')
+regex unicode: (['naïve', 'café', '日本語', 'ünï'], ['١٢٣', '456'], 'a b c', False)
+--- encodings
+utf-8: (32, '68c3a96c6c6f2077c3b6726c', True)
+utf-16: (42, 'fffe6800e9006c006c006f00', True)
+utf-16-be: (40, '006800e9006c006c006f0020', True)
+utf-32-le: (76, '68000000e90000006c000000', True)
+latin-1: UnicodeEncodeError
+ascii: UnicodeEncodeError
+cp1252: UnicodeEncodeError
+cp437: UnicodeEncodeError
+iso-8859-15: UnicodeEncodeError
+shift_jis: UnicodeEncodeError
+euc-jp: UnicodeEncodeError
+gbk: UnicodeEncodeError
+big5: UnicodeEncodeError
+koi8-r: UnicodeEncodeError
+utf-7: (43, '682b414f6b2d6c6c6f20772b', True)
+idna: (43, '786e2d2d686c6c6f2077726c', True)
+punycode: (39, '686c6c6f2077726c64202020', True)
+errors=: (b'h?llo w?rld ? ??? ?', b'hllo wrld   ', b'h&#233;llo w&#246;rld &#9731; &#26085;&#26412;&#35486; &#128512;', b'h\\xe9llo w\\xf6rld \\u2603 \\u65e5\\u672c\\u8a9e \\U0001f600', b'h\\N{LATIN SMALL LETTER E WITH ACUTE}llo w\\N{LATIN SMALL LETT')
+decode errors: ('caf� ok', 'caf', 'café', '\\xff\\xfe', b'a\x80b')
+UnicodeDecodeError: ('utf-8', 'invalid start byte', 0, 1, b'\xff')
+UnicodeEncodeError: ('latin-1', 'ordinal not in range(256)', 0)
+codecs: ('uryyb', b'68656c6c6f', b'hello', b'aGVsbG8=\n', 'utf-8', 'iso8859-1')
+BOM: (b'\xef\xbb\xbf', 'data', b'\xef\xbb\xbfx')
+incremental decoder: ['', '', '日', ' ok']
+bytes: (b'Hi', '616263', b'Hi', [b'a', b'b'], b'ABC', bytearray(b'abcd'), b'5-x', b'el')
+bytes vs str: (False, 98, b'b', b'\xc3\xa9', 'é')
+--- streams and text
+StringIO: to a StringIO!1-2-3
+
+BytesIO: (b'line one\n', b'line ', 14, 0, [b'line one\n', b'line two\r\n', b'line three'])
+universal newlines: ['héllo\n', 'wörld\n', 'third']
+newline translation: b'a\r\nb\r\n'
+stdout: ('utf-8', 'surrogateescape', False, 'utf-8', 'backslashreplace')
+locale: ('UTF-8', ('C', 'UTF-8'), 'LC_CTYPE=C.UTF-8;LC_NUMERIC=C;LC_TIME=C;LC_COLLATE=C;LC_MONETARY=C;LC_MESSAGES=C;LC_PAPER=C;LC_NAME=C;LC_ADDRESS=C;LC_TELEPHONE=C;LC_MEASUREMENT=C;LC_IDENTIFICATION=C')
+wrap: ['The quick brown fox jumps over', 'the lazy dog The quick brown', 'fox jumps over the lazy dog', 'The quick brown fox jumps over', 'the lazy dog']
+fill/indent/dedent: ('a b c\nd e f', '> one\n> two', 'x\n  y\nz', 'The quick brown…')
+word counts: [('the', 3), ('brown', 1), ('dog', 1), ('end', 1), ('fox', 1), ('jumps', 1), ('lazy', 1), ('over', 1), ('quick', 1)]
+name        qty    price
+apple         3      1.5
+banana       12     0.25
+cherry      100     10.0
+日本語-----| ***日本語***
+emoji 😀 and combining é and right-to-left אב print without trouble
+--- done
+exit status: 0

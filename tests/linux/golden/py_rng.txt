@@ -1,0 +1,31 @@
+random: [0.41661987254534116, 0.010169169457068361, 0.8252065092537432, 0.2986398551995928, 0.3684116894884757]
+getrandbits: (49, 1160692746, 8046993897209325893, 1039811549448388449757926023051)
+randint: [56, 34, 72, 81, 23, 79, 71, 24, 46, 95]
+randrange: [161, 945, 735, 903, 294, 259]
+uniform: [-2.94285813578, -4.22157971636, 3.37070281368, -1.77961185399]
+choice: ['h', 'f', 'a', 'i', 'g', 'a', 'a', 'c']
+shuffle: [11, 12, 4, 7, 14, 0, 15, 19, 8, 16, 6, 2, 17, 10, 1, 13, 3, 9, 5, 18]
+sample: [754, 821, 774, 568, 685, 190, 263, 602]
+choices with weights: ['a', 'c', 'a', 'c', 'a', 'c', 'a', 'c', 'a', 'a', 'a', 'a']
+choices with cumulative weights: ['x', 'z', 'z', 'z', 'y', 'x', 'z', 'z']
+randbytes: 82bb3483c4dae1c21a1f
+gauss: [-0.353771671398, 0.0429398142975, -0.623460005597, -0.632169587035]
+normalvariate: [10.6521758944, 13.0602003844, 10.2109571217]
+others: [0.120177149851, 0.195559316615, 3.96382756651, 1.58017497014, 1.69593574549, 1.68509632143, 2.80714162723, 0.662376258874]
+binomial: 4
+setstate: True
+string seed: [9, 5, 1, 7, 8, 7, 8, 3, 1, 2]
+bytes seed: 0.7731514366044835
+big seed: 0.41604161323913513
+float seed: 0.10626827177291942
+seed 0: (0.8444218515250481, 1627694678)
+independent generators: (True, True)
+sum of 200000 draws: 6535937346
+passwords: ['222222222222', 'iiiiiiiiiiii', '999999999999']
+system random: (True, 5, 5, 20)
+os.urandom: (32, True)
+sample too large: Sample larger than population or is negative
+choice of nothing: Cannot choose from an empty sequence
+empty range: empty range in randrange(5, 5)
+--- done
+exit status: 0
