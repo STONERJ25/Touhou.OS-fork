@@ -90,7 +90,7 @@ def main(argv=None):
 
     atexit.register(release)
     try:
-        return subprocess.call(cmd)
+        return subprocess.call(cmd, env=dict(os.environ, TOUHOU_QEMU_SLOT_HELD=str(lock)))     # tools that take a slot of their own (run-in-guest.py) see this and do not
     finally:
         release()
 

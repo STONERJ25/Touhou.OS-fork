@@ -1,0 +1,65 @@
+.page runstatus 1 run programs and say how each one ended: exit code and signal apart, with a time limit
+
+# SYNOPSIS
+*runstatus* [*-t* _SECONDS_] [*-C* _DIR_] [*-i* _FILE_] [*-o* _FILE_ [*-e* _FILE_]] _PROGRAM_ [_ARGUMENT_...]
+
+*runstatus* *-b* _MANIFEST_ [*-w* _DIR_] [*-m* _SUBDIR_]... [*-t* _SECONDS_] [*-c* _BYTES_] [*-s*] [*-k*]
+
+# DESCRIPTION
+A shell reports a program that a signal killed as the status 128 plus the signal number, which cannot be told from a program that exits with that number itself, and it waits for a program as long as the program likes. `runstatus` runs a program in a process group of its own, waits for it with a time limit, and says how it ended in the words of the kernel: the exit code, or the signal that killed it, never both.
+
+In the first form it runs _PROGRAM_ (found through `PATH` when the name has no slash) and then prints one line on standard error: `exit 3`, `killed by signal 8 (SIGFPE)` or `timed out after 5000 ms (killed)`. Its own status is the program's; after a signal it is 128 plus the signal, after a time-out 124, and 126 or 127 when the program could not be started (`cannot run`). The program's input and output stay on the terminal unless *-i* and *-o* redirect them.
+
+When the program has ended, everything left in its process group is killed, so that a program that started helpers does not leak them into the next one.
+
+The second form is for `tools/run-in-guest.py`, which runs hundreds of programs in one boot (docs/RUN_IN_GUEST.md has the format of the manifest, a list of programs with their arguments, time limits and input files). Each program runs in a new working directory `DIR/ID` with its input from `/dev/null` unless the job names a file, its standard output and standard error go to one file (so their order is the order of the writes), and `runstatus` prints one record line per program on standard output:
+
+    @@RS ID EXIT SIGNAL FLAGS MS LENGTH BASE64 [ELENGTH EBASE64]
+
+_EXIT_ and _SIGNAL_ are numbers, `-` for the one that does not apply. _FLAGS_ is `-` or letters: `T` the time limit ended it, `C` it wrote more than the cap and was killed, `X` it could not be started (the output is then the reason). _MS_ is the time it ran. _BASE64_ is the output, _LENGTH_ bytes of it, so that no byte of it can be mistaken for the record. Standard output and standard error are one stream, in the order of the writes, unless *-s* is given: then _BASE64_ is standard output alone and a second length and payload, _ELENGTH_ and _EBASE64_, hold standard error (the order between the two is lost). The records are framed by `@@RS-START COUNT` and `@@RS-DONE COUNT`.
+
+# OPTIONS
+@ *-t* _SECONDS_
+    The time limit, 10 seconds by default; a job of a manifest may set its own. Fractions are fine (`-t 0.5`). A program still running at the limit gets SIGKILL.
+
+@ *-C* _DIR_
+    Run the program in this directory (first form).
+
+@ *-i* _FILE_
+    Standard input of the program comes from this file (first form; the manifest says it for each job).
+
+@ *-o* _FILE_
+    Standard output and standard error of the program go to this file, together (first form).
+
+@ *-e* _FILE_
+    With *-o*: standard error goes to this file and *-o* gets standard output alone (first form).
+
+@ *-b* _MANIFEST_
+    Run every program of the manifest, one after another, and print the records.
+
+@ *-w* _DIR_
+    The directory that holds the working directories of the jobs (second form; `/tmp/runstatus.PID` by default).
+
+@ *-m* _SUBDIR_
+    Make this directory inside the working directory of every job before it runs (second form; may be repeated, up to 16 times).
+
+@ *-c* _BYTES_
+    The most output kept from one program, 256 KiB by default. A program that writes more is killed (flag `C`).
+
+@ *-s*
+    Keep standard output and standard error apart: two files per program, two payloads in each record (second form).
+
+@ *-k*
+    Keep the working directories and output files afterwards (second form), to look at what a program left behind.
+
+# EXIT STATUS
+First form: the program's own status, 128 plus the signal number after a signal, 124 after a time-out or an output cap, 126 or 127 when the program could not be started (127 when it was not found), 125 when `runstatus` itself was misused. Second form: 0 once every job has been run, whatever became of the programs; 125 when the manifest cannot be read.
+
+# EXAMPLES
+    runstatus /bin/false
+    runstatus -t 2 sleep 60
+    runstatus -o /tmp/out.txt ./a.out one two
+    runstatus -b /tmp/rig/manifest -w /tmp/rig/w -m build
+
+# SEE ALSO
+gapsh(1), kill(1), nice(1)

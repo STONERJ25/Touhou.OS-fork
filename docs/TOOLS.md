@@ -146,6 +146,16 @@ Kappabox applets in `kappabox/linux.c`; the mechanism, the Linux root and the te
 | `native PROGRAM [ARG...]` | the way back to the native personality |
 | `tools/make-linux-root.py` (host) | builds `build/linux-inputs/linux-root.tar` (`--gzip` for `.tar.gz`) from the Ubuntu in WSL: the dynamic linker, glibc, bash, dash, coreutils; the archive is third-party data, never committed (copy it to `/HumanVillage/linux-root.tar` on the machine) |
 
+## Running programs and reading how they ended: runstatus
+
+A kappabox applet in `kappabox/runstatus.c` (manual page `runstatus(1)`; the whole story, with the host tool that feeds it hundreds of programs per boot, is in [RUN_IN_GUEST.md](RUN_IN_GUEST.md)).
+
+| Command | What it does |
+|---|---|
+| `runstatus [-t SECONDS] [-C DIR] [-i FILE] [-o FILE] PROGRAM [ARG...]` | runs the program in a process group of its own with a time limit, then says on standard error how it ended: `exit 3`, `killed by signal 8 (SIGFPE)` or `timed out after ... (killed)`; its own status is the program's (128+N after a signal, 124 after a time-out, 126 or 127 if the program could not be started) |
+| `runstatus -b MANIFEST [-w DIR] [-m SUBDIR]... [-c BYTES] [-k]` | runs every program of a manifest, each in a fresh directory with its output (standard output and error together) in one file, and prints one record per program, `@@RS ID EXIT SIGNAL FLAGS MS LENGTH BASE64`: the exit code and the signal are never folded into one number |
+| `tools/run-in-guest.py` (host) | boots a guest, hands it the programs, and prints one JSON line per program: `{"name", "output", "exit", "signal", "timed_out", ...}`; `PROGRAM [ARG...]` for a single one |
+
 ## Tests
 
 ```
