@@ -85,6 +85,10 @@ HOSTED_PROGRAMS.update({                            # real-time signals, who sen
     "glibc_setxid": ([], {}),
     "glibc_sigsys": ([], {}),                       # signal 31 as an ordinary signal for a Linux program (freed on 2026-11-09)
 })
+HOSTED_PROGRAMS.update({                            # the Linux view of /proc as facts about its formats, static and dynamic (tests/case_linux_proc.py)
+    "proc_probe": (["alpha", "beta"], {"FOO": "bar"}),
+    "dyn_proc_probe": (["alpha", "beta"], {"FOO": "bar"}),
+})
 
 # How a hosted program is built when it is not simply `gcc -static NAME.c`: name -> (source file, flags). gcc's default is a dynamic position-independent executable.
 RECIPES = {
@@ -98,6 +102,7 @@ RECIPES = {
     "dyn_sys": ("glibc_sys.c", []),
     "dyn_signals": ("glibc_signals.c", []),
     "dyn_threads": ("glibc_threads.c", []),
+    "dyn_proc_probe": ("proc_probe.c", []),
 }
 # shared libraries: name -> (source file, flags); built beside the programs
 LIBRARIES = {

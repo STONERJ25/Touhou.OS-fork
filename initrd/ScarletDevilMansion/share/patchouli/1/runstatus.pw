@@ -1,4 +1,4 @@
-.page runstatus 1 run programs and say how each one ended: exit code and signal apart, with a time limit
+.page runstatus 1 run programs and say how each one ended
 
 # SYNOPSIS
 *runstatus* [*-t* _SECONDS_] [*-C* _DIR_] [*-i* _FILE_] [*-o* _FILE_ [*-e* _FILE_]] _PROGRAM_ [_ARGUMENT_...]

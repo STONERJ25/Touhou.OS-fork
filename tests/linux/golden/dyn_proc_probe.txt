@@ -1,0 +1,91 @@
+fields in /proc/self/stat: 52
+stat: the comm is in parentheses and is the program's name: yes
+stat: the line ends with a newline: yes
+stat: pid, ppid, pgrp and session are ours: yes
+stat: the state is R while we read it: yes
+stat: num_threads is 1 and priority is 20 + nice: yes
+stat: exit_signal is SIGCHLD, policy and rt_priority are 0: yes
+stat: vsize and rss are positive, rsslim is the maximum: yes
+stat: start_stack lies above our locals, start_brk is below the break: yes
+stat: arg_start < arg_end <= env_start < env_end: yes
+stat: startcode <= endcode: yes
+stat: starttime is in clock ticks since boot, not in the future: yes
+stat: utime + stime grow while we compute: yes
+maps, status and statm could be read: yes
+maps: every line is start-end, perms, offset, device, inode and an optional name: yes
+maps: sorted by address and not overlapping: yes
+maps: [heap] and [stack] are named: yes
+maps: the program is mapped from the file /proc/self/exe names: yes
+maps: an anonymous mapping has no name: yes
+maps: a file mapping that mprotect split in three keeps its file and offsets: yes
+maps: the sizes add up to VmSize: yes
+status: VmRSS <= VmSize and RssAnon + RssFile + RssShmem == VmRSS: yes
+statm: seven numbers, size in pages equals VmSize: yes
+statm: resident is close to VmRSS: yes
+status: the keys of proc(5) are all there, in order: yes
+status: Name, State and Pid are ours: yes
+status: Uid and Gid have four values: real, effective, saved, filesystem: yes
+status: Groups lists the supplementary groups getgroups returns: yes
+status: the signal sets are 16 hexadecimal digits: yes
+status: Cpus_allowed_list starts with CPU 0: yes
+status: FDSize is at least the number of open descriptors we have: yes
+status: SigCgt has the signal we gave a handler: yes
+status: SigIgn has the signal we ignore: yes
+status: SigBlk has the signals we block, including a real-time one: yes
+status: SigPnd has the signal aimed at the thread, ShdPnd the one aimed at the process: yes
+cmdline: the arguments, each ended by a NUL: yes
+environ: the environment, each entry ended by a NUL: yes
+comm: the name prctl set, and a newline: yes
+stat: a comm with a space and a parenthesis is still in parentheses: yes
+smaps: a Size and an Rss line for every mapping of maps: yes
+limits: a header and the sixteen limits, the open files and stack ones agree with getrlimit: yes
+limits: the stack limit agrees with getrlimit: yes
+mountinfo: id, parent, device, root, mount point, options, a separator, type, source, options; the root is mounted: yes
+mounts: device, mount point, type, options and two zeros on every line: yes
+/proc/self is a link to our pid: yes
+/proc/thread-self is a link to pid/task/tid: yes
+/proc/self/cwd is the working directory: yes
+/proc/self/root is /: yes
+/proc/self/exe is an absolute path to a file that exists: yes
+fd: a pipe reads as pipe:[inode]: yes
+fd: a file reads as the path it was opened by: yes
+fdinfo: pos, flags, mnt_id and ino, with the position after a read of 10 bytes: yes
+fd: the directory lists descriptors 0, 1, 2 and ours, and each is a link: yes
+status: Threads counts the new thread: yes
+task: the directory lists the main thread and the new one: yes
+task/TID/stat: the first field is the thread id, the process's pgrp is ours, the state is a sleeping one: yes
+task/TID/status: Tgid is the process, Pid is the thread: yes
+child: its stat says it sleeps, its parent is us and its pid is the directory's: yes
+child: a forked process still shows its parent's command line: yes
+child: a zombie shows state Z in stat and status, and an empty command line: yes
+child: after waitpid its directory is gone and its status was 7: yes
+numbers on the first line of /proc/stat: 10
+stat: the aggregate cpu line, then cpu0 and the keys intr, ctxt, btime, processes, procs_running: yes
+stat: btime is in the past and after the year 2000: yes
+stat: procs_running is at least 1 and processes at least our pid: yes
+uptime: two numbers with two decimals, the first is the time since boot: yes
+loadavg: three load averages, running/total and the last pid: yes
+meminfo: MemTotal, MemFree, MemAvailable, Buffers, Cached, SwapTotal, SwapFree, Shmem and Slab, in this order: yes
+meminfo: MemTotal is what sysinfo(2) says, MemFree and MemAvailable do not exceed it: yes
+meminfo: every line is a key, a colon, a number and perhaps kB: yes
+cpuinfo: one block per processor, as many as sysconf says are online: yes
+cpuinfo: vendor_id, cpu family, model name and a flags line with fpu and sse2: yes
+cpuinfo: nproc agrees with the number of processors we may run on: yes
+version: Linux version, then the release uname(2) reports: yes
+filesystems: nodev lines and plain lines, with proc in them: yes
+partitions: the header major minor #blocks name: yes
+sys/kernel/hostname: the host name and a newline: yes
+sys/kernel/ostype: Linux, as uname(2) says: yes
+sys/kernel/osrelease: what uname(2) says: yes
+sys/kernel/version: what uname(2) says: yes
+sys/kernel/pid_max: a number above our pid: yes
+sys/kernel/random/boot_id: a UUID that does not change during the boot: yes
+sys/vm/overcommit_memory: 0, 1 or 2: yes
+sys/vm/max_map_count: a number of at least 1000: yes
+sys/kernel/hostname: not writable by a program without the right to: yes
+net/dev: the two header lines of proc(5): yes
+net/tcp: the header of proc(5): yes
+net/route: the header of proc(5): yes
+init: /proc/1/stat is readable and is the process with pid 1: yes
+facts that did not hold: 0
+exit status: 0

@@ -27,11 +27,21 @@
 #define VMA_WC       0x800          /* map write-combining (framebuffer) */
 #define VMA_FILE     0x1000         /* filled from a file when it was mapped (a private copy): madvise(MADV_DONTNEED) must not zero it */
 
+/* The file a mapping was made from, for /proc/<pid>/maps (docs/COMPAT.md, "A Linux-shaped /proc"). One object per mmap or loaded segment, shared by the pieces it is split into and
+ * by the copies fork makes (refs), freed with the last of them. path is the path the file was opened by. */
+typedef struct VmaFile {
+    int  refs;
+    u64  dev, ino;
+    char path[];
+} VmaFile;
+
 typedef struct Vma {
     u64 start, end;
     u32 prot;                       /* PROT_* */
     u32 flags;                      /* VMA_* */
     struct Vma *next;
+    VmaFile *file;                  /* NULL: anonymous memory; else the file this mapping shows and the offset in it of `start` */
+    u64 file_off;
 } Vma;
 
 typedef struct AddrSpace {
@@ -89,7 +99,8 @@ typedef struct Process {
     char cmdline[128];
     char exe[128];                  /* absolute path of the running program (/proc/<pid>/exe) */
 
-    u8 abi;                         /* system call personality: ABI_NATIVE or ABI_LINUX (docs/COMPAT.md); fork copies it, execve keeps it unless exec_abi asks for the other */
+    u64 arg_start, arg_end, env_start, env_end, start_stack;   /* where execve put the arguments, the environment and the initial stack pointer (the strings are read back through the page tables: /proc/<pid>/cmdline, environ) */
+    u8 abi;                         /* system call personality: ABI_NATIVE or ABI_LINUX (docs/COMPAT.md); fork copies it, execve picks it from the file's markers (a file with none, or SYS_setabi's request: see exec.c) */
     u8 exec_abi;                    /* SYS_setabi: the personality of the next successful execve, plus one (0 = no request) */
     /* The Linux root (docs/COMPAT.md, kernel/linux/root.c): a Linux program started from a native one runs inside the tmpfs mounted on /linux, which is "/" for it */
     VNode *root;                    /* what "/" means to this process: NULL = the real root; else the root of the Linux tree (a reference; fork copies it, a native exec drops it) */
@@ -157,6 +168,8 @@ int      fd_close(Process *p, int fd);
 int      uvm_new(AddrSpace *as);
 Vma     *vma_find(AddrSpace *as, u64 addr);
 int      uvm_map(AddrSpace *as, u64 addr, u64 len, u32 prot, u32 flags);   /* demand-zero region */
+void     uvm_set_file(AddrSpace *as, u64 addr, u64 len, const char *path, bool canonical, u64 dev, u64 ino, u64 off);   /* the mapping just made at addr shows this file, `off` into it (maps); a path that is not canonical yet is made so */
+void     uvm_copy_file(Vma *to, const Vma *from);                          /* `to` shows the same file as `from`, at the matching offset when it starts later */
 int      uvm_populate(AddrSpace *as, u64 addr, u64 len);                   /* allocate and map pages now */
 int      uvm_unmap(AddrSpace *as, u64 addr, u64 len);
 int      uvm_protect(AddrSpace *as, u64 addr, u64 len, u32 prot);
@@ -259,5 +272,6 @@ extern u64 g_syscall_kstack;
 
 /* helpers */
 void path_normalize(const char *base, const char *path, char *out, size_t n);
+void path_canonical(VNode *root, const char *in, char *out, size_t n);   /* `in` (absolute) with every symbolic link along it replaced by its target, read in the directory root means by "/" (NULL: the caller's own); what a mapping and /proc/<pid>/exe show */
 
 #endif

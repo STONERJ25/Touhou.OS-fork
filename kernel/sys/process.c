@@ -182,6 +182,7 @@ int process_fork_ex(TrapFrame *tf, u64 settid_addr, u64 cleartid_addr) {
     strlcpy(c->cwd_path, par->cwd_path, sizeof c->cwd_path);
     strlcpy(c->cmdline, par->cmdline, sizeof c->cmdline);
     strlcpy(c->exe, par->exe, sizeof c->exe);
+    c->arg_start = par->arg_start, c->arg_end = par->arg_end, c->env_start = par->env_start, c->env_end = par->env_end, c->start_stack = par->start_stack;   /* the copy of memory has the same layout: /proc/<pid>/cmdline */
     c->nice = par->nice;
     c->cwd = par->cwd;
     if (c->cwd) vnode_get(c->cwd);

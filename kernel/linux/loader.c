@@ -34,6 +34,67 @@ static int read_interp_path(File *f, const ElfFile *e, char **out) {
     return 0;
 }
 
+/*
+ * Which personality does an executable file ask for (docs/COMPAT.md, "The personality is chosen by the file")? Written from elf(5) (the ELF header's e_ident[EI_OSABI], program
+ * headers, the note format: namesz, descsz, type, then the name and the descriptor each padded to a multiple of the note segment's alignment) and from the GNU ABI note
+ * specification published with the Linux Standard Base ("ABI note tag": owner "GNU", type 1, a descriptor of four words whose first is the operating system, 0 for Linux).
+ * Our own note (user/user.ld) has the owner "Gensokyo".
+ *
+ * A file is read here only as far as its program headers and its note segments; whatever is wrong with it is left for the real loader to report (a file this function
+ * cannot parse simply carries no marker).
+ */
+#define EI_OSABI         7
+#define ELFOSABI_GNU     3                       /* a.k.a. ELFOSABI_LINUX: what a static glibc program has (it uses IFUNC) */
+#define NT_GNU_ABI_TAG   1
+#define ELF_NOTE_OS_LINUX 0
+#define NT_GENSOKYO_ABI  1
+#define NOTE_SEGMENT_MAX 4096                    /* the notes of a real program are a few dozen bytes; a bigger segment is not looked at */
+#define NOTE_SEGMENTS_MAX 8
+
+static unsigned scan_note_segment(File *f, const Elf64_Phdr *ph) {
+    if (ph->p_filesz < 12 || ph->p_filesz > NOTE_SEGMENT_MAX) return 0;
+    u8 *buf = kmalloc(ph->p_filesz);
+    if (!buf) return 0;
+    unsigned mark = 0;
+    if (exec_read_exact(f, ph->p_offset, buf, ph->p_filesz) == 0) {
+        u64 pad = ph->p_align >= 8 ? 8 : 4;                                 /* a segment aligned to 8 (GNU properties) pads its names and descriptors to 8 */
+        u64 len = ph->p_filesz;
+        for (u64 at = 0; at + 12 <= len; ) {
+            u32 namesz, descsz, type;
+            memcpy(&namesz, buf + at, 4);
+            memcpy(&descsz, buf + at + 4, 4);
+            memcpy(&type, buf + at + 8, 4);
+            u64 name = at + 12, desc = name + ((u64)namesz + pad - 1) / pad * pad, next = desc + ((u64)descsz + pad - 1) / pad * pad;
+            if (namesz > len || descsz > len || desc > len || next < desc || desc + descsz > len) break;      /* a note that runs off the segment ends the list */
+            if (type == NT_GNU_ABI_TAG && namesz == 4 && !memcmp(buf + name, "GNU", 4) && descsz >= 4) {
+                u32 os;
+                memcpy(&os, buf + desc, 4);
+                if (os == ELF_NOTE_OS_LINUX) mark |= ELF_MARK_LINUX;
+            } else if (type == NT_GENSOKYO_ABI && namesz == 9 && !memcmp(buf + name, "Gensokyo", 9) && descsz >= 4) {
+                mark |= ELF_MARK_NATIVE;
+            }
+            at = next;
+        }
+    }
+    kfree(buf);
+    return mark;
+}
+
+unsigned linux_elf_mark(File *f) {
+    ElfFile e;
+    if (elf_read_headers(f, true, &e)) return 0;
+    unsigned mark = 0;
+    if (e.eh.e_ident[EI_OSABI] == ELFOSABI_GNU) mark |= ELF_MARK_LINUX;
+    int segments = 0;
+    for (int i = 0; i < e.eh.e_phnum; i++) {
+        const Elf64_Phdr *ph = &e.ph[i];
+        if (ph->p_type == PT_INTERP) mark |= ELF_MARK_LINUX;                /* native programs are static: whatever dynamic linker is named, the file is for the Linux loader */
+        else if (ph->p_type == PT_NOTE && segments++ < NOTE_SEGMENTS_MAX) mark |= scan_note_segment(f, ph);
+    }
+    elf_free_headers(&e);
+    return mark;
+}
+
 int linux_load_elf(File *f, AddrSpace *as, LinuxImage *img, u64 *start, VNode *root, VNode *cwd, const Cred *cred) {
     ElfFile e, ie;
     memset(&ie, 0, sizeof ie);
@@ -52,6 +113,11 @@ int linux_load_elf(File *f, AddrSpace *as, LinuxImage *img, u64 *start, VNode *r
     if (!rc && interp) {
         rc = vfs_open_root(root, interp, O_RDONLY, 0, cred, cwd, &ifile);        /* a missing interpreter is ENOENT, as execve(2) says */
         if (!rc && !S_ISREG(ifile->vn->mode)) rc = -EACCES;
+        if (!rc) {                                                      /* the interpreter's segments are named after it in /proc/<pid>/maps, as Linux names them (links resolved) */
+            char canon[256];
+            path_canonical(root, interp, canon, sizeof canon);
+            file_set_path(ifile, canon);
+        }
         if (!rc) rc = elf_read_headers(ifile, true, &ie);
         u64 ibias = 0;
         if (!rc && ie.eh.e_type == ET_DYN) {                            /* the interpreter goes into the mmap area, below whatever the libraries will get */

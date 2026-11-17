@@ -11,6 +11,7 @@
 #include "task.h"
 #include "cmdline.h"
 #include "process.h"
+#include "linux.h"
 
 typedef size_t (*GenFn)(char *buf, size_t cap);
 
@@ -277,6 +278,10 @@ static VNode *make_pid_dir(Mount *m, int pid) {
 
 static int proc_root_lookup(VNode *dir, const char *name, VNode **out) {
     if (!strcmp(name, ".") || !strcmp(name, "..")) { vnode_get(dir); *out = dir; return 0; }
+    if (linux_proc_view()) {                                    /* a Linux program sees /proc as proc(5) describes it (kernel/linux/procfs.c); what that view does not claim is ours */
+        int rc = linux_proc_lookup(dir, name, out);
+        if (rc != LINUX_PROC_NOT_MINE) return rc;
+    }
     for (unsigned i = 0; i < NSTATIC; i++) {
         if (strcmp(g_entries[i].name, name)) continue;
         VNode *v = vnode_alloc(&proc_file_ops, dir->mount, S_IFREG | (g_entries[i].wr ? 0644 : 0444));
@@ -324,7 +329,7 @@ static void pid_cb(Process *p, void *ctx) {
 }
 
 static int proc_root_readdir(VNode *dir, u64 cookie, DirEntry *out) {
-    (void)dir;
+    if (linux_proc_view()) return linux_proc_readdir(dir, cookie, out);
     unsigned nvis = root_visible_count();
     if (cookie < nvis) {
         u64 k = 0;

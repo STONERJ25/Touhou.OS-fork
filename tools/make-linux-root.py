@@ -34,7 +34,9 @@ PROGRAMS = ["bash", "dash", "ls", "cat", "echo", "env", "uname", "grep", "sed", 
             "rm", "cp", "mv", "stat", "date", "sleep",
             # a few more that scripts and the tests use
             "basename", "dirname", "tee", "readlink", "touch", "chmod", "rmdir", "test", "[", "seq", "expr", "pwd", "whoami", "hostname", "uniq", "tac", "od", "mktemp",
-            "realpath", "dd", "printenv"]
+            "realpath", "dd", "printenv",
+            # the programs that read /proc (docs/COMPAT.md, "A Linux-shaped /proc"): procps (libproc2 and, for the sake of `ps -o unit`, libsystemd with its libraries) and util-linux's lscpu
+            "ps", "free", "uptime", "pidof", "pgrep", "pkill", "top", "vmstat", "nproc", "lscpu", "kill"]
 # the C library and its run-time companions: always present, whether or not ldd names them (the C library loads the nss ones by itself, with dlopen)
 LIBRARIES = ["ld-linux-x86-64.so.2", "libc.so.6", "libm.so.6", "libdl.so.2", "libpthread.so.0", "librt.so.1", "libresolv.so.2", "libnss_files.so.2", "libnss_dns.so.2",
              "libutil.so.1", "libgcc_s.so.1"]
@@ -58,7 +60,10 @@ ETC = {
     "etc/resolv.conf": "nameserver 10.0.2.3\n",
 }
 # files copied from the machine the archive is made on: path -> source (read through symlinks, stored as plain files)
-COPIES = {"etc/os-release": "/etc/os-release", "usr/lib/os-release": "/etc/os-release"}
+COPIES = {"etc/os-release": "/etc/os-release", "usr/lib/os-release": "/etc/os-release",
+          # the terminal descriptions top (ncurses) looks for in /usr/share/terminfo
+          "usr/share/terminfo/d/dumb": "/usr/share/terminfo/d/dumb", "usr/share/terminfo/l/linux": "/usr/share/terminfo/l/linux",
+          "usr/share/terminfo/x/xterm": "/usr/share/terminfo/x/xterm", "usr/share/terminfo/v/vt100": "/usr/share/terminfo/v/vt100"}
 
 FIXED_TIME = 1767225600           # 2026-01-01: the archive does not depend on when it was made
 

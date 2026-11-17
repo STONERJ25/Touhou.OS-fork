@@ -9,7 +9,8 @@
  *     them; /tmp is shared with the native programs, which is what lets the two worlds hand each other files).
  *   - fork copies the root, a Linux program that execs another keeps it, a native program has none. A program that is started with setabi(ABI_LINUX | ABI_NOROOT) or while
  *     nothing is mounted on /linux runs in the real root, as the Linux programs of the first levels (static, kept at native paths) always did.
- *   - Entering the root moves the working directory to its top unless the directory is visible there under the same path (/tmp/x is; /HumanVillage/reimu is not).
+ *   - Entering the root moves the working directory to its top unless the directory is visible there under the same path (/tmp/x is; /HumanVillage/reimu is not); leaving it for
+ *     the real root (a Linux shell starting a native tool) follows the same rule the other way round.
  */
 #include "linux.h"
 #include "kernel.h"
@@ -49,8 +50,8 @@ void linux_root_adopt(Process *p, VNode *root) {
     if (root == old) return;
 
     VNode *top = root ? root : vfs_root();
-    if (root && cwd_visible_in(p, root)) return;        /* /tmp/x means the same directory on both sides */
     if (!root && !old) return;
+    if (cwd_visible_in(p, top)) return;                 /* /tmp/x means the same directory on both sides, whichever way the process goes (a Linux shell that starts a native tool in /tmp) */
     vnode_get(top);                                     /* otherwise the working directory is "/" of the new world */
     VNode *oldcwd = p->cwd;
     p->cwd = top;

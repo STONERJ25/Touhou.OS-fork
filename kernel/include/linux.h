@@ -43,6 +43,20 @@ typedef struct LinuxImage {
  * auxiliary vector needs and the program break is placed after the program. 0 or a negative errno. */
 int  linux_load_elf(File *f, AddrSpace *as, LinuxImage *img, u64 *start, VNode *root, VNode *cwd, const Cred *cred);
 
+/* kernel/linux/loader.c: what the ELF file f says about the personality it wants (docs/COMPAT.md, "The personality is chosen by the file"): a mask of ELF_MARK_LINUX (a PT_INTERP,
+ * ELFOSABI_GNU, a GNU ABI note for Linux) and ELF_MARK_NATIVE (our own "Gensokyo" note, written by user/user.ld); 0 = no marker, 3 = both (execve refuses such a file). */
+#define ELF_MARK_LINUX   1
+#define ELF_MARK_NATIVE  2
+unsigned linux_elf_mark(File *f);
+
+/* kernel/linux/procfs.c: the Linux personality's view of /proc (docs/COMPAT.md, "A Linux-shaped /proc"). kernel/fs/procfs.c asks it first, when it resolves a name in /proc or lists
+ * /proc, and only for a reader that runs under the Linux personality (linux_proc_view). linux_proc_lookup answers 0 with a vnode, an errno, or LINUX_PROC_NOT_MINE (the native
+ * /proc answers); linux_proc_readdir lists the Linux view of /proc itself (1: *out is filled, 0: the end). */
+#define LINUX_PROC_NOT_MINE 1
+bool linux_proc_view(void);
+int  linux_proc_lookup(VNode *dir, const char *name, VNode **out);
+int  linux_proc_readdir(VNode *dir, u64 cookie, DirEntry *out);
+
 /* kernel/linux/root.c: the Linux root (docs/COMPAT.md, "The Linux root"). */
 VNode *linux_root_get(void);                            /* a reference to the top of the tree mounted on /linux, or NULL when nothing is mounted there */
 VNode *linux_exec_root(Process *p);                     /* the root the program p execs will have (a reference, or NULL for the real root); see the rules in root.c */

@@ -400,6 +400,25 @@ def generate_applet_table(srcs):
     return out
 
 
+def check_native_note(path):
+    """Every program linked with user/user.ld carries the ELF note "Gensokyo" (type 1) in a PT_NOTE segment: it is how the kernel knows, at execve, that the file is a native
+    program and not a Linux one (kernel/linux/loader.c, docs/COMPAT.md). A link that lost it would silently start such a program under whatever personality its parent has."""
+    with open(path, "rb") as f:
+        head = f.read(64)
+        phoff, phentsize, phnum = struct.unpack_from("<Q", head, 32)[0], struct.unpack_from("<H", head, 54)[0], struct.unpack_from("<H", head, 56)[0]
+        f.seek(phoff)
+        phdrs = f.read(phentsize * phnum)
+        for i in range(phnum):
+            p_type, _flags, p_offset, _va, _pa, p_filesz = struct.unpack_from("<IIQQQQ", phdrs, i * phentsize)
+            if p_type == 4 and 12 < p_filesz <= 4096:                                     # PT_NOTE
+                f.seek(p_offset)
+                notes = f.read(p_filesz)
+                namesz, _descsz, ntype = struct.unpack_from("<III", notes, 0)
+                if ntype == 1 and notes[12:12 + namesz] == b"Gensokyo\0":
+                    return
+    sys.exit(f"build: {rel(path)} has no \"Gensokyo\" ELF note: user/user.ld must put it in every native program (docs/COMPAT.md, \"The personality is chosen by the file\")")
+
+
 def build_user(nproc):
     """Builds every program under user/bin (-> /bin), user/sbin (-> /sbin) and user/test (-> /usr/lib/kernel-tests, which is not
     in anybody's PATH: the kernel's fuzzers and stress programs live there). Returns [(install_dir, path)]."""
@@ -447,6 +466,8 @@ def build_user(nproc):
                 cmd.append(str(lib))
             ins = [j.obj for j in jobs] + crt0 + userlibs + ([lib] if lib else []) + [script]
         link(out, cmd, ins, f"link {kind}/{name}")
+        if kind != "linuxtest":
+            check_native_note(out)
         outputs.append((kind, out))
     return outputs
 

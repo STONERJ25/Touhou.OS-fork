@@ -32,6 +32,43 @@ static Vma *vma_new(u64 s, u64 e, u32 prot, u32 flags) {
     return v;
 }
 
+/* ---- the file a mapping was made from (VmaFile, process.h): only /proc/<pid>/maps reads it ---- */
+
+static void vmafile_put(VmaFile *f) {
+    if (f && __atomic_sub_fetch(&f->refs, 1, __ATOMIC_ACQ_REL) == 0) kfree(f);
+}
+
+static void vma_free(Vma *v) {
+    vmafile_put(v->file);
+    kfree(v);
+}
+
+void uvm_copy_file(Vma *to, const Vma *from) {
+    to->file = from->file;
+    if (!to->file) return;
+    __atomic_add_fetch(&to->file->refs, 1, __ATOMIC_RELAXED);
+    to->file_off = from->file_off + (to->start - from->start);
+}
+
+void uvm_set_file(AddrSpace *as, u64 addr, u64 len, const char *path, bool canonical, u64 dev, u64 ino, u64 off) {
+    Vma *v = vma_find(as, addr);
+    if (!v || v->start != addr || v->end != addr + len || !path || !path[0]) return;
+    char canon[256];
+    if (!canonical) {
+        path_canonical(NULL, path, canon, sizeof canon);
+        path = canon;
+    }
+    VmaFile *f = kmalloc(sizeof *f + strlen(path) + 1);
+    if (!f) return;                                         /* the mapping stays anonymous: a name is only for /proc */
+    f->refs = 1;
+    f->dev = dev;
+    f->ino = ino;
+    strcpy(f->path, path);
+    vmafile_put(v->file);
+    v->file = f;
+    v->file_off = off;
+}
+
 Vma *vma_find(AddrSpace *as, u64 addr) {
     for (Vma *v = as->vmas; v; v = v->next)
         if (addr >= v->start && addr < v->end) return v;
@@ -75,14 +112,16 @@ int uvm_unmap(AddrSpace *as, u64 addr, u64 len) {
             if (!(v->flags & VMA_IO)) pmm_free_page(p);
             else if (pmm_page_managed(p)) pmm_free_page(p);             /* drop the reference taken when it was mapped */
         }
-        if (lo <= v->start && hi >= v->end) { *pp = v->next; kfree(v); continue; }
+        if (lo <= v->start && hi >= v->end) { *pp = v->next; vma_free(v); continue; }
         if (lo <= v->start) {
+            v->file_off += hi - v->start;
             v->start = hi;
         } else if (hi >= v->end) {
             v->end = lo;
         } else {
             Vma *tail = vma_new(hi, v->end, v->prot, v->flags);
             if (!tail) return -ENOMEM;
+            uvm_copy_file(tail, v);
             tail->next = v->next;
             v->next = tail;
             v->end = lo;
@@ -99,6 +138,7 @@ static int split_at(AddrSpace *as, u64 addr) {
     if (!v || v->start == addr) return 0;
     Vma *tail = vma_new(addr, v->end, v->prot, v->flags);
     if (!tail) return -ENOMEM;
+    uvm_copy_file(tail, v);
     tail->next = v->next;
     v->next = tail;
     v->end = addr;
@@ -142,6 +182,7 @@ int uvm_clone(AddrSpace *dst, const AddrSpace *src) {
     for (Vma *v = src->vmas; v; v = v->next) {
         Vma *nv = vma_new(v->start, v->end, v->prot, v->flags);
         if (!nv) return -ENOMEM;
+        uvm_copy_file(nv, v);
         nv->next = dst->vmas;
         dst->vmas = nv;
         for (u64 va = v->start; va < v->end; va += PAGE_SIZE) {
@@ -173,7 +214,7 @@ void uvm_destroy(AddrSpace *as) {
                 paddr_t p = vmm_unmap(as->pml4, va);                     /* detach; shared RAM pages just lose one reference */
                 if (p && pmm_page_managed(p)) pmm_free_page(p);
             }
-        kfree(v);
+        vma_free(v);
         v = next;
     }
     as->vmas = NULL;

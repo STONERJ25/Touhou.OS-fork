@@ -1,5 +1,8 @@
 /* linux, native, linuxroot: running programs built for Linux (docs/COMPAT.md). The kernel answers such a program's system calls with the Linux personality, and gives it the
- * tree under /linux as its root when one is mounted there. */
+ * tree under /linux as its root when one is mounted there. Since 2026-11-17 execve picks the personality from the file by itself (a PT_INTERP, the GNU/Linux OS/ABI byte or a GNU
+ * ABI note say Linux; the "Gensokyo" note every program of this build carries says native), so a Linux program starts from the shell by its name and a native tool from a Linux
+ * shell by its path; `linux` and `native` stay as the explicit override for one exec: for a program that carries no marker (the freestanding ones of
+ * /ScarletDevilMansion/share/linux-tests) and for a path that has to be read in the other world. */
 #include "kappabox.h"
 #include <gensokyo.h>
 
@@ -18,7 +21,7 @@ APPLET(linux) {
     return errno == ENOENT ? 127 : 126;
 }
 
-/* native PROGRAM [ARGUMENT...]: the other way round, for a native program started from inside a Linux one (a Linux process keeps its personality across exec). */
+/* native PROGRAM [ARGUMENT...]: the other way round: PROGRAM is a native program, looked up in the real root (not in the Linux root) whoever runs this. */
 APPLET(native) {
     if (argc < 2) { kb_error("usage: native PROGRAM [ARGUMENT...]"); return 2; }
     if (gap_setabi(ABI_NATIVE) < 0) { kb_error("cannot select the native personality: %s", strerror(errno)); return 1; }

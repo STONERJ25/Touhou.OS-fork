@@ -148,7 +148,8 @@ static long sys_execve(TrapFrame *tf) {
 }
 
 /* setabi(abi): the next successful execve of this process starts its program under that system call personality (docs/COMPAT.md). The request is for one
- * execve only. Without it a program keeps the personality it already has: a Linux program that execs another one stays a Linux program. */
+ * execve only, and it wins over the markers in the file. Without it the file decides (exec.c, docs/COMPAT.md "The personality is chosen by the file"); a file with no marker
+ * keeps the personality the process already has: a Linux program that execs one of the freestanding test programs stays a Linux program. */
 static long sys_setabi(TrapFrame *tf) {
     u64 abi = A0(tf);
     bool noroot = (abi & ABI_NOROOT) != 0;                  /* a Linux program normally runs in the Linux root when there is one; ABI_NOROOT keeps it in the real root */
@@ -702,6 +703,7 @@ static long do_mmap(TrapFrame *tf) {
     }
     if (!S_ISREG(v->mode)) return -ENODEV;
     int rc = uvm_map(as, addr, len, prot | PROT_WRITE, VMA_FILE);   /* private copy: fill now, then drop write if not requested */
+    if (!rc) uvm_set_file(as, addr, len, f->path, false, v->mount ? v->mount->id : 0, v->ino, off);        /* what /proc/<pid>/maps names the mapping */
     if (!rc) rc = uvm_populate(as, addr, len);
     if (rc) return rc;
     u64 save = f->off;

@@ -4,6 +4,8 @@
 #include "cpu.h"
 #include "elf.h"
 #include "linux.h"
+#include "cmdline.h"
+#include "initcall.h"
 
 #define AT_NULL   0
 #define AT_PAGESZ 6
@@ -70,6 +72,8 @@ int elf_map(File *f, AddrSpace *as, const ElfFile *e, u64 bias, ElfMapped *m) {
             m->phdr = vaddr + (eh->e_phoff - ph->p_offset);                /* the segment that holds the program headers maps them too */
         rc = uvm_map(as, start, end - start, prot, VMA_FILE);
         if (rc) { rc = rc == -EEXIST ? -ENOEXEC : rc; break; }
+        uvm_set_file(as, start, end - start, f->path, true, f->vn->mount ? f->vn->mount->id : 0, f->vn->ino,
+                     ph->p_offset >= vaddr - start ? ph->p_offset - (vaddr - start) : 0);       /* what /proc/<pid>/maps names the segment */
         rc = uvm_populate(as, start, end - start);
         if (rc) break;
         u64 va = vaddr, remaining = filesz, foff = ph->p_offset;
@@ -186,20 +190,107 @@ static const char *base_name(const char *path) {
 
 #define EXEC_SCRIPT_DEPTH 3                     /* #! chains followed before giving up with ELOOP */
 
+/* The canonical form of an absolute path: every symbolic link along it replaced by what it says, "." and ".." folded, read in the tree that root is the top of (NULL: the calling
+ * process's own, whose credentials the lookups use). A part that cannot be looked up is kept as it is, and so is a link that cannot be read; at most 20 links are followed. A link
+ * is followed only when the path it leads to can be found from the top of the tree: the real /tmp is a link to /BambooForest, which a Linux program in the Linux root cannot see, so
+ * for it /tmp stays /tmp, the one name that works there. */
+void path_canonical(VNode *root, const char *in, char *out, size_t n) {
+    char *work = kmalloc(4 * PATH_MAX);
+    if (!work) { strlcpy(out, in, n); return; }
+    char *cur = work, *rest = work + PATH_MAX, *tmp = work + 2 * PATH_MAX, *trial = work + 3 * PATH_MAX;
+    const Cred *cred = current->proc ? &current->proc->cred : NULL;
+    cur[0] = 0;
+    strlcpy(rest, in, PATH_MAX);
+    size_t ro = 0;
+    int links = 0;
+    for (;;) {
+        while (rest[ro] == '/') ro++;
+        if (!rest[ro]) break;
+        size_t cl = 0;
+        while (rest[ro + cl] && rest[ro + cl] != '/') cl++;
+        if (cl > GNAME_MAX) { strlcat(cur, "/", PATH_MAX); strlcat(cur, rest + ro, PATH_MAX); break; }
+        char comp[GNAME_MAX + 1];
+        memcpy(comp, rest + ro, cl);
+        comp[cl] = 0;
+        ro += cl;
+        if (!strcmp(comp, ".")) continue;
+        if (!strcmp(comp, "..")) { char *sl = strrchr(cur, '/'); if (sl) *sl = 0; continue; }
+        size_t before = strlen(cur);
+        strlcat(cur, "/", PATH_MAX);
+        strlcat(cur, comp, PATH_MAX);
+        VNode *v;
+        if (vfs_lookup_root(root, cur, NULL, cred, LOOKUP_NOFOLLOW, &v)) {
+            strlcat(cur, rest + ro, PATH_MAX);                          /* not there (or not reachable): the rest stays as it was written */
+            break;
+        }
+        if (S_ISLNK(v->mode) && v->ops && v->ops->readlink && links < 20) {
+            ssize_t r = v->ops->readlink(v, tmp, PATH_MAX - 1);
+            vnode_put(v);
+            if (r > 0) {
+                tmp[r] = 0;
+                const char *remain = rest + ro;
+                while (*remain == '/') remain++;                        /* where the link would lead: an absolute target from the top, a relative one from its directory */
+                if (tmp[0] == '/') snprintf(trial, PATH_MAX, *remain ? "%s/%s" : "%s", tmp, remain);
+                else snprintf(trial, PATH_MAX, *remain ? "%.*s/%s/%s" : "%.*s/%s", (int)before, cur, tmp, remain);
+                VNode *there;
+                if (vfs_lookup_root(root, trial, NULL, cred, 0, &there) == 0) {
+                    vnode_put(there);
+                    links++;
+                    if (tmp[0] == '/') cur[0] = 0;                      /* an absolute target starts again at the top, a relative one at the directory the link was in */
+                    else cur[before] = 0;
+                    strlcat(tmp, "/", PATH_MAX);
+                    strlcat(tmp, rest + ro, PATH_MAX);
+                    strlcpy(rest, tmp, PATH_MAX);
+                    ro = 0;
+                }                                                       /* else: the link stays a name, as for a file that is not a link */
+            }
+            continue;
+        }
+        vnode_put(v);
+    }
+    strlcpy(out, cur[0] ? cur : "/", n);
+    kfree(work);
+}
+
+/* One word of the new user stack, read through the new page tables (the address space has not been switched to yet). */
+static bool stack_word(const AddrSpace *as, u64 va, u64 *out) {
+    paddr_t pa = vmm_translate(as->pml4, va, NULL);
+    if (!pa) return false;
+    memcpy(out, phys_to_virt(pa), sizeof *out);
+    return true;
+}
+
 /* The personality and the root one execve starts the program with. root is the directory "/" will mean to the new program (a reference the process takes over when the
- * exec succeeds; NULL for a program in the real root); lookup_root is the same directory for the lookups of this exec (the program, the interpreter, a script's interpreter). */
+ * exec succeeds; NULL for a program in the real root); lookup_root is the directory the lookups of this exec start in (the program, a script's interpreter).
+ * With a setabi request (the applets `linux` and `native`) abi and root are settled before anything is looked up. Without one (decide) they are settled by exec_file
+ * from the file it ends up loading: the markers in the ELF file choose the personality, a file with none keeps the process's own (docs/COMPAT.md, "The personality
+ * is chosen by the file"), and the lookups start in the world the calling process lives in. */
 typedef struct ExecWorld {
     u8     abi;
     VNode *root;
     VNode *lookup_root;
+    bool   decide;                              /* no setabi request: exec_file picks abi and root from the file */
+    const char *comm_path;                      /* the path execve was given (a script's name, not its interpreter's): a Linux program's comm is its last component */
 } ExecWorld;
 
-static int exec_file(Process *p, const char *path, char *const argv[], char *const envp[], TrapFrame *tf, int depth, const ExecWorld *w) {
+static bool g_exec_inherit;                     /* "exec.abi=inherit" on the kernel command line: the file's markers are ignored, a process always keeps its personality */
+
+static void exec_init(void) {
+    char v[16];
+    g_exec_inherit = cmdline_value("exec.abi", v, sizeof v) && !strcmp(v, "inherit");
+    if (g_exec_inherit) klog("Outside World", "exec.abi=inherit: the personality is no longer chosen by the file, a process keeps the one it has");
+}
+INITCALL(exec_init);
+
+static int exec_file(Process *p, const char *path, char *const argv[], char *const envp[], TrapFrame *tf, int depth, ExecWorld *w) {
     File *f;
     int rc = vfs_open_root(w->lookup_root, path, O_RDONLY, 0, &p->cred, p->cwd, &f);
     if (rc) return rc;
     if (!S_ISREG(f->vn->mode)) { file_put(f); return -EACCES; }
     if (vfs_access(f->vn, &p->cred, X_OK)) { file_put(f); return -EACCES; }
+    char abs[256];
+    path_normalize(p->cwd_path, path, abs, sizeof abs);
+    file_set_path(f, abs);                                              /* the segments we map from it are named after it in /proc/<pid>/maps */
 
     char head[160];
     memset(head, 0, sizeof head);
@@ -231,6 +322,19 @@ static int exec_file(Process *p, const char *path, char *const argv[], char *con
         return rc;
     }
 
+    if (w->decide) {                                                    /* the file picks the personality: markers in it say Linux or native, none keeps the process's own */
+        unsigned mark = g_exec_inherit ? 0 : linux_elf_mark(f);
+        if (mark == (ELF_MARK_LINUX | ELF_MARK_NATIVE)) { file_put(f); return -ENOEXEC; }      /* it claims to be both: no personality can run it */
+        if (mark) w->abi = mark == ELF_MARK_LINUX ? ABI_LINUX : ABI_NATIVE;
+        w->root = w->abi == ABI_LINUX ? linux_exec_root(p) : NULL;     /* a Linux process keeps its root; a native one enters the Linux root, if there is one */
+        w->decide = false;
+    }
+    if (w->abi == ABI_LINUX) {                                          /* Linux names a mapped file by its canonical path (links resolved): /usr/lib/... where the program said /lib/... */
+        char canon[256];
+        path_canonical(w->lookup_root, abs, canon, sizeof canon);
+        file_set_path(f, canon);
+    }
+
     AddrSpace nas;
     rc = uvm_new(&nas);
     if (rc) { file_put(f); return rc; }
@@ -241,7 +345,7 @@ static int exec_file(Process *p, const char *path, char *const argv[], char *con
     LinuxImage img = { .secure = (fmode & (S_ISUID | S_ISGID)) != 0,
                        .euid = (fmode & S_ISUID) ? fuid : p->cred.uid, .egid = (fmode & S_ISGID) ? fgid : p->cred.gid };
     if (abi == ABI_LINUX) {                                             /* position-independent programs and interpreters too (kernel/linux/loader.c) */
-        rc = linux_load_elf(f, &nas, &img, &entry, w->lookup_root, p->cwd, &p->cred);
+        rc = linux_load_elf(f, &nas, &img, &entry, w->root ? w->root : vfs_root(), p->cwd, &p->cred);       /* the interpreter is looked up in the root the program will run in */
         if (!rc) rc = linux_build_stack(&nas, &img, argv, envp, path, &sp);
     } else {
         rc = load_elf(f, &nas, &entry, &img);
@@ -249,6 +353,19 @@ static int exec_file(Process *p, const char *path, char *const argv[], char *con
     }
     file_put(f);
     if (rc) { uvm_destroy(&nas); return rc; }
+
+    /* Where the argument strings and the environment strings are on the new stack (both loaders put them there, the arguments below the environment): /proc/<pid>/cmdline
+     * and environ read them back from the process's memory, as Linux's do. They are found through the pointer tables the loader has just written. */
+    u64 a_start = 0, a_end = 0, e_start = 0, e_end = 0, word;
+    int ac = 0, ec = 0;
+    while (argv && argv[ac]) ac++;
+    while (envp && envp[ec]) ec++;
+    u64 argv_at = sp + 8, envp_at = argv_at + (u64)(ac + 1) * 8;
+    if (ac && stack_word(&nas, argv_at, &word)) a_start = word;
+    if (ac && stack_word(&nas, argv_at + (u64)(ac - 1) * 8, &word)) a_end = word + strlen(argv[ac - 1]) + 1;
+    if (ec && stack_word(&nas, envp_at, &word)) e_start = word;
+    if (ec && stack_word(&nas, envp_at + (u64)(ec - 1) * 8, &word)) e_end = word + strlen(envp[ec - 1]) + 1;
+    if (!ec) e_start = e_end = a_end;
 
     /* The other threads of the process die first, and we wait until each has left the kernel: a thread asleep in read() holds
      * references and buffers that its syscall frees on the way out, and none may still touch the old address space. */
@@ -271,9 +388,19 @@ static int exec_file(Process *p, const char *path, char *const argv[], char *con
     current->utid = p->pid;                                           /* the survivor of a threaded process becomes its first thread */
     current->clear_tid = 0;
     task_set_fs_base(current, 0);                                     /* the new program sets up its own TLS */
-    strlcpy(p->name, base_name(argv && argv[0] ? argv[0] : path), sizeof p->name);
+    strlcpy(p->name, base_name(abi == ABI_LINUX ? w->comm_path : argv && argv[0] ? argv[0] : path), sizeof p->name);      /* a Linux program's comm is the last component of the path it was started by, as ps(1) shows it */
     path_normalize(p->cwd_path, path, p->exe, sizeof p->exe);              /* /proc/<pid>/exe */
     linux_root_adopt(p, w->root);                                     /* "/" is the Linux tree's top for a Linux program started from a native one, the real root for a native program */
+    if (abi == ABI_LINUX) {                                           /* a Linux program's /proc/<pid>/exe is the canonical path, as on Linux (the dynamic linker takes $ORIGIN from it) */
+        char exe[256];
+        path_canonical(NULL, p->exe, exe, sizeof exe);
+        strlcpy(p->exe, exe, sizeof p->exe);
+    }
+    p->arg_start = a_start;
+    p->arg_end = a_end;
+    p->env_start = e_start;
+    p->env_end = e_end;
+    p->start_stack = sp;
     p->cmdline[0] = 0;
     size_t cl = 0;
     for (int i = 0; argv && argv[i] && cl < sizeof p->cmdline - 1; i++) {      /* /proc shows the first 127 bytes; stop reading once they are there */
@@ -297,10 +424,16 @@ static int exec_file(Process *p, const char *path, char *const argv[], char *con
 }
 
 int process_exec(Process *p, const char *path, char *const argv[], char *const envp[], TrapFrame *tf) {
-    ExecWorld w;
-    w.abi = p->exec_abi ? (u8)(p->exec_abi - 1) : p->abi;               /* SYS_setabi asked for a personality, or the process keeps its own */
-    w.root = w.abi == ABI_LINUX ? linux_exec_root(p) : NULL;
-    w.lookup_root = w.root ? w.root : vfs_root();                       /* explicit: a Linux program that runs a native one looks the native program up in the real root */
+    ExecWorld w = { .comm_path = path };
+    if (p->exec_abi) {                                                  /* SYS_setabi asked for a personality, for this exec only */
+        w.abi = (u8)(p->exec_abi - 1);
+        w.root = w.abi == ABI_LINUX ? linux_exec_root(p) : NULL;
+        w.lookup_root = w.root ? w.root : vfs_root();                   /* explicit: a Linux program that runs a native one looks the native program up in the real root */
+    } else {
+        w.abi = p->abi;                                                 /* until the file says otherwise (exec_file) */
+        w.decide = true;
+        w.lookup_root = p->abi == ABI_LINUX && p->root ? p->root : vfs_root();      /* the lookups are made in the world of the caller: a Linux shell finds /tmp/tool in its root */
+    }
     int rc = exec_file(p, path, argv, envp, tf, 0, &w);
     if (rc && w.root) vnode_put(w.root);                                /* the process did not take the reference over */
     return rc;

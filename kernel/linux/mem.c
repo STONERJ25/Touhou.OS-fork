@@ -111,6 +111,13 @@ long lnx_mremap(TrapFrame *tf) {
         } else {
             u64 na = uvm_find_free(as, nsz);
             rc = na ? uvm_map(as, na, nsz, prot, vflags) : -ENOMEM;
+            if (!rc && v->file) {                           /* the mapping that moves still shows its file, from the offset it had at its old place */
+                Vma *moved = vma_find(as, na);
+                if (moved) {
+                    uvm_copy_file(moved, v);
+                    moved->file_off = v->file_off + (old - v->start);
+                }
+            }
             if (!rc) {
                 for (u64 o = 0; o < osz; o += PAGE_SIZE) {  /* the pages move with their contents: no copy */
                     paddr_t p = vmm_translate(as->pml4, old + o, NULL);
