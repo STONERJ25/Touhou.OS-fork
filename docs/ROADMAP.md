@@ -48,6 +48,8 @@ since 2026-11-03; see the project notes.)
 - [x] vi hardening (about 950 scripted checks), gapsh job control with `jobs`/`fg`/`bg` and Ctrl-Z
 - [ ] the remaining small tools (not started)
 - [x] C compiler `mcc` that runs on the OS and compiles itself (merged on `agent/selfhost`; see [SELFHOST.md](SELFHOST.md))
+- [x] read-only ext2/ext3/ext4 (`mount -t ext4 -o ro`), so a Linux disk or stick can be read and the Linux root can live on a disk instead of in RAM (docs/EXT4.md; checked in QEMU on generated images and under AddressSanitizer on the host, not yet on a real Linux disk)
+- [ ] ext4, next: a real Linux stick on the Dell, a hash-tree lookup for huge directories, journal replay in memory (read only), extended attributes and ACLs; writing stays out of scope
 - [x] consistency check of a dirty FAT volume at mount, an `fsck` tool (not yet run on real hardware) and a power-cut-safe FAT write order (docs/STORAGE.md)
 - [x] kernel hardening: syscall fuzzer fixes and larger `exec` limits (docs/HARDENING.md)
 - [ ] kernel hardening, next: SMAP, an OOM killer, a lockup detector

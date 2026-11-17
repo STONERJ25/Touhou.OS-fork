@@ -82,6 +82,21 @@ done:
 APPLET(lsblk) {
     FILE *f = fopen("/proc/partitions", "r");
     if (!f) { kb_error("/proc/partitions: %s", strerror(errno)); return 1; }
+    /* /proc/blkfs names the filesystem that the kernel found on a device ("vdb1 ext4 rootfs": the label is the rest of the line); it is a file of its own so that the columns of
+     * /proc/partitions, which several programs parse, stay as they were */
+    struct { char name[32], fs[8], label[24]; } fsr[32];
+    int nfs = 0;
+    FILE *bf = fopen("/proc/blkfs", "r");
+    if (bf) {
+        char bl[128];
+        while (nfs < 32 && fgets(bl, sizeof bl, bf)) {
+            char lab[64] = "";
+            if (sscanf(bl, "%31s %7s %63[^\n]", fsr[nfs].name, fsr[nfs].fs, lab) < 2) continue;
+            strlcpy(fsr[nfs].label, strcmp(lab, "-") ? lab : "", sizeof fsr[nfs].label);
+            nfs++;
+        }
+        fclose(bf);
+    }
     char line[256];
     int any = 0;
     while (fgets(line, sizeof line, f)) {
@@ -90,10 +105,12 @@ APPLET(lsblk) {
         unsigned ss;
         int ro;
         if (sscanf(line, "%31s %llu %u %d %31s %llu %47s %23s %63[^\n]", name, &size, &ss, &ro, parent, &start, label, driver, model) < 8) continue;
-        if (!any) { printf("%-12s %9s %-3s %-8s %-16s %-10s %s\n", "NAME", "SIZE", "RO", "TYPE", "LABEL", "DRIVER", "MODEL"); any = 1; }
+        if (!any) { printf("%-12s %9s %-3s %-8s %-6s %-16s %-10s %s\n", "NAME", "SIZE", "RO", "TYPE", "FSTYPE", "LABEL", "DRIVER", "MODEL"); any = 1; }
         char sz[16];
         kb_format_size(size, sz, sizeof sz);
-        printf("%-12s %9s %-3d %-8s %-16s %-10s %s\n", name, sz, ro, strcmp(parent, "-") ? "part" : "disk", strcmp(label, "-") ? label : "", driver,
+        const char *fst = "", *flabel = "";
+        for (int i = 0; i < nfs; i++) if (!strcmp(fsr[i].name, name)) { fst = fsr[i].fs; flabel = fsr[i].label; }
+        printf("%-12s %9s %-3d %-8s %-6s %-16s %-10s %s\n", name, sz, ro, strcmp(parent, "-") ? "part" : "disk", fst, strcmp(label, "-") ? label : flabel, driver,
                strcmp(model, "-") ? model : "");
     }
     fclose(f);

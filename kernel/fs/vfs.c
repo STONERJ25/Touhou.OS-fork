@@ -11,7 +11,7 @@ const Cred g_root_cred = { 0, 0 };
 
 static VNode *g_root;
 static Mutex g_ns;                      /* serialises namespace operations */
-static const FsType *g_fstypes[8];
+static const FsType *g_fstypes[16];                     /* tmpfs, devfs, procfs, fat32, vfat, fat16, ntfs, ext2, ext3, ext4 and room for more */
 static int g_nfstypes;
 static Mount *g_mounts[32];
 static int g_nmounts;

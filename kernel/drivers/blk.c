@@ -3,6 +3,8 @@
 #include "kernel.h"
 #include "cpu.h"
 #include "mm.h"
+#include "ext4.h"
+#include "initcall.h"
 
 const u8 GPT_GUID_EFI_SYSTEM[16]   = { 0x28, 0x73, 0x2a, 0xc1, 0x1f, 0xf8, 0xd2, 0x11, 0xba, 0x4b, 0x00, 0xa0, 0xc9, 0x3e, 0xc9, 0x3b };
 const u8 GPT_GUID_MS_BASIC_DATA[16] = { 0xa2, 0xa0, 0xd0, 0xeb, 0xe5, 0xb9, 0x33, 0x44, 0x87, 0xc0, 0x68, 0xb6, 0xb7, 0x26, 0x99, 0xc7 };
@@ -151,6 +153,39 @@ static void make_node(BlockDev *d) {
     }
 }
 
+/* ---------------------------------------------------------------- what a partition holds (for lsblk) */
+
+/* The partitions that can hold a Linux filesystem: MBR type 0x83, and the GPT types of Linux data, the x86-64 root, /home, /srv and /var, and "basic data" (what some tools
+ * put on a partition that they format as ext4 anyway). The EFI system partition, the Windows reserved and recovery partitions and everything unknown are not read.
+ * The kernel only ever looks at the two sectors that hold the superblock (byte 1024), and only to name the filesystem. */
+static bool may_hold_linux_fs(const BlockDev *p) {
+    static const u8 types[5][16] = {
+        { 0xaf, 0x3d, 0xc6, 0x0f, 0x83, 0x84, 0x72, 0x47, 0x8e, 0x79, 0x3d, 0x69, 0xd8, 0x47, 0x7d, 0xe4 },     /* 0FC63DAF-8483-4772-8E79-3D69D8477DE4 Linux filesystem data */
+        { 0xe3, 0xbc, 0x68, 0x4f, 0xcd, 0xe8, 0xb1, 0x4d, 0x96, 0xe7, 0xfb, 0xca, 0xf9, 0x84, 0xb7, 0x09 },     /* 4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709 root, x86-64 */
+        { 0xe1, 0xc7, 0x3a, 0x93, 0xb4, 0x2e, 0x13, 0x4f, 0xb8, 0x44, 0x0e, 0x14, 0xe2, 0xae, 0xf9, 0x15 },     /* 933AC7E1-2EB4-4F13-B844-0E14E2AEF915 /home */
+        { 0x25, 0x84, 0x8f, 0x3b, 0xe0, 0x20, 0x3b, 0x4f, 0x90, 0x7f, 0x1a, 0x25, 0xa7, 0x6f, 0x98, 0xe8 },     /* 3B8F8425-20E0-4F3B-907F-1A25A76F98E8 /srv */
+        { 0x16, 0xb0, 0x21, 0x4d, 0x34, 0xb5, 0xc2, 0x45, 0xa9, 0xfb, 0x5c, 0x16, 0xe0, 0x91, 0xfd, 0x2d },     /* 4D21B016-B534-45C2-A9FB-5C16E091FD2D /var */
+    };
+    if (p->part_type_mbr == 0x83) return true;
+    if (!memcmp(p->part_type_guid, GPT_GUID_MS_BASIC_DATA, 16)) return true;
+    for (unsigned i = 0; i < ARRAY_SIZE(types); i++) if (!memcmp(p->part_type_guid, types[i], 16)) return true;
+    return false;
+}
+
+static void probe_fs(BlockDev *d) {
+    u32 ss = d->sector_size;
+    if (ss < 512 || ss > 4096 || d->sectors < 16) return;
+    u64 first = 1024 / ss;
+    u32 count = (u32)((2048 + ss - 1) / ss - first);
+    u8 *buf = kmalloc((size_t)count * ss);
+    if (!buf) return;
+    if (blk_read(d, first, count, buf) == 0 &&
+        ext4_probe_super(buf + (1024 - first * ss), 1024, d->fstype, sizeof d->fstype, d->fslabel, sizeof d->fslabel)) {
+        klog("Marisa", "blk: %s holds %s%s%s%s", d->name, d->fstype, d->fslabel[0] ? " (label '" : "", d->fslabel, d->fslabel[0] ? "')" : "");
+    }
+    kfree(buf);
+}
+
 /* ---------------------------------------------------------------- partitions */
 
 typedef struct PACKED { u8 sig[8]; u32 rev, hdr_size, hdr_crc, reserved; u64 my_lba, alt_lba, first_usable, last_usable; u8 guid[16];
@@ -183,6 +218,7 @@ static BlockDev *add_partition(BlockDev *disk, int index, u64 first, u64 count, 
     make_node(p);
     klog("Marisa", "blk: %s  %lu MiB  start %lu%s%s", p->name, (unsigned long)(count * p->sector_size >> 20), (unsigned long)first,
          label[0] ? "  label " : "", label);
+    if (may_hold_linux_fs(p)) probe_fs(p);
     return p;
 }
 
@@ -245,6 +281,11 @@ static int register_locked(BlockDev *d) {
     klog("Marisa", "blk: %s  %s  %lu MiB, %u-byte sectors%s%s%s", d->name, d->driver, (unsigned long)(d->sectors * d->sector_size >> 20), d->sector_size,
          d->readonly ? ", read-only" : "", d->model[0] ? "  " : "", d->model);
     if (!d->parent && !scan_gpt(d)) scan_mbr(d);
+    if (!d->parent) {                                           /* a disk without a partition table may be one filesystem from end to end */
+        bool any = false;
+        for (BlockDev *x = g_head; x; x = x->next) if (x->parent == d) { any = true; break; }
+        if (!any) probe_fs(d);
+    }
     return 0;
 }
 
@@ -321,3 +362,16 @@ size_t blk_describe(char *buf, size_t cap) {
                               d->driver ? d->driver : "-", d->model[0] ? d->model : "-");
     return n;
 }
+
+/* /proc/blkfs: "name fstype label" (the label is the rest of the line, "-" when there is none) for each device that holds an ext2, ext3 or ext4 filesystem. lsblk joins it with
+ * /proc/partitions, whose columns other tools parse and which therefore did not change. */
+size_t blk_describe_fs(char *buf, size_t cap) {
+    size_t n = 0;
+    for (BlockDev *d = g_head; d && n + 100 < cap; d = d->next)
+        if (d->fstype[0]) n += (size_t)snprintf(buf + n, cap - n, "%s %s %s\n", d->name, d->fstype, d->fslabel[0] ? d->fslabel : "-");
+    return n;
+}
+
+static size_t gen_blkfs(char *buf, size_t cap) { return blk_describe_fs(buf, cap); }
+static void blkfs_init(void) { procfs_register("blkfs", gen_blkfs); }
+INITCALL(blkfs_init);

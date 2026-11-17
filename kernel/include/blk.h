@@ -37,6 +37,8 @@ struct BlockDev {
     u8   part_type_mbr;             /* MBR partition type, or 0xEE-less GPT marker 0 */
     u8   part_type_guid[16];        /* GPT partition type GUID (mixed-endian, as stored on disk) */
     char label[40];                 /* GPT partition name; filesystems may set the volume label here too */
+    char fstype[8];                 /* "ext2", "ext3" or "ext4" when a Linux partition (or a disk without a partition table) holds one: named by the block layer for lsblk, docs/EXT4.md */
+    char fslabel[17];               /* that filesystem's volume label */
     int  dev_index;
     BlockDev *next;
 };
@@ -59,6 +61,7 @@ int  blk_write(BlockDev *d, u64 lba, u32 count, const void *buf);
 int  blk_flush(BlockDev *d);
 int  blk_write_as(BlockDev *d, const void *holder, u64 lba, u32 count, const void *buf);   /* a filesystem that may hold the ESP grant */
 size_t blk_describe(char *buf, size_t cap);                      /* text for /proc/partitions */
+size_t blk_describe_fs(char *buf, size_t cap);                   /* text for /proc/blkfs: "name fstype label" for each device that holds a recognised filesystem */
 
 /* Mount policy (kernel/fs/mountpolicy.c). storage_mount_boot_volumes() runs once at boot for the disks that exist by then. A driver whose
  * disks appear later (USB sticks) calls storage_disk_added() for each one: the policy then looks at it on a worker thread of its own

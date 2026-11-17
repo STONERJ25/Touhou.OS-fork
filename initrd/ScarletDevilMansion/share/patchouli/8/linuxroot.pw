@@ -14,7 +14,7 @@ The tree is a tmpfs: it lives in RAM and uses as much of it as the files in the 
 
 # OPTIONS
 @ *-d*
-    Empty `/linux` and unmount it, which gives the memory back. A Linux program that still runs in the tree keeps the (empty) mount; the command says so.
+    Empty `/linux` and unmount it, which gives the memory back. A Linux program that still runs in the tree keeps the (empty) mount; the command says so. A root that is a volume (see below) has nothing to empty: the command refuses and says so; `umount /linux` detaches it.
 
 # EXIT STATUS
 0 on success, and, without an argument, when a Linux root is mounted. 1 if the command failed (an archive that cannot be read or did not unpack cleanly, `/linux` already holding a root, no root to remove, not being root) and, without an argument, when no root is mounted. 2 for a wrong number of arguments.
@@ -26,6 +26,13 @@ The tree is a tmpfs: it lives in RAM and uses as much of it as the files in the 
     linuxroot -d
 
 # NOTES
+A root that is too big for RAM (Python's library, a compiler and its headers are a few hundred MB) can be a volume instead of an archive: any ext2, ext3 or ext4 volume that holds the tree (make one with `mke2fs -d DIRECTORY IMAGE SIZE` from the unpacked archive, or install a distribution on a disk) mounted read only on `/linux` is the Linux root, `linuxroot` says so, and programs find their files there with their real owners, modes and symbolic links:
+
+    mkdir -p /linux
+    mount -t ext4 -o ro /dev/sdb1 /linux
+
+The tree stays where it is on the disk, nothing is copied into RAM, and the volume is never written; see mount(8) for the driver.
+
 `/proc`, `/dev`, `/tmp`, `/sys` and `/run` are not taken from the tree: a Linux program sees the machine's own, so that it can talk to the machine and hand files to native programs through `/tmp`. The native directories (`/HumanVillage` and the others) do not exist for it at all.
 
 # SEE ALSO

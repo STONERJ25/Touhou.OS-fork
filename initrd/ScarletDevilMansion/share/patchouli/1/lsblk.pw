@@ -4,7 +4,9 @@
 *lsblk*
 
 # DESCRIPTION
-`lsblk` reads `/proc/partitions` and prints a table of the block devices the kernel found: the name (as in `/dev`), the size, whether it is read-only (RO), whether it is a whole disk or a partition (TYPE), its filesystem label, the driver that serves it and the model. If there are no devices it says so.
+`lsblk` reads `/proc/partitions` and `/proc/blkfs` and prints a table of the block devices the kernel found: the name (as in `/dev`), the size, whether it is read-only (RO), whether it is a whole disk or a partition (TYPE), the Linux filesystem it holds (FSTYPE: `ext2`, `ext3` or `ext4`, empty for anything else), its label (the name the partition table gives it, or else the label of the filesystem), the driver that serves it and the model. If there are no devices it says so.
+
+The kernel names the filesystem of a partition when the partition is typed as Linux data (MBR type 83; GPT: Linux filesystem, root, home, server data, variable data, or basic data) and of a disk that has no partition table; it reads two sectors for that and never looks into an EFI system partition. FAT and NTFS volumes are not named in the FSTYPE column.
 
 SATA disks are `sda`, `sdb` ...; USB sticks (driver `usb-storage`) take the next free letters, so the stick you booted from is `sda` when the machine has no SATA disk and `sdb` otherwise; NVMe drives are `nvme0n1`; partitions add a number (`sdb2`, `nvme0n1p2`). A stick whose write-protect switch is on, or a disk started with `blk.ro` on the kernel command line, shows `1` under RO. A stick that is pulled out disappears from the list.
 

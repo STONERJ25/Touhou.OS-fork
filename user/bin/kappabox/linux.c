@@ -5,6 +5,7 @@
  * /ScarletDevilMansion/share/linux-tests) and for a path that has to be read in the other world. */
 #include "kappabox.h"
 #include <gensokyo.h>
+#include <sys/statfs.h>
 
 #define LINUX_ROOT "/linux"
 
@@ -109,6 +110,11 @@ APPLET(linuxroot) {
 
     if (!strcmp(argv[1], "-d")) {
         if (!root_mounted()) { kb_error("nothing is mounted on " LINUX_ROOT); return 1; }
+        struct statfs sf;
+        if (statfs(LINUX_ROOT, &sf) == 0 && strcmp(sf.f_fstypename, "tmpfs")) {         /* a volume (ext4 on a disk, docs/EXT4.md) is no unpacked archive: nothing to empty, and it is read only */
+            kb_error(LINUX_ROOT " is a %s volume, not an unpacked archive: there is nothing to empty (umount " LINUX_ROOT " detaches it)", sf.f_fstypename);
+            return 1;
+        }
         DIR *d = opendir(LINUX_ROOT);
         if (!d) { kb_error(LINUX_ROOT ": %s", strerror(errno)); return 1; }
         char **names = NULL;

@@ -7,6 +7,8 @@
 # DESCRIPTION
 Without arguments `mount` lists the mounted filesystems as `SOURCE on TARGET type TYPE`, from `/proc/mounts`. With a source and a target it asks the kernel to mount _SOURCE_ (a device such as `/dev/sdb1`, the first partition of a USB stick, or `/dev/vda2`) on the directory _TARGET_. Only root may mount. The type is `fat32` for a `/dev/...` source unless given with `-t` (`fat32`, `vfat` and `fat16` are the same driver; `tmpfs` needs no device).
 
+`ext2`, `ext3` and `ext4` are one driver under three names: it reads the volumes of Linux (disks, partitions and sticks formatted by mke2fs) and never writes. `mount -t ext4 -o ro /dev/sdb1 /mnt` mounts one; `rw` is refused with "Read-only file system". The owners and permissions are the real ones of each file (root can read everything, others only what the modes allow); a volume that was not shut down cleanly is mounted as it is on disk, without replaying its journal, and the kernel log (see dmesg(1)) says so. The ext4 volume of a Linux system can be the Linux root: `mkdir -p /linux; mount -t ext4 -o ro /dev/sdb1 /linux`, see linux(1).
+
 The Human Village is mounted by the kernel itself: the one volume labelled HUMANVILLAGE, on an internal disk or on a USB stick, appears on `/HumanVillage` at boot or when the stick is plugged in. Nothing else is ever mounted by itself; a second stick is mounted by hand with this command.
 
 # OPTIONS
@@ -17,6 +19,8 @@ The Human Village is mounted by the kernel itself: the one volume labelled HUMAN
 @ *-r*
     Read-only.
 
+For `ext2`, `ext3` and `ext4`: `ro` (always read only), `nosuid` (the set-user-id and set-group-id bits of every file read as 0: for a stick that is not yours), `noload` and `norecovery` (the journal is never replayed anyway), and the words that a Linux `fstab` carries and that mean nothing to a reader (`defaults`, `noatime`, `relatime`, `nodev`, `noexec`, `errors=...`, `data=...`, `barrier=...`, `discard`, `user_xattr`, `acl`, `commit=...`, `lazytime` and a few more) are accepted and ignored. There is no `uid=` or `umask=`: the owners are on the disk. Any other option fails the mount.
+
 FAT stores the time of a file as the local time of the machine that wrote it, without saying which. `tzoffset=MINUTES` says how many minutes east of UTC that clock is (`-300` for New York in winter, `540` for Tokyo). Unless the option is given, `mount` passes the current offset of its own time zone (see timezone(5)); the kernel applies it when it writes and reads times, so a file saved here at 12:04 shows 12:04 on the computer that reads the stick next.
 
 # EXAMPLES
@@ -25,9 +29,11 @@ FAT stores the time of a file as the local time of the machine that wrote it, wi
     mount /dev/sdb1 /mnt
     mount -o ro /dev/sdb1 /mnt
     mount -o tzoffset=540 /dev/sdb1 /mnt
+    mount -t ext4 -o ro /dev/sdb1 /mnt
+    mount -t ext4 -o ro,nosuid /dev/nvme0n1p2 /mnt
 
 # EXIT STATUS
 0, or 1 if the mount failed (the message includes the kernel's reason).
 
 # SEE ALSO
-umount(8), fsck(8), lsblk(1), lsusb(1), dmesg(1), timezone(5)
+umount(8), fsck(8), lsblk(1), lsusb(1), dmesg(1), timezone(5), linux(1), linuxroot(8)
