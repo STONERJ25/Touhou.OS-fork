@@ -11,9 +11,10 @@ struct sockaddr {
     char sa_data[108];
 };
 
-struct sockaddr_storage {
+struct sockaddr_storage {                       /* 128 bytes, aligned for any of the address structures (sockaddr_in6 has 32-bit fields) */
     sa_family_t ss_family;
-    char __pad[126];
+    char __pad[118];
+    unsigned long __ss_align;
 };
 
 #define SOMAXCONN 128

@@ -78,6 +78,26 @@ static u32 tag_color(const char *tag) {
     return colors[h % ARRAY_SIZE(colors)];
 }
 
+/* Like klog(), but only into the in-memory log (dmesg, /dev/kmsg, the log file on the stick), not onto the serial line and the screen: for messages that are worth reading afterwards
+ * and come at times nobody chooses (the IPv6 addresses of a card becoming ready a few seconds after the boot), so that they do not break into what a program is printing on the console. */
+void klog_quiet(const char *tag, const char *fmt, ...) {
+    char buf[1024];
+    char head[48];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+    if (n < 0) return;
+    size_t len = (size_t)n < sizeof buf - 1 ? (size_t)n : sizeof buf - 2;
+    buf[len++] = '\n';
+    int hn = snprintf(head, sizeof head, "[%s] ", tag);
+    if (hn >= (int)sizeof head) hn = sizeof head - 1;
+    u64 f = irq_save();
+    klog_append(head, (size_t)hn);
+    klog_append(buf, len);
+    irq_restore(f);
+}
+
 void klog(const char *tag, const char *fmt, ...) {
     char buf[1024];
     char head[48];

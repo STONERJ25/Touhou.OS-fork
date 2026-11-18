@@ -1,0 +1,78 @@
+socket: ok
+SO_TYPE: 1, SO_DOMAIN: 10, SO_PROTOCOL: 6
+IPV6_V6ONLY by default: 0
+bind to ::1 and a free port: 0
+getsockname: 0
+the listener: family 10, address ::1, port is set 1, flowinfo 0, scope id 0, length 28
+listen: 0
+connect: 0
+accept: ok
+accept's peer address: family 10, address ::1, port is set 1, flowinfo 0, scope id 0, length 28
+the client's own address: family 10, address ::1, port is set 1, flowinfo 0, scope id 0, length 28
+the client's peer address: family 10, address ::1, port is set 1, flowinfo 0, scope id 0, length 28
+the peer port is the listener's: 1, accept's peer port is the client's own port: 1
+write: 15
+read: 15 'hello over IPv6'
+write back: 8
+read: 8 'and back'
+end of file after shutdown(SHUT_WR): 0
+IPV6_UNICAST_HOPS by default: 64
+set 17: 0, read back 17
+set 256: -1, errno 22 (EINVAL 22)
+set -1 (the default again): 0, read back 64
+IPV6_RECVPKTINFO set: 0, read back 1
+IPV6_V6ONLY set before bind: 0, read back 1
+bind to :: 0
+IPV6_V6ONLY set after bind: -1, errno 22 (EINVAL 22)
+listener on :: (dual-stack): ok
+an IPv4 client connects: 0
+the IPv4 client as accept shows it: family 10, address ::ffff:127.0.0.1, port is set 1, flowinfo 0, scope id 0, length 28
+the accepted socket's own address: family 10, address ::ffff:127.0.0.1, port is set 1, flowinfo 0, scope id 0, length 28
+write: 4
+read: 4 'ipv4'
+an IPv6 client connects: 0
+the IPv6 client as accept shows it: family 10, address ::1, port is set 1, flowinfo 0, scope id 0, length 28
+an IPv4 client of a V6ONLY listener: -1, errno 111 (ECONNREFUSED 111)
+connect to ::ffff:127.0.0.1: 0
+the IPv4 server sees family 2, address 127.0.0.1: 1, length 16
+the client's own address: family 10, address ::ffff:127.0.0.1, port is set 1, flowinfo 0, scope id 0, length 28
+the client's peer address: family 10, address ::ffff:127.0.0.1, port is set 1, flowinfo 0, scope id 0, length 28
+a V6ONLY socket to a v4-mapped address: -1, errno 101 (ENETUNREACH 101)
+sendto: 8
+recvfrom: 8 'datagram'
+the sender: family 10, address ::1, port is set 1, flowinfo 0, scope id 0, length 28
+answer: 6
+recv: 6 'answer'
+MSG_TRUNC with a short buffer: sent 10, recvfrom says 10
+connect: 0
+send to the closed port: 1
+recv after the refusal: -1, errno 111 (ECONNREFUSED 111)
+bind of a sockaddr_in to an IPv6 socket: -1, errno 22 (EINVAL 22)
+bind with a length that is too short: -1, errno 22 (EINVAL 22)
+bind with another family: -1, errno 97 (EAFNOSUPPORT 97)
+bind to an address that is not ours: -1, errno 99 (EADDRNOTAVAIL 99)
+bind to a port that is in use: -1, errno 98 (EADDRINUSE 98)
+an unknown IPv6 option: -1, errno 92 (ENOPROTOOPT 92)
+getaddrinfo(::1, 80): 0
+the result: family 10, address ::1, port is set 1, flowinfo 0, scope id 0, length 28
+ai_family 10, ai_socktype 1, ai_protocol 6, the port is 80: 1
+getnameinfo: 0 '::1' '80'
+getaddrinfo of an IPv6 address for an IPv4 request: refused
+AI_V4MAPPED turns 127.0.0.1 into ::ffff:127.0.0.1
+inet_pton(::): 1 -> ::
+inet_pton(::1): 1 -> ::1
+inet_pton(fe80::1:2): 1 -> fe80::1:2
+inet_pton(2001:db8::): 1 -> 2001:db8::
+inet_pton(1:0:0:2:0:0:0:3): 1 -> 1:0:0:2::3
+inet_pton(::ffff:10.0.2.2): 1 -> ::ffff:10.0.2.2
+inet_pton(0:0:0:0:0:0:0:1): 1 -> ::1
+inet_pton(1:2:3:4:5:6:7:8): 1 -> 1:2:3:4:5:6:7:8
+inet_pton(FE80::A): 1 -> fe80::a
+inet_pton(1::2::3): 0
+inet_pton(::g): 0
+inet_pton(1:2:3:4:5:6:7:8:9): 0
+inet_pton(:1): 0
+inet_pton(1:): 0
+inet_pton(::ffff:1.2.3.256): 0
+inet_pton(1.2.3.4): 0
+exit status: 0

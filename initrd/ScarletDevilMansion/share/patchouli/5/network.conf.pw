@@ -3,13 +3,14 @@
 # DESCRIPTION
 `/Hakurei/etc/network.conf` says, card by card, whether an address comes from DHCP or is set by hand. A card that is not listed uses DHCP, which is also what every card does while the file holds only comments, as it does out of the box. The file is kept on the HUMANVILLAGE volume across restarts (etckeep(8)).
 
-`init` applies the `static` lines with netconf(8) before the first session (and `sudo netconf` applies the file again by hand); a network panel that edits it is still to come. A card with a static address does not ask DHCP: while the kept copy has a static line, the kernel holds the DHCP client back until `init` has run netconf(8) (details there).
+`init` applies the `static` and `static6` lines with netconf(8) before the first session (and `sudo netconf` applies the file again by hand); a network panel that edits it is still to come. A card with a static address does not ask DHCP: while the kept copy has a `static` line, the kernel holds the DHCP client back until `init` has run netconf(8) (details there).
 
 One line per card; blank lines and lines starting with `#` are ignored:
 
     eth0  dhcp
     eth0  static 192.168.1.20/24  gateway 192.168.1.1  dns 1.1.1.1
     eth1  static 192.168.1.5/8  mac 52:54:00:12:34:56
+    eth0  static6 2001:db8:1::20/64  gateway fe80::1
 
 @ _IFACE_ *dhcp*
     Ask a DHCP server, as without the file.
@@ -19,6 +20,10 @@ One line per card; blank lines and lines starting with `#` are ignored:
     The default route. It must lie inside _ADDR_/_PREFIX_ and differ from _ADDR_.
 @ *dns* _D1_ [_D2_ [_D3_]]
     Up to three name servers, written to resolv.conf(5).
+@ _IFACE_ *static6* _ADDR_/_PREFIX_
+    An IPv6 address, beside whatever the card's IPv4 line says (the two lines are independent: `static`, `dhcp` or no line for IPv4, and one `static6` line for IPv6). _ADDR_ is an IPv6 address that is not `::`, `::1`, multicast, IPv4-mapped or link-local (the card makes its own link-local address); _PREFIX_ is 1 to 128. The address is checked for duplicates before it is used, like every address, and has no lifetime. A router's advertisements, if the network has a router, still add their addresses and routes beside it.
+@ *gateway* _GW_ (after *static6*)
+    The default route over IPv6. It is either a link-local address (a router is usually named so: `fe80::1`) or lies inside _ADDR_/_PREFIX_, and differs from _ADDR_. A `static6` line has no `dns`: IPv6 servers go into resolv.conf(5) through DHCP or a router's advertisement, or by hand.
 @ *mac* _XX:XX:XX:XX:XX:XX_
     Use the line only on the card with this hardware address. A stick that boots several machines can carry one line per machine for the same _IFACE_; on a machine whose card has another address the card uses DHCP.
 
@@ -31,4 +36,4 @@ A line that breaks these rules makes the whole file damaged: at boot it is left 
     The copy kept on the volume.
 
 # SEE ALSO
-netconf(8), etckeep(8), resolv.conf(5), ifconfig(1), route(1), network(7)
+netconf(8), etckeep(8), resolv.conf(5), ifconfig(1), ip(1), route(1), network(7)

@@ -1,17 +1,19 @@
 .page hosts 5 names that are known without asking a name server
 
 # DESCRIPTION
-`/etc/hosts` maps names to IPv4 addresses before the DNS is consulted. Each line holds an address followed by one or more names, separated by blanks or tabs; `#` begins a comment. The first name on a line is the official one and is what a reverse lookup (`getnameinfo`, `gethostbyaddr`) returns.
+`/etc/hosts` maps names to IPv4 and IPv6 addresses before the DNS is consulted. Each line holds an address followed by one or more names, separated by blanks or tabs; `#` begins a comment. The first name on a line is the official one and is what a reverse lookup (`getnameinfo`, `gethostbyaddr`) returns.
 
     127.0.0.1   localhost localhost.localdomain
     127.0.0.1   gensokyo
+    ::1         localhost ip6-localhost ip6-loopback
+    ::1         gensokyo
     10.0.2.2    yukari-gate
 
-Names are compared without regard to case. Lines with IPv6 addresses are skipped; there is no IPv6 in this system. The file is read every time a name is looked up, so a change takes effect at once.
+Names are compared without regard to case. A name that has lines of both families (`localhost` above) gives both addresses to `getaddrinfo`, which puts them in the order of RFC 6724 (`::1` first, as on other systems); `gethostbyname` and a program that asks for `AF_INET` only get the IPv4 one. The file is read every time a name is looked up, so a change takes effect at once.
 
 # FILES
 @ /etc/hosts
-    This file (the system ships with `localhost` and `gensokyo`).
+    This file (the system ships with `localhost` and `gensokyo`, for both families).
 
 # SEE ALSO
 resolv.conf(5), nslookup(1), network(7)

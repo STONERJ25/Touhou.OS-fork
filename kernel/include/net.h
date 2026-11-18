@@ -80,6 +80,7 @@ typedef struct NetDev {
     void *priv;
     u64  rx_packets, tx_packets, rx_bytes, tx_bytes, rx_errors, tx_errors, rx_dropped, tx_dropped;
     void *dhcp;                         /* dhcp.c state */
+    struct Ip6If *ip6;                  /* IPv6 state of the card: addresses, router advertisement data (net6k.h); NULL until the card needs it */
     /* The panic path's transmit (the netconsole, netcons.c): a whole Ethernet frame, sent with interrupts off and the net lock possibly held by
      * whatever was interrupted; no allocation, no sleep, no log line, bounded waits. Returns once the card has taken the frame. NULL: the
      * driver has none. */
@@ -104,6 +105,7 @@ bool    netdev_shutdown_all(void);                           /* before a power-o
 #define ETH_P_IP    0x0800
 #define ETH_P_ARP   0x0806
 int  eth_output(NetDev *d, u32 nexthop, u16 ethertype, NetBuf *nb);   /* prepends the Ethernet header, resolves ARP */
+int  eth_send(NetDev *d, const u8 *dmac, u16 ethertype, NetBuf *nb);   /* prepends the header for a destination address that is already known and hands the frame to the card (IPv6 neighbour discovery uses it) */
 void arp_input(NetDev *d, const u8 *p, size_t len);
 void arp_tick(u64 now);
 void arp_flush_dev(NetDev *d);                                      /* forget the neighbours learned on this device (link change) */

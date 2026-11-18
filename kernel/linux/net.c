@@ -4,7 +4,9 @@
  * accept, shutdown, getsockname, getpeername, sendto, recvfrom, setsockopt, getsockopt) are routed to the native handlers by the table in syscall.c; the
  * native sockets already use Linux's errno values, option numbers, flag values and sockaddr_in, which is why that is enough.
  *
- * AF_INET6, AF_NETLINK, AF_PACKET and every other family answer EAFNOSUPPORT: the stack has IPv4 only, and a C library falls back to it. Written from the
+ * AF_INET6 goes to the native handlers too (the structures are Linux's: sockaddr_in6, the IPV6_* option numbers; v4-mapped addresses and IPV6_V6ONLY work as on Linux; the options that
+ * ask for control messages (IPV6_RECVPKTINFO, IPV6_RECVHOPLIMIT, IPV6_RECVTCLASS) are accepted and read back, but no control messages are delivered). AF_NETLINK, AF_PACKET and every
+ * other family answer EAFNOSUPPORT, and a C library falls back. Written from the
  * manual pages socket(2), socketpair(2), accept(2), sendmsg(2), recvmsg(2), sendmmsg(2), recvmmsg(2), sendfile(2), fcntl(2), ioctl_tty(2) and unix(7) and the
  * System V x86-64 ABI for the structure layouts (netabi.h); the behaviour is checked against a real Linux by tests/linux/src/net_*.c.
  */
@@ -46,8 +48,8 @@ long lnx_socket(TrapFrame *tf) {
     if (type & ~(LNX_SOCK_TYPE_MASK | LNX_SOCK_NONBLOCK | LNX_SOCK_CLOEXEC)) return -EINVAL;
     if (domain == LNX_AF_UNIX) {
         if (protocol != 0 && protocol != LNX_AF_UNIX) return -EPROTONOSUPPORT;                  /* unix(7): the protocol is 0 (or PF_UNIX, which is 1) */
-    } else if (domain != LNX_AF_INET) {
-        return -EAFNOSUPPORT;                                  /* INET6, NETLINK, PACKET, ...: not here */
+    } else if (domain != LNX_AF_INET && domain != LNX_AF_INET6) {
+        return -EAFNOSUPPORT;                                  /* NETLINK, PACKET, ...: not here */
     }
     return native(SYS_socket, tf);
 }
@@ -56,7 +58,7 @@ long lnx_socket(TrapFrame *tf) {
 long lnx_socketpair(TrapFrame *tf) {
     int domain = (int)A0(tf), type = (int)A1(tf), protocol = (int)A2(tf);
     if (type & ~(LNX_SOCK_TYPE_MASK | LNX_SOCK_NONBLOCK | LNX_SOCK_CLOEXEC)) return -EINVAL;
-    if (domain != LNX_AF_UNIX) return domain == LNX_AF_INET ? -EOPNOTSUPP : -EAFNOSUPPORT;
+    if (domain != LNX_AF_UNIX) return domain == LNX_AF_INET || domain == LNX_AF_INET6 ? -EOPNOTSUPP : -EAFNOSUPPORT;
     if (protocol != 0 && protocol != LNX_AF_UNIX) return -EPROTONOSUPPORT;
     TrapFrame t = *tf;
     t.rdi = (u64)(long)type;
@@ -203,11 +205,13 @@ static long msg_send(File *f, const struct lnx_msghdr *mh, int flags) {
     int nfds;
     rc = cmsg_collect(mh, inet, &fds, &nfds);
     if (rc) { kfree(iov); return rc; }
-    u32 daddr = 0;
-    u16 dport = 0;
+    SockAddr to;
     bool have = false;
     if (mh->msg_name && mh->msg_namelen && inet) {
-        rc = sk_get_sockaddr(mh->msg_name, mh->msg_namelen, &daddr, &dport);
+        net_lock();
+        u8 fam = ((Sock *)f->priv)->family;                                     /* (the family never changes after socket()) */
+        net_unlock();
+        rc = sk_get_addr_fam(fam, mh->msg_name, mh->msg_namelen, &to);
         if (rc) { kfree(iov); if (fds) files_put_all(fds, nfds); return rc; }
         have = true;
     }
@@ -227,7 +231,7 @@ static long msg_send(File *f, const struct lnx_msghdr *mh, int flags) {
         if (e) { rc = sent ? (long)sent : e; break; }
         ssize_t w;
         if (inet) {
-            w = sk_send(f, k, want, flags, have, daddr, dport);
+            w = sk_send_to(f, k, want, flags, have ? &to : NULL);
         } else {
             File **mine = fds;                                              /* handed over: the callee puts them if the send fails */
             int nmine = nfds;
@@ -303,8 +307,8 @@ static long msg_recv(File *f, struct lnx_msghdr *mh, int flags) {
     if (!k) { kfree(iov); return -ENOMEM; }
     IovCur cur = { iov, mh->msg_iovlen, 0, 0 };
     size_t got_total = 0, full = 0;
-    u32 from = 0;
-    u16 fport = 0;
+    SockAddr from;
+    memset(&from, 0, sizeof from);
     u32 out_flags = 0;
     UnixCtl uctl;
     memset(&uctl, 0, sizeof uctl);
@@ -312,7 +316,7 @@ static long msg_recv(File *f, struct lnx_msghdr *mh, int flags) {
     rc = 0;
     for (;;) {
         size_t want = MIN(cap - got_total, chunk);
-        ssize_t r = inet ? sk_recv_ex(f, k, want, flags & ~LNX_MSG_TRUNC, &from, &fport, &full)
+        ssize_t r = inet ? sk_recv_from(f, k, want, flags & ~LNX_MSG_TRUNC, &from, &full)
                          : unix_recv_msg(f, k, want, flags & ~LNX_MSG_TRUNC, &uctl);
         if (r < 0) { rc = got_total ? (long)got_total : r; break; }
         long e = iov_scatter(&cur, k, (size_t)r);
@@ -341,14 +345,14 @@ static long msg_recv(File *f, struct lnx_msghdr *mh, int flags) {
     if (ce) return ce;
     if (mh->msg_name && mh->msg_namelen) {
         if (inet && dgram) {
-            struct gsockaddr_in sa;
-            memset(&sa, 0, sizeof sa);
-            sa.family = AF_INET;
-            sa.port = hton16(fport);
-            sa.addr = hton32(from);
-            size_t n = MIN((size_t)mh->msg_namelen, sizeof sa);
-            if (copy_to_user((void *)mh->msg_name, &sa, n)) return -EFAULT;
-            mh->msg_namelen = sizeof sa;
+            u8 sa[sizeof(struct gsockaddr_in6)];
+            net_lock();
+            u8 fam = ((Sock *)f->priv)->family;
+            net_unlock();
+            size_t sl = sk_addr_bytes(fam, &from, sa);                          /* a sockaddr_in, or a sockaddr_in6 for an AF_INET6 socket */
+            size_t n = MIN((size_t)mh->msg_namelen, sl);
+            if (copy_to_user((void *)mh->msg_name, sa, n)) return -EFAULT;
+            mh->msg_namelen = (u32)sl;
         } else if (!inet && dgram && uctl.fromlen) {
             struct lnx_sockaddr_un sun;
             memset(&sun, 0, sizeof sun);

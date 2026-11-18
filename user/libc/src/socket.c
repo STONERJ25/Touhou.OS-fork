@@ -10,6 +10,9 @@
 #include <string.h>
 #include <errno.h>
 #include <pty.h>
+#include <net/if.h>
+#include <stdlib.h>
+#include <gensokyo.h>
 #include "syscall_priv.h"
 
 int socket(int domain, int type, int protocol) { return (int)__ret(__sc3(SYS_socket, domain, type, protocol)); }
@@ -61,6 +64,56 @@ int setsockopt(int fd, int level, int name, const void *val, socklen_t len) {
 
 int getsockopt(int fd, int level, int name, void *val, socklen_t *len) {
     return (int)__ret(__sc6(SYS_getsockopt, fd, level, name, (long)val, (long)len, 0));
+}
+
+/* Interface names and indexes: the index is the kernel's card number plus one (so lo is 1, as on Linux), which is also the scope id of a link-local IPv6 address. */
+unsigned int if_nametoindex(const char *name) {
+    if (!name) { errno = ENODEV; return 0; }
+    for (unsigned i = 0; i < 64; i++) {
+        struct gnet_if r;
+        memset(&r, 0, sizeof r);
+        r.index = i;
+        if (gap_netctl(NETCTL_IF_GET, &r) < 0) break;
+        if (!strcmp(r.name, name)) return i + 1;
+    }
+    errno = ENODEV;
+    return 0;
+}
+
+char *if_indextoname(unsigned int index, char *name) {
+    struct gnet_if r;
+    if (index == 0) { errno = ENXIO; return NULL; }
+    memset(&r, 0, sizeof r);
+    r.index = index - 1;
+    if (gap_netctl(NETCTL_IF_GET, &r) < 0) { errno = ENXIO; return NULL; }
+    strlcpy(name, r.name, IF_NAMESIZE);
+    return name;
+}
+
+struct if_nameindex *if_nameindex(void) {
+    unsigned n = 0;
+    struct gnet_if r;
+    for (; n < 64; n++) {
+        memset(&r, 0, sizeof r);
+        r.index = n;
+        if (gap_netctl(NETCTL_IF_GET, &r) < 0) break;
+    }
+    struct if_nameindex *v = calloc(n + 1, sizeof *v);
+    if (!v) { errno = ENOMEM; return NULL; }
+    for (unsigned i = 0; i < n; i++) {
+        memset(&r, 0, sizeof r);
+        r.index = i;
+        if (gap_netctl(NETCTL_IF_GET, &r) < 0) break;
+        v[i].if_index = i + 1;
+        v[i].if_name = strdup(r.name);
+    }
+    return v;
+}
+
+void if_freenameindex(struct if_nameindex *list) {
+    if (!list) return;
+    for (struct if_nameindex *p = list; p->if_index; p++) free(p->if_name);
+    free(list);
 }
 
 int getpeercred(int fd, struct gpeercred *cred) { return ioctl(fd, SOCK_PEERCRED, cred); }

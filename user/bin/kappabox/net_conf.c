@@ -16,6 +16,9 @@ typedef struct {
     uint32_t addr, mask, gw, dns[3];
     int ndns;
     uint8_t mac[6];
+    bool is_static6, has_gw6;                       /* "IFACE static6 ADDR/PREFIX [gateway GW]": an IPv6 address, beside whatever the card's other line says */
+    uint8_t addr6[16], gw6[16];
+    int plen6;
 } Line;
 
 static int get_ifs(struct gnet_if *v, int max) {
@@ -47,6 +50,16 @@ static bool parse_line(char *text, Line *l) {
     memset(l, 0, sizeof *l);
     strlcpy(l->iface, tok[0], sizeof l->iface);
     if (!strcmp(tok[1], "dhcp")) return true;
+    if (!strcmp(tok[1], "static6") && n >= 3) {
+        if (!nu_parse_cidr6(tok[2], l->addr6, &l->plen6) || l->plen6 < 1) return false;
+        l->is_static6 = true;
+        for (int i = 3; i < n; i++) {
+            if (!strcmp(tok[i], "gateway") && i + 1 < n) { if (!nu_parse_cidr6(tok[++i], l->gw6, NULL)) return false; l->has_gw6 = true; }
+            else if (!strcmp(tok[i], "mac") && i + 1 < n) { if (!parse_mac(tok[++i], l->mac)) return false; l->has_mac = true; }
+            else return false;
+        }
+        return true;
+    }
     if (strcmp(tok[1], "static") || n < 3) return false;
     int prefix = -1;
     if (!nu_parse_cidr(tok[2], &l->addr, &prefix) || prefix < 1 || prefix > 30) return false;
@@ -87,10 +100,39 @@ APPLET(netconf) {
         const struct gnet_if *c = &ifs[k];
         if (c->flags & GIFF_LOOPBACK) continue;
         const Line *best = NULL;
+        const Line *best6 = NULL;
         for (int i = 0; i < nl; i++) {                          /* a line for this card; one that names its hardware address beats one that does not */
             if (strcmp(lines[i].iface, c->name)) continue;
             if (lines[i].has_mac && memcmp(lines[i].mac, c->mac, 6)) continue;
-            if (!best || (lines[i].has_mac && !best->has_mac)) best = &lines[i];
+            const Line **slot = lines[i].is_static6 ? &best6 : &best;               /* the IPv6 line and the IPv4 line of a card are chosen apart */
+            if (!*slot || (lines[i].has_mac && !(*slot)->has_mac)) *slot = &lines[i];
+        }
+        if (best6) {                                                                /* IPv6: the address (checked for duplicates before it is used) and the default router */
+            char msg6[200];
+            int o6 = snprintf(msg6, sizeof msg6, "%s: static6 %s/%d", c->name, nu_ip6(best6->addr6), best6->plen6);
+            if (best6->has_gw6) o6 += snprintf(msg6 + o6, sizeof msg6 - (size_t)o6, ", gateway %s", nu_ip6(best6->gw6));
+            if (dry) {
+                printf("netconf: would set %s\n", msg6);
+            } else {
+                struct gnet_addr6 a6;
+                memset(&a6, 0, sizeof a6);
+                strlcpy(a6.ifname, c->name, sizeof a6.ifname);
+                memcpy(a6.addr, best6->addr6, 16);
+                a6.plen = (uint8_t)best6->plen6;
+                if (gap_netctl(NETCTL_ADDR6_ADD, &a6) < 0 && errno != EEXIST) { kb_error("%s: %s", c->name, strerror(errno)); rc = 1; }
+                else {
+                    if (best6->has_gw6) {
+                        struct gnet_route6 r6;
+                        memset(&r6, 0, sizeof r6);
+                        strlcpy(r6.ifname, c->name, sizeof r6.ifname);
+                        memcpy(r6.gw, best6->gw6, 16);
+                        if (gap_netctl(NETCTL_ROUTE6_ADD, &r6) < 0) { kb_error("%s: default route: %s", c->name, strerror(errno)); rc = 1; }
+                    }
+                    gap_setname("netconf");
+                    gap_log(msg6);
+                    printf("netconf: %s\n", msg6);
+                }
+            }
         }
         if (!best || !best->is_static) continue;
         char msg[200];

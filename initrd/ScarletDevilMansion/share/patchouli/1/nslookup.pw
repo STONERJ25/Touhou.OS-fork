@@ -4,14 +4,18 @@
 *nslookup* [*-type=*_TYPE_] _NAME_ [_SERVER_]
 
 # DESCRIPTION
-`nslookup` sends one query to a name server and prints what comes back. Without _SERVER_ it asks the servers listed in `/etc/resolv.conf` (the DHCP client fills that file in), in order, until one answers. It does not consult `/etc/hosts` and does not apply the search list; it shows the DNS exactly as the server gives it. For the friendlier lookup that programs use, see `ping` or `fetch`, which go through the resolver in the C library.
+`nslookup` sends one query to a name server and prints what comes back. Without _SERVER_ it asks the servers listed in `/etc/resolv.conf` (the DHCP client fills that file in; so does a router's advertisement for IPv6 servers), in order, until one answers. It does not consult `/etc/hosts` and does not apply the search list; it shows the DNS exactly as the server gives it. For the friendlier lookup that programs use, see `ping` or `fetch`, which go through the resolver in the C library.
 
-The answer is printed under the name and address of the server that gave it. The _TYPE_ is one of `A` (the default), `AAAA`, `NS`, `CNAME`, `SOA`, `PTR`, `MX`, `TXT` or `ANY`. If _NAME_ is a dotted IPv4 address the query is a reverse lookup (`PTR`, for `2.2.0.10.in-addr.arpa` when you give 10.0.2.2). _SERVER_ may carry a port: `10.0.2.2#5353`.
+The answer is printed under the name and address of the server that gave it. The _TYPE_ is one of `A` (the default), `AAAA`, `NS`, `CNAME`, `SOA`, `PTR`, `MX`, `TXT` or `ANY`. If _NAME_ is a dotted IPv4 address the query is a reverse lookup (`PTR`, for `2.2.0.10.in-addr.arpa` when you give 10.0.2.2); an IPv6 address (`fec0::2`) is looked up the same way under `ip6.arpa` (the 32 hexadecimal digits written backwards, one per label). An `AAAA` answer shows the address in its shortest form (`fec0::2`).
+
+_SERVER_ is an address or a name, IPv4 or IPv6, and may carry a port: `10.0.2.2#5353`, `fec0::3`, `fec0::2#5353`. The query goes to it over its own family.
 
 # EXAMPLES
     nslookup kappa.gensokyo
     nslookup -type=MX gensokyo 10.0.2.3
+    nslookup -type=AAAA kappa.gensokyo fec0::3
     nslookup 10.0.2.2
+    nslookup fec0::2
 
 # EXIT STATUS
 0 when records were found, 1 when the name does not exist (`NXDOMAIN`), the answer is empty or no server answered, 2 for a usage error.

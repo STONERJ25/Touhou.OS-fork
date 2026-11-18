@@ -57,7 +57,7 @@ static void set_nonblock(int fd) {
 int sshc_tcp_connect(const char *host, int port, int timeout_ms, char *why, size_t wc, char *ip, size_t ic) {
     struct addrinfo hints, *res = NULL;
     memset(&hints, 0, sizeof hints);
-    hints.ai_family = AF_INET;                              /* the system's network stack is IPv4 only */
+    hints.ai_family = AF_INET;                              /* IPv4 only: this client has no IPv6 code (the network stack itself speaks IPv6 since 2026-11-17) */
     hints.ai_socktype = SOCK_STREAM;
     char service[16];
     snprintf(service, sizeof service, "%d", port);

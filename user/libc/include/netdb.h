@@ -7,8 +7,8 @@
 struct hostent {
     char  *h_name;
     char **h_aliases;
-    int    h_addrtype;                      /* AF_INET */
-    int    h_length;                        /* 4 */
+    int    h_addrtype;                      /* AF_INET or AF_INET6 */
+    int    h_length;                        /* 4 or 16 */
     char **h_addr_list;                     /* network byte order addresses, NULL terminated */
 };
 #define h_addr h_addr_list[0]
@@ -19,7 +19,8 @@ extern int h_errno;
 #define NO_RECOVERY    3
 #define NO_DATA        4
 
-struct hostent *gethostbyname(const char *name);
+struct hostent *gethostbyname(const char *name);                                 /* IPv4 */
+struct hostent *gethostbyname2(const char *name, int af);                        /* AF_INET or AF_INET6 */
 struct hostent *gethostbyaddr(const void *addr, socklen_t len, int type);       /* /etc/hosts only */
 const char *hstrerror(int err);
 
@@ -32,7 +33,7 @@ struct servent {
 struct servent *getservbyname(const char *name, const char *proto);
 struct servent *getservbyport(int port, const char *proto);                     /* port in network byte order */
 
-/* ---- the new interface (IPv4 only) ---- */
+/* ---- the new interface (IPv4 and IPv6: A and AAAA records, RFC 6724 order) ---- */
 struct addrinfo {
     int              ai_flags;
     int              ai_family;
@@ -87,10 +88,13 @@ int  getnameinfo(const struct sockaddr *sa, socklen_t salen, char *host, socklen
 #define DNS_AAAA  28
 #define DNS_ANY   255
 
-/* The name servers of /etc/resolv.conf ("nameserver ADDR" or "nameserver ADDR#PORT"); returns how many were stored. */
+/* The IPv4 name servers of /etc/resolv.conf ("nameserver ADDR" or "nameserver ADDR#PORT"); returns how many were stored. */
 int gap_dns_servers(struct sockaddr_in *out, int max);
+/* All of them, IPv6 ones too: out[i] holds a sockaddr_in or sockaddr_in6, lens[i] (if given) its length. */
+int gap_dns_servers_sa(struct sockaddr_storage *out, socklen_t *lens, int max);
 /* Sends one query to one server (UDP, retried) and stores the raw answer; returns its length, or -1 with h_errno set. */
 int gap_dns_query(const struct sockaddr_in *server, const char *name, int qtype, unsigned char *answer, int cap, int timeout_ms);
+int gap_dns_query_sa(const struct sockaddr *server, socklen_t slen, const char *name, int qtype, unsigned char *answer, int cap, int timeout_ms);
 /* Walks a raw answer: calls fn for every resource record with its owner name, type, class, ttl and rdata (rdata is relative
  * to msg, so names inside it can be expanded with gap_dns_name). Returns the response code (0 = no error) or -1 if malformed. */
 typedef void (*gap_dns_rr_fn)(void *ctx, int section, const char *name, int type, int cls, unsigned ttl, const unsigned char *msg, int msglen,

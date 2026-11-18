@@ -4,9 +4,14 @@
 *host* [*-t* _TYPE_] _NAME_ [_SERVER_]
 
 # DESCRIPTION
-`host` is the terse cousin of `nslookup`: it asks one question and prints one short sentence per record: `kappa.gensokyo has address 10.0.2.2`, `www.gensokyo is an alias for kappa.gensokyo.`, `gensokyo mail is handled by 10 mx.gensokyo.`, `2.2.0.10.in-addr.arpa domain name pointer kappa.gensokyo.`.
+`host` is the terse cousin of `nslookup`: it asks one question and prints one short sentence per record: `kappa.gensokyo has address 10.0.2.2`, `kappa.gensokyo has IPv6 address fec0::2`, `www.gensokyo is an alias for kappa.gensokyo.`, `gensokyo mail is handled by 10 mx.gensokyo.`, `2.2.0.10.in-addr.arpa domain name pointer kappa.gensokyo.`.
 
-_NAME_ may be a dotted IPv4 address, which asks for the name (`PTR`). `-t` chooses another record type: `A`, `AAAA`, `NS`, `CNAME`, `SOA`, `PTR`, `MX`, `TXT`, `ANY`. Without _SERVER_ the servers of `/etc/resolv.conf` are tried in order.
+_NAME_ may be a dotted IPv4 address or an IPv6 address, which asks for the name (`PTR`, under `in-addr.arpa` or `ip6.arpa`). `-t` chooses another record type: `A`, `AAAA`, `NS`, `CNAME`, `SOA`, `PTR`, `MX`, `TXT`, `ANY`; the default is `A`, so a name that has only an IPv6 address needs `-t AAAA`. Without _SERVER_ the servers of `/etc/resolv.conf` are tried in order; _SERVER_ may be an IPv4 or IPv6 address.
+
+# EXAMPLES
+    host kappa.gensokyo
+    host -t AAAA kappa.gensokyo
+    host fec0::2
 
 # EXIT STATUS
 0 when the name was found, 1 when it does not exist or no server answered, 2 for a usage error.

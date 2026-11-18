@@ -22,6 +22,7 @@
 #define RTL_VENDOR 0x10EC
 
 #define R_MAC0     0x00
+#define R_MAR0     0x08         // the multicast hash filter, 8 bytes
 #define R_TXDESC_LO 0x20
 #define R_TXDESC_HI 0x24
 #define R_CHIPCMD  0x37
@@ -210,9 +211,13 @@ static void r_probe(PciDev *p) {
     w32(r, R_RXDESC_LO, (u32)r->rx_phys);
     w32(r, R_TXCONFIG, (7u << 8) | (3u << 24));                  // 2048-byte DMA bursts, normal inter-frame gap
     w32(r, R_RXCONFIG, (7u << 13) | (7u << 8) | 0x0E);           // no FIFO threshold, unlimited bursts; broadcast, multicast, our address
+    w32(r, R_MAR0, 0xFFFFFFFF);                                  // every multicast group in (the hash filter is empty after a reset): IPv6 neighbour discovery uses 33:33:xx:xx:xx:xx
+    w32(r, R_MAR0 + 4, 0xFFFFFFFF);
     w8(r, R_CHIPCMD, CMD_RXEN | CMD_TXEN);
     w32(r, R_TXCONFIG, (7u << 8) | (3u << 24));                  // older revisions only take these once the units are enabled
     w32(r, R_RXCONFIG, (7u << 13) | (7u << 8) | 0x0E);
+    w32(r, R_MAR0, 0xFFFFFFFF);
+    w32(r, R_MAR0 + 4, 0xFFFFFFFF);
     w8(r, R_CFG9346, CFG9346_LOCK);
 
     u16 bmcr;                                                    // power the PHY up if something switched it off (BMCR bit 11)

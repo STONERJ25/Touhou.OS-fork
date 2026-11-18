@@ -30,8 +30,7 @@ static void rr_print(void *ctx, int section, const char *name, int type, int cls
         break;
     case DNS_AAAA:
         if (rdlen != 16) return;
-        printf(p->host_style ? "%s has IPv6 address " : "Name:\t%s\nAddress: ", name);
-        for (int i = 0; i < 16; i += 2) printf("%x%s", (rd[i] << 8) | rd[i + 1], i < 14 ? ":" : "\n");
+        printf(p->host_style ? "%s has IPv6 address %s\n" : "Name:\t%s\nAddress: %s\n", name, nu_ip6(rd));        /* the shortest form (RFC 5952): fec0::2, not fec0:0:0:0:0:0:0:2 */
         break;
     case DNS_CNAME:
         if (gap_dns_name(msg, msglen, rd, tgt, sizeof tgt) < 0) return;
@@ -76,35 +75,42 @@ static void rr_print(void *ctx, int section, const char *name, int type, int cls
     p->found++;
 }
 
+static unsigned short sa_port(const struct sockaddr_storage *s) {
+    return ntohs(s->ss_family == AF_INET6 ? ((const struct sockaddr_in6 *)s)->sin6_port : ((const struct sockaddr_in *)s)->sin_port);
+}
+
 static int lookup(int host_style, const char *name, int qtype, const char *server_arg, int verbose_server) {
-    struct sockaddr_in servers[3];
+    struct sockaddr_storage servers[3];
+    socklen_t slen[3];
     int ns = 0;
-    if (server_arg) {
-        uint32_t ip;
+    if (server_arg) {                                                       /* ADDR or ADDR#PORT, the address of either family or a name */
         unsigned port = 53;
-        char tmp[64];
+        char tmp[80];
         strlcpy(tmp, server_arg, sizeof tmp);
         char *hash = strchr(tmp, '#');
         if (hash) { *hash++ = 0; port = (unsigned)atoi(hash); }
-        if (!nu_resolve(tmp, &ip)) return 1;
-        memset(&servers[0], 0, sizeof servers[0]);
-        servers[0].sin_family = AF_INET;
-        servers[0].sin_addr.s_addr = htonl(ip);
-        servers[0].sin_port = htons((unsigned short)port);
+        if (!nu_resolve_sa(tmp, AF_UNSPEC, &servers[0], &slen[0])) return 1;
+        if (servers[0].ss_family == AF_INET6) ((struct sockaddr_in6 *)&servers[0])->sin6_port = htons((unsigned short)port);
+        else ((struct sockaddr_in *)&servers[0])->sin_port = htons((unsigned short)port);
         ns = 1;
     } else {
-        ns = gap_dns_servers(servers, 3);
+        ns = gap_dns_servers_sa(servers, slen, 3);
     }
     if (ns == 0) { kb_error("no name server is configured (/etc/resolv.conf is empty; has DHCP finished?)"); return 1; }
 
     char qname[256];
     uint32_t lit;
+    uint8_t lit6[16];
     if (qtype == DNS_PTR && nu_parse_cidr(name, &lit, NULL)) snprintf(qname, sizeof qname, "%u.%u.%u.%u.in-addr.arpa", lit & 255, (lit >> 8) & 255, (lit >> 16) & 255, lit >> 24);
-    else strlcpy(qname, name, sizeof qname);
+    else if (qtype == DNS_PTR && nu_parse_cidr6(name, lit6, NULL)) {         /* the nibbles of the address, last first, under ip6.arpa (RFC 3596 section 2.5) */
+        size_t o = 0;
+        for (int i = 15; i >= 0; i--) o += (size_t)snprintf(qname + o, sizeof qname - o, "%x.%x.", lit6[i] & 15, lit6[i] >> 4);
+        snprintf(qname + o, sizeof qname - o, "ip6.arpa");
+    } else strlcpy(qname, name, sizeof qname);
 
     static unsigned char ans[1500];
     int n = -1, used = 0;
-    for (; used < ns && n < 0; used++) n = gap_dns_query(&servers[used], qname, qtype, ans, sizeof ans, 3000);
+    for (; used < ns && n < 0; used++) n = gap_dns_query_sa((struct sockaddr *)&servers[used], slen[used], qname, qtype, ans, sizeof ans, 3000);
     if (n < 0) {
         if (host_style) printf(";; connection timed out; no servers could be reached\n");
         else printf(";; connection timed out; no servers could be reached\n\n");
@@ -112,7 +118,9 @@ static int lookup(int host_style, const char *name, int qtype, const char *serve
     }
     used--;
     if (!host_style && verbose_server) {
-        printf("Server:\t\t%s\nAddress:\t%s#%u\n\n", nu_ip(ntohl(servers[used].sin_addr.s_addr)), nu_ip(ntohl(servers[used].sin_addr.s_addr)), ntohs(servers[used].sin_port));
+        char who[80];
+        nu_sa_str((struct sockaddr *)&servers[used], who, sizeof who);
+        printf("Server:\t\t%s\nAddress:\t%s#%u\n\n", who, who, sa_port(&servers[used]));
     }
     Printer p = { host_style, 0 };
     if (!host_style) printf("Non-authoritative answer:\n");
@@ -151,7 +159,8 @@ APPLET(nslookup) {
     const char *name = argv[i];
     const char *server = i + 1 < argc ? argv[i + 1] : NULL;
     uint32_t lit;
-    if (type == DNS_A && nu_parse_cidr(name, &lit, NULL) && strchr(name, '.')) type = DNS_PTR;       /* nslookup 10.0.2.2 asks for the name */
+    uint8_t lit6[16];
+    if (type == DNS_A && ((nu_parse_cidr(name, &lit, NULL) && strchr(name, '.')) || nu_parse_cidr6(name, lit6, NULL))) type = DNS_PTR;       /* nslookup 10.0.2.2 and nslookup fec0::2 ask for the name */
     return lookup(0, name, type, server, 1);
 }
 
@@ -161,7 +170,7 @@ APPLET(host) {
         if (!strcmp(argv[i], "-t") && i + 1 < argc) {
             type = parse_type(argv[++i]);
             if (type < 0) { kb_error("unknown query type '%s'", argv[i]); return 2; }
-        } else if (strcmp(argv[i], "-a") && strcmp(argv[i], "-v") && strcmp(argv[i], "-4")) {
+        } else if (strcmp(argv[i], "-a") && strcmp(argv[i], "-v") && strcmp(argv[i], "-4") && strcmp(argv[i], "-6")) {
             kb_error("usage: host [-t TYPE] NAME [SERVER]");
             return 2;
         }
@@ -170,6 +179,7 @@ APPLET(host) {
     const char *name = argv[i];
     const char *server = i + 1 < argc ? argv[i + 1] : NULL;
     uint32_t lit;
-    if (type < 0) type = (nu_parse_cidr(name, &lit, NULL) && strchr(name, '.')) ? DNS_PTR : DNS_A;
+    uint8_t lit6[16];
+    if (type < 0) type = ((nu_parse_cidr(name, &lit, NULL) && strchr(name, '.')) || nu_parse_cidr6(name, lit6, NULL)) ? DNS_PTR : DNS_A;
     return lookup(1, name, type, server, 0);
 }

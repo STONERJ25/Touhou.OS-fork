@@ -4,13 +4,16 @@
 *ifconfig* [*-a*]
 *ifconfig* _IFACE_
 *ifconfig* _IFACE_ [_ADDRESS_[/_LEN_]] [*netmask* _MASK_] [*mtu* _N_] [*up* | *down* | *dhcp* | *nodhcp*]
+*ifconfig* _IFACE_ [*inet6*] *add* | *del* _ADDRESS_[/_LEN_]
 
 # DESCRIPTION
 `ifconfig` without arguments lists the interfaces that are up (`-a`: all of them). With an interface name it shows that one. With more arguments it changes the interface; changing anything needs root.
 
-For each interface the listing shows the flags (`UP`, `BROADCAST`, `RUNNING` for "carrier present", `LOOPBACK`, `NOARP`), the MTU, the IPv4 address with netmask and broadcast address, the hardware address and the name of the driver that serves it, and the packet, byte, error and drop counters (the same numbers as `/proc/net/dev`).
+For each interface the listing shows the flags (`UP`, `BROADCAST`, `RUNNING` for "carrier present", `LOOPBACK`, `NOARP`), the MTU, the IPv4 address with netmask and broadcast address, every IPv6 address with its prefix length and scope (`inet6 fe80::5054:ff:fe12:3456  prefixlen 64  scopeid 0x20<link>`; the scope is `host` for `::1`, `link`, `site` or `global`; an address that failed the duplicate check is not shown), the hardware address and the name of the driver that serves it, and the packet, byte, error and drop counters (the same numbers as `/proc/net/dev`).
 
 Giving an address sets it, replaces any address the interface had, drops the routes that belonged to it and installs the connected route of the new network. The netmask comes from a `/LEN` suffix, from `netmask`, or, failing both, from the old class of the address. The broadcast address is always derived from address and mask.
+
+**IPv6.** An interface has several IPv6 addresses at once: a link-local one made from the hardware address, the ones that a router's advertisement gives, and the ones added by hand. `add` gives the interface one more (`ifconfig eth0 inet6 add 2001:db8::5/64`, or just `ifconfig eth0 2001:db8::5/64`; without a prefix length it is 64), `del` removes one. An address added by hand is checked for duplicates first (`ip -6 addr` shows it as `tentative` for about a second) and has no lifetime. Setting an IPv4 address does not touch the IPv6 ones.
 
 @ *up*, *down*
     Switch the interface on or off. A down interface sends and receives nothing and loses its routes.
@@ -26,12 +29,16 @@ Giving an address sets it, replaces any address the interface had, drops the rou
     ifconfig eth0 192.168.7.9/24
     ifconfig eth0 10.0.2.15 netmask 255.255.255.0 mtu 1400 up
     ifconfig eth0 dhcp
+    ifconfig eth0 inet6 add 2001:db8::5/64
+    ifconfig eth0 inet6 del 2001:db8::5/64
 
 # FILES
 @ /proc/net/dev
     Counters per interface.
 @ /proc/net/dhcp
     One line per interface: the DHCP state (off, selecting, requesting, bound, renewing), address, mask, server, gateway, name servers, the lease in seconds and the seconds left.
+@ /proc/net/if_inet6
+    The IPv6 addresses in Linux's format: the address as 32 hex digits, the interface index, the prefix length, the scope and the flags, the name.
 
 # EXIT STATUS
 0 on success, 1 when the interface does not exist or the kernel refused (root is needed to change anything), 2 for a usage error.

@@ -3,6 +3,7 @@
  * thread, Ethernet and ARP, the routing table, IPv4 (with fragment reassembly) and ICMP.
  */
 #include "net.h"
+#include "net6k.h"
 #include "kernel.h"
 #include "cpu.h"
 #include "mm.h"
@@ -186,6 +187,7 @@ NetDev *netdev_register(const char *prefix, NetDev *d) {
     if (!g_devs) g_devs = d;
     else { NetDev *t = g_devs; while (t->next) t = t->next; t->next = d; }
     if ((d->flags & NDF_LINK) && !(d->flags & NDF_LOOPBACK)) dhcp_start(d);
+    nd6_dev_added(d);                                       /* IPv6: the card's state (the loopback gets ::1; a card with a carrier its link-local address) */
     net_unlock();
     net_kick();
     return d;
@@ -207,6 +209,7 @@ void net_set_link(NetDev *d, bool up) {
     if (up == was) return;
     if (up) d->flags |= NDF_LINK; else d->flags &= ~(u32)NDF_LINK;
     arp_flush_dev(d);                                       /* the cable may lead to another network: what we knew about neighbours is stale */
+    nd6_link(d, up);                                        /* ... and so is what IPv6 learned from the routers there; the link-local address is checked again */
     klog("Yukari", "%s: link %s", d->name, up ? "up, the gap is open" : "down, the gap closed");
     if (up && !(d->flags & NDF_LOOPBACK) && (!d->addr || (d->flags & NDF_DHCP))) dhcp_start(d);
 }
@@ -387,6 +390,7 @@ void net_rx(NetDev *d, NetBuf *nb) {
     nb->dev = d;
     nb_pull(nb, ETH_HLEN);
     if (type == ETH_P_IP) { ip_input(d, nb); return; }
+    if (type == ETH_P_IPV6) { ip6_input(d, nb); return; }
     if (type == ETH_P_ARP) arp_input(d, nb_data(nb), nb->len);
     nb_free(nb);
 }
@@ -427,7 +431,7 @@ static ArpEnt *arp_slot(void) {
     return oldest;
 }
 
-static int eth_send(NetDev *d, const u8 *dmac, u16 type, NetBuf *nb) {
+int eth_send(NetDev *d, const u8 *dmac, u16 type, NetBuf *nb) {
     if (nb->len < 46 && nb_room(nb) >= 46 - nb->len) memset(nb_put(nb, 46 - nb->len), 0, 46 - nb->len);   /* pad to the 60 byte minimum */
     u8 *e = nb_push(nb, ETH_HLEN);
     memcpy(e, dmac, 6);
@@ -957,6 +961,8 @@ static void net_poll_once(void) {
     tcp_tick(now);
     arp_tick(now);
     ip_tick(now);
+    ip6_tick(now);
+    nd6_tick(now);
     dhcp_tick(now);
 }
 
@@ -1032,9 +1038,9 @@ static size_t gen_udp(char *b, size_t cap) { return net_proc_udp(b, cap); }
 static size_t gen_tune(char *b, size_t cap) {
     return (size_t)snprintf(b, cap,
         "lo_drop %d\nlo_dup %d\nlo_reorder %d\nlo_corrupt %d\nrto_min_ms %d\nsyn_retries %d\ndata_retries %d\ntimewait_ms %d\n"
-        "ip_bad %lu\ntcp_bad %lu\nbuffers %d\n",
+        "ip_bad %lu\ntcp_bad %lu\nbuffers %d\nip6_bad %lu\nip6_reasm_ms %d\n",
         g_net_lo_drop, g_net_lo_dup, g_net_lo_reorder, g_net_lo_corrupt, g_net_rto_min_ms, g_net_syn_retries, g_net_data_retries,
-        g_net_timewait_ms, (unsigned long)g_net_stat_ip_bad, (unsigned long)g_net_stat_tcp_bad, g_nb_count);
+        g_net_timewait_ms, (unsigned long)g_net_stat_ip_bad, (unsigned long)g_net_stat_tcp_bad, g_nb_count, (unsigned long)g_ip6_stats.bad, g_ip6_reasm_ms);
 }
 
 static ssize_t put_tune(const char *buf, size_t n) {
@@ -1067,6 +1073,7 @@ static ssize_t put_tune(const char *buf, size_t n) {
         else if (!strcmp(line, "syn_retries")) g_net_syn_retries = MAX(0, MIN(v, 12));
         else if (!strcmp(line, "data_retries")) g_net_data_retries = MAX(1, MIN(v, 30));
         else if (!strcmp(line, "timewait_ms")) g_net_timewait_ms = MAX(100, MIN(v, 120000));
+        else if (!strcmp(line, "ip6_reasm_ms")) g_ip6_reasm_ms = MAX(100, MIN(v, 60000));
         net_unlock();
     }
     return (ssize_t)n;
@@ -1123,8 +1130,12 @@ long net_ctl(unsigned long cmd, void *arg) {
             if (r->mtu < 68 || r->mtu > 1500) { rc = -EINVAL; break; }
             d->mtu = r->mtu;
         }
-        if (r->flags & GIFF_UP) d->flags |= NDF_UP;
-        else if (r->flags & GIFF_DOWN) { d->flags &= ~(u32)NDF_UP; route_flush_dev(d); }
+        if (r->flags & GIFF_UP) {
+            bool was_up = (d->flags & NDF_UP) != 0;
+            d->flags |= NDF_UP;
+            if (!was_up && (d->flags & NDF_LINK) && !(d->flags & NDF_LOOPBACK)) nd6_link(d, true);        /* IPv6 starts over on a card that was down: the addresses are checked again, a router is asked */
+        }
+        else if (r->flags & GIFF_DOWN) { d->flags &= ~(u32)NDF_UP; route_flush_dev(d); nd6_if_down(d); }
         if (r->flags & GIFF_CLEARADDR) {
             route_flush_dev(d);
             d->flags &= ~(u32)NDF_DHCP;
@@ -1191,7 +1202,11 @@ long net_ctl(unsigned long cmd, void *arg) {
         }
         break;
     }
-    default: rc = -EINVAL;
+    default: {
+        bool handled = false;
+        rc = net6_ctl(cmd, arg, root, &handled);             /* the IPv6 commands (kernel/net/net6ctl.c) */
+        if (!handled) rc = -EINVAL;
+    }
     }
     net_unlock();
     net_kick();
@@ -1223,6 +1238,7 @@ static void net_init(void) {
     procfs_register("net/udp", gen_udp);
     procfs_register_rw("net/tune", gen_tune, put_tune);
     procfs_register_rw("net/inject", gen_tune, put_inject);
+    ip6_netctl_init();
     g_net_trace = cmdline_flag("nicdebug");
     task_create_detached("Yukari", yukari_main, NULL);
     klog("Yukari", "the gap-opener is awake: loopback up, 127.0.0.1/8");

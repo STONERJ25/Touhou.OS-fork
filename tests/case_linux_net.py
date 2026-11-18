@@ -31,6 +31,7 @@ PROGRAMS = {
     "net_unix": ("linux /tmp/net_unix", 300),
     "net_unix2": ("linux /tmp/net_unix2", 300),
     "net_resolve": ("linux /tmp/net_resolve", 300),
+    "net_tcp6": ("linux /tmp/net_tcp6", 300),
     "net_poll": ("linux /tmp/net_poll", 300),
     "net_epoll": ("linux /tmp/net_epoll", 300),
     "net_events": ("linux /tmp/net_events", 300),
@@ -69,6 +70,14 @@ def linux_net_sockets_match_linux():
     sendmsg/recvmsg/sendmmsg/recvmmsg, shutdown and end of file, EPIPE and SIGPIPE, ECONNREFUSED, EADDRINUSE, non-blocking connect with poll, abstract names,
     SO_PEERCRED, a server thread and a 1 MB echo): the same output as on a real Linux"""
     run_programs(["net_tcp", "net_errors", "net_udp", "net_unix", "net_unix2", "net_resolve"], "t-linux-net-sockets")
+
+
+@test
+def linux_net6_matches_linux():
+    """IPv6 through glibc over ::1 (socket(AF_INET6), sockaddr_in6, getsockname, getpeername, accept's address, IPV6_UNICAST_HOPS and IPV6_V6ONLY with their limits, a dual-stack
+    listener that takes an IPv4 client with a v4-mapped peer address, a V6ONLY one that refuses it, connect to ::ffff:127.0.0.1, UDP with its addresses and the refusal of a
+    closed port, the errors of a wrong family, length, address and port, numeric getaddrinfo and getnameinfo, the text forms of inet_pton and inet_ntop): the same output as on a real Linux"""
+    run_programs(["net_tcp6"], "t-linux-net6")
 
 
 @test

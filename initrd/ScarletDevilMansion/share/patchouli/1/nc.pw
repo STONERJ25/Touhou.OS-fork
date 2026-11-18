@@ -1,15 +1,19 @@
 .page nc 1 connect to a TCP or UDP port, or listen on one
 
 # SYNOPSIS
-*nc* [*-uvz*] [*-w* _SECONDS_] _HOST_ _PORT_
-*nc* *-l* [*-u*] [*-v*] [*-w* _SECONDS_] [*-p* _PORT_ | _PORT_] [_ADDRESS_]
+*nc* [*-46uvz*] [*-w* _SECONDS_] _HOST_ _PORT_
+*nc* *-l* [*-46*] [*-u*] [*-v*] [*-w* _SECONDS_] [*-p* _PORT_ | _PORT_] [_ADDRESS_]
 
 # DESCRIPTION
-`nc` ("netcat") connects standard input and standard output to a network connection. In the first form it connects to _HOST_ (a name or dotted address) and _PORT_ and copies in both directions: what you type or pipe in is sent, what arrives is printed. When standard input ends, the sending direction of the connection is closed (a TCP half-close) and `nc` keeps printing until the other side hangs up; with `-w` it also gives up after that many silent seconds. This is enough to talk to a web server by hand or to send a file through a pipe.
+`nc` ("netcat") connects standard input and standard output to a network connection. In the first form it connects to _HOST_ (a name, a dotted address or an IPv6 address) and _PORT_ and copies in both directions: what you type or pipe in is sent, what arrives is printed. When standard input ends, the sending direction of the connection is closed (a TCP half-close) and `nc` keeps printing until the other side hangs up; with `-w` it also gives up after that many silent seconds. This is enough to talk to a web server by hand or to send a file through a pipe.
 
 With `-l` it waits for one incoming connection (or, with `-u`, for the first datagram, whose sender becomes the peer), then relays in the same way and exits. Ports below 1024 need root.
 
+**IPv4 and IPv6.** A name is looked up for IPv4 first and then, if it has no IPv4 address, for IPv6; an address with colons is IPv6 (`nc ::1 7`, `nc fe80::2%eth0 7`: a link-local address needs the interface). `-4` and `-6` force the family. A listener with no address is IPv4 (`0.0.0.0`, as it always was); `nc -l -6 PORT` listens on `::`, which takes IPv6 and IPv4 connections both (an IPv4 peer shows as `::ffff:10.0.2.2`); an _ADDRESS_ names one address of either family.
+
 # OPTIONS
+@ *-4*, *-6*
+    Use IPv4 or IPv6 only. For a listener: `-6` without an address means `::`.
 @ *-u*
     UDP instead of TCP.
 @ *-l*
@@ -28,9 +32,11 @@ With `-l` it waits for one incoming connection (or, with `-u`, for the first dat
     nc -l -p 9000 > received.bin
     nc -z -v 10.0.2.2 80
     nc -u -l 5353
+    nc -6 -l 9300
+    echo hello | nc ::1 9300
 
 # EXIT STATUS
 0 when the connection (or the check) worked and ended normally, 1 on errors and refusals, 2 for a usage error.
 
 # SEE ALSO
-fetch(1), httpd(1), network(7)
+fetch(1), httpd(1), netstat(1), network(7)

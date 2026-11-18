@@ -1,7 +1,7 @@
 .page httpd 1 a tiny web server for static files
 
 # SYNOPSIS
-*httpd* [*-p* _PORT_] [*-d* _DIR_] [*-b* _ADDRESS_] [*-1*] [*-q*]
+*httpd* [*-4* | *-6*] [*-p* _PORT_] [*-d* _DIR_] [*-b* _ADDRESS_] [*-1*] [*-q*]
 
 # DESCRIPTION
 `httpd` serves the files below a directory (the current one unless `-d` says otherwise) over HTTP/1.1 on a TCP port (8080 by default; ports below 1024 need root). It answers `GET` and `HEAD`, sets `Content-Type` from the file name extension, sends `Content-Length` and closes the connection after each answer. A directory is answered with its `index.html` when there is one and with a generated listing otherwise; a directory named without its trailing slash gets a redirect. Names containing `..` are refused, so nothing outside the served directory can be reached, and missing files get a 404.
@@ -10,13 +10,17 @@ Every connection is handled by a child process, so a slow client does not hold u
 
 It is meant for demos and for moving files between machines: there is no authentication, no TLS and no access control beyond the file permissions of the user who started it.
 
+By default it listens for IPv4 connections only (on `0.0.0.0`, as it always did). `-6` makes it listen on `::`, which takes IPv6 and IPv4 connections both (the log then shows an IPv4 client as `::ffff:10.0.2.2`); `-b` with an IPv6 address listens on that one address.
+
 # OPTIONS
+@ *-4*, *-6*
+    `-6`: listen on `::` for IPv6 and IPv4 clients; `-4` is the default and changes nothing. With `-b` they choose the family of a name.
 @ *-p* _PORT_
     The port to listen on.
 @ *-d* _DIR_
     The directory to serve.
 @ *-b* _ADDRESS_
-    Listen on one address only (default: all of them).
+    Listen on one address only (default: all IPv4 addresses, or with `-6` all addresses of both families).
 @ *-1*
     Answer a single request and exit.
 @ *-q*
@@ -25,6 +29,8 @@ It is meant for demos and for moving files between machines: there is no authent
 # EXAMPLES
     httpd -p 8080 -d /HumanVillage/reimu/www &
     fetch http://127.0.0.1:8080/index.html
+    httpd -6 -p 8686 &
+    fetch http://[::1]:8686/
 
 # NOTES
 Under QEMU's user-mode networking the guest is not reachable from the host unless a port is forwarded: start QEMU with `hostfwd=tcp:127.0.0.1:8080-:8080` on the `-netdev user` option and the host can browse to `http://127.0.0.1:8080/`.

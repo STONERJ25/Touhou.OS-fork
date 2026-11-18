@@ -154,7 +154,7 @@ The policy is checked on the address that is actually connected to, after a name
 under `local` like the address itself, before anything is connected. A refused open reaches the client as the protocol's reason, and OpenSSH
 prints it: `channel 2: open failed: administratively prohibited: only this machine may be reached (sshd.forward=local)`, `connect failed:
 Connection refused`, `connect failed: the target did not answer in time`, `connect failed: no such host`, `resource shortage: too many
-forwarded channels on this connection (sshd.forwardmax=16)`. IPv6 targets are refused (the stack is IPv4).
+forwarded channels on this connection (sshd.forwardmax=16)`. IPv6 targets are refused (sshd's forwarding code is IPv4 only; the network stack itself speaks IPv6 since 2026-11-17, see [NETWORK.md](NETWORK.md#ipv6)).
 
 How it behaves:
 

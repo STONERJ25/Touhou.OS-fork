@@ -1,0 +1,39 @@
+.page ping6 1 send ICMPv6 echo requests to a host
+
+# SYNOPSIS
+*ping6* [*-c* _COUNT_] [*-i* _SECONDS_] [*-W* _SECONDS_] [*-s* _BYTES_] [*-t* _HOPS_] [*-q*] _HOST_
+
+# DESCRIPTION
+`ping6` is `ping -6`: it sends an ICMPv6 echo request to _HOST_ (a name that has an AAAA record, or an IPv6 address) once a second and prints a line for every answer: the size of the reply, the sender, the sequence number and the round-trip time. Without `-c` it goes on until interrupted with Ctrl+C. At the end it prints how many packets were sent and received and the shortest, average and longest round trip.
+
+It uses an ICMPv6 datagram socket, so any user may run it. The kernel numbers the requests and checks their checksum; the first request to a neighbour waits a moment while the neighbour's hardware address is looked up (neighbour discovery, `ip -6 neigh` shows the result).
+
+A link-local address (`fe80::...`) is only meaningful on one cable, so it is written with the interface after a percent sign: `fe80::2%eth0`. When there is exactly one card that is up the `%eth0` may be left out; with several cards the request fails with `Invalid argument` and the card has to be named.
+
+If a router or the stack itself answers with an error the line says so (`Destination unreachable: No route`, `Packet too big`, `Time exceeded: Hop limit`, `Parameter problem`) instead of a reply. A request that gets no answer within the timeout prints `Request timeout for icmp_seq N`. A request bigger than the path allows (the size is up to 65000 bytes) is sent in fragments and the reply is put together again.
+
+# OPTIONS
+@ *-c* _COUNT_
+    Stop after COUNT requests.
+@ *-i* _SECONDS_
+    Wait this long between requests (at least 0.2, default 1).
+@ *-W* _SECONDS_
+    Wait this long for each answer (default 2).
+@ *-s* _BYTES_
+    Size of the data in the request (8 to 65000, default 56).
+@ *-t* _HOPS_
+    Hop limit of the outgoing packets (the IPv6 name for the time to live).
+@ *-q*
+    Quiet: only the summary.
+
+# EXAMPLES
+    ping6 -c 3 ::1
+    ping6 -c 3 fec0::2
+    ping6 -c 1 fe80::2%eth0
+    ping6 -c 1 -s 3000 ::1
+
+# EXIT STATUS
+0 if at least one answer arrived, 1 if none did, 2 for a usage error or a name that does not resolve.
+
+# SEE ALSO
+ping(1), ip(1), nslookup(1), network(7)

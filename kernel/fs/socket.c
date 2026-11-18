@@ -114,6 +114,7 @@ extern void (*g_signal_self_hook)(int sig);
 /* kernel/net/sockcall.c */
 extern const FileOps g_inet_fops;
 long inet_socket(int type, int protocol);
+long inet6_socket(int type, int protocol);
 long inet_bind(File *f, u64 uaddr, u64 len);
 long inet_listen(File *f, int backlog);
 long inet_accept(File *f, u64 uaddr, u64 ulenp);
@@ -859,6 +860,7 @@ static long fd_for(File *f, int type) {
 static long sys_socket(TrapFrame *tf) {
     int type = (int)A1(tf);
     if (A0(tf) == AF_INET) return inet_socket(type, (int)A2(tf));
+    if (A0(tf) == AF_INET6) return inet6_socket(type, (int)A2(tf));
     if (A0(tf) != AF_UNIX) return -EAFNOSUPPORT;
     int t = type & 0xFF;
     if (t != SOCK_STREAM && t != SOCK_DGRAM) return -EPROTONOSUPPORT;

@@ -4,7 +4,7 @@
 *ss* [*-altun*]
 
 # DESCRIPTION
-`ss` prints the TCP and UDP sockets known to the kernel in the compact style of the modern tools: one line each with the protocol (`Netid`), state, the two queue sizes and the local and peer `address:port`. Like `netstat` it reads `/proc/net/tcp` and `/proc/net/udp`.
+`ss` prints the TCP and UDP sockets known to the kernel in the compact style of the modern tools: one line each with the protocol (`Netid`, `tcp` or `udp`), state, the two queue sizes and the local and peer `address:port`. Like `netstat` it reads `/proc/net/tcp` and `/proc/net/udp` and, for the IPv6 family, `/proc/net/tcp6` and `/proc/net/udp6`; an IPv6 address is written in square brackets (`[::]:22`, `[::1]:8686`), an unset peer as `*:*`.
 
 Without options only connected sockets are shown; `-l` shows listening ones, `-a` both, `-t` and `-u` pick the protocol. `-n` is accepted and ignored (addresses are always numeric).
 

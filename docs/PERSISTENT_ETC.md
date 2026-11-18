@@ -142,11 +142,18 @@ they would not accept.
 ```
 IFACE dhcp [mac XX:XX:XX:XX:XX:XX]
 IFACE static ADDR/PREFIX [gateway GW] [dns D1 [D2 [D3]]] [mac XX:XX:XX:XX:XX:XX]
+IFACE static6 ADDR/PREFIX [gateway GW] [mac XX:XX:XX:XX:XX:XX]
 ```
 
 * One line per card; a card that is not listed uses DHCP (today's behaviour). `IFACE` is a card name such as `eth0`.
 * `ADDR` is not `0.x`, `127.x` or multicast; `PREFIX` is 1 to 30; `GW` lies inside `ADDR/PREFIX` and is not `ADDR`; at most three
   name servers.
+* `static6` gives the card an IPv6 address beside whatever its IPv4 line says (a `static`, a `dhcp` line or none: the two are chosen
+  apart; one `static6` line per card and `mac`). It does not hold the DHCP client back (an IPv4 matter), and the address goes through
+  duplicate address detection before it is used, like every address. `ADDR` is not `::`, `::1`, multicast, v4-mapped or link-local (the
+  kernel makes the link-local address itself); `PREFIX` is 1 to 128; `GW` is optional, is not `ADDR`, and is either link-local (a
+  router is usually named so, `fe80::1`) or inside `ADDR/PREFIX`; it becomes the default route. Router advertisements, if a router
+  sends them, still add their addresses and routes beside it. Example: `eth0 static6 2001:db8::5/64 gateway fe80::1`.
 * `mac` binds the line to the card with that hardware address: the line is used only when `IFACE` has that MAC. Several lines for
   one `IFACE` are allowed when their `mac` differ (one stick, several machines); the same `IFACE` and `mac` twice is damage.
   A line without `mac` applies to whatever card has that name.

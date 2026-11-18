@@ -506,7 +506,9 @@ static void rx_start(EDev *e, u32 fl) {
     for (int i = 0; i < NDESC; i++) { e->rx[i].status = 0; e->rx[i].errors = 0; e->rx[i].len = 0; }
     cache_drop(e->rx, (size_t)NDESC * 16);                          /* nothing of ours may be left dirty in a cache while the card writes to the ring */
     e->rx_next = 0;
-    u32 on = RCTL_EN | RCTL_BAM | RCTL_SECRC | ((fl & RXF_PROMISC) ? (RCTL_UPE | RCTL_MPE) : 0);   /* 2048-byte buffers, legacy descriptors, CRC stripped */
+    /* 2048-byte buffers, legacy descriptors, CRC stripped. Multicast promiscuous (MPE) always: IPv6 neighbour discovery and its autoconfiguration live on the multicast addresses
+     * 33:33:xx:xx:xx:xx (the solicited-node group of each address and "all nodes"), and the multicast hash table (MTA) is empty; the stack throws away the groups it does not listen to. */
+    u32 on = RCTL_EN | RCTL_BAM | RCTL_SECRC | RCTL_MPE | ((fl & RXF_PROMISC) ? RCTL_UPE : 0);
     if (fl & RXF_ENFIRST) wr(e, R_RCTL, on);
     wr(e, R_RDBAL, (u32)e->rx_phys);
     wr(e, R_RDBAH, (u32)(e->rx_phys >> 32));
@@ -1189,7 +1191,7 @@ static void tx_apply_variant(NetDev *d, EDev *e, int var) {
         tx_program(e);
         tx_enable_wait(e);
         udelay(5000);
-        wr(e, R_RCTL, RCTL_EN | RCTL_BAM | RCTL_SECRC);
+        wr(e, R_RCTL, RCTL_EN | RCTL_BAM | RCTL_SECRC | RCTL_MPE);
         break;
     case 8:                                                         /* nothing of ours: the registers the firmware's driver had left */
         tx_quiesce(e);

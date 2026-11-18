@@ -43,7 +43,7 @@ static int relay(int fd, int is_udp, int wait_s) {
 }
 
 APPLET(nc) {
-    int udp = 0, listen_mode = 0, zero = 0, verbose = 0, wait_s = 0, opt;
+    int udp = 0, listen_mode = 0, zero = 0, verbose = 0, wait_s = 0, opt, family = AF_UNSPEC;
     unsigned port = 0;
     optind = 1;
     while ((opt = getopt(argc, argv, "ulp:zvw:n46")) != -1) {
@@ -54,8 +54,10 @@ APPLET(nc) {
         case 'z': zero = 1; break;
         case 'v': verbose = 1; break;
         case 'w': wait_s = atoi(optarg); break;
-        case 'n': case '4': case '6': break;
-        default: kb_error("usage: nc [-u] [-z] [-v] [-w SECONDS] HOST PORT   |   nc -l [-u] [-p] PORT"); return 2;
+        case '4': family = AF_INET; break;
+        case '6': family = AF_INET6; break;
+        case 'n': break;
+        default: kb_error("usage: nc [-4|-6] [-u] [-z] [-v] [-w SECONDS] HOST PORT   |   nc -l [-4|-6] [-u] [-p] PORT [ADDRESS]"); return 2;
         }
     }
     const char *host = NULL;
@@ -63,30 +65,36 @@ APPLET(nc) {
         if (!port) { if (optind >= argc) { kb_error("listen on which port?"); return 2; } port = (unsigned)atoi(argv[optind++]); }
         if (optind < argc) host = argv[optind];
     } else {
-        if (optind + 1 >= argc) { kb_error("usage: nc [-u] [-z] [-v] [-w SECONDS] HOST PORT"); return 2; }
+        if (optind + 1 >= argc) { kb_error("usage: nc [-4|-6] [-u] [-z] [-v] [-w SECONDS] HOST PORT"); return 2; }
         host = argv[optind];
         port = (unsigned)atoi(argv[optind + 1]);
     }
     if (!port || port > 65535) { kb_error("bad port"); return 2; }
     signal(SIGPIPE, SIG_IGN);
-    int fd = socket(AF_INET, udp ? SOCK_DGRAM : SOCK_STREAM, 0);
+    struct sockaddr_storage sa;
+    socklen_t sl;
+    memset(&sa, 0, sizeof sa);
+    if (listen_mode) {
+        /* the address to listen on: -6 alone means :: (IPv6 and, as a dual-stack socket, IPv4 too); no -6 and no address means 0.0.0.0, as before */
+        if (host) { if (!nu_resolve_sa(host, family, &sa, &sl)) return 1; }
+        else if (family == AF_INET6) { struct sockaddr_in6 *a6 = (struct sockaddr_in6 *)&sa; a6->sin6_family = AF_INET6; sl = sizeof *a6; }
+        else { struct sockaddr_in *a4 = (struct sockaddr_in *)&sa; a4->sin_family = AF_INET; sl = sizeof *a4; }
+    } else {
+        if (!nu_resolve_sa(host, family, &sa, &sl)) return 1;
+    }
+    if (sa.ss_family == AF_INET6) ((struct sockaddr_in6 *)&sa)->sin6_port = htons((unsigned short)port);
+    else ((struct sockaddr_in *)&sa)->sin_port = htons((unsigned short)port);
+    int fd = socket(sa.ss_family, udp ? SOCK_DGRAM : SOCK_STREAM, 0);
     if (fd < 0) { kb_error("socket: %s", strerror(errno)); return 1; }
 
     if (listen_mode) {
         int one = 1;
         setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
-        struct sockaddr_in sa;
-        memset(&sa, 0, sizeof sa);
-        sa.sin_family = AF_INET;
-        sa.sin_port = htons((unsigned short)port);
-        uint32_t ip = 0;
-        if (host && !nu_resolve(host, &ip)) return 1;
-        sa.sin_addr.s_addr = htonl(ip);
-        if (bind(fd, (struct sockaddr *)&sa, sizeof sa) < 0) { kb_error("bind to port %u: %s", port, strerror(errno)); return 1; }
+        if (bind(fd, (struct sockaddr *)&sa, sl) < 0) { kb_error("bind to port %u: %s", port, strerror(errno)); return 1; }
         if (verbose) fprintf(stderr, "Listening on port %u\n", port);
         if (udp) {
             char first[2048];
-            struct sockaddr_in peer;
+            struct sockaddr_storage peer;
             socklen_t pl = sizeof peer;
             ssize_t n = recvfrom(fd, first, sizeof first, 0, (struct sockaddr *)&peer, &pl);
             if (n < 0) { kb_error("recvfrom: %s", strerror(errno)); return 1; }
@@ -95,27 +103,24 @@ APPLET(nc) {
             return relay(fd, 1, wait_s);
         }
         if (listen(fd, 1) < 0) { kb_error("listen: %s", strerror(errno)); return 1; }
-        struct sockaddr_in peer;
+        struct sockaddr_storage peer;
         socklen_t pl = sizeof peer;
         int c = accept(fd, (struct sockaddr *)&peer, &pl);
         if (c < 0) { kb_error("accept: %s", strerror(errno)); return 1; }
-        if (verbose) fprintf(stderr, "Connection from %s:%u\n", nu_ip(ntohl(peer.sin_addr.s_addr)), ntohs(peer.sin_port));
+        if (verbose) {
+            char who[80];
+            nu_sa_str((struct sockaddr *)&peer, who, sizeof who);
+            fprintf(stderr, "Connection from %s:%u\n", who, ntohs(peer.ss_family == AF_INET6 ? ((struct sockaddr_in6 *)&peer)->sin6_port : ((struct sockaddr_in *)&peer)->sin_port));
+        }
         close(fd);
         return relay(c, 0, wait_s);
     }
 
-    uint32_t ip;
-    if (!nu_resolve(host, &ip)) return 1;
-    struct sockaddr_in sa;
-    memset(&sa, 0, sizeof sa);
-    sa.sin_family = AF_INET;
-    sa.sin_port = htons((unsigned short)port);
-    sa.sin_addr.s_addr = htonl(ip);
     if (wait_s > 0) {
         struct timeval tv = { wait_s, 0 };
         setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
     }
-    if (connect(fd, (struct sockaddr *)&sa, sizeof sa) < 0) {
+    if (connect(fd, (struct sockaddr *)&sa, sl) < 0) {
         if (verbose || zero) fprintf(stderr, "nc: connect to %s port %u (%s) failed: %s\n", host, port, udp ? "udp" : "tcp", strerror(errno));
         else kb_error("%s: %s", host, strerror(errno));
         return 1;

@@ -1,7 +1,7 @@
 .page ip 1 show and change addresses, links, routes and neighbours
 
 # SYNOPSIS
-*ip* [*-s*] *addr* [*show* [*dev* _IFACE_]]
+*ip* [*-4* | *-6*] [*-s*] *addr* [*show* [*dev* _IFACE_]]
 *ip* *addr* *add* _ADDRESS_/_LEN_ *dev* _IFACE_
 *ip* *addr* *del* _ADDRESS_/_LEN_ *dev* _IFACE_
 *ip* *addr* *flush* *dev* _IFACE_
@@ -9,32 +9,39 @@
 *ip* *link* *set* [*dev*] _IFACE_ [*up* | *down*] [*mtu* _N_]
 *ip* *route* [*show*]
 *ip* *route* *add* | *del* _TARGET_[/_LEN_] | *default* [*via* _GATEWAY_] [*dev* _IFACE_] [*metric* _N_]
+*ip* *-6* *route* [*show* | *add* | *del* ...]
 *ip* *neigh* [*show*]
+*ip* *-6* *neigh* *add* _ADDRESS_ *lladdr* _MAC_ *dev* _IFACE_
+*ip* *-6* *neigh* *del* _ADDRESS_ *dev* _IFACE_
 
 # DESCRIPTION
 `ip` looks at and changes the network configuration of the machine. The object (`addr`, `link`, `route`, `neigh`) may be shortened to `a`, `l`, `r`, `n`; the verb defaults to `show`. Changing anything needs root.
 
 @ *addr*
-    The IPv4 addresses. `add` gives an interface an address (replacing the one it had, the stack keeps one per interface), `del` removes it, `flush` removes it without asking which.
+    The addresses. `add` gives an interface an address, `del` removes it. For IPv4 `add` replaces the address the interface had (the stack keeps one per interface) and `flush` removes it without asking which. IPv6 addresses (anything written with a colon) are added beside the others, up to 8 per interface; the listing shows them in Linux's form, `inet6 ADDRESS/LEN scope link|site|global`, with `tentative` while the duplicate check runs, `dadfailed` if another machine has the address, `deprecated` once its preferred time ran out, and `dynamic` for the ones that came from a router (the line below says `valid_lft` and `preferred_lft`, in seconds or `forever`). `ip -6 addr flush dev IFACE` removes every IPv6 address of the interface.
 @ *link*
     The interfaces themselves: state, MTU, hardware address. With `-s` the packet counters are shown as well.
 @ *route*
-    The routing table: connected networks, the default gateway and anything added by hand. The kernel picks the longest matching prefix. A route needs a gateway that lies on a connected network, or an interface.
+    The routing table: connected networks, the default gateway and anything added by hand. The kernel picks the longest matching prefix. A route needs a gateway that lies on a connected network, or an interface. `ip route` shows and changes the IPv4 table; `ip -6 route` (or a target written with a colon) the IPv6 table, with the lines `default via fe80::2 dev eth0 proto ra metric 1024 expires 1796sec` (`proto kernel` for the connected prefix of an address, `proto ra` for what a router advertised, `proto boot` for what was added by hand) and prefix lengths of 0 to 128. A static IPv6 route has the metric 1024 unless `metric` says otherwise.
 @ *neigh*
-    The ARP cache: which hardware address answered for which IP address, and whether the entry is `REACHABLE`, `INCOMPLETE` (asked, no answer yet) or `PERMANENT`.
+    The neighbours: for IPv4 the ARP cache, for IPv6 the neighbour discovery cache with the state of each entry (`REACHABLE`, `STALE`, `DELAY`, `PROBE`, `INCOMPLETE` for one that was asked about and has not answered yet, `PERMANENT` for one added by hand) and `router` for a neighbour that said it is one. Without `-4` or `-6` both tables are shown. `ip -6 neigh add` puts a permanent entry in, `del` removes one.
 
-The options `-4`, `-o` and `-br` are accepted and ignored: there is only IPv4 and one output style.
+`-4` and `-6` limit the output of `addr` and `neigh` to one family and choose the table of `route`; `-o` and `-br` are accepted and ignored (there is one output style).
 
 # EXAMPLES
     ip addr
     ip addr add 192.168.7.9/24 dev eth0
+    ip -6 addr add 2001:db8::5/64 dev eth0
     ip route add default via 192.168.7.1
     ip route add 10.9.0.0/16 via 192.168.7.1 dev eth0
+    ip -6 route add default via fe80::1 dev eth0
+    ip -6 route
     ip link set eth0 mtu 1400
     ip neigh
+    ip -6 neigh add fe80::dead dev eth0 lladdr 52:56:00:00:00:77
 
 # EXIT STATUS
 0 on success, 1 when the device does not exist or the kernel refused, 2 for a usage error.
 
 # SEE ALSO
-ifconfig(1), route(1), network(7)
+ifconfig(1), route(1), ping6(1), network(7)

@@ -6,11 +6,13 @@
 # DESCRIPTION
 `netconf` reads network.conf(5) (by default `/etc/network.conf`) and gives every network card that has a `static` line its address, its default route and its name servers (written to `/etc/resolv.conf`). A card with a `dhcp` line, or with no line, is left alone: the DHCP client asks for its address as usual. A card with a static address never asks.
 
+A `static6` line gives the card an IPv6 address (and, with `gateway`, a default route over IPv6) beside whatever its IPv4 line does. The address goes through duplicate address detection like any other (`ip -6 addr` shows it as `tentative` for a second); `netconf` does not wait for that. Running `netconf` again with the same line is harmless: an address that is already there is left as it is. The DHCP hold below concerns `static` lines only.
+
 `init` runs it before the first session. It can be run again by hand, as root, after the file changed. A line that names a `mac` applies only to the card with that hardware address; it beats a line for the same card name without one.
 
 A card with a static address really never asks: when the copy of network.conf kept on the Human Village volume has a `static` line, the kernel does not let any card ask DHCP at boot until `init` has run `netconf` and said so (the kernel log says `DHCP waits until netconf has run`, then `DHCP may ask now`). The cards that have no static address ask then. If nobody says so (an `init=` program that does not know about it), the wait ends 20 seconds after init started; `netconf.wait=SECONDS` on the kernel command line changes that time, and `netconf.wait=0` turns the wait off. Without a static line in the kept file nothing waits.
 
-The addresses must be right for the network the machine is on: nothing checks that nobody else uses the address. The kernel log gets one line per card (`[netconf] eth0: static 192.168.1.185/24, gateway 192.168.1.1, dns 192.168.1.1`).
+The addresses must be right for the network the machine is on: nothing checks that nobody else uses the address. The kernel log gets one line per card and family (`[netconf] eth0: static 192.168.1.185/24, gateway 192.168.1.1, dns 192.168.1.1`, `[netconf] eth0: static6 2001:db8:1::20/64, gateway fe80::1`).
 
 # OPTIONS
 @ *-n*

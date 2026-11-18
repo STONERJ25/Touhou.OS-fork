@@ -8,6 +8,8 @@
 
 For `https://` the connection goes through the system's TLS library (tls(7)), and **the server's certificate is always checked**: the chain must lead to a root in the trust store, every certificate must be valid at the time the clock shows, and the name must match. A server that fails is refused with a sentence that says why, nothing is fetched, and the exit status is 5. The trust store is the PEM file named by `--cacert`, else by the variable `SSL_CERT_FILE`, else `/etc/ssl/cacert.pem`; the system ships no roots of its own (see tls(7)). A computer whose clock is wrong cannot make safe connections: set it with `sntp -s` first. `-k` goes on without checking and says so on standard error, whatever `-q` says.
 
+**IPv6.** An IPv6 address is written in square brackets, as in every URL: `http://[::1]:8080/` (a link-local one carries its interface: `http://[fe80::2%eth0]/`). A host name is looked up for A and AAAA records, and the addresses are tried in the order of RFC 6724 until one accepts the connection, so a name that has only an AAAA record works. `https://` over IPv6 is not possible yet (the TLS library's connection code is IPv4 only): for an IPv6 address `fetch` says so and exits with status 1.
+
 Redirects (301, 302, 303, 307, 308) are followed up to eight times, with relative and absolute `Location` headers. A redirect from `http` to `https` continues over TLS; one from `https` to `http` continues in the clear after a warning. Bodies sent with a `Content-Length`, in chunks (`Transfer-Encoding: chunked`) or simply until the server closes the connection are all understood. The request carries `Connection: close`, a `Host` header (with the port when it is not the default one) and a short `User-Agent`; it does not ask for compressed answers, so what the server sends is what is written.
 
 Progress messages (`Connecting to ...`, the status line, the length) go to standard error unless `-q` is given. If the server answers with an error status (400 and up) nothing is written, the status is reported and the exit status is 8.
@@ -38,6 +40,7 @@ Progress messages (`Connecting to ...`, the status line, the length) go to stand
 
 # EXAMPLES
     fetch http://10.0.2.2:8000/hello.txt
+    fetch http://[::1]:8686/
     fetch -q -O /tmp/page.html http://example.test/
     fetch --cacert /tmp/roots.pem https://example.com/
     wget http://10.0.2.2:8000/archive.tar

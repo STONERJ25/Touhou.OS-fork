@@ -14,6 +14,7 @@
 #define RTL_8139   0x8139
 
 #define R_IDR0   0x00
+#define R_MAR0   0x08                   /* the multicast hash filter, 8 bytes */
 #define R_TSD0   0x10
 #define R_TSAD0  0x20
 #define R_RBSTART 0x30
@@ -135,6 +136,8 @@ static void r_probe(PciDev *p) {
     out16(r, R_ISR, 0xFFFF);
     out32(r, R_TCR, 0x03000600);                                 /* normal inter-frame gap, 1024-byte DMA bursts */
     out8(r, R_CR, CR_TE | CR_RE);
+    out32(r, R_MAR0, 0xFFFFFFFF);                                /* the multicast hash filter lets every group in (it is empty after a reset): IPv6 neighbour discovery arrives on 33:33:xx:xx:xx:xx; the stack drops the groups it does not listen to */
+    out32(r, R_MAR0 + 4, 0xFFFFFFFF);
     out32(r, R_RCR, 0xE78E);                                     /* broadcast, multicast and our address; WRAP; no thresholds */
     r->rx_off = 0;
     snprintf(d->driver, sizeof d->driver, "rtl8139");

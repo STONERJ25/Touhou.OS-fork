@@ -60,7 +60,7 @@ the careful answer. `-o StrictHostKeyChecking=accept-new` remembers new hosts wi
   server (Forgejo's built-in) or an old router (Dropbear) may not.
 - Agent forwarding and X11 (`-A -X -Y`: refused; `ForwardAgent yes` in a file: said to stay off), certificates, GSSAPI, hostbased login, security keys,
   password change on login, ProxyJump / `-J`, ProxyCommand (an error: it would send the connection somewhere else than the file says), `-W`,
-  multiplexing, `-f`, IPv6 (this system has none), `SSH_ASKPASS`.
+  multiplexing, `-f`, IPv6 (the client is IPv4 only; the network stack has IPv6 since 2026-11-17), `SSH_ASKPASS`.
 - A key that is not ed25519 in `~/.ssh` is skipped with a note; `ssh-keygen` makes ed25519 keys only (it reads and prints keys of any type).
 
 ## Security decisions

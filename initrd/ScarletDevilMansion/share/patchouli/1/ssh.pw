@@ -36,7 +36,7 @@ Without a command, and when standard input is a terminal, you get a login shell 
 @ *-D* [_BIND_:]_PORT_
     Listen on a port of this machine as a SOCKS server (versions 4, 4a and 5; CONNECT); programs that use it as their proxy reach any address through the server.
 @ *-4*
-    IPv4 only (it is the only kind there is). *-6* is refused. *-V* prints the version.
+    IPv4 only (`ssh` does not use IPv6 yet, although the network stack does). *-6* is refused. *-V* prints the version.
 
 # THE ESCAPE CHARACTER
 At the start of a line, the escape character (`~`) is taken by ssh itself and the next key says what to do: `~.` ends the session at once, `~?` lists the escapes, `~~` sends one `~`, `~R` asks for new keys, `~V` and `~v` say less or more about the connection, `~#` lists the forwarded connections. Anything else is sent on, `~` included. The escapes are only recognised on a terminal session.

@@ -4,6 +4,7 @@
  * Nothing else in the stack ever speaks first on the network.
  */
 #include "net.h"
+#include "net6k.h"
 #include "kernel.h"
 #include "vfs.h"
 #include "process.h"
@@ -336,7 +337,10 @@ static void write_resolv(Dhcp *c, NetDev *d) {
         net_ip_str(c->dns[i], a, sizeof a);
         n += (size_t)snprintf(buf + n, sizeof buf - n, "nameserver %s\n", a);
     }
-    if (vfs_write_file("/etc/resolv.conf", buf, n, 0644) == 0) c->resolv_dirty = false;
+    if (vfs_write_file("/etc/resolv.conf", buf, n, 0644) == 0) {
+        c->resolv_dirty = false;
+        net6_resolv_changed();                                      /* the name servers that routers announced (RDNSS, ndp.c) go back into the file */
+    }
 }
 
 void dhcp_tick(u64 now) {

@@ -4,6 +4,8 @@
 *route* [*-n*]
 *route* *add* | *del* [*-net* | *-host*] _TARGET_ [*netmask* _MASK_] [*gw* _GATEWAY_] [*metric* _N_] [*dev* _IFACE_]
 *route* *add* | *del* *default* *gw* _GATEWAY_
+*route* *-A* *inet6* [*-n*]
+*route* *-A* *inet6* *add* | *del* _TARGET_[/_LEN_] | *default* [*gw* _GATEWAY_] [*metric* _N_] [*dev* _IFACE_]
 
 # DESCRIPTION
 Without arguments `route` prints the kernel routing table in the traditional columns: destination, gateway, genmask, flags (`U` up, `G` via a gateway), metric and interface. Addresses are always numeric.
@@ -12,11 +14,16 @@ Without arguments `route` prints the kernel routing table in the traditional col
 
 Routes are kept per destination and mask; adding the same one again replaces it. When an interface gets a new address its old routes are dropped, so set the address first and the default route afterwards.
 
+**IPv6.** `-A inet6` (or `-6`) selects the IPv6 table, which is shown as destination with prefix length, next hop, flags, metric and interface. A target is an IPv6 address with a prefix length from 0 to 128 (no length: a host route, 128) or `default`. The gateway of an IPv6 route is usually a link-local address, `fe80::1`, and then the interface has to be named (`dev eth0`) unless there is only one. IPv6 routes are not dropped when an address changes: the ones that a router advertised are removed when its lifetime ends or the cable is pulled, the ones set by hand stay. A static route has the metric 1024 unless `metric` says otherwise; at most 32 IPv6 routes exist.
+
 # EXAMPLES
     route -n
     route add default gw 10.0.2.2
     route add -net 10.9.0.0 netmask 255.255.0.0 gw 192.168.7.1
     route del default
+    route -A inet6
+    route -A inet6 add default gw fe80::1 dev eth0
+    route -A inet6 add 2001:db8:5::/48 gw fe80::2 dev eth0 metric 700
 
 # EXIT STATUS
 0 on success, 1 when the kernel refused, 2 for a usage error.

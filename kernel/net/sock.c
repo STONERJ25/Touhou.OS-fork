@@ -1,7 +1,10 @@
 /*
- * AF_INET sockets: the socket objects, UDP and the ICMP "ping" sockets, and the glue to the system calls. socket(), bind(),
- * listen(), accept(), connect() and shutdown() arrive through kernel/fs/socket.c (which also serves AF_UNIX); the calls that
- * only make sense here (sendto, recvfrom, getsockname, getpeername, setsockopt, getsockopt, netctl) are registered below.
+ * AF_INET and AF_INET6 sockets: the socket objects, UDP and the ICMP / ICMPv6 "ping" sockets, and the glue to the system calls. socket(), bind(), listen(), accept(), connect() and
+ * shutdown() arrive through kernel/fs/socket.c (which also serves AF_UNIX); the calls that only make sense here (sendto, recvfrom, getsockname, getpeername, setsockopt,
+ * getsockopt, netctl) are registered in sockcall.c. How a socket holds either family: netsock.h.
+ *
+ * IPv6 follows RFC 3493 (the sockets interface: sockaddr_in6, v4-mapped addresses, IPV6_V6ONLY) and RFC 8200 section 8 (UDP over IPv6: the checksum is mandatory); an ICMPv6 ping
+ * socket gets the ICMPv6 message without its IP header, as Linux's does.
  */
 #include "netsock.h"
 #include "kernel.h"
@@ -26,6 +29,8 @@ Sock *sock_new(int kind) {
     if (!s) return NULL;
     s->kind = (u8)kind;
     s->ttl = 64;
+    s->mcast_hops = 1;
+    s->mcast_loop = true;
     s->ino = g_next_ino++;
     wq_init(&s->wq);
     if (kind == SK_TCP) tcp_sock_init(s);
@@ -75,10 +80,14 @@ u16 sock_alloc_port(int kind) {
     return 0;
 }
 
-bool sock_port_conflict(Sock *me, u32 addr, u16 port) {
+/* Two sockets conflict over a port when their bindings overlap in either protocol (an address and the wildcard overlap; so do two equal addresses), and the reuse rules do not allow it. */
+bool sock_port_conflict(Sock *me, const SockBind *b, u16 port) {
     for (Sock *o = g_socks; o; o = o->next) {
         if (o == me || o->kind != me->kind || !o->bound || o->lport != port) continue;
-        if (!(o->laddr == 0 || addr == 0 || o->laddr == addr)) continue;
+        bool overlap = false;
+        if (b->m4 && sk_binds4(o) && (!b->a4 || !o->laddr || b->a4 == o->laddr)) overlap = true;
+        if (b->m6 && sk_binds6(o) && (in6_is_any(&b->a6) || in6_is_any(&o->laddr6) || in6_eq(&b->a6, &o->laddr6))) overlap = true;
+        if (!overlap) continue;
         if (me->kind == SK_TCP) {
             if (o->state == TCPS_LISTEN) return true;
             if (!me->reuseaddr) { if (o->state != TCPS_CLOSED || o->has_file) return true; continue; }
@@ -88,6 +97,36 @@ bool sock_port_conflict(Sock *me, u32 addr, u16 port) {
         }
     }
     return false;
+}
+
+void sock_autobind(Sock *s, u16 port) {
+    s->lport = port;
+    s->bound = true;
+    if (s->family == AF_INET6) {
+        s->m6 = true;
+        s->m4 = !s->v6only;
+        s->laddr = 0;
+        in6_zero(&s->laddr6);
+    }
+}
+
+/* ------------------------------------------------------------------ datagram queues */
+
+static void dgram_put(Sock *s, const u8 *data, size_t n, bool v6, u32 saddr4, const In6 *saddr6, u32 scope, u16 sport) {
+    Dgram *g = kmalloc(sizeof *g + n);
+    if (!g) return;
+    g->next = NULL;
+    g->saddr = saddr4;
+    g->sport = sport;
+    g->len = (u32)n;
+    g->v6 = v6;
+    g->scope = scope;
+    if (v6) g->saddr6 = *saddr6; else in6_zero(&g->saddr6);
+    memcpy(g->data, data, n);
+    if (s->rq_tail) s->rq_tail->next = g; else s->rq = g;
+    s->rq_tail = g;
+    s->rq_bytes += (u32)n + 32;
+    sock_wake(s);
 }
 
 /* ------------------------------------------------------------------ UDP */
@@ -115,27 +154,60 @@ void udp_input(NetDev *d, const u8 *p, size_t len, u32 src, u32 dst) {
     bool delivered = false;
     for (Sock *s = g_socks; s; s = s->next) {
         if (s->kind != SK_UDP || !s->bound || s->lport != dport) continue;
-        if (s->laddr && s->laddr != dst && !(bcast && s->broadcast)) continue;
-        if (s->connected && (s->raddr != src || s->rport != sport)) continue;
+        if (!sock_match4(s, dst) && !(bcast && s->broadcast && sk_binds4(s))) continue;
+        if (s->connected && (s->wire6 || s->raddr != src || s->rport != sport)) continue;
         if (s->rd_shut_user) continue;
         if (s->rq_bytes + len > 131072) { delivered = true; continue; }                  /* receive buffer full: drop */
-        Dgram *g = kmalloc(sizeof *g + len - 8);
-        if (!g) continue;
-        g->next = NULL; g->saddr = src; g->sport = sport; g->len = (u32)(len - 8);
-        memcpy(g->data, p + 8, len - 8);
-        if (s->rq_tail) s->rq_tail->next = g; else s->rq = g;
-        s->rq_tail = g;
-        s->rq_bytes += g->len + 32;
-        sock_wake(s);
+        dgram_put(s, p + 8, len - 8, false, src, NULL, 0, sport);
         delivered = true;
         if (!bcast) break;
     }
     if (!delivered && !bcast && g_net_rx_ip) icmp_send_unreachable(g_net_rx_ip, g_net_rx_iplen, 3);
 }
 
+void udp6_input(NetDev *d, const u8 *p, size_t len, const In6 *src, const In6 *dst) {
+    if (len < 8) goto bad;
+    size_t ulen = rd16(p + 4);
+    if (ulen < 8 || ulen > len) goto bad;
+    len = ulen;
+    if (rd16(p + 6) == 0) goto bad;                                           /* RFC 8200 section 8.1: an IPv6 receiver discards a UDP datagram with a zero checksum */
+    if (net_csum(p, len, net6_pseudo_csum(src, dst, IP6P_UDP, (u32)len)) != 0xFFFF) goto bad;
+    u16 sport = rd16(p), dport = rd16(p + 2);
+    bool mcast = in6_is_mcast(dst);
+    u32 scope = in6_is_linklocal(src) ? ip6_dev_scope(d) : 0;
+    bool delivered = false;
+    g_ip6_stats.udp_in_datagrams++;
+    for (Sock *s = g_socks; s; s = s->next) {
+        if (s->kind != SK_UDP || !s->bound || s->lport != dport || !sock_match6(s, dst, d)) continue;
+        if (mcast && !in6_is_any(&s->laddr6)) continue;                       /* a group is heard by the sockets bound to :: only (sockets cannot join groups) */
+        if (s->connected && (!s->wire6 || !in6_eq(&s->raddr6, src) || s->rport != sport)) continue;
+        if (s->rd_shut_user) continue;
+        if (s->rq_bytes + len > 131072) { delivered = true; continue; }
+        dgram_put(s, p + 8, len - 8, true, 0, src, scope, sport);
+        delivered = true;
+        if (!mcast) break;
+    }
+    if (!delivered && !mcast) {
+        g_ip6_stats.udp_no_ports++;
+        if (g_rx6_pkt) icmp6_error(ICMP6_DST_UNREACH, 4, 0, g_rx6_pkt, g_rx6_len, d);
+    }
+    return;
+bad:
+    g_ip6_stats.udp_in_errors++;
+    g_ip6_stats.bad++;
+}
+
 void udp_error(u32 laddr, u16 lport, u32 raddr, u16 rport, int err) {
     for (Sock *s = g_socks; s; s = s->next)
-        if (s->kind == SK_UDP && s->connected && s->lport == lport && (!s->laddr || s->laddr == laddr) && s->raddr == raddr && s->rport == rport) {
+        if (s->kind == SK_UDP && s->connected && !s->wire6 && s->lport == lport && (!s->laddr || s->laddr == laddr) && s->raddr == raddr && s->rport == rport) {
+            s->err = err;
+            sock_wake(s);
+        }
+}
+
+void udp6_error(const In6 *laddr, u16 lport, const In6 *raddr, u16 rport, int err) {
+    for (Sock *s = g_socks; s; s = s->next)
+        if (s->kind == SK_UDP && s->connected && s->wire6 && s->lport == lport && (in6_is_any(&s->laddr6) || in6_eq(&s->laddr6, laddr)) && in6_eq(&s->raddr6, raddr) && s->rport == rport) {
             s->err = err;
             sock_wake(s);
         }
@@ -150,8 +222,7 @@ static int udp_send(Sock *s, const u8 *data, size_t n, u32 daddr, u16 dport) {
     if (!s->bound) {
         u16 p = sock_alloc_port(SK_UDP);
         if (!p) return -EADDRINUSE;
-        s->lport = p;
-        s->bound = true;
+        sock_autobind(s, p);
     }
     u32 src = s->laddr;
     if (!src && !bcast) { src = ip_source_for(daddr); if (!src) return -ENETUNREACH; }
@@ -181,6 +252,45 @@ static int udp_send(Sock *s, const u8 *data, size_t n, u32 daddr, u16 dport) {
     return rc;
 }
 
+static int udp6_send(Sock *s, const u8 *data, size_t n, const SockAddr *to) {
+    if (n > IP6_MAX_PAYLOAD - 8) return -EMSGSIZE;
+    In6 dst = to->a6;
+    if (in6_is_any(&dst)) { in6_zero(&dst); dst.b[15] = 1; }                 /* sending to :: means "this host" */
+    if (!s->bound) {
+        u16 p = sock_alloc_port(SK_UDP);
+        if (!p) return -EADDRINUSE;
+        sock_autobind(s, p);
+    }
+    const In6 *hint = (s->m6 && !in6_is_any(&s->laddr6)) ? &s->laddr6 : NULL;
+    u32 scope = to->scope ? to->scope : s->scope;
+    Pick6 pk;
+    int rc = ip6_pick(hint, &dst, scope, &pk);
+    if (rc) { g_ip6_stats.out_no_routes++; return rc; }
+    size_t total = 8 + n;
+    u8 *big = NULL;
+    NetBuf *nb = nb_alloc();
+    u8 *u;
+    if (nb && total + IP6_HLEN <= pk.mtu && total <= nb_room(nb)) {
+        u = nb_put(nb, total);
+    } else {
+        nb_free(nb);
+        nb = NULL;
+        big = kmalloc(total);
+        if (!big) return -ENOMEM;
+        u = big;
+    }
+    wr16(u, s->lport); wr16(u + 2, to->port); wr16(u + 4, (u16)total); u[6] = u[7] = 0;
+    memcpy(u + 8, data, n);
+    u16 c = ip6_l4_csum(&pk.src, &dst, IP6P_UDP, u, total);
+    if (c == 0) c = 0xFFFF;
+    memcpy(u + 6, &c, 2);
+    g_ip6_stats.udp_out_datagrams++;
+    if (nb) return ip6_send_nb(&pk, &dst, IP6P_UDP, s->ttl, s->tos, true, nb);
+    rc = ip6_send_data(&pk, &dst, IP6P_UDP, s->ttl, s->tos, true, big, total);
+    kfree(big);
+    return rc;
+}
+
 /* ------------------------------------------------------------------ ICMP sockets */
 
 void icmp_sock_deliver(const u8 *ip, size_t len) {
@@ -198,14 +308,14 @@ void icmp_sock_deliver(const u8 *ip, size_t len) {
     } else return;
     for (Sock *s = g_socks; s; s = s->next) {
         if (s->kind != SK_ICMP || s->icmp_ident != ident || s->rq_bytes + len > 65536) continue;
-        Dgram *g = kmalloc(sizeof *g + len);
-        if (!g) continue;
-        g->next = NULL; g->saddr = rd32(ip + 12); g->sport = 0; g->len = (u32)len;
-        memcpy(g->data, ip, len);
-        if (s->rq_tail) s->rq_tail->next = g; else s->rq = g;
-        s->rq_tail = g;
-        s->rq_bytes += (u32)len + 32;
-        sock_wake(s);
+        dgram_put(s, ip, len, false, rd32(ip + 12), NULL, 0, 0);
+    }
+}
+
+void icmp6_sock_deliver(const In6 *src, u32 scope, u16 ident, const u8 *msg, size_t len) {
+    for (Sock *s = g_socks; s; s = s->next) {
+        if (s->kind != SK_ICMP6 || s->icmp_ident != ident || s->rq_bytes + len > 65536) continue;
+        dgram_put(s, msg, len, true, 0, src, scope, 0);
     }
 }
 
@@ -300,6 +410,115 @@ int sk_put_sockaddr(u64 uaddr, u64 ulenp, u32 addr, u16 port) {
     return 0;
 }
 
+/* An address from a program, as the socket's family allows it: an AF_INET socket takes a sockaddr_in; an AF_INET6 socket a sockaddr_in6, whose v4-mapped addresses become IPv4
+ * (RFC 3493 section 3.7). Anything else is EAFNOSUPPORT, as on Linux. */
+int sk_get_addr_fam(u8 family, u64 uaddr, u64 len, SockAddr *out) {
+    memset(out, 0, sizeof *out);
+    if (family != AF_INET6) {
+        u32 a;
+        u16 p;
+        int rc = sk_get_sockaddr(uaddr, len, &a, &p);
+        if (rc) return rc;
+        out->fam = AF_INET;
+        out->a4 = a;
+        out->port = p;
+        return 0;
+    }
+    struct gsockaddr_in6 sa;
+    if (len < 24) return -EINVAL;
+    memset(&sa, 0, sizeof sa);
+    if (copy_from_user(&sa, (const void *)uaddr, MIN((size_t)len, sizeof sa))) return -EFAULT;
+    if (sa.family != AF_INET6) return -EAFNOSUPPORT;
+    In6 a;
+    memcpy(a.b, sa.addr, 16);
+    out->port = ntoh16(sa.port);
+    if (in6_is_v4mapped(&a)) {
+        out->fam = AF_INET;
+        out->a4 = in6_v4(&a);
+    } else {
+        out->fam = AF_INET6;
+        out->a6 = a;
+        out->scope = len >= sizeof sa ? sa.scope_id : 0;
+    }
+    return 0;
+}
+
+int sk_get_addr(const Sock *s, u64 uaddr, u64 len, SockAddr *out) { return sk_get_addr_fam(s->family, uaddr, len, out); }
+
+/* The bytes of an address as the socket's family shows it: a sockaddr_in (16 bytes), or a sockaddr_in6 (28) in which an IPv4 address is v4-mapped. Returns the length; out holds 28 bytes. */
+size_t sk_addr_bytes(u8 family, const SockAddr *a, void *out) {
+    if (family != AF_INET6) {
+        struct gsockaddr_in sa;
+        memset(&sa, 0, sizeof sa);
+        sa.family = AF_INET;
+        sa.port = hton16(a->port);
+        sa.addr = hton32(a->a4);
+        memcpy(out, &sa, sizeof sa);
+        return sizeof sa;
+    }
+    struct gsockaddr_in6 sa;
+    memset(&sa, 0, sizeof sa);
+    sa.family = AF_INET6;
+    sa.port = hton16(a->port);
+    if (a->fam == AF_INET) {
+        In6 m;
+        in6_set_v4mapped(&m, a->a4);
+        memcpy(sa.addr, m.b, 16);
+    } else {
+        memcpy(sa.addr, a->a6.b, 16);
+        if (in6_is_linklocal(&a->a6) || (in6_is_mcast(&a->a6) && in6_scope(&a->a6) == IP6_SCOPE_LINK)) sa.scope_id = a->scope;
+    }
+    memcpy(out, &sa, sizeof sa);
+    return sizeof sa;
+}
+
+int sk_put_addr(u8 family, u64 uaddr, u64 ulenp, const SockAddr *a) {
+    if (!uaddr || !ulenp) return 0;
+    u32 have;
+    if (copy_from_user(&have, (const void *)ulenp, sizeof have)) return -EFAULT;
+    u8 sa[sizeof(struct gsockaddr_in6)];
+    u32 want = (u32)sk_addr_bytes(family, a, sa);
+    u32 n = have < want ? have : want;
+    if (n && copy_to_user((void *)uaddr, sa, n)) return -EFAULT;
+    if (copy_to_user((void *)ulenp, &want, sizeof want)) return -EFAULT;
+    return 0;
+}
+
+static bool sk_connected_now(const Sock *s) {
+    return s->kind == SK_TCP ? (s->state != TCPS_CLOSED && s->state != TCPS_LISTEN) : s->connected;
+}
+
+void sk_local_addr(Sock *s, SockAddr *a) {
+    memset(a, 0, sizeof *a);
+    a->port = s->lport;
+    if (s->family != AF_INET6) {
+        a->fam = AF_INET;
+        a->a4 = s->laddr;
+        if (!a->a4 && s->kind != SK_ICMP && s->raddr) a->a4 = ip_source_for(s->raddr);
+        return;
+    }
+    bool conn = sk_connected_now(s);
+    if (conn && s->wire6) { a->fam = AF_INET6; a->a6 = s->laddr6; a->scope = s->scope; return; }
+    if (conn) {
+        a->fam = AF_INET;
+        a->a4 = s->laddr ? s->laddr : (s->raddr ? ip_source_for(s->raddr) : 0);
+        return;
+    }
+    if (s->m6 || !s->bound) { a->fam = AF_INET6; a->a6 = s->laddr6; a->scope = s->scope; return; }
+    a->fam = AF_INET;                                                       /* bound to an IPv4 address (::ffff:a.b.c.d) */
+    a->a4 = s->laddr;
+}
+
+bool sk_peer_addr(Sock *s, SockAddr *a) {
+    bool ok = s->kind == SK_TCP ? (s->state >= TCPS_ESTABLISHED && s->state != TCPS_CLOSED && s->state != TCPS_LISTEN && s->state != TCPS_SYN_SENT) : s->connected;
+    if (!ok) return false;
+    memset(a, 0, sizeof *a);
+    a->port = s->rport;
+    if (s->wire6) { a->fam = AF_INET6; a->a6 = s->raddr6; a->scope = s->scope; }
+    else { a->fam = AF_INET; a->a4 = s->raddr; }
+    return true;
+}
+
 /* ------------------------------------------------------------------ blocking helper */
 
 int sk_block(Sock *s, u32 tmo, u64 *deadline) {
@@ -320,9 +539,18 @@ ssize_t sk_recv(File *f, u8 *buf, size_t n, int mflags, u32 *from_addr, u16 *fro
     return sk_recv_ex(f, buf, n, mflags, from_addr, from_port, NULL);
 }
 
+ssize_t sk_recv_ex(File *f, u8 *buf, size_t n, int mflags, u32 *from_addr, u16 *from_port, size_t *full) {
+    SockAddr from;
+    memset(&from, 0, sizeof from);
+    ssize_t rc = sk_recv_from(f, buf, n, mflags, (from_addr || from_port) ? &from : NULL, full);
+    if (from_addr) *from_addr = from.fam == AF_INET ? from.a4 : 0;
+    if (from_port) *from_port = from.port;
+    return rc;
+}
+
 /* The same, and for a datagram socket *full (if given) becomes the length of the datagram, which is more than the result when the buffer was too small and the
  * rest was thrown away: recvmsg reports that as MSG_TRUNC. For a stream it is the byte count. */
-ssize_t sk_recv_ex(File *f, u8 *buf, size_t n, int mflags, u32 *from_addr, u16 *from_port, size_t *full) {
+ssize_t sk_recv_from(File *f, u8 *buf, size_t n, int mflags, SockAddr *from, size_t *full) {
     Sock *s = f->priv;
     bool nb = (f->flags & O_NONBLOCK) || (mflags & MSG_DONTWAIT);
     bool peek = (mflags & MSG_PEEK) != 0;
@@ -356,8 +584,12 @@ ssize_t sk_recv_ex(File *f, u8 *buf, size_t n, int mflags, u32 *from_addr, u16 *
                 size_t k = MIN(n, (size_t)g->len);
                 memcpy(buf, g->data, k);
                 if (full) *full = g->len;
-                if (from_addr) *from_addr = g->saddr;
-                if (from_port) *from_port = g->sport;
+                if (from) {
+                    memset(from, 0, sizeof *from);
+                    from->port = g->sport;
+                    if (g->v6) { from->fam = AF_INET6; from->a6 = g->saddr6; from->scope = g->scope; }
+                    else { from->fam = AF_INET; from->a4 = g->saddr; }
+                }
                 if (!peek) {
                     s->rq = g->next;
                     if (!s->rq) s->rq_tail = NULL;
@@ -383,6 +615,15 @@ ssize_t sk_recv_ex(File *f, u8 *buf, size_t n, int mflags, u32 *from_addr, u16 *
 /* ------------------------------------------------------------------ send */
 
 ssize_t sk_send(File *f, const u8 *buf, size_t n, int mflags, bool have_addr, u32 daddr, u16 dport) {
+    SockAddr to;
+    memset(&to, 0, sizeof to);
+    to.fam = AF_INET;
+    to.a4 = daddr;
+    to.port = dport;
+    return sk_send_to(f, buf, n, mflags, have_addr ? &to : NULL);
+}
+
+ssize_t sk_send_to(File *f, const u8 *buf, size_t n, int mflags, const SockAddr *to) {
     Sock *s = f->priv;
     bool nb = (f->flags & O_NONBLOCK) || (mflags & MSG_DONTWAIT);
     u64 deadline = 0;
@@ -412,16 +653,41 @@ ssize_t sk_send(File *f, const u8 *buf, size_t n, int mflags, bool have_addr, u3
             if (w && !tcp_send_space(s) && !s->err) { rc = sent ? (ssize_t)sent : w; break; }
         }
     } else if (s->kind == SK_UDP) {
-        if (!have_addr) {
+        SockAddr dst;
+        bool have = to != NULL;
+        if (have) dst = *to;
+        if (!have) {
             if (!s->connected) rc = -EDESTADDRREQ;
-            else { daddr = s->raddr; dport = s->rport; have_addr = true; }
+            else {
+                memset(&dst, 0, sizeof dst);
+                dst.port = s->rport;
+                if (s->wire6) { dst.fam = AF_INET6; dst.a6 = s->raddr6; dst.scope = s->scope; } else { dst.fam = AF_INET; dst.a4 = s->raddr; }
+                have = true;
+            }
         }
-        if (have_addr) {
+        if (have) {
             if (s->err) { rc = -s->err; s->err = 0; }
             else if (s->wr_shut) { rc = -EPIPE; sigpipe = true; }
-            else { int r = udp_send(s, buf, n, daddr, dport); rc = r ? r : (ssize_t)n; }
+            else if (dst.fam == AF_INET6) { int r = udp6_send(s, buf, n, &dst); rc = r ? r : (ssize_t)n; }
+            else if (s->family == AF_INET6 && s->v6only) rc = -ENETUNREACH;      /* an IPv4 destination from a socket that takes no IPv4 */
+            else if (s->family == AF_INET6 && s->bound && !s->m4) rc = -ENETUNREACH;
+            else { int r = udp_send(s, buf, n, dst.a4, dst.port); rc = r ? r : (ssize_t)n; }
+        }
+    } else if (s->kind == SK_ICMP6) {
+        SockAddr dst;
+        bool have = to != NULL;
+        if (have) dst = *to;
+        else if (s->connected) { memset(&dst, 0, sizeof dst); dst.fam = AF_INET6; dst.a6 = s->raddr6; dst.scope = s->scope; have = true; }
+        if (!have) rc = -EDESTADDRREQ;
+        else if (dst.fam != AF_INET6) rc = -EAFNOSUPPORT;
+        else {
+            const In6 *hint = (s->m6 && !in6_is_any(&s->laddr6)) ? &s->laddr6 : NULL;
+            int r = icmp6_send_echo_request(hint, &dst.a6, dst.scope ? dst.scope : s->scope, buf, n, s->icmp_ident);
+            rc = r ? r : (ssize_t)n;
         }
     } else {
+        u32 daddr = to ? to->a4 : 0;
+        bool have_addr = to != NULL;
         if (!have_addr && s->raddr) { daddr = s->raddr; have_addr = true; }
         if (!have_addr) rc = -EDESTADDRREQ;
         else { int r = icmp_send_echo(s, buf, n, daddr); rc = r ? r : (ssize_t)n; }

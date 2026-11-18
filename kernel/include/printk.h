@@ -15,4 +15,7 @@ int  vprintk(const char *fmt, va_list ap);
 /* "[Subsystem] message\n" -- the tag is the Touhou-flavoured subsystem name. */
 void klog(const char *subsystem, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 
+/* The same, only into the in-memory log (dmesg): not onto the serial line and the screen. */
+void klog_quiet(const char *subsystem, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+
 #endif

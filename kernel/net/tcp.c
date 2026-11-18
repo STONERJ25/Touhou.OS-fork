@@ -48,12 +48,29 @@ static u32 tcp_rcv_window(Sock *s) {
     return w;
 }
 
-static u16 tcp_local_mss(u32 laddr, u32 raddr) {
+/* w runs from the local end to the remote one. */
+static u16 tcp_local_mss(const Wire *w) {
     u32 mtu = 1500;
-    if ((raddr >> 24) == 127 || net_is_local(raddr)) mtu = netdev_loopback()->mtu;
-    else { Route *r = ip_route(raddr); if (r) mtu = r->dev->mtu; }
-    (void)laddr;
+    if (w->v6) {                                                /* the path MTU (the card's, a router's advertisement, a "packet too big"), minus the IPv6 and TCP headers */
+        Pick6 p;
+        if (ip6_pick(&w->src6, &w->dst6, w->scope, &p) == 0) mtu = p.mtu;
+        if (mtu < IP6_MIN_MTU) mtu = IP6_MIN_MTU;
+        return (u16)(mtu - 60);
+    }
+    if ((w->dst4 >> 24) == 127 || net_is_local(w->dst4)) mtu = netdev_loopback()->mtu;
+    else { Route *r = ip_route(w->dst4); if (r) mtu = r->dev->mtu; }
     return (u16)(mtu - 40);
+}
+
+/* The two ends of a connection as a segment of ours travels: local to remote. */
+static void sock_wire(const Sock *s, Wire *w) {
+    w->v6 = s->wire6;
+    w->src4 = s->laddr;
+    w->dst4 = s->raddr;
+    w->src6 = s->laddr6;
+    w->dst6 = s->raddr6;
+    w->scope = s->scope;
+    w->dev = NULL;
 }
 
 static void tcp_alloc_bufs(Sock *s) {
@@ -78,7 +95,7 @@ void tcp_sock_init(Sock *s) {
 
 /* ------------------------------------------------------------------ segment output */
 
-static void tcp_emit_raw(u32 src, u32 dst, u16 sport, u16 dport, u32 seq, u32 ack, u8 flags, u16 win, const u8 *opts, size_t optlen,
+static void tcp_emit_raw(const Wire *w, u16 sport, u16 dport, u32 seq, u32 ack, u8 flags, u16 win, const u8 *opts, size_t optlen,
                          Sock *s, size_t dlen, u8 ttl, u8 tos) {
     NetBuf *nb = nb_alloc();
     if (!nb) return;
@@ -97,9 +114,17 @@ static void tcp_emit_raw(u32 src, u32 dst, u16 sport, u16 dport, u32 seq, u32 ac
         memcpy(t + hl, s->sbuf + idx, first);
         if (dlen > first) memcpy(t + hl + first, s->sbuf, dlen - first);
     }
-    u16 c = (u16)~net_csum(t, hl + dlen, net_pseudo_csum(src, dst, IPPROTO_TCP, (u16)(hl + dlen)));
+    if (w->v6) {                                                /* IPv6: the pseudo-header has the 128-bit addresses; TCP never fragments (no "don't fragment" bit exists: the segment simply has to fit) */
+        Pick6 p;
+        if (ip6_pick(&w->src6, &w->dst6, w->scope, &p)) { g_ip6_stats.out_no_routes++; nb_free(nb); return; }
+        u16 c6 = ip6_l4_csum(&w->src6, &w->dst6, IP6P_TCP, t, hl + dlen);
+        memcpy(t + 16, &c6, 2);
+        ip6_send_nb(&p, &w->dst6, IP6P_TCP, ttl, tos, false, nb);
+        return;
+    }
+    u16 c = (u16)~net_csum(t, hl + dlen, net_pseudo_csum(w->src4, w->dst4, IPPROTO_TCP, (u16)(hl + dlen)));
     memcpy(t + 16, &c, 2);
-    ip_output(src, dst, IPPROTO_TCP, ttl, tos, true, nb);
+    ip_output(w->src4, w->dst4, IPPROTO_TCP, ttl, tos, true, nb);
 }
 
 /* A segment of the connection: acknowledges what we have received, carries `dlen` bytes of the send ring starting at seq. */
@@ -121,7 +146,9 @@ static void tcp_emit(Sock *s, u32 seq, u8 flags, size_t dlen) {
         if (flags & TH_ACK) s->rcv_adv = s->rcv_nxt + (w << (s->ws_on ? s->rcv_ws : 0));
     }
     if (flags & TH_ACK) { s->t_delack = 0; s->segs_unacked = 0; s->ack_now = false; }
-    tcp_emit_raw(s->laddr, s->raddr, s->lport, s->rport, seq, (flags & TH_ACK) ? tcp_ack_num(s) : 0, flags, (u16)w, opts, optlen, s, dlen,
+    Wire wire;
+    sock_wire(s, &wire);
+    tcp_emit_raw(&wire, s->lport, s->rport, seq, (flags & TH_ACK) ? tcp_ack_num(s) : 0, flags, (u16)w, opts, optlen, s, dlen,
                  s->ttl ? s->ttl : 64, s->tos);
 }
 
@@ -129,13 +156,16 @@ static void tcp_ack_now(Sock *s) {
     tcp_emit(s, s->snd_nxt, TH_ACK, 0);
 }
 
-/* A reply to a segment that belongs to no connection (RFC 793 page 36). */
-static void tcp_reset_reply(u32 src, u32 dst, u16 sport, u16 dport, u32 seq, u32 ack, u8 flags, size_t dlen) {
+/* A reply to a segment that belongs to no connection (RFC 793 page 36). pw is the received packet's two ends (its source is the peer). */
+static void tcp_reset_reply(const Wire *pw, u16 sport, u16 dport, u32 seq, u32 ack, u8 flags, size_t dlen) {
     if (flags & TH_RST) return;
-    if (flags & TH_ACK) tcp_emit_raw(dst, src, dport, sport, ack, 0, TH_RST, 0, NULL, 0, NULL, 0, 64, 0);
+    Wire r = *pw;                                               /* the reply goes the other way */
+    r.src4 = pw->dst4; r.dst4 = pw->src4;
+    r.src6 = pw->dst6; r.dst6 = pw->src6;
+    if (flags & TH_ACK) tcp_emit_raw(&r, dport, sport, ack, 0, TH_RST, 0, NULL, 0, NULL, 0, 64, 0);
     else {
         u32 a = seq + (u32)dlen + ((flags & TH_SYN) ? 1 : 0) + ((flags & TH_FIN) ? 1 : 0);
-        tcp_emit_raw(dst, src, dport, sport, 0, a, TH_RST | TH_ACK, 0, NULL, 0, NULL, 0, 64, 0);
+        tcp_emit_raw(&r, dport, sport, 0, a, TH_RST | TH_ACK, 0, NULL, 0, NULL, 0, 64, 0);
     }
 }
 
@@ -299,6 +329,7 @@ static void tcp_release(Sock *s) {
     if (!s->has_file) { tcp_destroy(s); return; }
     s->state = TCPS_CLOSED;
     s->raddr = 0;
+    in6_zero(&s->raddr6);
     s->rport = 0;
     s->t_rexmit = s->t_delack = s->t_misc = 0;
     tcp_free_bufs(s);
@@ -307,8 +338,11 @@ static void tcp_release(Sock *s) {
 
 /* Kills the connection: optionally tell the peer with a RST, tell the owner why, free everything if nobody holds the socket. */
 static void tcp_abort(Sock *s, int err, bool send_rst) {
-    if (send_rst && s->state != TCPS_SYN_SENT && s->state != TCPS_TIME_WAIT && s->state != TCPS_CLOSED && s->state != TCPS_LISTEN)
-        tcp_emit_raw(s->laddr, s->raddr, s->lport, s->rport, s->snd_nxt, tcp_ack_num(s), TH_RST | TH_ACK, 0, NULL, 0, NULL, 0, 64, 0);
+    if (send_rst && s->state != TCPS_SYN_SENT && s->state != TCPS_TIME_WAIT && s->state != TCPS_CLOSED && s->state != TCPS_LISTEN) {
+        Wire wire;
+        sock_wire(s, &wire);
+        tcp_emit_raw(&wire, s->lport, s->rport, s->snd_nxt, tcp_ack_num(s), TH_RST | TH_ACK, 0, NULL, 0, NULL, 0, 64, 0);
+    }
     if (err && !s->err) s->err = err;
     if (s->state == TCPS_SYN_RCVD && s->listener && s->listener->nsyn > 0) s->listener->nsyn--;
     s->state = TCPS_CLOSED;
@@ -368,7 +402,7 @@ static void tcp_absorb(Sock *s) {
 /* ------------------------------------------------------------------ input */
 
 typedef struct Seg {
-    u32 src, dst;
+    Wire w;                                                     /* the packet's two ends: its source is the peer */
     u16 sport, dport;
     u32 seq, ack;
     u8  flags;
@@ -379,26 +413,33 @@ typedef struct Seg {
     int ws;
 } Seg;
 
-static Sock *tcp_lookup(u32 laddr, u16 lport, u32 raddr, u16 rport, Sock **listener) {
+/* The connection or listener a packet belongs to; w is the packet (its destination is our end). A listener bound to a specific address beats one bound to the wildcard. */
+static Sock *tcp_lookup(const Wire *w, u16 lport, u16 rport, Sock **listener) {
     Sock *l = NULL;
     for (Sock *s = g_socks; s; s = s->next) {
         if (s->kind != SK_TCP || s->lport != lport) continue;
         if (s->state == TCPS_LISTEN) {
-            if ((s->laddr == 0 || s->laddr == laddr) && (!l || (s->laddr && !l->laddr))) l = s;
+            bool match = w->v6 ? sock_match6(s, &w->dst6, w->dev) : sock_match4(s, w->dst4);
+            bool specific = w->v6 ? !in6_is_any(&s->laddr6) : s->laddr != 0;
+            if (match) {
+                bool l_specific = l && (w->v6 ? !in6_is_any(&l->laddr6) : l->laddr != 0);
+                if (!l || (specific && !l_specific)) l = s;
+            }
             continue;
         }
-        if (s->state == TCPS_CLOSED) continue;
-        if (s->raddr == raddr && s->rport == rport && s->laddr == laddr) return s;
+        if (s->state == TCPS_CLOSED || s->wire6 != w->v6) continue;
+        if (w->v6 ? (s->rport == rport && in6_eq(&s->raddr6, &w->src6) && in6_eq(&s->laddr6, &w->dst6))
+                  : (s->raddr == w->src4 && s->rport == rport && s->laddr == w->dst4)) return s;
     }
     *listener = l;
     return NULL;
 }
 
-static void tcp_init_conn(Sock *s, u32 laddr, u32 raddr) {
+static void tcp_init_conn(Sock *s, const Wire *w) {                    /* w: local to remote */
     s->iss = (u32)random_u64();
     s->snd_una = s->snd_nxt = s->snd_max = s->iss;
     s->snd_end = s->iss + 1;
-    s->mss = tcp_local_mss(laddr, raddr);
+    s->mss = tcp_local_mss(w);
     s->rcv_ws = 2;
     s->rto = 1000;
     s->srtt = s->rttvar = 0;
@@ -406,7 +447,7 @@ static void tcp_init_conn(Sock *s, u32 laddr, u32 raddr) {
 }
 
 static void tcp_apply_peer_opts(Sock *s, const Seg *g) {
-    u16 pm = g->mss ? g->mss : 536;
+    u16 pm = g->mss ? g->mss : (g->w.v6 ? 1220 : 536);                  /* the default when the peer names none: 536 for IPv4, 1220 for IPv6 (RFC 6691) */
     if (pm < s->mss) s->mss = pm;
     if (s->mss < 64) s->mss = 64;
     if (g->ws >= 0) { s->ws_on = true; s->snd_ws = (u8)g->ws; } else { s->ws_on = false; s->snd_ws = 0; }
@@ -419,7 +460,18 @@ static void tcp_listen_syn(Sock *l, const Seg *g) {
     Sock *c = sock_new(SK_TCP);
     if (!c) return;
     tcp_sock_init(c);
-    c->laddr = g->dst; c->lport = g->dport; c->raddr = g->src; c->rport = g->sport;
+    c->family = l->family;                                       /* the child is what the listener is: an AF_INET6 listener's IPv4 connection shows its addresses mapped */
+    c->v6only = l->v6only;
+    c->wire6 = g->w.v6;
+    c->lport = g->dport; c->rport = g->sport;
+    if (g->w.v6) {
+        c->laddr6 = g->w.dst6; c->raddr6 = g->w.src6;
+        c->m6 = true;
+        c->scope = in6_is_linklocal(&g->w.src6) ? g->w.scope : 0;
+    } else {
+        c->laddr = g->w.dst4; c->raddr = g->w.src4;
+        c->m4 = true;
+    }
     c->bound = true;
     c->uid = l->uid;
     c->reuseaddr = l->reuseaddr; c->nodelay = l->nodelay; c->keepalive = l->keepalive;
@@ -427,7 +479,11 @@ static void tcp_listen_syn(Sock *l, const Seg *g) {
     c->ttl = l->ttl; c->tos = l->tos;
     tcp_alloc_bufs(c);
     if (!c->sbuf || !c->rbuf) { sock_unlink_free(c); return; }
-    tcp_init_conn(c, c->laddr, c->raddr);
+    {
+        Wire lw;
+        sock_wire(c, &lw);
+        tcp_init_conn(c, &lw);
+    }
     c->irs = g->seq;
     c->rcv_nxt = c->rd_nxt = g->seq + 1;
     c->rcv_adv = c->rcv_nxt;
@@ -558,7 +614,7 @@ static void tcp_segment(Sock *s, const Seg *g) {
     case TCPS_SYN_SENT: {
         bool ack_ok = false;
         if (flags & TH_ACK) {
-            if (SEQ_LEQ(g->ack, s->iss) || SEQ_GT(g->ack, s->snd_nxt)) { tcp_reset_reply(g->src, g->dst, g->sport, g->dport, g->seq, g->ack, flags, g->len); return; }
+            if (SEQ_LEQ(g->ack, s->iss) || SEQ_GT(g->ack, s->snd_nxt)) { tcp_reset_reply(&g->w, g->sport, g->dport, g->seq, g->ack, flags, g->len); return; }
             ack_ok = true;
         }
         if (flags & TH_RST) { if (ack_ok) tcp_abort(s, ECONNREFUSED, false); return; }
@@ -625,7 +681,7 @@ static void tcp_segment(Sock *s, const Seg *g) {
     if (!(flags & TH_ACK)) return;
     /* 4. ACK */
     if (s->state == TCPS_SYN_RCVD) {
-        if (SEQ_LEQ(g->ack, s->snd_una) || SEQ_GT(g->ack, s->snd_nxt)) { tcp_reset_reply(g->src, g->dst, g->sport, g->dport, g->seq, g->ack, flags, g->len); return; }
+        if (SEQ_LEQ(g->ack, s->snd_una) || SEQ_GT(g->ack, s->snd_nxt)) { tcp_reset_reply(&g->w, g->sport, g->dport, g->seq, g->ack, flags, g->len); return; }
         s->snd_una = g->ack;
         s->snd_wnd = g->win << s->snd_ws;
         s->snd_wl1 = g->seq;
@@ -688,15 +744,10 @@ static void tcp_segment(Sock *s, const Seg *g) {
     }
 }
 
-void tcp_input(NetDev *d, const u8 *p, size_t len, u32 src, u32 dst) {
-    (void)d;
-    if (len < 20) { g_net_stat_tcp_bad++; return; }
-    size_t off = (size_t)(p[12] >> 4) * 4;
-    if (off < 20 || off > len) { g_net_stat_tcp_bad++; return; }
-    if (net_csum(p, len, net_pseudo_csum(src, dst, IPPROTO_TCP, (u16)len)) != 0xFFFF) { g_net_stat_tcp_bad++; return; }
-    if (src == 0xFFFFFFFFu || dst == 0xFFFFFFFFu || (dst >> 28) == 14 || (src >> 28) == 14) return;
+/* What happens to a segment whose checksum and addresses were checked by the entry for its protocol: w is the packet's two ends (its source is the peer). */
+static void tcp_input_common(const u8 *p, size_t len, size_t off, const Wire *w) {
     Seg g;
-    g.src = src; g.dst = dst;
+    g.w = *w;
     g.sport = rd16(p); g.dport = rd16(p + 2);
     g.seq = rd32(p + 4); g.ack = rd32(p + 8);
     g.flags = p[13];
@@ -706,56 +757,144 @@ void tcp_input(NetDev *d, const u8 *p, size_t len, u32 src, u32 dst) {
     g.mss = 0;
     g.ws = -1;
     if (off > 20) tcp_parse_opts(p + 20, off - 20, &g.mss, &g.ws);
-    if ((g.flags & (TH_SYN | TH_FIN)) == (TH_SYN | TH_FIN) || (g.flags & (TH_SYN | TH_RST)) == (TH_SYN | TH_RST)) { g_net_stat_tcp_bad++; return; }
-    if (!(g.flags & (TH_SYN | TH_FIN | TH_RST | TH_ACK))) { g_net_stat_tcp_bad++; return; }          /* a null segment */
-    if (g.sport == 0 || g.dport == 0) { g_net_stat_tcp_bad++; return; }
+    if ((g.flags & (TH_SYN | TH_FIN)) == (TH_SYN | TH_FIN) || (g.flags & (TH_SYN | TH_RST)) == (TH_SYN | TH_RST)) { g_net_stat_tcp_bad++; if (w->v6) g_ip6_stats.bad++; return; }
+    if (!(g.flags & (TH_SYN | TH_FIN | TH_RST | TH_ACK))) { g_net_stat_tcp_bad++; if (w->v6) g_ip6_stats.bad++; return; }          /* a null segment */
+    if (g.sport == 0 || g.dport == 0) { g_net_stat_tcp_bad++; if (w->v6) g_ip6_stats.bad++; return; }
 
     Sock *l = NULL;
-    Sock *s = tcp_lookup(dst, g.dport, src, g.sport, &l);
+    Sock *s = tcp_lookup(w, g.dport, g.sport, &l);
     if (s && s->state == TCPS_TIME_WAIT && (g.flags & TH_SYN) && !(g.flags & TH_ACK) && SEQ_GT(g.seq, s->rcv_nxt + (s->fin_rcvd ? 1u : 0u))) {
         tcp_release(s);                                           /* RFC 1122 4.2.2.13: a newer SYN reopens the tuple */
         s = NULL;
-        tcp_lookup(dst, g.dport, src, g.sport, &l);
+        tcp_lookup(w, g.dport, g.sport, &l);
     }
     if (s) { tcp_segment(s, &g); return; }
     if (l) {
         if (g.flags & TH_RST) return;
-        if (g.flags & TH_ACK) { tcp_reset_reply(src, dst, g.sport, g.dport, g.seq, g.ack, g.flags, g.len); return; }
+        if (g.flags & TH_ACK) { tcp_reset_reply(w, g.sport, g.dport, g.seq, g.ack, g.flags, g.len); return; }
         if (g.flags & TH_SYN) tcp_listen_syn(l, &g);
         return;
     }
-    tcp_reset_reply(src, dst, g.sport, g.dport, g.seq, g.ack, g.flags, g.len);
+    tcp_reset_reply(w, g.sport, g.dport, g.seq, g.ack, g.flags, g.len);
+}
+
+void tcp_input(NetDev *d, const u8 *p, size_t len, u32 src, u32 dst) {
+    if (len < 20) { g_net_stat_tcp_bad++; return; }
+    size_t off = (size_t)(p[12] >> 4) * 4;
+    if (off < 20 || off > len) { g_net_stat_tcp_bad++; return; }
+    if (net_csum(p, len, net_pseudo_csum(src, dst, IPPROTO_TCP, (u16)len)) != 0xFFFF) { g_net_stat_tcp_bad++; return; }
+    if (src == 0xFFFFFFFFu || dst == 0xFFFFFFFFu || (dst >> 28) == 14 || (src >> 28) == 14) return;
+    Wire w;
+    memset(&w, 0, sizeof w);
+    w.src4 = src;
+    w.dst4 = dst;
+    w.dev = d;
+    tcp_input_common(p, len, off, &w);
+}
+
+void tcp6_input(NetDev *d, const u8 *p, size_t len, const In6 *src, const In6 *dst) {
+    if (len < 20) goto bad;
+    size_t off = (size_t)(p[12] >> 4) * 4;
+    if (off < 20 || off > len) goto bad;
+    if (net_csum(p, len, net6_pseudo_csum(src, dst, IP6P_TCP, (u32)len)) != 0xFFFF) goto bad;
+    if (in6_is_any(src) || in6_is_mcast(src) || in6_is_any(dst) || in6_is_mcast(dst)) return;       /* a connection is between two single hosts */
+    Wire w;
+    memset(&w, 0, sizeof w);
+    w.v6 = true;
+    w.src6 = *src;
+    w.dst6 = *dst;
+    w.scope = in6_is_linklocal(src) ? ip6_dev_scope(d) : 0;
+    w.dev = d;
+    tcp_input_common(p, len, off, &w);
+    return;
+bad:
+    g_net_stat_tcp_bad++;
+    g_ip6_stats.bad++;
 }
 
 void tcp_error(u32 laddr, u16 lport, u32 raddr, u16 rport, int err) {
     for (Sock *s = g_socks; s; s = s->next) {
-        if (s->kind != SK_TCP || s->state != TCPS_SYN_SENT) continue;
+        if (s->kind != SK_TCP || s->state != TCPS_SYN_SENT || s->wire6) continue;
         if (s->laddr == laddr && s->lport == lport && s->raddr == raddr && s->rport == rport) { tcp_abort(s, err, false); return; }
+    }
+}
+
+void tcp6_error(const In6 *laddr, u16 lport, const In6 *raddr, u16 rport, int err) {
+    for (Sock *s = g_socks; s; s = s->next) {
+        if (s->kind != SK_TCP || s->state != TCPS_SYN_SENT || !s->wire6) continue;
+        if (s->lport == lport && s->rport == rport && in6_eq(&s->laddr6, laddr) && in6_eq(&s->raddr6, raddr)) { tcp_abort(s, err, false); return; }
+    }
+}
+
+/* A router said that a packet to raddr was too big for the next link (the path MTU, already lowered in the cache): the connections to it send smaller segments from now on, and what was in
+ * flight at the old size, which the router threw away, goes out again at once instead of after the retransmission timer. */
+void tcp6_pmtu(const In6 *raddr, u32 mtu) {
+    u32 mss = mtu - 60;
+    for (Sock *s = g_socks; s; s = s->next) {
+        if (s->kind != SK_TCP || !s->wire6 || !in6_eq(&s->raddr6, raddr)) continue;
+        if (s->state != TCPS_ESTABLISHED && s->state != TCPS_CLOSE_WAIT && s->state != TCPS_FIN_WAIT1 && s->state != TCPS_LAST_ACK && s->state != TCPS_CLOSING) continue;
+        if (mss >= s->mss) continue;
+        s->mss = (u16)mss;
+        if (s->snd_una != s->snd_max) {
+            s->snd_nxt = s->snd_una;
+            s->rtt_on = false;
+            tcp_output(s);
+            if (!s->t_rexmit) tcp_arm_rexmit(s);
+        }
     }
 }
 
 /* ------------------------------------------------------------------ user-facing operations */
 
-int tcp_connect(Sock *s, u32 raddr, u16 rport) {
-    u32 laddr = s->laddr ? s->laddr : ip_source_for(raddr);
-    if (!laddr) return -ENETUNREACH;
-    if (!s->bound) {
-        s->lport = sock_alloc_port(SK_TCP);
-        s->bound = true;
+int tcp_connect(Sock *s, const SockAddr *to) {
+    Wire w;                                                       /* local to remote */
+    memset(&w, 0, sizeof w);
+    if (to->fam == AF_INET6) {
+        if (s->family != AF_INET6) return -EAFNOSUPPORT;
+        const In6 *hint = (s->bound && s->m6 && !in6_is_any(&s->laddr6)) ? &s->laddr6 : NULL;
+        Pick6 pk;
+        int rc = ip6_pick(hint, &to->a6, to->scope ? to->scope : s->scope, &pk);
+        if (rc) return rc;
+        w.v6 = true;
+        w.src6 = pk.src;
+        w.dst6 = to->a6;
+        w.scope = in6_is_linklocal(&to->a6) && pk.dev ? ip6_dev_scope(pk.dev) : 0;
+    } else {
+        if (s->family == AF_INET6 && (s->v6only || (s->bound && !s->m4))) return -ENETUNREACH;      /* an IPv4 peer for a socket that takes no IPv4 */
+        u32 laddr = s->laddr ? s->laddr : ip_source_for(to->a4);
+        if (!laddr) return -ENETUNREACH;
+        w.src4 = laddr;
+        w.dst4 = to->a4;
     }
-    for (Sock *o = g_socks; o; o = o->next)
-        if (o != s && o->kind == SK_TCP && o->state != TCPS_LISTEN && o->lport == s->lport && o->laddr == laddr && o->raddr == raddr && o->rport == rport)
-            return -EADDRNOTAVAIL;
+    if (!s->bound) {
+        u16 port = sock_alloc_port(SK_TCP);
+        if (!port) return -EADDRINUSE;
+        sock_autobind(s, port);
+    }
+    for (Sock *o = g_socks; o; o = o->next) {
+        if (o == s || o->kind != SK_TCP || o->state == TCPS_LISTEN || o->lport != s->lport || o->rport != to->port || o->wire6 != w.v6) continue;
+        if (w.v6 ? (in6_eq(&o->laddr6, &w.src6) && in6_eq(&o->raddr6, &w.dst6)) : (o->laddr == w.src4 && o->raddr == w.dst4)) return -EADDRNOTAVAIL;
+    }
     tcp_alloc_bufs(s);
     if (!s->sbuf || !s->rbuf) return -ENOMEM;
-    s->laddr = laddr;
-    s->raddr = raddr;
-    s->rport = rport;
+    s->wire6 = w.v6;
+    if (w.v6) {
+        s->laddr6 = w.src6;
+        s->raddr6 = w.dst6;
+        s->scope = w.scope;
+        s->m6 = true;
+        s->m4 = false;
+    } else {
+        s->laddr = w.src4;
+        s->raddr = w.dst4;
+        if (s->family == AF_INET6) { s->m4 = true; s->m6 = false; }
+    }
+    s->rport = to->port;
     s->err = 0;
     s->rd_shut = s->wr_shut = false;
     s->fin_pending = s->fin_acked = s->fin_rcvd = s->fin_seen = false;
     s->nooo = 0;
-    tcp_init_conn(s, laddr, raddr);
+    tcp_init_conn(s, &w);
     s->ws_on = true;                                              /* offered in our SYN; cleared if the peer does not answer in kind */
     s->cwnd = 10u * s->mss;
     s->rcv_nxt = s->rd_nxt = s->rcv_adv = 0;

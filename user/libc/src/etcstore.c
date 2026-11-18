@@ -14,6 +14,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/statfs.h>
+#include <arpa/inet.h>
 #include <abi.h>
 
 const char *const etc_kept_names[] = { "passwd", "shadow", "group", "hostname", "timezone", "network.conf", "update.conf", NULL };
@@ -186,7 +187,20 @@ static bool good_mac(const char *s) {
     return true;
 }
 
-/* network.conf: IFACE dhcp|static ADDR/PREFIX [gateway GW] [dns D [D [D]]] [mac XX:XX:XX:XX:XX:XX] */
+/* An IPv6 address that a line of network.conf may give a card: not ::, not ::1, not a multicast address, not v4-mapped, not link-local (the kernel makes the link-local one). */
+static bool usable_host6(const unsigned char *a) {
+    bool zero = true;
+    for (int i = 0; i < 16; i++) if (a[i]) zero = false;
+    if (zero) return false;
+    if (a[0] == 0xFF) return false;
+    if (a[0] == 0xFE && (a[1] & 0xC0) == 0x80) return false;
+    bool lead0 = true;
+    for (int i = 0; i < 10; i++) if (a[i]) lead0 = false;
+    if (lead0 && ((a[10] == 0xFF && a[11] == 0xFF) || (a[10] == 0 && a[11] == 0 && a[12] == 0 && a[13] == 0 && a[14] == 0 && a[15] == 1))) return false;
+    return true;
+}
+
+/* network.conf: IFACE dhcp|static ADDR/PREFIX [gateway GW] [dns D [D [D]]] [mac XX:XX:XX:XX:XX:XX]   and   IFACE static6 ADDR/PREFIX [gateway GW] [mac XX:XX:XX:XX:XX:XX] (IPv6, beside the other line of the card) */
 static int check_network(char *line, int ln, Why *w, Seen *seen) {
     char *t[16];
     int n = 0;
@@ -198,6 +212,45 @@ static int check_network(char *line, int ln, Why *w, Seen *seen) {
     if (strlen(t[0]) > 15 || !good_name(t[0])) return bad(w, ln, "'%s' is not a card name", t[0]);
     int i = 2;
     unsigned long addr = 0, mask = 0, gw = 0;
+    if (!strcmp(t[1], "static6")) {                                    /* an IPv6 address (and a default router), checked with duplicate address detection when it is applied */
+        if (n < 3) return bad(w, ln, "static6 needs ADDR/PREFIX");
+        char a[64];
+        snprintf(a, sizeof a, "%s", t[2]);
+        char *slash = strchr(a, '/');
+        if (!slash) return bad(w, ln, "'%s' has no /PREFIX", t[2]);
+        *slash = 0;
+        unsigned char ad[16], gb[16];
+        if (inet_pton(AF_INET6, a, ad) != 1 || !usable_host6(ad)) return bad(w, ln, "'%s' is not a usable IPv6 address", a);
+        if (!good_number(slash + 1, 128) || atoi(slash + 1) < 1) return bad(w, ln, "the prefix must be 1 to 128");
+        int plen = atoi(slash + 1);
+        const char *mac6 = "";
+        for (i = 3; i < n;) {
+            if (!strcmp(t[i], "gateway") && i + 1 < n) {
+                bool ll = false, inside = true;
+                if (inet_pton(AF_INET6, t[i + 1], gb) != 1 || !usable_host6(gb)) {
+                    ll = inet_pton(AF_INET6, t[i + 1], gb) == 1 && gb[0] == 0xFE && (gb[1] & 0xC0) == 0x80;     /* a router is usually named by its link-local address */
+                    if (!ll) return bad(w, ln, "the gateway %s is not an IPv6 address", t[i + 1]);
+                }
+                for (int b = 0; b < 16 && b * 8 < plen; b++) {
+                    unsigned char m = plen - b * 8 >= 8 ? 0xFF : (unsigned char)(0xFF << (8 - (plen - b * 8)));
+                    if ((gb[b] ^ ad[b]) & m) inside = false;
+                }
+                if (!ll && !inside) return bad(w, ln, "the gateway %s is neither link-local nor inside the card's prefix", t[i + 1]);
+                if (!memcmp(gb, ad, 16)) return bad(w, ln, "the gateway is the card's own address");
+                i += 2;
+            } else if (!strcmp(t[i], "mac") && i + 1 < n) {
+                if (!good_mac(t[i + 1])) return bad(w, ln, "'%s' is not a MAC address", t[i + 1]);
+                mac6 = t[i + 1];
+                i += 2;
+            } else {
+                return bad(w, ln, "unexpected '%s'", t[i]);
+            }
+        }
+        char key6[56];
+        snprintf(key6, sizeof key6, "%s/6/%s", t[0], mac6);
+        if (seen_before(seen, key6)) return bad(w, ln, "%s%s%s has two static6 lines", t[0], mac6[0] ? " " : "", mac6);
+        return 0;
+    }
     bool is_static = !strcmp(t[1], "static"), have_gw = false;
     if (is_static) {
         if (n < 3) return bad(w, ln, "static needs ADDR/PREFIX");
@@ -211,7 +264,7 @@ static int check_network(char *line, int ln, Why *w, Seen *seen) {
         mask = 0xFFFFFFFFul << (32 - atoi(slash + 1)) & 0xFFFFFFFFul;
         i = 3;
     } else if (strcmp(t[1], "dhcp")) {
-        return bad(w, ln, "'%s' is neither dhcp nor static", t[1]);
+        return bad(w, ln, "'%s' is neither dhcp, static nor static6", t[1]);
     }
     const char *mac = "";
     while (i < n) {

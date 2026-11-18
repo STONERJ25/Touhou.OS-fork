@@ -72,6 +72,7 @@ HOSTED_PROGRAMS.update({                            # sockets, poll, epoll, even
     "net_unix": ([], {}),
     "net_unix2": ([], {}),
     "net_resolve": ([], {}),
+    "net_tcp6": ([], {}),                            # IPv6 over ::1 (tests/case_linux_net.py: linux_net6_matches_linux)
     "net_poll": ([], {}),
     "net_epoll": ([], {}),
     "net_events": ([], {}),

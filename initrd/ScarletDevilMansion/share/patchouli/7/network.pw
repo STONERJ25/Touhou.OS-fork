@@ -1,21 +1,28 @@
 .page network 7 Yukari's gaps: the network stack, its tools and its files
 
 # DESCRIPTION
-Yukari Yakumo opens gaps between places; the network stack opens them between machines. It lives in the kernel (`kernel/net/`) and speaks Ethernet, ARP, IPv4, ICMP, UDP and TCP. Programs reach it through the usual socket calls (`socket`, `bind`, `listen`, `accept`, `connect`, `send`, `recvfrom`, `setsockopt`, `poll` and the rest) with `AF_INET` and `SOCK_STREAM` or `SOCK_DGRAM`; the C library adds `getaddrinfo`, `gethostbyname`, `inet_pton` and the byte-order functions. There is no IPv6, and TLS is not part of the kernel: it is a library in user space (tls(7)) that `fetch`, `wget`, `https_get` and the Browser use.
+Yukari Yakumo opens gaps between places; the network stack opens them between machines. It lives in the kernel (`kernel/net/`) and speaks Ethernet, ARP, IPv4, IPv6, ICMP, ICMPv6, neighbour discovery, UDP and TCP. Programs reach it through the usual socket calls (`socket`, `bind`, `listen`, `accept`, `connect`, `send`, `recvfrom`, `setsockopt`, `poll` and the rest) with `AF_INET` or `AF_INET6` and `SOCK_STREAM` or `SOCK_DGRAM`; the C library adds `getaddrinfo`, `gethostbyname`, `inet_pton` and the byte-order functions. TLS is not part of the kernel: it is a library in user space (tls(7)) that `fetch`, `wget`, `https_get` and the Browser use (over IPv4 only for now).
 
 # INTERFACES
 @ lo
-    The loopback, always there, 127.0.0.1/8. It works without any network card, which is how most of the system's own tests run.
+    The loopback, always there, 127.0.0.1/8 and `::1`. It works without any network card, which is how most of the system's own tests run.
 @ eth0, eth1, ...
     Network cards, in the order the kernel finds them. Drivers exist for virtio-net, Intel e1000 and e1000e (including the I217, I218 and I219 chips of recent PCs, untried on real hardware) and Realtek RTL8139; see `lspci` and the `[Yukari]` lines of `dmesg` for what was found.
 
 When a card reports that a cable is plugged in, the kernel starts a DHCP client on it in the background; the boot never waits for it. A lease sets the address, the default route and `/etc/resolv.conf`. Apart from that DHCP exchange the only thing that sends a packet on its own is the clock: soon after boot the kernel asks an NTP server for the time (the one the lease names, one from `ntp=` on the command line, or, failing both, a public one; `ntp=off` stops it; see ntp(7)). Nothing else phones home.
 
+# IPv6
+IPv6 runs beside IPv4 and starts with the same carrier. The card gets a link-local address (`fe80::/64`, made from its hardware address) and checks that nobody else on the cable has it (duplicate address detection, about a second); it then asks for a router advertisement. A router's answer gives the card a global address for every prefix it announces (SLAAC), a default route, and the name servers it names, which appear in `/etc/resolv.conf` marked `# RDNSS`. If no router answers the card keeps its link-local address, which is enough to talk to the machines on the same cable. `ip -6 addr`, `ip -6 route`, `ip -6 neigh` and `ifconfig` show all this; `ping6`, `nc -6`, `fetch http://[::1]:PORT/` and `httpd -6` use it. A `static6` line of network.conf(5) or `ip -6 addr add` gives an address by hand.
+
+A socket made with `AF_INET6` and bound to `::` takes both IPv6 and IPv4 connections (an IPv4 peer shows up as `::ffff:a.b.c.d`) unless the program sets `IPV6_V6ONLY`. A link-local address is only meaningful on one cable, so it is written with the interface: `fe80::2%eth0`.
+
+Under QEMU's user-mode networking the virtual router is the machine QEMU runs on: it advertises `fec0::/64`, is itself `fec0::2` (a connection to it reaches the host's `::1`) and names `fec0::3` as the name server.
+
 # TOOLS
 @ ifconfig(1), ip(1), route(1)
-    Look at and change addresses, links, routes and the neighbour (ARP) table.
-@ ping(1)
-    ICMP echo.
+    Look at and change addresses, links, routes and the neighbour tables (ARP and neighbour discovery).
+@ ping(1), ping6(1)
+    ICMP and ICMPv6 echo.
 @ nslookup(1), host(1)
     Ask the DNS.
 @ fetch(1), wget(1)
@@ -30,17 +37,19 @@ When a card reports that a cable is plugged in, the kernel starts a DHCP client 
     Sockets, routes and counters.
 
 # FILES
-@ /etc/resolv.conf, /etc/hosts
-    See resolv.conf(5) and hosts(5).
+@ /etc/resolv.conf, /etc/hosts, /etc/network.conf
+    See resolv.conf(5), hosts(5) and network.conf(5).
 @ /proc/net/dev, route, arp, tcp, udp
     The stack's state in the usual text formats.
+@ /proc/net/if_inet6, ipv6_route, tcp6, udp6, snmp6
+    The same for IPv6, in the formats that Linux programs read. `/proc/net/ndp` is the neighbour cache of IPv6.
 @ /proc/net/tune
     Root can write `name value` lines to change timers and to make the loopback lose, duplicate, reorder or corrupt a percentage of its frames (`lo_drop`, `lo_dup`, `lo_reorder`, `lo_corrupt`), which is how the stack's recovery from loss is tested. Reading it shows the settings and a few error counters.
 @ /proc/net/inject
-    Root can write one raw Ethernet frame per `write()`; the stack handles it as if it had arrived on the loopback. Used to feed it garbage.
+    Root can write one raw Ethernet frame per `write()`; the stack handles it as if it had arrived on the loopback. Used to feed it garbage. `/proc/net/inject_dev` does the same for a named card (a 16-byte name, then the frame).
 
 # LIMITS
-Ports below 1024 may only be bound by root. A socket has two 128 KiB rings (send and receive); a connection that has been closed lingers in TIME_WAIT for half a minute. UDP datagrams up to 65507 bytes are fragmented and reassembled; at most four incomplete datagrams are kept at a time. TCP implements window scaling but not selective acknowledgements or timestamps.
+Ports below 1024 may only be bound by root. A socket has two 128 KiB rings (send and receive); a connection that has been closed lingers in TIME_WAIT for half a minute. UDP datagrams up to 65507 bytes (IPv6: 65527) are fragmented and reassembled; at most four incomplete datagrams are kept at a time. TCP implements window scaling but not selective acknowledgements or timestamps. IPv6 is not yet used by the TLS library, ssh or the update tools; it has no multicast group membership (MLD) and no DHCPv6.
 
 # SEE ALSO
-ifconfig(1), ping(1), fetch(1), nc(1), resolv.conf(5), hosts(5), gensokyo(7)
+ifconfig(1), ping(1), ping6(1), fetch(1), nc(1), resolv.conf(5), hosts(5), network.conf(5), gensokyo(7)

@@ -23,6 +23,7 @@ typedef struct {
     unsigned port;
     char path[1024];
     int tls;
+    int host6;                      /* the host is an IPv6 address (kept here without its brackets) */
 } Url;
 
 typedef struct {
@@ -36,6 +37,7 @@ typedef struct {
 static int parse_url(const char *s, Url *u) {
     unsigned port = 80;
     u->tls = 0;
+    u->host6 = 0;
     if (!strncasecmp(s, "https://", 8)) { u->tls = 1; port = 443; s += 8; }
     else if (!strncasecmp(s, "http://", 7)) s += 7;
     else if (strstr(s, "://")) { kb_error("unsupported URL scheme in '%s'", s); return -1; }
@@ -46,31 +48,63 @@ static int parse_url(const char *s, Url *u) {
     memcpy(hostport, s, hl);
     hostport[hl] = 0;
     u->port = port;
-    char *colon = strrchr(hostport, ':');
-    if (colon) { *colon++ = 0; u->port = (unsigned)atoi(colon); if (u->port == 0 || u->port > 65535) { kb_error("bad port in URL"); return -1; } }
-    strlcpy(u->host, hostport, sizeof u->host);
+    if (hostport[0] == '[') {                                                /* an IPv6 address in brackets, then an optional ":port" (RFC 3986 section 3.2.2) */
+        char *close = strchr(hostport, ']');
+        if (!close || close == hostport + 1) { kb_error("bad host in URL"); return -1; }
+        *close++ = 0;
+        if (*close == ':') {
+            u->port = (unsigned)atoi(close + 1);
+            if (u->port == 0 || u->port > 65535) { kb_error("bad port in URL"); return -1; }
+        } else if (*close) { kb_error("bad host in URL"); return -1; }
+        strlcpy(u->host, hostport + 1, sizeof u->host);
+        u->host6 = 1;
+    } else {
+        char *colon = strrchr(hostport, ':');
+        if (colon) { *colon++ = 0; u->port = (unsigned)atoi(colon); if (u->port == 0 || u->port > 65535) { kb_error("bad port in URL"); return -1; } }
+        strlcpy(u->host, hostport, sizeof u->host);
+    }
     if (slash) strlcpy(u->path, slash, sizeof u->path); else strlcpy(u->path, "/", sizeof u->path);
     return 0;
 }
 
+/* "host" or "[v6address]": how the host goes into a URL or a Host header */
+static const char *host_text(const Url *u, char *buf, size_t n) {
+    if (u->host6) snprintf(buf, n, "[%s]", u->host); else strlcpy(buf, u->host, n);
+    return buf;
+}
+
+/* Every address the name has, in RFC 6724 order, until one accepts the connection (an IPv6 literal or AAAA record first if that is what the system prefers). */
 static int connect_to(const Url *u, int timeout_s) {
-    uint32_t ip;
-    if (!nu_resolve(u->host, &ip)) return -1;
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) { kb_error("socket: %s", strerror(errno)); return -1; }
-    struct timeval tv = { timeout_s, 0 };
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
-    struct sockaddr_in sa;
-    memset(&sa, 0, sizeof sa);
-    sa.sin_family = AF_INET;
-    sa.sin_port = htons((unsigned short)u->port);
-    sa.sin_addr.s_addr = htonl(ip);
-    if (connect(fd, (struct sockaddr *)&sa, sizeof sa) < 0) {
-        kb_error("connecting to %s:%u failed: %s", u->host, u->port, strerror(errno));
-        close(fd);
-        return -1;
+    struct addrinfo hints, *res = NULL, *ai;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_ADDRCONFIG;
+    int rc = getaddrinfo(u->host, NULL, &hints, &res);
+    if (rc == EAI_NONAME && u->host6 == 0) {                                 /* AI_ADDRCONFIG left nothing: a literal address needs no configuration */
+        hints.ai_flags = 0;
+        rc = getaddrinfo(u->host, NULL, &hints, &res);
     }
+    if (rc) { kb_error("%s: %s", u->host, gai_strerror(rc)); return -1; }
+    int fd = -1, err = 0;
+    for (ai = res; ai; ai = ai->ai_next) {
+        fd = socket(ai->ai_family, SOCK_STREAM, 0);
+        if (fd < 0) { err = errno; continue; }
+        struct timeval tv = { timeout_s, 0 };
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+        struct timeval tvc = { ai->ai_next && timeout_s > 6 ? 6 : timeout_s, 0 };       /* an address that is not the last gets six seconds to answer: the next one may work (a router that advertises an IPv6 prefix but has no way out) */
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tvc, sizeof tvc);
+        struct sockaddr_storage sa;
+        memcpy(&sa, ai->ai_addr, ai->ai_addrlen);
+        if (sa.ss_family == AF_INET6) ((struct sockaddr_in6 *)&sa)->sin6_port = htons((unsigned short)u->port);
+        else ((struct sockaddr_in *)&sa)->sin_port = htons((unsigned short)u->port);
+        if (connect(fd, (struct sockaddr *)&sa, ai->ai_addrlen) == 0) { setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv); break; }
+        err = errno;
+        close(fd);
+        fd = -1;
+    }
+    freeaddrinfo(res);
+    if (fd < 0) { kb_error("connecting to %s:%u failed: %s", u->host, u->port, strerror(err)); return -1; }
     return fd;
 }
 
@@ -87,14 +121,16 @@ static int send_all(int fd, const char *p, size_t n) {
 /* Resolves a Location header against the URL it came from. */
 static void redirect_target(const Url *from, const char *loc, char *out, size_t n) {
     if (!strncasecmp(loc, "http://", 7) || !strncasecmp(loc, "https://", 8)) { strlcpy(out, loc, n); return; }
-    if (loc[0] == '/') { snprintf(out, n, "http://%s:%u%s", from->host, from->port, loc); return; }
+    char ht[300];
+    host_text(from, ht, sizeof ht);
+    if (loc[0] == '/') { snprintf(out, n, "http://%s:%u%s", ht, from->port, loc); return; }
     char dir[1024];
     strlcpy(dir, from->path, sizeof dir);
     char *q = strchr(dir, '?');
     if (q) *q = 0;
     char *s = strrchr(dir, '/');
     if (s) s[1] = 0;
-    snprintf(out, n, "http://%s:%u%s%s", from->host, from->port, dir, loc);
+    snprintf(out, n, "http://%s:%u%s%s", ht, from->port, dir, loc);
 }
 
 typedef struct {
@@ -354,6 +390,7 @@ static int do_fetch(const char *start_url, const char *outname, int to_file_defa
     for (int hop = 0; hop <= o->max_redirects; hop++) {
         Url u;
         if (parse_url(url, &u) < 0) return 1;
+        if (u.tls && u.host6) { kb_error("https:// to an IPv6 address is not supported (libhttp is IPv4 only); plain http:// is"); return 1; }
         if (u.tls) return fetch_secure(url, outname, to_file_default, o, o->max_redirects - hop);
         if (!o->quiet) fprintf(stderr, "Connecting to %s:%u... ", u.host, u.port);
         int fd = connect_to(&u, o->timeout_s);
@@ -361,7 +398,9 @@ static int do_fetch(const char *start_url, const char *outname, int to_file_defa
         if (!o->quiet) fprintf(stderr, "connected.\n");
         char req[2048];
         char hostport[300];
-        if (u.port == 80) snprintf(hostport, sizeof hostport, "%s", u.host); else snprintf(hostport, sizeof hostport, "%s:%u", u.host, u.port);
+        char ht[300];
+        host_text(&u, ht, sizeof ht);
+        if (u.port == 80) snprintf(hostport, sizeof hostport, "%s", ht); else snprintf(hostport, sizeof hostport, "%s:%u", ht, u.port);
         int rl = snprintf(req, sizeof req, "GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\nAccept: */*\r\nConnection: close\r\n", u.path, hostport, o->agent);
         if (o->extra_header) rl += snprintf(req + rl, sizeof req - (size_t)rl, "%s\r\n", o->extra_header);
         rl += snprintf(req + rl, sizeof req - (size_t)rl, "\r\n");

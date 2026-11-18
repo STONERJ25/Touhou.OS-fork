@@ -132,42 +132,53 @@ done:
 APPLET(httpd) {
     unsigned port = 8080;
     const char *dir = ".", *bind_addr = NULL;
-    int once = 0, quiet = 0, opt;
+    int once = 0, quiet = 0, opt, six = 0;
     optind = 1;
-    while ((opt = getopt(argc, argv, "p:d:b:1q")) != -1) {
+    while ((opt = getopt(argc, argv, "p:d:b:1q46")) != -1) {
         switch (opt) {
         case 'p': port = (unsigned)atoi(optarg); break;
         case 'd': dir = optarg; break;
         case 'b': bind_addr = optarg; break;
         case '1': once = 1; break;
         case 'q': quiet = 1; break;
-        default: kb_error("usage: httpd [-p PORT] [-d DIR] [-b ADDRESS] [-1] [-q]"); return 2;
+        case '6': six = 1; break;
+        case '4': break;
+        default: kb_error("usage: httpd [-4|-6] [-p PORT] [-d DIR] [-b ADDRESS] [-1] [-q]    (-6: listen on :: for IPv6 and IPv4; an IPv6 ADDRESS does too)"); return 2;
         }
     }
     if (!port || port > 65535) { kb_error("bad port"); return 2; }
     if (chdir(dir) < 0) { kb_error("%s: %s", dir, strerror(errno)); return 1; }
-    int ls = socket(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_storage sa;
+    socklen_t sl;
+    memset(&sa, 0, sizeof sa);
+    if (bind_addr) {
+        if (!nu_resolve_sa(bind_addr, six ? AF_INET6 : AF_UNSPEC, &sa, &sl)) return 1;
+    } else if (six) {                                                       /* :: takes IPv4 connections as well (a dual-stack socket) */
+        struct sockaddr_in6 *a6 = (struct sockaddr_in6 *)&sa;
+        a6->sin6_family = AF_INET6;
+        sl = sizeof *a6;
+    } else {
+        struct sockaddr_in *a4 = (struct sockaddr_in *)&sa;
+        a4->sin_family = AF_INET;
+        sl = sizeof *a4;
+    }
+    if (sa.ss_family == AF_INET6) ((struct sockaddr_in6 *)&sa)->sin6_port = htons((unsigned short)port);
+    else ((struct sockaddr_in *)&sa)->sin_port = htons((unsigned short)port);
+    int ls = socket(sa.ss_family, SOCK_STREAM, 0);
     if (ls < 0) { kb_error("socket: %s", strerror(errno)); return 1; }
     int one = 1;
     setsockopt(ls, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
-    struct sockaddr_in sa;
-    memset(&sa, 0, sizeof sa);
-    sa.sin_family = AF_INET;
-    sa.sin_port = htons((unsigned short)port);
-    uint32_t ip = 0;
-    if (bind_addr && !nu_resolve(bind_addr, &ip)) return 1;
-    sa.sin_addr.s_addr = htonl(ip);
-    if (bind(ls, (struct sockaddr *)&sa, sizeof sa) < 0) { kb_error("cannot bind port %u: %s", port, strerror(errno)); return 1; }
+    if (bind(ls, (struct sockaddr *)&sa, sl) < 0) { kb_error("cannot bind port %u: %s", port, strerror(errno)); return 1; }
     if (listen(ls, 16) < 0) { kb_error("listen: %s", strerror(errno)); return 1; }
     signal(SIGPIPE, SIG_IGN);
     if (!quiet) fprintf(stderr, "httpd: serving %s on port %u\n", dir, port);
     for (;;) {
-        struct sockaddr_in peer;
+        struct sockaddr_storage peer;
         socklen_t pl = sizeof peer;
         int c = accept(ls, (struct sockaddr *)&peer, &pl);
         if (c < 0) { if (errno == EINTR) continue; kb_error("accept: %s", strerror(errno)); return 1; }
-        char pname[24];
-        snprintf(pname, sizeof pname, "%s", nu_ip(ntohl(peer.sin_addr.s_addr)));
+        char pname[80];
+        nu_sa_str((struct sockaddr *)&peer, pname, sizeof pname);
         if (once) { handle(c, pname, quiet); close(c); return 0; }
         pid_t pid = fork();
         if (pid == 0) {
