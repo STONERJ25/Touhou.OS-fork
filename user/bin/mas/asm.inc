@@ -515,7 +515,8 @@ static void asm_tokens(TokList *l) {
         static const char *lone[] = {"ret", "nop", "cli", "sti", "hlt", "cld", "std", "syscall", "sysret", "ud2", "iretq", "iret", "leave", "pause", "cpuid", "rdtsc",
                                      "rdmsr", "wrmsr", "int3", "swapgs", "lfence", "mfence", "sfence", "pushfq", "popfq", "cqo", "cdq", "cdqe", "movsb", "movsw",
                                      "movsd", "movsq", "stosb", "stosw", "stosd", "stosq", "lodsb", "lodsw", "lodsd", "lodsq", "scasb", "scasw", "scasd", "scasq",
-                                     "cmpsb", "cmpsw", "cmpsd", "cmpsq", "clc", "stc", "cmc", "xgetbv", "wbinvd", "invd", "retq", "sysretq", "use64", NULL};
+                                     "cmpsb", "cmpsw", "cmpsd", "cmpsq", "clc", "stc", "cmc", "xgetbv", "wbinvd", "invd", "retq", "sysretq", "stac", "clac", "rdtscp", "iretd", "cwde", "cbw",
+                                     "lahf", "sahf", "use64", NULL};
         int is_insn = 0;
         for (int k = 0; lone[k]; k++)
             if (!icmp(t[0].text, lone[k])) is_insn = 1;

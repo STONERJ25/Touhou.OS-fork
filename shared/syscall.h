@@ -119,6 +119,10 @@
 #define SYS_setpriority   117     /* (which, who, nice): PRIO_PROCESS / PRIO_PGRP / PRIO_USER; only root may lower a nice value */
 #define SYS_link          118     /* (oldpath, newpath): a hard link; tmpfs only */
 #define SYS_setabi        119     /* (abi): the NEXT successful execve of this process starts the program under that system call personality (docs/COMPAT.md) */
+/* Resource limits (kernel/sys/rlimit.c, abi.h: struct grlimit, RLIMIT_*; docs/HARDENING.md) */
+#define SYS_getrlimit     120     /* (resource, struct grlimit *): the calling process's soft and hard limit */
+#define SYS_setrlimit     121     /* (resource, const struct grlimit *): soft up to hard for anyone, the hard limit only down (root: up too) */
+#define SYS_prlimit       122     /* (pid, resource, const struct grlimit *new or NULL, struct grlimit *old or NULL): both at once, for another process of the same user (or any, as root) */
 #define SYS_nsyscalls     128
 
 /* System call personalities. A process makes its calls either with the numbers and structures of this header (native) or with those of x86-64 Linux. */

@@ -27,6 +27,7 @@ static Process *process_alloc(void) {
     wq_init(&p->thread_wq);
     wq_init(&p->stop_wq);
     p->umask = 022;
+    rlimit_defaults(&p->rlim);                      /* fork overwrites them with the parent's */
     p->start_ms = uptime_ms();
     u64 f = irq_save();
     p->pid = g_next_pid++;
@@ -94,7 +95,8 @@ void alarm_tick(u64 now) { process_for_each(alarm_cb, &now); }
 /* The descriptor table is shared by every thread: scans and updates run with interrupts disabled (its lock). */
 int fd_install(Process *p, File *f, int minfd, int flags) {
     u64 fl = irq_save();
-    for (int i = minfd < 0 ? 0 : minfd; i < MAX_FD; i++) {
+    int nfd = rlimit_nofile(p);                     /* RLIMIT_NOFILE: the soft limit, at most the table */
+    for (int i = minfd < 0 ? 0 : minfd; i < nfd; i++) {
         if (!p->fds[i]) {
             p->fds[i] = f;
             p->fd_flags[i] = (u8)flags;
@@ -166,8 +168,10 @@ void path_normalize(const char *base, const char *path, char *out, size_t n) {
  * (CLONE_CHILD_CLEARTID) the word that is zeroed and futex-woken when the child exits. Either may be 0. The child is given both before it can run. */
 int process_fork_ex(TrapFrame *tf, u64 settid_addr, u64 cleartid_addr) {
     Process *par = current->proc;
+    if (rlimit_nproc_exceeded(par)) return -EAGAIN;        /* RLIMIT_NPROC: the real user has as many processes as the limit allows */
     Process *c = process_alloc();
     if (!c) return -EAGAIN;
+    c->rlim = par->rlim;
 
     c->ppid = par->pid;
     c->pgid = par->pgid;

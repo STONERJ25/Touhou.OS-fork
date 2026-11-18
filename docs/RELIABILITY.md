@@ -2,13 +2,14 @@
 
 The owner's Dell is updated over the network ([UPDATE.md](UPDATE.md)). Until now a kernel that hung or panicked needed someone at the
 machine: to read the screen, and to press the reset button twice so that the loader's fallback brought the previous kernel back. Three
-pieces close that gap and make failures visible from another computer:
+pieces close that gap and make failures visible from another computer, and a fourth, added in the second hardening round, reports the hang that the first does not see:
 
 | Piece | Who (log tag) | What it does | Command line |
 |---|---|---|---|
 | hardware watchdog | Momiji | the Intel TCO timer restarts a hung machine; armed by the loader, fed by the kernel, then by init | `wdt=SECONDS` (default 120), `wdt=off` |
 | panic record | Akyuu | a panic's text kept in RAM across the restart, read at the next start; a panic restarts the machine by itself | `panic=SECONDS` (default 30 on a trial start, off otherwise), `persist=` |
 | netconsole | Aya | every kernel log line as a UDP datagram; a panic's text through the card's polled transmit | `netconsole=IP[:PORT]` |
+| lockup detector | Momiji | a task that runs in the kernel for 20 s without sleeping is reported with its registers and backtrace; with `panic_on_lockup` that is a panic ([the software twin](#the-software-twin-the-lockup-detector)) | `lockup.thresh=SECONDS` (default 20), `lockup=off`, `panic_on_lockup` |
 
 Momiji Inubashiri is the white wolf tengu who keeps watch on Youkai Mountain; Hieda no Akyuu remembers in each life what the one before saw;
 Aya Shameimaru is the reporter who gets the news out first.
@@ -148,6 +149,26 @@ the sending path writes to the kernel log: a netconsole that logged its own trou
 it. Its one line is the one at the start (`[Aya] netconsole: the kernel log goes to 192.168.1.15:6666 ...`); everything else is in
 `/proc/netconsole` (target, state, card, counters, backlog). Root can write `flood N` there: N lines into the log at once (the tests' flood).
 
+## The software twin: the lockup detector
+
+The hardware watchdog above only knows that nobody fed the timer. A kernel thread that spins with interrupts on does not stop that: the kernel is preemptive, the `Momiji`
+thread and the init feeder go on running beside the spinner and the timer is fed on time, so the machine looks alive while whatever the spinner holds (a lock, the CPU's time) keeps
+the rest from doing work. The **soft-lockup detector** (`kernel/sched/watchdog.c`, [HARDENING](HARDENING.md) "The lockup detector") is the part that notices that: each timer tick charges itself
+to the task it interrupted, and a task that has been in the kernel for `lockup.thresh` seconds (20 by default) without sleeping, blocking, yielding or returning to user mode is
+reported under the tag Momiji with its name, the registers and a symbolised backtrace of what it was doing, counted in `watchdog_reports` (`/proc/kstats`), and, with `panic_on_lockup`, turned into a
+panic. The two divide the cases between them:
+
+| What is wrong | Who notices | What the record or the log says |
+|---|---|---|
+| a task spins in the kernel with interrupts on (a soft lockup); the rest of the system is slow or stuck behind what it holds | the lockup detector, after `lockup.thresh` | `[Momiji] soft lockup: 'NAME' (tid N, pid M) has run in the kernel for S s ...`, the registers and a backtrace, on the screen, the log, the netconsole and `TOUHOU.LOG`. Nothing restarts the machine unless `panic_on_lockup` is on: then it is the usual panic (the incident text, the record in RAM, the netconsole, the restart that `panic=SECONDS` asks for) and the next start says `previous panic: soft lockup: ...` |
+| interrupts are off for good (a hard lockup): not even the tick runs | the hardware watchdog, after `wdt` seconds | nothing at the time; the next start reports `ended in a watchdog reset` and the record `ended without a shutdown or a panic` with the last sign of life. The detector cannot help: it needs the tick. The next step would be an NMI from a performance counter, which a PC has and QEMU does not emulate |
+| user space does not run (the feeder is stopped, or the system call path is dead) | the hardware watchdog | as above |
+| the scheduler itself stops (the `Momiji` thread never runs) | the hardware watchdog | as above |
+
+The detector never touches the timer: it does not feed it, stop it or change its timeout, and the panic path it can lead to gives the timer the long budget it always gives (a panic restart is not
+cut short). It does not run until the boot is complete (the boot thread's check and repair of the volume are the loader-armed timer's, fed from `tcowdt_boot_feed`); work in the kernel that is
+long on purpose and alive (the block layer calls `lockup_touch()` on every request) does not count. On a start under trial (`update.trial=N`) a panic from `panic_on_lockup` ends in the loader's fallback like any other.
+
 ## Failure modes
 
 | What goes wrong | What happens | What it looks like |
@@ -248,5 +269,5 @@ and the tick arithmetic.
 `shared/tcohw.h` (the TCO hardware, loader and kernel), `shared/bootinfo.h` (BootInfo version 5: `persist_*`, `wdt_*`, `BOOT_WDT_MARK`),
 `boot/recovery.c` (and three calls in `boot/main.c`), `kernel/drivers/tcowdt.c`, `kernel/include/tcowdt.h`, `kernel/panic.c`,
 `kernel/include/panicrec.h`, `kernel/drivers/netcons.c`, `kernel/include/netcons.h`, `NetDev.netpoll_tx` (`kernel/include/net.h`) with its
-implementations in `kernel/drivers/e1000.c` and `kernel/drivers/virtio_net.c`, `panic_frame()` in `kernel/arch/x86_64/trap.c`, the
+implementations in `kernel/drivers/e1000.c` and `kernel/drivers/virtio_net.c`, `kernel/sched/watchdog.c` (the soft-lockup detector, with its hooks in `kernel/sched/task.c`), `panic_frame()` in `kernel/arch/x86_64/trap.c`, the
 shutdown hook in `sys_reboot()` (`kernel/sys/syscalls.c`), the feeder in `user/sbin/init.c`, `tools/netconsole.py`, `tests/case_reliability.py`.

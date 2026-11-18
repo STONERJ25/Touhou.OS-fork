@@ -1,0 +1,135 @@
+; Every instruction without operands that mas knows, each alone on its line (a lone word is a label unless it is one of these: stac and clac were once missing from that
+; list, so `clac` became a label and the local label after it was defined under the wrong parent), with a local label after each one.
+bits 64
+default rel
+section .text
+parent:
+    nop
+.l0:
+    ret
+.l1:
+    retq
+.l2:
+    ud2
+.l3:
+    syscall
+.l4:
+    sysret
+.l5:
+    cli
+.l7:
+    sti
+.l8:
+    cld
+.l9:
+    std
+.l10:
+    hlt
+.l11:
+    iretq
+.l12:
+    iretd
+.l13:
+    iret
+.l14:
+    leave
+.l15:
+    pause
+.l16:
+    cpuid
+.l17:
+    rdtsc
+.l18:
+    rdtscp
+.l19:
+    rdmsr
+.l20:
+    wrmsr
+.l21:
+    int3
+.l22:
+    swapgs
+.l23:
+    lfence
+.l24:
+    mfence
+.l25:
+    sfence
+.l26:
+    pushfq
+.l27:
+    popfq
+.l28:
+    cqo
+.l29:
+    cdq
+.l30:
+    cdqe
+.l31:
+    cwde
+.l32:
+    cbw
+.l33:
+    lahf
+.l34:
+    sahf
+.l35:
+    clc
+.l36:
+    stc
+.l37:
+    cmc
+.l38:
+    xgetbv
+.l39:
+    wbinvd
+.l40:
+    invd
+.l41:
+    clac
+.l42:
+    stac
+.l43:
+    movsb
+.l44:
+    movsw
+.l45:
+    movsd
+.l46:
+    movsq
+.l47:
+    stosb
+.l48:
+    stosw
+.l49:
+    stosd
+.l50:
+    stosq
+.l51:
+    lodsb
+.l52:
+    lodsw
+.l53:
+    lodsd
+.l54:
+    lodsq
+.l55:
+    scasb
+.l56:
+    scasw
+.l57:
+    scasd
+.l58:
+    scasq
+.l59:
+    cmpsb
+.l60:
+    cmpsw
+.l61:
+    cmpsd
+.l62:
+    cmpsq
+.l63:
+    jmp parent.l0
+    jne .l1
+    jmp .l7

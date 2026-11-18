@@ -3,6 +3,7 @@
 #include "kernel.h"
 #include "cpu.h"
 #include "mm.h"
+#include "task.h"
 #include "ext4.h"
 #include "initcall.h"
 
@@ -36,6 +37,7 @@ BlockDev *blk_find_label(const char *label) {
 /* ---------------------------------------------------------------- checked access */
 
 int blk_read(BlockDev *d, u64 lba, u32 count, void *buf) {
+    lockup_touch();                                     /* a scan or a repair that goes through the device is alive, however long it takes (kernel/sched/watchdog.c) */
     if (!count) return 0;
     if (d->removed) return -ENODEV;
     if (lba >= d->sectors || lba + count > d->sectors) return -EINVAL;
@@ -44,6 +46,7 @@ int blk_read(BlockDev *d, u64 lba, u32 count, void *buf) {
 
 /* unlocked: the caller is a /dev node whose open file holds the BLKWRUNLOCK of this very (whole) disk, see blk_unlock.c */
 static int write_checked(BlockDev *d, u64 lba, u32 count, const void *buf, bool unlocked) {
+    lockup_touch();
     if (!count) return 0;
     if (d->removed) return -ENODEV;
     if (d->readonly && !(unlocked && d->ro_policy && !d->parent)) return -EROFS;
@@ -69,6 +72,7 @@ static int part_write(BlockDev *d, u64 lba, u32 count, const void *buf) {
 }
 
 int blk_flush(BlockDev *d) {
+    lockup_touch();
     if (d->removed) return -ENODEV;
     return d->flush ? d->flush(d) : 0;
 }

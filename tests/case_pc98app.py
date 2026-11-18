@@ -108,6 +108,19 @@ def start_app(name, extra="", image=None, audio=None, mem="768M", wait_for_pictu
     return vm, g, origin
 
 
+def wait_in_whole_text(vm, pattern, timeout=60):
+    """Waits until the serial text, from its very start, holds `pattern` (for the first line the program prints). expect() looks only after the previous match, and g.sh() has
+    consumed everything up to its own end marker: a program that starts fast (a big executable starts in well under a second since the loader keeps the .bss demand-zero and
+    fork and exec copy memory by words) prints its first lines while the shell is still echoing the marker, so expect() would never see them."""
+    rx = re.compile(pattern, re.S)
+    end = time.time() + scaled(timeout)
+    while time.time() < end:
+        if rx.search(vm.text()):
+            return
+        time.sleep(0.1)
+    raise TimeoutError(f"timeout waiting for /{pattern}/\n" + vm.diagnose())
+
+
 def crop(arr, origin, x, y, w, h):
     return arr[origin[1] + y:origin[1] + y + h, origin[0] + x:origin[0] + x + w]
 
@@ -344,7 +357,7 @@ def pc98app_inserts_an_image_through_the_file_dialog_and_remembers_it():
         g.start_desktop()
         put_file(g, "/tmp/demo.d88", demo_image())
         g.sh("pc98app --trace &")
-        vm.expect(HEAD + r"settings: 386 16 MHz, FM 86, sound on, volume 80, scale 1x, speed 100%", timeout=60)
+        wait_in_whole_text(vm, HEAD + r"settings: 386 16 MHz, FM 86, sound on, volume 80, scale 1x, speed 100%")
         time.sleep(2)
         assert find_picture(screen(vm)) is None
         g.key("f12")
@@ -378,8 +391,8 @@ def pc98app_reads_the_font_rom_named_in_the_settings_file():
              "dd if=/tmp/solid of=/tmp/FONT.ROM bs=1 seek=2576 conv=notrunc 2>/dev/null; ls -l /tmp/FONT.ROM")
         g.sh("mkdir -p ~/.config/pc98; printf 'font=/tmp/FONT.ROM\\nvolume=40\\nscale=1\\n' > ~/.config/pc98/config")
         g.sh("pc98app --trace /tmp/demo.d88 &")
-        vm.expect(HEAD + r"settings: .*volume 40", timeout=60)
-        vm.expect(re.escape(HEAD + "font: FONT.ROM"), timeout=20)
+        wait_in_whole_text(vm, HEAD + r"settings: .*volume 40")
+        wait_in_whole_text(vm, re.escape(HEAD + "font: FONT.ROM"), timeout=20)
         vm.expect(re.escape(HEAD + "boot 90"), timeout=60)
         origin = wait_picture(vm)
         time.sleep(1.0)
@@ -513,6 +526,19 @@ def pc98app_the_buzzer_reaches_the_sound_card():
     assert (b - a) / rate > 1.0, f"the beep lasted {(b - a) / rate:.2f} s of audio, about 2 s expected"
 
 
+def square_pitch(x, rate, expected):
+    """The pitch of a square tone, from the half-periods of its own cycles. A guest that is slow under TCG cannot always keep the sound card fed, and an underrun is filled with
+    silence (docs/AUDIO.md): the capture of this test is a third zeros, in gaps of 80 to 100 samples, with the tone between them exact (half-periods of 23 and 24 samples, the
+    mean of a 1006.5 Hz tone at 48 kHz). The peak of the spectrum read that stream as 1036 to 1040 Hz and the test failed on this PC from the day it was written, although the
+    pitch was right. Only the stretches between two sign changes that are one half-period long, within 5 %, count (a cycle that a gap cut short is left out); a wrong pitch
+    (a wrong resampling ratio) still shows, as another mean."""
+    runs = np.diff(np.flatnonzero(np.signbit(x)[1:] != np.signbit(x)[:-1]))
+    half = rate / (2 * expected)
+    ok = runs[(runs > half * 0.95) & (runs < half * 1.05)]
+    assert len(ok) > 1000, f"only {len(ok)} half-periods of about {half:.1f} samples among {len(runs)} sign changes: no steady tone"
+    return rate / (2 * ok.mean())
+
+
 @test
 def pc98app_the_fm_board_reaches_the_sound_card():
     """A boot sector programs the PC-9801-86's SSG for a 1006.5 Hz tone: the sound card's capture has it, clean, at the right pitch (55,466 Hz chip frames resampled to 48 kHz)."""
@@ -534,8 +560,8 @@ def pc98app_the_fm_board_reaches_the_sound_card():
     assert segs, "nothing was played"
     a, b = max(segs, key=lambda s: s[1] - s[0])
     tone = at.trimmed(x[a:b], rate)
-    f = at.dominant_freq(tone, rate)
-    assert abs(f - 7987200 / 128 / 62) < 5, f"dominant frequency {f:.1f} Hz"
+    f = square_pitch(tone, rate, 7987200 / 128 / 62)
+    assert abs(f - 7987200 / 128 / 62) < 5, f"pitch {f:.1f} Hz (from the half-periods of the tone)"
     assert at.band_power(tone, rate, 1006.5, 60) > 0.5, "the tone is not the main part of the sound"
 
 

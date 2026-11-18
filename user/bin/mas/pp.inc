@@ -18,7 +18,12 @@ typedef struct Macro {
 
 static SMacro *smacros;
 static Macro *macros;
-static int macro_serial = 1;            /* NASM numbers the %%local labels of its macro calls from 2 */
+/* NASM names the %%local labels of a macro call ..@N.name (the names are in the object file's symbol table, so the numbers must be NASM's for the object to be byte for byte
+ * the same). N comes from a counter that starts at 0: every multi-line macro call takes the current value and adds one (a macro called from a macro takes the next number
+ * after its caller's). The directives that NASM implements as standard macros count like calls of the user's: one number for each use of bits, default, cpu, use16/32/64, section,
+ * segment, absolute, extern, global, common, static and incbin, two for align and alignb. Probed with NASM 3.02 (tests/mas/numbering.asm keeps the result). Before this a file
+ * with exactly `bits 64` and `section .text` in front of its first macro call was the only one that matched: kernel/arch/x86_64/uaccess.asm has nine such lines. */
+static int macro_serial = 0;
 static char *inc_dirs[32];
 static int ninc_dirs;
 
@@ -166,6 +171,15 @@ static int is_if_word(const char *w) {
 
 /* ------------------------------------------------------------------------------------------------ lines */
 
+static int directive_numbers(const char *w) {
+    static const char *one[] = {"bits", "default", "cpu", "use16", "use32", "use64", "section", "segment", "absolute", "extern", "global", "common", "static", "incbin", NULL};
+    if (!icmp(w, "align") || !icmp(w, "alignb")) return 2;
+    for (int k = 0; one[k]; k++)
+        if (!icmp(w, one[k])) return 1;
+    return 0;
+}
+
+
 static void run_rep(void) {
     char **body = coll;
     int n = ncoll;
@@ -207,7 +221,7 @@ static void expand_macro_call(Macro *m, TokList *l, int first) {
         tl_push(&args[nargs - 1], t);
     }
     if (nargs != m->nparams) fatal("macro '%s' expects %d parameters, not %d", m->name, m->nparams, nargs);
-    int serial = ++macro_serial;
+    int serial = macro_serial++;
     for (int b = 0; b < m->nbody; b++) {
         TokList body = tokenize(m->body[b]);
         TokList out = {0};
@@ -382,6 +396,7 @@ static void pp_line(const char *text) {
             return;
         }
     }
+    if (first < x.n && x.t[first].kind == T_ID) macro_serial += directive_numbers(x.t[first].text);
     asm_tokens(&x);
 }
 

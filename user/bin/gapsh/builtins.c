@@ -1,5 +1,6 @@
 /* Builtin commands. */
 #include "gapsh.h"
+#include <sys/resource.h>
 
 extern int g_last_bg;
 extern char **environ;
@@ -597,7 +598,78 @@ static int bi_trap(int argc, char **argv) {
     return 0;
 }
 
-static int bi_ulimit(int argc, char **argv) { (void)argc; (void)argv; puts("unlimited"); return 0; }
+/* ulimit [-SH] [-a | -c | -d | -f | -l | -m | -n | -s | -t | -u | -v] [limit]  (POSIX.1-2017 `ulimit`, plus bash's -a and its "soft", "hard" and "unlimited" words).
+ * The limits live in the kernel (kernel/sys/rlimit.c, docs/HARDENING.md) and are inherited by everything this shell starts. With no limit the value is printed (the soft one
+ * unless -H is given); with a limit it is set (both the soft and the hard one unless -S or -H says which). Sizes are in 1024-byte units. */
+typedef struct { char opt; int res; unsigned long unit; const char *label; } UlimitRes;
+static const UlimitRes g_ulimits[] = {
+    { 'c', RLIMIT_CORE,    1024, "core file size              (blocks, -c)" },
+    { 'd', RLIMIT_DATA,    1024, "data seg size               (kbytes, -d)" },
+    { 'f', RLIMIT_FSIZE,   1024, "file size                   (blocks, -f)" },
+    { 'l', RLIMIT_MEMLOCK, 1024, "max locked memory           (kbytes, -l)" },
+    { 'm', RLIMIT_RSS,     1024, "max memory size             (kbytes, -m)" },
+    { 'n', RLIMIT_NOFILE,  1,    "open files                          (-n)" },
+    { 's', RLIMIT_STACK,   1024, "stack size                  (kbytes, -s)" },
+    { 't', RLIMIT_CPU,     1,    "cpu time                   (seconds, -t)" },
+    { 'u', RLIMIT_NPROC,   1,    "max user processes                  (-u)" },
+    { 'v', RLIMIT_AS,      1024, "virtual memory              (kbytes, -v)" },
+};
+
+static void ulimit_print(const UlimitRes *u, int hard) {
+    struct rlimit r;
+    if (getrlimit(u->res, &r) < 0) { printf("?\n"); return; }
+    rlim_t v = hard ? r.rlim_max : r.rlim_cur;
+    if (v == RLIM_INFINITY) puts("unlimited");
+    else printf("%lu\n", v / u->unit);
+}
+
+static int bi_ulimit(int argc, char **argv) {
+    int soft = 0, hard = 0, all = 0;
+    const UlimitRes *want = NULL;
+    int i = 1;
+    for (; i < argc && argv[i][0] == '-' && argv[i][1]; i++) {
+        if (!strcmp(argv[i], "--")) { i++; break; }
+        for (const char *o = argv[i] + 1; *o; o++) {
+            if (*o == 'S') { soft = 1; continue; }
+            if (*o == 'H') { hard = 1; continue; }
+            if (*o == 'a') { all = 1; continue; }
+            const UlimitRes *found = NULL;
+            for (unsigned k = 0; k < sizeof g_ulimits / sizeof g_ulimits[0]; k++)
+                if (g_ulimits[k].opt == *o) found = &g_ulimits[k];
+            if (!found) { fprintf(stderr, "ulimit: -%c: invalid option\nulimit: usage: ulimit [-SHa] [-cdflmnstuv] [limit]\n", *o); return 2; }
+            want = found;
+        }
+    }
+    if (all) {
+        for (unsigned k = 0; k < sizeof g_ulimits / sizeof g_ulimits[0]; k++) {
+            printf("%s ", g_ulimits[k].label);
+            ulimit_print(&g_ulimits[k], hard && !soft);
+        }
+        return 0;
+    }
+    if (!want) want = &g_ulimits[2];                            /* POSIX: with no option, -f (the file size) */
+    if (i >= argc) { ulimit_print(want, hard && !soft); return 0; }
+    struct rlimit r;
+    if (getrlimit(want->res, &r) < 0) { fprintf(stderr, "ulimit: %s\n", strerror(errno)); return 1; }
+    const char *a = argv[i];
+    rlim_t v;
+    if (!strcmp(a, "unlimited")) v = RLIM_INFINITY;
+    else if (!strcmp(a, "hard")) v = r.rlim_max;
+    else if (!strcmp(a, "soft")) v = r.rlim_cur;
+    else {
+        char *end;
+        errno = 0;
+        unsigned long n = strtoul(a, &end, 10);
+        if (!*a || *end || errno || n > RLIM_INFINITY / want->unit) { fprintf(stderr, "ulimit: %s: invalid number\n", a); return 1; }
+        v = n * want->unit;
+    }
+    int set_soft = soft || !hard, set_hard = hard || !soft;     /* neither flag: both, as POSIX says */
+    if (set_soft) r.rlim_cur = v;
+    if (set_hard) r.rlim_max = v;
+    if (set_hard && !set_soft && r.rlim_cur > r.rlim_max) r.rlim_cur = r.rlim_max;      /* lowering the hard limit under the soft one pulls the soft one down with it (bash does this too) */
+    if (setrlimit(want->res, &r) < 0) { fprintf(stderr, "ulimit: %s: cannot modify limit: %s\n", a, strerror(errno)); return 1; }
+    return 0;
+}
 
 static int bi_getopts(int argc, char **argv) {
     if (argc < 3) return 2;
@@ -633,7 +705,7 @@ static int bi_help(int argc, char **argv) {
     (void)argc; (void)argv;
     printf("\x1b[1;31mgapsh\x1b[0m -- the shell of Gensokyo. Every command passes through a gap in the Boundary.\n\n");
     printf("builtins:  cd pwd echo printf exit export unset set shift local alias unalias type command\n");
-    printf("           source . eval exec read test [ jobs fg bg wait disown kill history umask\n");
+    printf("           source . eval exec read test [ jobs fg bg wait disown kill history umask ulimit\n");
     printf("           trap getopts pushd popd dirs help true false :\n\n");
     printf("syntax:    pipes | && || ; & ( ) { }   if/elif/else/fi   while/until/do/done   for x in ...\n");
     printf("           case/esac   name() { ... }   $var ${var:-x} $(cmd) $((1+2))   globs * ? [a-z]\n");

@@ -157,6 +157,7 @@ static Task *pick_next(Task *prev) {
 void schedule(void) {
     u64 f = irq_save();
     Task *prev = g_current;
+    if (prev->state != TASK_RUNNING) prev->kspin = 0;           /* it chose to sleep, block or end: not a task that never gives the CPU up (the lockup detector) */
     Task *next = pick_next(prev);
     if (next != prev) {
         if (prev->state == TASK_RUNNING) prev->state = TASK_READY;
@@ -185,6 +186,7 @@ void task_on_trap_return(TrapFrame *tf) {
             if (user) c->utime_ticks++;
             if (c->proc->itimer_virt | c->proc->itimer_prof) ktimers_cpu_tick(c->proc, user);        /* setitimer(ITIMER_VIRTUAL, ITIMER_PROF) */
         }
+        lockup_tick(c, tf, c == g_idle);                                                            /* the soft-lockup detector (kernel/sched/watchdog.c) */
     }
     if (g_need_resched) {
         g_need_resched = false;
@@ -357,6 +359,7 @@ NORETURN void task_exit(int code) {
 void task_exit_current(int code) { task_exit(code); }
 
 void task_yield(void) {
+    g_current->kspin = 0;                       /* a yield is the task giving the CPU up: not a lockup */
     schedule();
 }
 

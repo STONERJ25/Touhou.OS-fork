@@ -3,6 +3,7 @@ bits 64
 default rel
 
 extern trap_handler
+extern g_smap_enabled
 
 section .text
 
@@ -21,6 +22,14 @@ isr_stub_%+%1:
 
 align 16
 isr_common:
+    ; SMAP: clear EFLAGS.AC before any handler runs (Intel SDM vol. 3A, 4.6.1). The CPU does not clear it for an interrupt or an exception, so without this a
+    ; program that sets AC in its own flags (any ring may) would have the kernel run with SMAP switched off, and an interrupt that arrives inside the copy
+    ; window of uaccess.asm would run its handler with the window open. The interrupted code gets its own AC back from the saved flags at iretq. CLAC is #UD
+    ; on a CPU without SMAP (or with "smap=off"): hence the flag. Only the flags register is touched, and the CPU has saved the interrupted one.
+    cmp byte [g_smap_enabled], 0
+    je .smap_done
+    clac
+.smap_done:
     push rax
     push rcx
     push rdx

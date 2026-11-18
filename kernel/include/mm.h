@@ -30,6 +30,9 @@ void    boot_mmap_report(void);                      /* log lines: how much memo
 void    pmm_init(void);
 paddr_t pmm_alloc(unsigned order);                  /* 0 on failure */
 paddr_t pmm_alloc_below(unsigned order, paddr_t limit);     /* the whole block lies below limit (32-bit DMA); 0 on failure */
+paddr_t pmm_alloc_user(unsigned order);             /* memory for a user process: 0 when the free pages would fall below the reserve (pmm_reserve_pages), which only the kernel's own pmm_alloc may use */
+paddr_t pmm_alloc_page_user_zeroed(void);
+u64     pmm_reserve_pages(void);
 void    pmm_free(paddr_t p, unsigned order);
 paddr_t pmm_alloc_page(void);
 paddr_t pmm_alloc_page_zeroed(void);
@@ -42,6 +45,13 @@ u64     pmm_free_pages_count(void);
 Page   *pmm_page(paddr_t p);
 paddr_t pmm_ram_top(void);
 void    pmm_reclaim_boot_memory(void);              /* frees BOOT_RECLAIMABLE regions; call after the boot page tables are gone */
+
+/* ---- the out-of-memory killer (kernel/mm/oom.c, docs/HARDENING.md) ---- */
+paddr_t oom_alloc_user_page(bool zero, bool can_sleep);     /* pmm_alloc_user, and when the reserve is reached: kill one process, wait for its memory (if can_sleep), try once more; 0 if there is none */
+bool    oom_make_room(bool can_sleep);                      /* the killer alone: true when memory may be there again */
+bool    oom_wait_for_pages(u64 npages);                     /* before a writer takes a lock: room for npages above the reserve, killing and waiting if need be */
+bool    oom_current_is_dying(void);                         /* the running process has been picked (SIGKILL pending or exiting) */
+u64     oom_kill_count(void);
 
 /* ---- virtual memory ---- */
 #define PTE_P    BIT(0)

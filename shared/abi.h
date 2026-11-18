@@ -221,6 +221,32 @@ struct gdirent {
 #define NICE_MIN     (-20)
 #define NICE_MAX     19
 
+/* resource limits (getrlimit / setrlimit / prlimit; kernel/sys/rlimit.c, docs/HARDENING.md): the resource numbers and the structure are those of x86-64 Linux, so the Linux
+ * personality shares the implementation. A limit has a soft value (what is enforced) and a hard value (the ceiling the soft one may be raised to; lowering the hard
+ * value is irreversible for anyone but root). RLIM_INFINITY is "no limit". */
+#define RLIMIT_CPU       0      /* seconds of CPU time: accepted, not enforced */
+#define RLIMIT_FSIZE     1      /* bytes of a file: accepted, not enforced */
+#define RLIMIT_DATA      2      /* bytes of writable private memory (heap, anonymous maps, program data): enforced when memory is mapped */
+#define RLIMIT_STACK     3      /* bytes the stack may grow to (the stack region is 8 MiB at most): enforced when a stack page is first touched */
+#define RLIMIT_CORE      4      /* core dumps do not exist: accepted */
+#define RLIMIT_RSS       5      /* accepted, not enforced */
+#define RLIMIT_NPROC     6      /* processes of one real user (root is exempt): fork fails with EAGAIN */
+#define RLIMIT_NOFILE    7      /* open descriptors, at most MAX_FD: a call that needs a new one fails with EMFILE */
+#define RLIMIT_MEMLOCK   8      /* accepted, not enforced */
+#define RLIMIT_AS        9      /* bytes of address space (the sum of the mappings, the stack counted at its initial size): mmap and brk fail with ENOMEM */
+#define RLIMIT_LOCKS     10     /* accepted, not enforced */
+#define RLIMIT_SIGPENDING 11    /* accepted, not enforced */
+#define RLIMIT_MSGQUEUE  12     /* accepted, not enforced */
+#define RLIMIT_NICE      13     /* accepted, not enforced */
+#define RLIMIT_RTPRIO    14     /* accepted, not enforced */
+#define RLIMIT_RTTIME    15     /* accepted, not enforced */
+#define RLIM_NLIMITS     16
+#define RLIM_INFINITY    (~0ULL)
+struct grlimit {
+    uint64_t cur;               /* the soft limit */
+    uint64_t max;               /* the hard limit */
+};
+
 /* sigaction flags the kernel looks at */
 #define SA_NOCLDSTOP 0x1        /* SIGCHLD for a child that stops or continues is not wanted (it still dies noisily) */
 

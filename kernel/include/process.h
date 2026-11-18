@@ -54,6 +54,12 @@ typedef struct AddrSpace {
 
 typedef enum { PROC_RUNNING, PROC_ZOMBIE } ProcState;
 
+/* Resource limits of one process (kernel/sys/rlimit.c, abi.h): soft and hard value of each RLIMIT_*. fork copies them, execve keeps them (they belong to the Process). */
+typedef struct Rlimits {
+    u64 cur[RLIM_NLIMITS];
+    u64 max[RLIM_NLIMITS];
+} Rlimits;
+
 typedef struct Process {
     int pid, ppid, pgid, sid;
     struct Tty *ctty;               /* controlling terminal (what /dev/tty means); NULL = the console */
@@ -117,6 +123,7 @@ typedef struct Process {
     int  ktimer_next_id;
     u64  dead_ticks, dead_utime;    /* cpu_ticks and utime_ticks of the threads that have ended */
     u64  child_ticks, child_utime;  /* the same for the children this process has waited for, and their waited-for children (times, getrusage) */
+    Rlimits rlim;                   /* getrlimit / setrlimit: set to the defaults by process_alloc, copied by fork (kernel/sys/rlimit.c) */
 } Process;
 
 extern Process *g_init_proc;
@@ -247,6 +254,15 @@ void ktimer_signal_taken(Process *p, SigInfo *info);                    /* a tim
 void ktimer_signal_dropped(Process *p, const SigInfo *info);            /* a timer's signal was thrown away: the timer may queue the next one */
 void signal_drop_timer(Process *p, int timerid);                        /* timer_delete: the timer's queued signal never arrives (irq off) */
 extern int g_ktimers_armed;
+
+/* resource limits (kernel/sys/rlimit.c; docs/HARDENING.md) */
+void rlimit_defaults(Rlimits *r);                                       /* a new process starts from these (init, and what fork then overwrites with the parent's) */
+long rlimit_get(const Process *caller, int pid, int res, struct grlimit *out);              /* pid 0 = the caller; 0 or -errno */
+long rlimit_set(Process *caller, int pid, int res, const struct grlimit *nw);               /* the POSIX rules; 0 or -errno */
+int  rlimit_nofile(const Process *p);                                   /* descriptors the process may have open now: its soft limit, at most MAX_FD */
+bool rlimit_nproc_exceeded(const Process *p);                           /* fork would take the real user above RLIMIT_NPROC (root is exempt) */
+int  rlimit_vm_check(const AddrSpace *as, u64 len, u32 prot, u32 vflags);                   /* -ENOMEM when mapping len more bytes of the caller's own space breaks RLIMIT_AS or RLIMIT_DATA */
+bool rlimit_stack_ok(const AddrSpace *as, u64 addr);                    /* the stack may grow down to this address (RLIMIT_STACK of the caller) */
 
 /* syscall plumbing */
 typedef long (*SyscallFn)(TrapFrame *tf);

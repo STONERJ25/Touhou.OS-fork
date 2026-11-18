@@ -63,6 +63,7 @@ typedef struct Task {
     int  fault_code;            /* si_code of the signal a fault raised (SEGV_MAPERR, ...), 0 when the signal was sent */
     SigList sigl;               /* queued siginfo behind sig_pending (Linux personality: kernel/sys/signal.c) */
     u64  utime_ticks;           /* the part of cpu_ticks that interrupted user mode (setitimer, CPU clocks: kernel/sched/task.c) */
+    u32  kspin;                 /* ticks that found this task in the kernel since it last slept, yielded, was seen in user mode or was touched: the soft-lockup detector's count (kernel/sched/watchdog.c) */
 } Task;
 
 /* Start-up state of a user thread, set before the Task can first run. */
@@ -88,6 +89,9 @@ void  sched_tick(void);                             /* from the timer interrupt 
 void  schedule(void);
 void  task_on_trap_return(TrapFrame *tf);
 void  task_print_current(void);
+void  lockup_arm(void);                             /* the boot is complete: the soft-lockup detector starts to count (kernel/sched/watchdog.c) */
+void  lockup_touch(void);                           /* the running task is alive although it has been in the kernel for long: a loop that makes request after request to a device */
+void  lockup_tick(Task *c, const TrapFrame *tf, bool idle);     /* from the timer tick's return path */
 
 Task *task_create(const char *name, void (*entry)(void *), void *arg);   /* kernel thread; starts READY */
 Task *task_create_detached(const char *name, void (*entry)(void *), void *arg);

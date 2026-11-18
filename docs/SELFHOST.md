@@ -57,6 +57,10 @@ guest Makefile because the command-line system does not need them.
   sections and attributes, `global/extern/equ/db..dq/resb../incbin/align/times`, the integer instruction set of insn.inc with NASM's encoding choices
   (branch relaxation, `83 /r` immediates, accumulator forms, `mov r32, imm32`). The output is NASM's layout byte for byte (ELF header, section
   headers, `.symtab` with locals before globals, `.strtab` in symbol creation order, `.rela.*`, padding to 16). `-g -F dwarf` are accepted and ignored (no debug sections).
+  The names of `%%labels` are NASM's too (`..@N.name` is in `.symtab`): N counts every macro call and also each directive that NASM implements as a standard macro (one
+  number for `bits default cpu section segment extern global common static incbin absolute`, two for `align` and `alignb`; probed with NASM 3.02,
+  `tests/mas/numbering.asm`); a lone word on a line is a label unless it is an instruction without operands (`stac` and `clac` were missing from that list when the
+  kernel started to use them, and `selfhost_mas_guest` caught it on 2026-11-17).
   Left out: floating point, SSE/AVX, segment and control registers, `bits 16/32`, `org`, other object formats.
 
 ## File times (the "check utimes and the clock" item)

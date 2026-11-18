@@ -21,6 +21,7 @@ typedef struct TrapFrame {
 #define RFLAGS_IF  (1UL << 9)
 #define RFLAGS_TF  (1UL << 8)
 #define RFLAGS_DF  (1UL << 10)
+#define RFLAGS_AC  (1UL << 18)      /* with CR4.SMAP: set = a supervisor access to user memory is allowed (STAC/CLAC); only the copy routines of uaccess.asm set it */
 
 void gdt_init(void);
 void tss_set_rsp0(u64 rsp0);

@@ -46,7 +46,7 @@ long lnx_mmap(TrapFrame *tf) {
     if (!rc) rc = uvm_map(as, addr, len, prot, VMA_IO);
     if (!rc) {
         for (u64 o = 0; o < len; o += PAGE_SIZE) {
-            paddr_t p = pmm_alloc_page_zeroed();
+            paddr_t p = oom_alloc_user_page(true, true);        /* memory for a user process: it must not eat the kernel's reserve, and a shortage goes to the OOM killer (kernel/mm/oom.c) */
             if (!p || vmm_map(as->pml4, addr + o, p, pte_flags_for(prot, 0))) {
                 if (p) pmm_free_page(p);
                 uvm_unmap(as, addr, len);                    /* gives back the pages mapped so far */

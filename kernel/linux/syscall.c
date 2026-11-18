@@ -67,47 +67,8 @@ static long lnx_unsupported(TrapFrame *tf) { (void)tf; return -ENOSYS; }
 
 /* ------------------------------------------------------------------ resource limits */
 
-struct lnx_rlimit { u64 cur, max; };
-
-static bool rlimit_of(int res, struct lnx_rlimit *r) {
-    r->cur = r->max = LNX_RLIM_INFINITY;
-    switch (res) {
-    case LNX_RLIMIT_STACK:  r->cur = USER_STACK_MAX; break;
-    case LNX_RLIMIT_CORE:   r->cur = 0; break;
-    case LNX_RLIMIT_NOFILE: r->cur = r->max = MAX_FD; break;
-    case LNX_RLIMIT_NPROC:  r->cur = r->max = MAX_PROCS; break;
-    case LNX_RLIMIT_MEMLOCK: r->cur = r->max = 64 * 1024; break;
-    case LNX_RLIMIT_SIGPENDING: r->cur = r->max = SIGQ_PER_PROC; break;         /* queued signals per process (kernel/sys/signal.c) */
-    case LNX_RLIMIT_NICE: case LNX_RLIMIT_RTPRIO: r->cur = r->max = 0; break;
-    default: return res >= 0 && res < LNX_RLIM_NLIMITS;
-    }
-    return true;
-}
-
-/* prlimit64(pid, resource, new, old): the limits are reported as this system has them (the stack, the descriptor table) and a new value is accepted and not enforced. */
-static long lnx_prlimit64(TrapFrame *tf) {
-    int pid = (int)A0(tf);
-    struct lnx_rlimit cur, nw;
-    if (pid != 0 && pid != me()->pid) return -ESRCH;
-    if (!rlimit_of((int)A1(tf), &cur)) return -EINVAL;
-    if (A3(tf) && copy_to_user((void *)A3(tf), &cur, sizeof cur)) return -EFAULT;
-    if (A2(tf) && copy_from_user(&nw, (void *)A2(tf), sizeof nw)) return -EFAULT;
-    if (A2(tf) && nw.cur > nw.max) return -EINVAL;
-    return 0;
-}
-
-static long lnx_getrlimit(TrapFrame *tf) {
-    struct lnx_rlimit cur;
-    if (!rlimit_of((int)A0(tf), &cur)) return -EINVAL;
-    return copy_to_user((void *)A1(tf), &cur, sizeof cur);
-}
-
-static long lnx_setrlimit(TrapFrame *tf) {
-    struct lnx_rlimit cur, nw;
-    if (!rlimit_of((int)A0(tf), &cur)) return -EINVAL;
-    if (copy_from_user(&nw, (void *)A1(tf), sizeof nw)) return -EFAULT;
-    return nw.cur > nw.max ? -EINVAL : 0;
-}
+/* getrlimit, setrlimit and prlimit64 are the native calls (kernel/sys/rlimit.c): the resource numbers, the structure and the argument order are Linux's, and the limits belong to
+ * the process, so a Linux program and a native one see and enforce the same ones (docs/HARDENING.md). */
 
 /* ------------------------------------------------------------------ system information */
 
@@ -775,15 +736,15 @@ static const LinuxCall g_calls[LINUX_NSYSCALLS] = {
     [LNX_truncate] = NATIVE(SYS_truncate), [LNX_ftruncate] = NATIVE(SYS_ftruncate), [LNX_chdir] = NATIVE(SYS_chdir),
     [LNX_rename] = NATIVE(SYS_rename), [LNX_mkdir] = NATIVE(SYS_mkdir), [LNX_rmdir] = NATIVE(SYS_rmdir), [LNX_link] = NATIVE(SYS_link),
     [LNX_unlink] = NATIVE(SYS_unlink), [LNX_symlink] = NATIVE(SYS_symlink), [LNX_readlink] = NATIVE(SYS_readlink), [LNX_chmod] = NATIVE(SYS_chmod),
-    [LNX_chown] = NATIVE(SYS_chown), [LNX_umask] = NATIVE(SYS_umask), [LNX_getrlimit] = OWN(lnx_getrlimit),
+    [LNX_chown] = NATIVE(SYS_chown), [LNX_umask] = NATIVE(SYS_umask), [LNX_getrlimit] = NATIVE(SYS_getrlimit),
     [LNX_getuid] = NATIVE(SYS_getuid), [LNX_getgid] = NATIVE(SYS_getgid), [LNX_setuid] = NATIVE(SYS_setuid), [LNX_setgid] = NATIVE(SYS_setgid),
     [LNX_geteuid] = NATIVE(SYS_geteuid), [LNX_getegid] = NATIVE(SYS_getegid), [LNX_setpgid] = NATIVE(SYS_setpgid), [LNX_getppid] = NATIVE(SYS_getppid),
     [LNX_setsid] = NATIVE(SYS_setsid), [LNX_getpgid] = NATIVE(SYS_getpgid),
-    [LNX_arch_prctl] = OWN(lnx_arch_prctl), [LNX_setrlimit] = OWN(lnx_setrlimit), [LNX_gettid] = NATIVE(SYS_gettid),
+    [LNX_arch_prctl] = OWN(lnx_arch_prctl), [LNX_setrlimit] = NATIVE(SYS_setrlimit), [LNX_gettid] = NATIVE(SYS_gettid),
     [LNX_set_tid_address] = OWN(lnx_set_tid_address), [LNX_clock_gettime] = OWN(lnx_clock_gettime), [LNX_exit_group] = NATIVE(SYS_exit_group),
     [LNX_newfstatat] = OWN(lnx_newfstatat), [LNX_readlinkat] = OWN(lnx_readlinkat),
     [LNX_set_robust_list] = OWN(lnx_unsupported), [LNX_get_robust_list] = OWN(lnx_unsupported), [LNX_rseq] = OWN(lnx_unsupported),
-    [LNX_prlimit64] = OWN(lnx_prlimit64), [LNX_getrandom] = OWN(lnx_getrandom),
+    [LNX_prlimit64] = NATIVE(SYS_prlimit), [LNX_getrandom] = OWN(lnx_getrandom),
     [LNX_pread64] = OWN(lnx_pread64), [LNX_pwrite64] = OWN(lnx_pwrite64), [LNX_madvise] = OWN(lnx_madvise), [LNX_mremap] = OWN(lnx_mremap), [LNX_clone] = OWN(lnx_clone),
     [LNX_flock] = OWN(lnx_zero), [LNX_fsync] = OWN(lnx_zero), [LNX_fdatasync] = OWN(lnx_zero), [LNX_getcwd] = NATIVE(SYS_getcwd),
     [LNX_creat] = OWN(lnx_creat), [LNX_gettimeofday] = OWN(lnx_gettimeofday), [LNX_sync] = NATIVE(SYS_sync), [LNX_time] = OWN(lnx_time),

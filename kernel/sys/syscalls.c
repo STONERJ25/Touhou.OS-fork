@@ -554,7 +554,7 @@ static long sys_dup2(TrapFrame *tf) {
     int oldfd = (int)A0(tf), newfd = (int)A1(tf);
     File *f = fd_get(me(), oldfd);
     if (!f) return -EBADF;
-    if (newfd < 0 || newfd >= MAX_FD) return -EBADF;
+    if (newfd < 0 || newfd >= rlimit_nofile(me())) return -EBADF;      /* RLIMIT_NOFILE */
     if (oldfd == newfd) return newfd;
     if (me()->fds[newfd]) fd_close(me(), newfd);
     file_get(f);

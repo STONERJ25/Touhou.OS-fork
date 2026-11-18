@@ -30,6 +30,7 @@ void usb_init(void);
 bool usb_wait_settled(u32 max_ms);
 void storage_mount_boot_volumes(void);
 void hwinfo_early(void);
+bool hardening_crash(const char *kind);
 
 u64 g_hhdm;
 u64 g_kernel_phys, g_kernel_virt;
@@ -74,6 +75,8 @@ static void crash_test(const char *kind) {
         fn();
     } else if (!strcmp(kind, "ro")) {
         *(volatile char *)__kernel_start = 0;                       /* text is read-only */
+    } else {
+        hardening_crash(kind);                                      /* smap, smep, lockup: kernel/crash_hardening.c */
     }
 }
 
@@ -127,6 +130,7 @@ NORETURN void kmain(BootInfo *bi) {
     char cpudesc[160];
     cpu_describe(cpudesc, sizeof cpudesc);
     klog("Gensokyo", "cpu: %s", cpudesc);
+    cpu_log_protection();               /* SMEP and SMAP: on, or why not (kernel/arch/x86_64/cpu.c) */
     klog("Gensokyo", "image %p .. %p, cmdline '%s'", __kernel_start, __kernel_end, cmdline_string());
 
     if (g_boot.version >= 3 && g_boot.report_phys && g_boot.report_len) {      /* text the loader left for the log ("netdiag": the firmware's own network driver) */
@@ -201,6 +205,7 @@ NORETURN void kmain(BootInfo *bi) {
 
     usb_wait_settled(8000);             /* a USB stick's HUMANVILLAGE volume is mounted before the first session starts (bounded; returns at once without USB) */
     process_init();
+    lockup_arm();                       /* from here a task that never leaves the kernel is reported (kernel/sched/watchdog.c) */
     klog("Gensokyo", "boot complete after %lu ms", (unsigned long)uptime_ms());
     printk("\n\x1b[1;35m Welcome to Gensokyo. \x1b[0m\n");
 

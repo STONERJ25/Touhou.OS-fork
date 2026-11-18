@@ -53,7 +53,8 @@ since 2026-11-03; see the project notes.)
 - [ ] ext4, next: a real Linux stick on the Dell, a hash-tree lookup for huge directories, journal replay in memory (read only), extended attributes and ACLs; writing stays out of scope
 - [x] consistency check of a dirty FAT volume at mount, an `fsck` tool (not yet run on real hardware) and a power-cut-safe FAT write order (docs/STORAGE.md)
 - [x] kernel hardening: syscall fuzzer fixes and larger `exec` limits (docs/HARDENING.md)
-- [ ] kernel hardening, next: SMAP, an OOM killer, a lockup detector
+- [x] kernel hardening, second round: SMAP, resource limits (`ulimit`), a reserve of pages and an OOM killer, a soft-lockup detector (docs/HARDENING.md; QEMU only, not yet on the Dell)
+- [ ] kernel hardening, next: a hard-lockup detector (an NMI from a performance counter), failure injection for allocations (the `ENOMEM` paths), limits on threads per user and on the memory pipes and sockets pin, the panic-screen cases that are left
 - [ ] install to an internal disk, so no stick is needed; updates over the network with a fallback kernel
 - [ ] package format and `gapget`, text editor syntax colours for more languages
 

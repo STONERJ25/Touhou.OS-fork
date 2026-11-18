@@ -349,8 +349,9 @@ static int grow_table(TmpNode *t, u64 need) {
     return 0;
 }
 
-static ssize_t tmp_write(VNode *v, File *f, const void *buf, size_t n, u64 off) {
-    (void)f;
+/* One attempt at a write. *starved is set when it stopped because the allocator had no page to give a user (the reserve, docs/HARDENING.md) and not because of
+ * the size limit of the file system: the caller then asks the OOM killer for room, with no lock held, and calls again for what is left. */
+static ssize_t tmp_write_once(VNode *v, const void *buf, size_t n, u64 off, bool *starved) {
     TmpNode *t = v->priv;
     TmpFs *fs = fs_of(v);
     if (!n) return 0;
@@ -367,9 +368,9 @@ static ssize_t tmp_write(VNode *v, File *f, const void *buf, size_t n, u64 off) 
         size_t po = (size_t)(pos & (PAGE_SIZE - 1));
         size_t chunk = MIN(n - done, PAGE_SIZE - po);
         if (!t->file.pages[page]) {
-            if (g_pages_used > pmm_total_pages() / 2) break;        /* keep half of RAM for everything else */
-            paddr_t p = pmm_alloc_page_zeroed();
-            if (!p) break;
+            if (g_pages_used > pmm_total_pages() / 2) break;        /* the size limit of the whole file system: half of RAM stays for everything else (ENOSPC) */
+            paddr_t p = pmm_alloc_page_user_zeroed();               /* data of a file belongs to the users: not from the kernel's reserve */
+            if (!p) { *starved = true; break; }
             t->file.pages[page] = phys_to_virt(p);
             g_pages_used++;
         }
@@ -380,6 +381,18 @@ static ssize_t tmp_write(VNode *v, File *f, const void *buf, size_t n, u64 off) 
     v->mtime = v->ctime = time_now_sec();
     mutex_unlock(&fs->lock);
     return done ? (ssize_t)done : -ENOSPC;
+}
+
+static ssize_t tmp_write(VNode *v, File *f, const void *buf, size_t n, u64 off) {
+    (void)f;
+    bool starved = false;
+    ssize_t w = tmp_write_once(v, buf, n, off, &starved);
+    if (!starved) return w;
+    size_t done = w > 0 ? (size_t)w : 0;
+    if (!oom_wait_for_pages(1)) return w;                               /* no victim to wait for (or the killer is off): a short write, or ENOSPC, as a full disk gives */
+    ssize_t w2 = tmp_write_once(v, (const u8 *)buf + done, n - done, off + done, &starved);
+    if (w2 > 0) done += (size_t)w2;
+    return done ? (ssize_t)done : (w2 < 0 ? w2 : -ENOSPC);
 }
 
 static int tmp_truncate(VNode *v, u64 size) {
@@ -418,7 +431,7 @@ static int tmp_mmap_phys(VNode *v, u64 off, paddr_t *phys) {
     else {
         rc = grow_table(t, idx + 1);
         if (!rc && !t->file.pages[idx]) {
-            paddr_t p = g_pages_used > pmm_total_pages() / 2 ? 0 : pmm_alloc_page_zeroed();
+            paddr_t p = g_pages_used > pmm_total_pages() / 2 ? 0 : pmm_alloc_page_user_zeroed();
             if (!p) rc = -ENOMEM;
             else { t->file.pages[idx] = phys_to_virt(p); g_pages_used++; }
         }
@@ -487,6 +500,15 @@ static int tmpfs_mount(const char *source, u32 flags, Mount *m) {
 static void tmpfs_unmount(Mount *m) { kfree(m->priv); }
 
 void tmpfs_stats(u64 *pages_used) { *pages_used = g_pages_used; }
+
+/* The pages of data a tmpfs regular file holds now (the OOM killer counts what a dying process would give back: an unlinked file it still has open). */
+u64 tmpfs_file_pages(const VNode *v) {
+    if (v->ops != &tmp_ops || !S_ISREG(v->mode) || !v->priv) return 0;
+    const TmpNode *t = v->priv;
+    u64 n = 0;
+    for (u32 i = 0; i < t->file.cap; i++) n += t->file.pages[i] != NULL;
+    return n;
+}
 
 /* All tmpfs instances draw from one pool (half of RAM, see tmp_write), so every mount reports the shared figures. */
 static int tmpfs_statfs(Mount *m, struct gstatfs *out) {

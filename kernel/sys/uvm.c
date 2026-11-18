@@ -80,6 +80,8 @@ int uvm_map(AddrSpace *as, u64 addr, u64 len, u32 prot, u32 flags) {
         return -EINVAL;
     for (Vma *v = as->vmas; v; v = v->next)
         if (addr < v->end && addr + len > v->start) return -EEXIST;
+    int lim = rlimit_vm_check(as, len, prot, flags);                    /* RLIMIT_AS and RLIMIT_DATA of the running process (kernel/sys/rlimit.c) */
+    if (lim) return lim;
     Vma *v = vma_new(addr, addr + len, prot, flags);
     if (!v) return -ENOMEM;
     v->next = as->vmas;
@@ -88,11 +90,12 @@ int uvm_map(AddrSpace *as, u64 addr, u64 len, u32 prot, u32 flags) {
 }
 
 int uvm_populate(AddrSpace *as, u64 addr, u64 len) {
+    bool can_sleep = (read_rflags() & RFLAGS_IF) != 0;
     for (u64 va = ALIGN_DOWN(addr, PAGE_SIZE); va < addr + len; va += PAGE_SIZE) {
         if (vmm_translate(as->pml4, va, NULL)) continue;
         Vma *v = vma_find(as, va);
         if (!v) return -EFAULT;
-        paddr_t p = pmm_alloc_page_zeroed();
+        paddr_t p = oom_alloc_user_page(true, can_sleep);          /* memory for a user process: the reserve and the OOM killer (kernel/mm/oom.c) */
         if (!p) return -ENOMEM;
         if (vmm_map(as->pml4, va, p, pte_flags_for(v->prot, v->flags))) { pmm_free_page(p); return -ENOMEM; }
     }
@@ -179,6 +182,7 @@ int uvm_clone(AddrSpace *dst, const AddrSpace *src) {
     dst->brk_start = src->brk_start;
     dst->brk = src->brk;
     dst->mmap_next = src->mmap_next;
+    bool can_sleep = (read_rflags() & RFLAGS_IF) != 0;
     for (Vma *v = src->vmas; v; v = v->next) {
         Vma *nv = vma_new(v->start, v->end, v->prot, v->flags);
         if (!nv) return -ENOMEM;
@@ -196,7 +200,7 @@ int uvm_clone(AddrSpace *dst, const AddrSpace *src) {
                 if (pmm_page_managed(sp)) pmm_get_page(sp);
                 continue;
             }
-            paddr_t np = pmm_alloc_page();
+            paddr_t np = oom_alloc_user_page(false, can_sleep);     /* fork copies every page: the reserve and the OOM killer decide when that is too much */
             if (!np) return -ENOMEM;
             memcpy(phys_to_virt(np), phys_to_virt(sp), PAGE_SIZE);
             if (vmm_map(dst->pml4, va, np, fl)) { pmm_free_page(np); return -ENOMEM; }
@@ -248,8 +252,10 @@ static bool uvm_fault_locked(AddrSpace *as, TrapFrame *tf, u64 addr) {
     if ((err & 2) && !(v->prot & PROT_WRITE)) return false;
     if ((err & 16) && !(v->prot & PROT_EXEC)) return false;
     if (!(v->prot & (PROT_READ | PROT_WRITE | PROT_EXEC))) return false;
-    paddr_t p = pmm_alloc_page_zeroed();
+    if ((v->flags & VMA_STACK) && !rlimit_stack_ok(as, addr)) return false;     /* deeper than RLIMIT_STACK: the program gets SIGSEGV */
+    paddr_t p = oom_alloc_user_page(true, (tf->rflags & RFLAGS_IF) != 0);       /* the reserve and the OOM killer (kernel/mm/oom.c); a handler that interrupted code with interrupts off cannot wait */
     if (!p) {
+        if ((tf->cs & 3) == 3 && oom_current_is_dying()) return true;           /* this process was the victim: the SIGKILL ends the thread on the way out of the fault, before the instruction runs again */
         klog("Yuyuko", "out of memory while mapping page %#lx: Yuyuko is hungry", (unsigned long)addr);
         return false;
     }

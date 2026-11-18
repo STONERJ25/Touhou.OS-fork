@@ -1,9 +1,15 @@
-/* CPU feature setup and identification. */
+/* CPU feature setup and identification.
+ *
+ * SMEP and SMAP follow the Intel SDM, volume 3A: 2.5 (CR4.SMEP is bit 20, CR4.SMAP bit 21), 4.6.1 (how the two checks decide a page fault: a supervisor-mode
+ * fetch from a user page faults under SMEP; a supervisor-mode data access to a user page faults under SMAP unless EFLAGS.AC is 1) and the STAC/CLAC entries of
+ * volume 2 (both are #UD on a CPU whose CPUID leaf 7 does not report SMAP: EBX bit 20). */
 #include "kernel.h"
 #include "cpu.h"
 #include "cpuinfo.h"
+#include "cmdline.h"
 
 CpuInfo g_cpu;
+u8 g_smap_enabled;
 
 /* "Intel(R) Core(TM) i5-7500 CPU @ 3.40GHz" -> 3400. On Intel parts that is also the rate the TSC counts at, which gives the
  * timer code a second opinion when the 8254 PIT it calibrates against is missing or misbehaves. */
@@ -83,7 +89,17 @@ void cpu_init(void) {
 
     u64 cr4 = read_cr4();
     cr4 |= (1UL << 9) | (1UL << 10);            /* OSFXSR, OSXMMEXCPT */
-    if (g_cpu.feat7_ebx & (1U << 7)) cr4 |= (1UL << 20);    /* SMEP */
+    if (CPU_HAS_SMEP) { cr4 |= (1UL << 20); g_cpu.smep_on = true; }
+    /* SMAP: a kernel access to user memory outside the window that uaccess.asm opens (STAC ... CLAC) is a fault, so a driver or a system call that follows a user
+     * pointer by accident panics with a name instead of reading whatever a hostile program put there. "smap=off" (or "nosmap") leaves it off, for a bad day on real
+     * hardware: with it off no STAC or CLAC is ever executed (g_smap_enabled stays 0), so nothing about the window can misbehave either. */
+    char opt[8];
+    g_cpu.smap_off_asked = (cmdline_value("smap", opt, sizeof opt) && !strcmp(opt, "off")) || cmdline_flag("nosmap");
+    if (CPU_HAS_SMAP && !g_cpu.smap_off_asked) {
+        cr4 |= (1UL << 21);
+        g_cpu.smap_on = true;
+        g_smap_enabled = 1;
+    }
     write_cr4(cr4);
 
     wrmsr(MSR_EFER, rdmsr(MSR_EFER) | (1UL << 11) | (1UL << 0));   /* NXE, SCE */
@@ -102,6 +118,15 @@ void cpu_init(void) {
     __asm__ volatile ("ldmxcsr %0" : : "m"(mxcsr_default));
 
     write_cr8(0);                               /* the firmware may have left the APIC task priority raised: no interrupt would get through */
+}
+
+/* The console is not up yet when cpu_init runs, so the line about what it switched on is written from here. The words are what `dmesg | grep -i smap` finds. */
+void cpu_log_protection(void) {
+    klog("Boundary", "SMEP %s", g_cpu.smep_on ? "on: the kernel does not run code from user pages" : CPU_HAS_SMEP ? "off" : "not offered by this CPU");
+    if (g_cpu.smap_on)
+        klog("Boundary", "SMAP on: the kernel reaches user memory only through the copy routines' stac/clac window (smap=off turns it off)");
+    else
+        klog("Boundary", "SMAP off: %s", g_cpu.smap_off_asked ? "smap=off is on the command line" : "this CPU does not offer it");
 }
 
 /* (cpu_mtrr_type_name, the firmware's MTRR type for a physical range, lives in mtrr.c.) */

@@ -155,9 +155,20 @@ void pmm_reclaim_boot_memory(void) {
     klog("Boundary", "reclaimed %lu KiB of loader and firmware memory", (unsigned long)(reclaimed >> 10));
 }
 
-paddr_t pmm_alloc(unsigned order) {
+/* The reserve (docs/HARDENING.md, "The OOM killer"): the last pages of RAM are for the kernel itself. An allocation made on behalf of a user process (a page fault,
+ * mmap, fork's copy, a tmpfs write: pmm_alloc_user) fails while the free pages would drop under it, so a program that wants all the memory can never take the
+ * pages the kernel needs for its own work (page tables, kernel stacks, the heap) while it is being dealt with. Everything else (pmm_alloc) may use all of it. The reserve is
+ * 1/32 of the RAM, but at least 64 and at most 2048 pages (256 KiB .. 8 MiB). */
+u64 pmm_reserve_pages(void) {
+    u64 r = g_total_pages / 32;
+    return r < 64 ? 64 : r > 2048 ? 2048 : r;
+}
+
+/* keep: free pages that must remain after this allocation (0 for the kernel's own). */
+static paddr_t alloc_keep(unsigned order, u64 keep) {
     if (order > PMM_MAX_ORDER) return 0;
     u64 f = irq_save();
+    if (g_free_pages < (1UL << order) + keep) { irq_restore(f); return 0; }
     unsigned o = order;
     while (o <= PMM_MAX_ORDER && g_free_head[o] == NIL) o++;
     if (o > PMM_MAX_ORDER) { irq_restore(f); return 0; }
@@ -173,6 +184,17 @@ paddr_t pmm_alloc(unsigned order) {
     g_free_pages -= 1UL << order;
     irq_restore(f);
     return (paddr_t)pfn << PAGE_SHIFT;
+}
+
+paddr_t pmm_alloc(unsigned order) { return alloc_keep(order, 0); }
+
+/* For memory that belongs to a user process: fails when the free pages would fall below the reserve. */
+paddr_t pmm_alloc_user(unsigned order) { return alloc_keep(order, pmm_reserve_pages()); }
+
+paddr_t pmm_alloc_page_user_zeroed(void) {
+    paddr_t p = alloc_keep(0, pmm_reserve_pages());
+    if (p) memset(phys_to_virt(p), 0, PAGE_SIZE);
+    return p;
 }
 
 /* Like pmm_alloc, but the block must end below `limit`: devices that can only address 32 bits of memory (and every device

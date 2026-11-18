@@ -1,10 +1,42 @@
-.page ulimit 1 show resource limits
+.page ulimit 1 show or set resource limits
 
 # SYNOPSIS
-*ulimit* [_OPTION_...]
+*ulimit* [*-SH*] [*-a* | *-c* | *-d* | *-f* | *-l* | *-m* | *-n* | *-s* | *-t* | *-u* | *-v*] [_LIMIT_]
 
 # DESCRIPTION
-`ulimit` is a gapsh builtin that exists so that scripts which call it do not fail. It ignores its arguments and prints `unlimited`: the kernel does not impose resource limits on processes.
+`ulimit` is a gapsh builtin. It shows or sets the resource limits of the shell, which every program the shell starts inherits (fork copies them, exec keeps them). Each limit has a soft value, which the kernel enforces, and a hard value, the ceiling for the soft one.
+
+Without a _LIMIT_ the soft value is printed (the hard one with `-H`). With one, both values are set (only the soft one with `-S`, only the hard one with `-H`). _LIMIT_ is a number, `unlimited`, `soft` or `hard`. Sizes are in units of 1024 bytes.
+
+Anyone may raise the soft value up to the hard one or lower it, and may lower the hard value, but not raise it again: a hard limit that was lowered stays lowered for that process and everything it starts. Only root may raise a hard limit.
+
+# OPTIONS
+@ *-n*
+    Open files. A call that needs a new descriptor fails with `EMFILE` once the process has this many (64 is the most the kernel has room for).
+@ *-u*
+    Processes of one user (root is exempt). `fork` fails with `EAGAIN` beyond this; a fork bomb stops there. The default is 128 of the 256 slots of the process table.
+@ *-v*
+    Address space in KiB: the sum of what the program has mapped. `mmap` and `brk` fail with `ENOMEM` beyond it, so a program that allocates until it is refused is refused instead of taking the machine's memory.
+@ *-d*
+    Writable private memory in KiB: the heap, anonymous maps and the program's data. Enforced like `-v`.
+@ *-s*
+    The stack, in KiB (at most 8192, the size of the stack region): a program that grows its stack past it gets `SIGSEGV`.
+@ *-c*, *-f*, *-l*, *-m*, *-t*
+    Core files (there are none), file size, locked memory, resident set size and CPU time: accepted and kept, not enforced.
+@ *-a*
+    Print every limit.
+@ *-S*, *-H*
+    Work on the soft or on the hard value.
+
+# EXIT STATUS
+0, or 1 when the limit could not be set (the message says why), or 2 for an unknown option.
+
+# EXAMPLES
+    ulimit -a
+    ulimit -n 16              # at most 16 open files from here on
+    ulimit -v 65536           # 64 MiB of address space
+    (ulimit -u 20; ./stress)  # in a subshell: the shell is unchanged
+    ulimit -Hn                # the hard limit on open files
 
 # SEE ALSO
-free(1)
+gapsh(1), gapsh-builtins(7), umask(1)

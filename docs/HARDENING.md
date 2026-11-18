@@ -13,10 +13,11 @@ checks now, what was found and fixed, how the tools that find such things work (
 | System call checks that the fuzzer and a review found missing | done; what is left is under "Open" |
 | `execve` limits: 32768 entries, 128 KiB per string, 512 KiB in all | done, tested |
 | `sysfuzz`, the system call fuzzer, and `tools/fuzz.py` | first version, passing; needs many more seeds |
-| Resource limits and an OOM killer | not started (`kernel/mm/oom.c` only counts) |
-| SMAP, `stac`/`clac`, crash tests for SMEP and SMAP | not started (SMEP was already on) |
-| Soft-lockup detector and `panic_on_lockup` | not started (`kernel/sched/watchdog.c` only counts) |
-| Panic screens that always appear | not started; one real gap is known: a panic during a desktop session is not drawn (see "How to resume", item 5) |
+| Resource limits (`getrlimit`, `setrlimit`, `prlimit`, `ulimit`) | done, tested (second round, 2026-11-17: "Resource limits") |
+| A reserve of pages, the OOM killer, tmpfs limited as a whole | done, tested in QEMU (second round: "The OOM killer") |
+| SMAP, `stac`/`clac`, crash tests for SMEP and SMAP | done, tested in QEMU, not yet tried on the Dell (second round: "SMAP and SMEP") |
+| Soft-lockup detector and `panic_on_lockup` | done, tested in QEMU; a hard lockup is the TCO watchdog's (second round: "The lockup detector") |
+| Panic screens that always appear | main has the part that mattered (the panic path switches the console back on, `fbcon_force_on`); the nested-panic and escape-sequence cases are not started ("How to resume", item 5) |
 
 ## Warnings and counters
 
@@ -26,7 +27,7 @@ only when going on is not safe. The hardening tests fail on any warning.
 
 `/proc/kstats` has one `name value` per line: `free_pages total_pages heap_bytes slab_pages tmpfs_pages tasks processes user_threads kstacks files vnodes pipes unix_sockets
 inet_sockets ptys warnings oom_kills watchdog_reports`. They are levels, not rates: the tests read them before and after a run and require the counts of objects to come
-back. (`oom_kills` and `watchdog_reports` stay 0 until those parts exist.)
+back. `oom_kills` counts the processes the OOM killer ended and `watchdog_reports` the soft lockups reported (both from the second round, below); `/proc/oom` says more about the killer.
 
 `/proc/vnodes` lists every live vnode, newest first, with the first four callers that led to its allocation:
 `0xADDR ino=N mode=M refs=R nlink=L size=S <- function+0xOFF function+0xOFF ...`. When the vnode count differs after a test, the lines at the top that were not there before
@@ -64,7 +65,9 @@ instead of causing a second fault in the middle of a panic. `backtrace_capture` 
 
 **tmpfs** (`kernel/fs/tmpfs.c`, rewritten for this). A file is at most 2 GiB (`TMP_MAX_PAGES` pages; `EFBIG` beyond, and a write that starts below the limit is cut at it), so no
 offset arithmetic can wrap and the page pointer table stays at 4 MiB at most. Every allocation failure in create, mkdir, symlink, link, rename and special files unwinds what was
-done. The file system as a whole has no size limit yet (see "Not started").
+done. All the tmpfs instances together (the root, `/tmp`, `/linux`) may hold half of the RAM and no more: `tmp_write` and `tmp_mmap_phys` stop there (a write that cannot get
+a page is cut short, or fails with `ENOSPC`), and `df` reports the same figure. The pages of a file come from the allocator's user class (see "The OOM killer"), so a runaway
+`dd` into `/tmp` ends with `ENOSPC` while the machine still has the other half, and a shortage of free pages caused by something else is the killer's business.
 
 **Sockets, pipes, ptys.** `AF_UNIX` sockets hold file references (`socket_ref`) and are allocated and released in pairs (`sock_alloc`, `sock_release`); `socketpair`, `pipe` and every
 error path give back what they took; a socket that was bound but never listened removes its file node on close. The counts feed `/proc/kstats`.
@@ -89,6 +92,156 @@ item; `gapsh` expands `*` over 3000 files, and `ls *` and `rm *` work.
 Tests: `user/test/exectest.c` (5000 and 20000 short arguments, a 100 KiB argument, a string of exactly 131071 characters plus NUL and one of one more, 32768 and 32769 entries, totals
 of 400, 500 and 600 KiB, 5000 environment entries, a big environment, arguments and environment that are only over the limit together, pointers into the kernel half and into unmapped
 memory (`EFAULT`), a `#!` script with 2000 arguments) and the shell checks in `hardening_exec` (`tests/case_hardening.py`).
+
+## SMAP and SMEP
+
+*Second round, 2026-11-17.* With **SMEP** (supervisor-mode execution prevention, on since the first version) the kernel cannot run code from a user page, and with **SMAP**
+(supervisor-mode access prevention, `CR4.SMAP`, switched on by `cpu_init` when CPUID leaf 7 (EBX bit 20) offers it) it cannot read or write a user page either, except
+while `EFLAGS.AC` is set. Together they close the cheapest ways to turn a kernel bug into a program's win: a stray pointer that happens to hold a user address is a panic with
+a name instead of a read of whatever a hostile program put there, and a jump through a pointer a program could plant cannot land in the program's own code. Written from the Intel SDM
+(vol. 3A 2.5 and 4.6.1; STAC and CLAC in vol. 2).
+
+**Who touches user memory.** Two assembly routines and nothing else (`kernel/arch/x86_64/uaccess.asm`): `__copy_user` (`rep movsb`) and `__clear_user` (`rep stosb`), reached through
+`copy_from_user`, `copy_to_user`, `clear_user`, `strnlen_user` and `strncpy_from_user` (`kernel/sys/uaccess.c`). Each opens the window with `stac` just before its string
+instruction and closes it with `clac` right after; the fixup `__uaccess_fault` (where a fault that demand paging cannot satisfy ends) closes it too. Nothing runs inside the window
+but that one instruction. The audit that found this (every one of the roughly 470 uses of the system call argument macros `A0`..`A5` and every cast of an integer to a pointer in the system call
+files, the Linux personality, the sockets, the drivers' `ioctl` handlers, the signal frames of both personalities, `exec`, the futex code) found **no direct dereference of a
+user pointer**: every handler copies through the helpers, the signal frames use `copy_to_user`/`copy_from_user`, the new stack of an `exec` and the futex words go through the direct
+map (`uvm_write`, `vmm_translate` + `phys_to_virt`), and the ioctl handlers receive a kernel copy of the argument. The audit was made again on the tree after the Linux `/proc` and exec-by-markers
+work was merged (main f4629f6): `kernel/linux/procfs.c` reads a process's memory (`/proc/<pid>/cmdline`, `environ`) through that process's page tables and the direct map (`read_user`), and
+`exec.c`'s `stack_word` reads the new stack the same way, so nothing there touches a user address either; and once more after main 9d69965 (the `.bss` of a program is demand-zero: `elf_map` only
+fills the pages that hold file data): that change decides which pages `uvm_populate` maps at `exec`, and the rest are filled by `uvm_fault` at the first touch, by the program or by a copy routine, so a
+demand fault inside the copy window is now common. That is the path the window was built for (the fault is taken with `AC` set in the frame, the handler runs with it clear, `iretq` gives it back and the
+`rep movsb` goes on), and main's `rig_big_bss` (the kernel reads untouched `.bss` pages, one a gigabyte away) runs it. And a third time after main 06f5e56 (the L3 calls for Python and gcc: `kernel/linux/l3.c`,
+`fsops.c`, `ioctl.c`; the ext4 driver; a word-wise `memcpy`): every new call copies through `copy_from_user`, `copy_to_user`, `strncpy_from_user`, `at_path` or `lnx_iov`, the ext4 driver never sees a user
+pointer, and `memcpy` and `memset` are only for kernel memory (the copy routines of `uaccess.asm` are separate). So no file needed a fix for SMAP; the proof that nothing was missed is the suite run with
+SMAP on (below). (The one change that merge needed was not a user access but an allocation: see "The reserve" below, `lnx_mmap`.)
+
+**Interrupts and exceptions.** The CPU does not clear `AC` when it enters a handler, and any ring may set `AC` in its own flags, so `isr_common` starts with `clac` (every
+vector goes through it, NMI and double fault included): without it a program that sets `AC` and waits for a tick would run the kernel's handlers with SMAP effectively off, and a
+tick inside the copy window would run its handler with the window open. The interrupted code gets its own `AC` back at `iretq`. `SYSCALL` clears `AC` through `IA32_FMASK`
+(0x47700 has bit 18). `trap_handler` warns if it ever finds `AC` set (`tests/case_hardening2.py` sets it in user mode and waits for ticks). A protection fault (the page is present) taken
+in kernel mode on a user address with `AC` clear is reported as **`SMAP VIOLATION: the kernel read the user address 0x... outside the copy window`**, a fetch from a user page as **`SMEP VIOLATION`**,
+both before the fault is offered to demand paging. A page that is *not* present is left to the old path (a null or garbage pointer stays a `BOUNDARY VIOLATION: not-present page ...`, which
+the `crash_pf` and `crash_null` tests expect), and a valid user page that was never touched is demand-paged and then faults again as a present page, which is when the message above appears.
+
+**`STAC` and `CLAC` are `#UD` on a CPU without SMAP**, so every use is guarded by one byte, `g_smap_enabled` (set by `cpu_init` when the CPU has SMAP and `smap=off` is not on
+the command line): a branch on a flag that never changes, in the copy routines and at the top of `isr_common`.
+
+**Command line:** `smap=off` (or the Linux word `nosmap`) leaves CR4.SMAP clear and runs no `stac` or `clac` at all: the way to survive a bad day on real hardware (a missed access
+shows up as a panic that names `SMAP VIOLATION` and the address; the `dmesg` line that says it is on is `[Boundary] SMAP on: ...`, and with the word `SMAP off: smap=off is on the command
+line`). **Crash tests** (`crash=KIND`, `kernel/crash_hardening.c`): `smap` (a plain load from a user page), `smep` (a call into an executable user page), `smap-window` (every copy routine in
+every way it can end, successful, faulting, clearing and string, and then a plain load: it must still be refused, which proves each closes the window). `acflag` (`user/test`) is the user program
+that sets `AC` and makes system calls, including failing ones, while the timer ticks.
+
+**What it does not cover.** A user access that goes through the direct map (the physical page of a user mapping is reachable by its kernel address) is not an access to a user page
+as far as the CPU is concerned: SMAP cannot see it, so the helpers that do it (`uvm_write`, the futex words) check the mapping themselves. SMAP guards one CPU's view; nothing here is
+about the speculative reads that SMAP does not stop either.
+
+## Resource limits
+
+*Second round.* `getrlimit`, `setrlimit` and `prlimit` (`SYS_getrlimit` 120, `SYS_setrlimit` 121, `SYS_prlimit` 122; `kernel/sys/rlimit.c`, `shared/abi.h`; libc `<sys/resource.h>`)
+give every process a soft and a hard value for the sixteen resources of Linux (the numbers and the structure are Linux's), as POSIX says: the soft value is what is enforced and
+anyone may move it anywhere up to the hard one, anyone may lower the hard value (and then cannot raise it again), only root may raise a hard value. They belong to the process: `fork`
+copies them, `execve` keeps them, so the shell's `ulimit` reaches everything it starts. A process may look at, and change, another of the same user (any, as root: `prlimit`).
+
+| Resource | Default (soft / hard) | Enforced |
+|----------|----------------------|----------|
+| `RLIMIT_NOFILE` | 64 / 64 | `fd_install` (open, pipe, socket, accept, `dup`, `F_DUPFD`) gives `EMFILE`, `dup2` beyond it `EBADF`; the table has 64 slots, so no hard limit above 64 (`EPERM`, root too) |
+| `RLIMIT_NPROC` | 128 / 128 | `fork` gives `EAGAIN` when the *real user* already has that many processes (zombies count until collected); root is exempt. Half of the 256-slot process table: one user cannot fill it. Threads are not counted: they are limited per process (256) and in all (1024) |
+| `RLIMIT_AS` | unlimited | every `mmap`, `brk` and other `uvm_map` of the running process fails with `ENOMEM` beyond the sum of its mappings (the 8 MiB stack counts at its initial 64 KiB) |
+| `RLIMIT_DATA` | unlimited | the same call, for writable private mappings (heap, anonymous maps, the program's data and bss) |
+| `RLIMIT_STACK` | 8 MiB / unlimited | the page fault handler refuses a stack page deeper than the limit: `SIGSEGV`. The stack region itself is 8 MiB, so a higher limit buys nothing |
+| `RLIMIT_CORE` | 0 / unlimited | accepted: there are no core dumps |
+| the rest (`CPU`, `FSIZE`, `RSS`, `MEMLOCK`, `LOCKS`, `SIGPENDING`, `MSGQUEUE`, `NICE`, `RTPRIO`, `RTTIME`) | as Linux reports them | stored and reported, not enforced |
+
+`ulimit` in `gapsh` is a builtin (`-n -u -v -d -s -c -f -l -m -t -a`, `-S` and `-H`, `unlimited`, `hard` and `soft`; sizes in KiB; manual page `ulimit(1)`). The defaults leave every program
+that ran before running. The Linux personality's `getrlimit`, `setrlimit` and `prlimit64` are the same calls (`NATIVE(SYS_getrlimit)` etc. in `kernel/linux/syscall.c`: the resource numbers, the structure and
+the argument order are Linux's), so Linux programs see and meet the same limits; before the second round that table answered fixed values and accepted anything. Tests: `rlimtest` (`user/test`) and the shell
+checks of `hardening2_limits`, `hardening2_fork_bomb_stops_at_the_limit`.
+
+## The OOM killer
+
+*Second round.* **The reserve.** The page allocator keeps the last 1/32 of RAM (at least 64, at most 2048 pages: 256 KiB to 8 MiB) for the kernel's own use. An allocation made *on behalf of a user
+process*, `pmm_alloc_user`, fails while the free pages would drop under it: that is a page fault's page, the pages `uvm_populate` maps for `exec` and file maps, the copy `fork` makes of an
+address space, the data pages of a tmpfs file, and the pages the Linux personality gives a shared anonymous mapping at the call (`lnx_mmap` in `kernel/linux/l3.c`). Everything else (page tables,
+kernel stacks, the heap, DMA buffers: `pmm_alloc`) may use the reserve, which is what lets the kernel go on working long after the programs have hit the wall. **A new place that maps fresh memory into a
+user address space must allocate with `oom_alloc_user_page` (or `pmm_alloc_user` where it cannot sleep)**: with a plain `pmm_alloc_page` a program could drive the free pages to nothing and the kernel's own
+allocations would fail first. (`hardening2_oom_kills_a_linux_shared_memory_hog` tests `lnx_mmap`, which did that when main's L3 work arrived.)
+
+**The design.** When a user allocation fails, `oom_alloc_user_page` (`kernel/mm/oom.c`) asks the killer once and tries once more:
+
+* *Where the victim is chosen*: in the context of the allocation that failed (a page fault handler, a system call), never in an interrupt and never inside the allocator, whose irq-off
+  sections only answer "no". The choice, the record and the signal are one step with interrupts off, so two failing allocations never end two processes for one shortage.
+* *Whom*: every user process except init and except one already dying (`exiting`, or `SIGKILL` pending); kernel threads have no process. By badness: the RAM pages its tables map (a framebuffer
+  mapping is not memory) plus the pages of *unlinked* tmpfs files it holds open (memory that dies with the last descriptor), times 5/4 for a process that runs as an ordinary user and 3/4 for root's,
+  times 5/4 again when it started less than half a minute ago (the youngest lose the least work). The biggest wins; nothing with no pages is killed.
+* *How, and when it takes effect*: `signal_send(victim, SIGKILL)`, exactly what `kill -9` does. The victim's threads die on their way back to user mode (a sleeping one is woken), and the last one out frees
+  the address space and the descriptors in `process_finalize`; the killer frees nothing itself. The log line is `[Eiki] out of memory: killed 'NAME' (pid N), M pages`, `oom_kills` in `/proc/kstats` counts it,
+  `/proc/oom` shows the last one.
+* *The caller waits, and only where it is safe*: a caller that can sleep (it was interrupted with interrupts on: every system call, every user-mode fault) yields in 1 ms steps until the free pages
+  are above the reserve again or the victim is a zombie, for at most 2 s, then tries the allocation once more. A page fault holds only its own address space's lock (the victim is another process, or
+  the caller's own); a tmpfs write waits *before* it takes the file system lock (`tmp_write` calls `oom_wait_for_pages` when its attempt came up empty); the wait is bounded in any case. A caller that cannot
+  sleep only starts the kill and fails.
+* *When the victim is the caller* (or a thread of its process): the kill is sent and the caller does not wait for itself. A user-mode fault is let go (the pending `SIGKILL` ends the thread on the way out
+  of the fault, before the instruction runs again); a copy to user space fails with `EFAULT`; either way the process is gone before it can run another instruction of its own.
+* *One shortage, one victim*: while a victim is alive within 2 s of its kill, later callers wait for it instead of choosing another. A victim that has not died after that (it is stuck in something
+  uninterruptible) is skipped as "dying already" and the next choice is made.
+* *Kernel allocations never kill anybody*: a `kmalloc` or `pmm_alloc` that fails gives `ENOMEM` (or a short write) to its caller, whatever the cause.
+
+`oom=off` on the command line keeps the reserve and the failing allocations but kills nobody (a fault ends in `SIGSEGV`, as before). Tests (`tests/case_hardening2.py`, guest program `oomtest`):
+`hardening2_oom_kills_the_hog` (a program that maps and touches memory in a 128 MiB guest is ended, init, the shell and sshd live, the pages come back), `hardening2_oom_worker_survives_a_slow_hog`
+(a hog that touches pages slowly while another program needs fresh memory all the time: the worker meets the shortage first, waits, and finishes with the right answers), `hardening2_oom_tmpfs_is_limited_as_a_whole`
+(`ENOSPC` at half of RAM, nobody killed), `hardening2_oom_fork_of_a_big_process` (the shortage is met inside `fork`'s copy of the address space and the victim is a child),
+`hardening2_oom_off_leaves_a_failing_fault`, and the fork bomb and descriptor leak in the limits tests.
+
+**Not covered:** memory the kernel holds for a process that is not in its page tables (pipe and socket buffers, the heap objects behind its descriptors) is not counted in its badness and comes from the
+kernel's side; a process that is stuck in an uninterruptible kernel wait cannot be killed until it gets out of it; the VM has no swap and no page cache to give back first. **Nothing but init is protected**:
+sshd, the shell and the window server are ordinary candidates, and they live in the tests because the hog is the biggest and the youngest, not because they are special (a Linux `oom_score_adj` that exempts
+chosen services is the next step).
+
+## The lockup detector
+
+*Second round.* `kernel/sched/watchdog.c` finds a task that has run **in the kernel** for too long **without ever giving the CPU up of its own accord** (a **soft lockup**). The kernel is preemptive
+(the timer ends a time slice wherever the code is), so a spinning kernel thread does not stop the others: a count of context switches would say nothing, and what the detector counts instead is, per
+task, the timer ticks that found it in the kernel (not in user mode, not the idle task) since it last slept, blocked, yielded, was seen in user mode, or was *touched* (`Task.kspin`, bumped by
+`lockup_tick` from the tick's return path, cleared by `schedule()` when the task is no longer runnable, by `task_yield`, and by `lockup_touch()`). At `lockup.thresh` seconds of the task's own time (20 s
+by default) it reports, with the tag Momiji (the hardware watchdog's):
+
+```
+[Momiji] soft lockup: 'NAME' (tid 7, pid 12) has run in the kernel for 20 s without sleeping, yielding or returning to user mode
+rip=... <function+0x..>  cs=... (the registers of the interrupted context)
+backtrace: ... (the panic code's symbolised walk of that context)
+```
+
+It counts in `watchdog_reports` and reports again after another threshold if the task is still at it. **`panic_on_lockup`** on the command line makes the report a panic instead (the usual incident text, the
+record in RAM, and the restart that `panic=SECONDS` asks for: [RELIABILITY](RELIABILITY.md)). Command line words: `lockup.thresh=SECONDS` (1 to 3600), `lockup=off`, `panic_on_lockup`.
+
+**Armed when the boot is complete** (`lockup_arm`, just before init starts): the boot thread does long work in the kernel (the check and repair of the volume under `hvfsck=safe`, unpacking the initrd) that the
+hardware watchdog is fed through separately. **Long jobs that are alive** call `lockup_touch()`: the block layer does for every request (`blk_read`, `blk_write`, `blk_flush`), which covers the FAT and NTFS
+scans and repairs at run time (a stick plugged in later). A user process spinning in user mode is never reported.
+
+**Not covered: a hard lockup**, a CPU that runs with interrupts off for good. The timer interrupt does not come either, and QEMU has no NMI source to break in with. Today the TCO hardware watchdog ends it
+(the machine restarts when nobody feeds it; the next start's record says "ended without a shutdown or a panic" with the last sign of life, but not why). The next step would be a performance-counter
+NMI (a PC has one; QEMU's TCG does not emulate it) whose handler looks at the same counter and prints where the CPU is. Tests: `hardening2_lockup_is_reported`, `hardening2_lockup_panics_with_panic_on_lockup`,
+`hardening2_lockup_off`, `hardening2_lockup_detector_stays_quiet` (the long legitimate jobs with a 3 s threshold and `panic_on_lockup`).
+
+## Second round on real hardware: what to try on the Dell
+
+None of the second round has run on the Dell (the i5-7500 has SMEP and SMAP; QEMU's `-cpu max` has both too). In this order, each with what turns it off:
+
+1. **A clean start with the defaults.** `dmesg | grep -i -E 'smap|smep|Momiji'` must say `[Boundary] SMEP on` and `SMAP on`, and `[Momiji] soft lockup detector: ...`. A panic that names `SMAP VIOLATION` and an address
+   means a path that QEMU never took touches user memory directly: note `rip` and the backtrace, and start again with **`smap=off`** (push with `--cmdline`; nothing else changes).
+2. **A working session**: the desktop, an ssh login, the USB stick mounted and unmounted, sound, a `fetch`, `update status`. These exercise every driver the Dell has that QEMU does not (e1000e/I219, xHCI,
+   HDA); none of them reaches user memory except through the system call layer, so a violation here would be new information.
+3. **Limits**: `/usr/lib/kernel-tests/rlimtest` (all the rules, as an ordinary user), `/usr/lib/kernel-tests/oomtest fdleak`, `oomtest forkbomb`, `(ulimit -n 8; ls /usr/bin | head -3)`. A program that violates a limit should
+   meet exactly what the table above says (`EMFILE`, `EAGAIN`, `ENOMEM`, `SIGSEGV` for the stack). There is no word that turns the limits off: the defaults only limit the descriptors (64, as before) and the processes
+   of one user (128).
+4. **The OOM killer** (only when you want to see it: the machine has gigabytes, and `oomtest hog` takes time and is unresponsive for a moment): `ulimit -v 1000000; oomtest hog` first (the address-space limit stops it
+   with `mmap failed`, nothing is killed), then `oomtest hog` over ssh: `[Eiki] out of memory: killed 'oomtest' ...` in `dmesg`/the netconsole, the ssh session and the desktop live. **`oom=off`** keeps the reserve but kills nobody.
+5. **The lockup detector**: add `crash=lockup lockup.thresh=10` for one start: the report (name `lockup`, the registers, a backtrace through `spin_forever`) appears about 10 s after boot completes, on the screen, in
+   `dmesg`, over the netconsole and in `TOUHOU.LOG`; the machine keeps running (the spinner only takes its share of the CPU). With `panic_on_lockup panic=20` it is a panic and a restart after 20 s. Remove the words
+   afterwards. **`lockup=off`** switches the detector off.
 
 ## The system call fuzzer
 
@@ -207,6 +360,61 @@ Known and not fixed. The first four are the ones to do first.
 * `hardening_sysfuzz`: opt-in, see above. It has never been run as a test; equivalent runs were made with the scripts that `tools/fuzz.py` was cleaned up from.
 * The suites that cover what was changed: `jobctl`, `jobctl_tools` (signals, groups, terminals), `threads_*`, `net_loopback`, `storage_posix_semantics` (tmpfs), `crash_*` in `tests/case_core.py` (the
   panic screen and the backtrace), `kshell_*`, `selftest`.
+* **The second round** (`python tests/run_all.py hardening2_`, `tests/case_hardening2.py`; each test boots its own guest, the OOM ones with 128 MiB and sshd):
+
+  | Test | What it shows |
+  |------|---------------|
+  | `hardening2_smap_on`, `_smap_off` | the start says SMAP and SMEP are on (or why SMAP is off with `smap=off`) and the system works in both |
+  | `hardening2_crash_smap`, `_crash_smep`, `_crash_smap_window` | the three deliberate faults panic with `SMAP VIOLATION` / `SMEP VIOLATION` and the address; every copy routine closes its window |
+  | `hardening2_ac_set_in_user_mode` | `acflag`: a program with `EFLAGS.AC` set lives through ticks and failing system calls, and the kernel never runs a handler with AC set |
+  | `hardening2_limits` | `rlimtest` (defaults, the soft and hard rules, `EMFILE`, `EAGAIN`, `ENOMEM`, `SIGSEGV`, inheritance, `prlimit` on others) and the `ulimit` builtin |
+  | `hardening2_fork_bomb_stops_at_the_limit` | `EAGAIN` at 128 processes (and at a lower `ulimit -u`), everything reaped, nobody killed |
+  | `hardening2_oom_kills_the_hog` | the hog is ended (status 137, the log line, `oom_kills`), init, the shell and sshd keep their pids, the free pages come back |
+  | `hardening2_oom_kills_a_threaded_hog` | a hog that grows in three threads is ended as one process (status 137): processes, tasks, user threads and kernel stacks are back at their old counts and the free pages come back |
+  | `hardening2_oom_kills_a_linux_shared_memory_hog` | `lnx_shmhog` (`user/linuxtest`), a Linux program that maps shared anonymous memory (all its pages at the call) until stopped, is ended by the killer (137), its pages come back |
+  | `hardening2_oom_worker_survives_a_slow_hog` | the program that needs fresh memory all the time waits for the victim and finishes with the right answers |
+  | `hardening2_oom_fork_of_a_big_process` | `fork` copies every page, so a big process that keeps forking runs the machine out of memory inside `fork`: the killer ends children (the youngest of equal size), the parent lives and gets all 24 |
+  | `hardening2_oom_tmpfs_is_limited_as_a_whole` | `ENOSPC` below half of RAM, no kill, the pages come back |
+  | `hardening2_oom_off_leaves_a_failing_fault` | `oom=off`: `SIGSEGV` at the wall, `/proc/oom` says the killer is off |
+  | `hardening2_lockup_is_reported`, `_panics_with_panic_on_lockup`, `_off` | `crash=lockup` with a 3 s threshold: the report, the panic, and silence with `lockup=off` |
+  | `hardening2_lockup_detector_stays_quiet` | the runtime kernel jobs (a stick repaired by the automount thread, a slow repair, 60 MiB through the cache in 96 MiB of RAM, an NTFS scan, a big exec, the self tests) with a 3 s threshold and `panic_on_lockup`: no report |
+* The safety net with SMAP on (the whole existing suite and the fuzzer): see "Results of the second round" below.
+
+## Results of the second round (2026-11-17)
+
+All in QEMU (TCG, `-cpu max`; the SMAP tests once more on `Skylake-Client-noTSX-IBRS`, the CPU model nearest the Dell's i5-7500). Nothing has run on the Dell.
+
+The branch was merged with main while the work went on; the last four merges were `f4629f6` (the Linux `/proc` and exec-by-markers work), `7e0e727` (the demand-zero `.bss`), `06f5e56` (the L3 calls for Python
+and gcc, ext4, a word-wise `memcpy`) and `98823c2` (the IPv6 stack). Each was audited for user-memory accesses by reading (none found: see "SMAP and SMEP") and the tests below were run on the merged tree.
+
+* **The 19 `hardening2_` tests pass** (`python tests/run_all.py hardening2_`, about 4 minutes on an idle machine) on the final tree, merged with main `98823c2` (the panic_on_lockup test once failed on a greedy
+  regular expression of the test itself; fixed). Mutation checks: with the `clac` taken
+  out of `isr_common` the AC test fails with the kernel's own `[WARNING] EFLAGS.AC is set inside the handler of vector 32`, and with it taken out of `__uaccess_fault` `crash=smap-window` fails (the plain load after a faulting
+  copy goes through): the two tests have teeth. So has the Linux shared-memory one: with `lnx_mmap` taking its pages from `pmm_alloc_page_zeroed()` again, `hardening2_oom_kills_a_linux_shared_memory_hog` fails
+  (nobody is killed; the program spins on `ENOMEM` until the test gives up after 484 s), and with the fix it passes in 5 s.
+* **The safety net with SMAP on**, all passing, nothing skipped within the lists, each group one run through `tools/qemu-slot.py` from a frozen copy of the tree. **No panic, no `[WARNING]`, no `SMAP VIOLATION`
+  anywhere**: the audit's result (no user access had to be changed) held.
+  * **On the final tree (main `98823c2`, the IPv6 stack)**: the 19 `hardening2_` tests, `selftest`, `utest` and the 5 `rig_` tests (26 in one run); the IPv6 and Linux socket tests, `net6_*` (16: the loopback,
+    the five card models, host TCP, UDP and HTTP, DNS, address configuration, reassembly, neighbour discovery) and `linux_net*` (4, among them `linux_net6_matches_linux`); the 10 IPv4 socket tests that merge touched
+    (`net_loopback`, `net_robust`, `net_loss`, `net_tcp_host`, `net_fetch_host`, `net_httpd_hostfwd`, `net_dns_host`, `net_ifconfig_set`, `net_dhcp_state_and_stop`, `net_static_config_at_boot`); all 16 `ssh_` tests;
+    **all 7 `linux_py_*` tests** (L3: the real Python 3.12 and gcc 13 of an Ubuntu root run as Linux programs: the first program, the language and its library, the system calls, threads and multiprocessing,
+    sockets and polling, the compiler, an interactive session; the multiprocessing script uses `lnx_mmap`'s shared memory); and the fuzzer, seeds 1, 2 and 201, 0 violations.
+  * **On the tree merged with `06f5e56`**: the 19 `hardening2_` tests, `selftest`, `utest`, `kshell_serial`, `shell`, `crash_pf`, `crash_panic`, `desktop_boots`, `hardening_exec`, `rig_big_bss` and `manual`
+    (29 in one run).
+  * **On the tree merged with `7e0e727`** (the Linux `/proc` and exec-by-markers work, the demand-zero `.bss`): the 18 `hardening2_` tests; **all 33 `linux_` tests**, **all 16 `ssh_` tests** and 13 socket and netctl tests (`net_loopback`, `net_robust`, `net_loss`,
+  `net_names_local`, `net_nonet_switch`, `net_tcp_host`, `net_fetch_host`, `net_httpd_hostfwd`, `net_dns_host`, `net_sntp_host`, `net_ifconfig_set`, `net_dhcp_state_and_stop`, `net_static_config_at_boot`);
+  main's `rig_big_bss`; and 48 of the core, desktop and application tests: `selftest`, `utest`, `kshell_serial`, `kshell_keyboard`, `shell`, the nine `crash_*`, `hardening_exec`, `threads_utest`,
+  `threads_selftest`, `jobctl` and its four variants, `desktop_boots`, `desktop_terminal`, `manual` (with the new `ulimit(1)`), `apps_cli`, `apps_windows`, the games (`games_selftests`, `minesweeper_play`,
+  `snake_play`, `snake_scores`, `danmaku_menus`, `danmaku_demo`), `hidpi_*` (5), `lock_screen`, `login_*` (3), `pnote_*` (3), `pager`, `tooltip_*` (2). **The system call fuzzer: 14 campaigns of 30 s, 0 violations**:
+  seeds 1, 2, 3 and 201 to 206 with two workers (9), 105, 111 and 112 with `--extra heapdebug` (3; seed 105 is the one that looked like a hang in the first round, Open, 1: it ran to its end this time), 301 and 302 with
+  four workers (2). The demand-zero `.bss` (a fault taken inside the copy window, `rig_big_bss`) works under SMAP.
+* **Not run on the final tree** (they ran on an earlier tree, or not at all): the other `linux_` tests (33 ran on the `7e0e727` tree; the L3 and IPv6 merges changed `kernel/linux/`), the kernel keyboard and
+  desktop groups, the application and game tests (48 core, desktop and application tests ran on the `7e0e727` tree), `ext4_*` (a driver that never sees a user pointer), the network card models and the DHCP timing
+  tests of IPv4 (`net_nic_*`, `net_link_*`, `net_e1000e_*`, `net_dhcp_*` other than the state one, `net_loader_netdiag`, `net_nicdebug_trace`, `net_wake_on_lan`), `tls_*`, the audio, explorer, storage and update
+  tests. They are for the lead's whole-suite run (`tools/suite.py`, which an agent may not start). Nothing was run on the Dell.
+* **What was measured** (128 MiB guest, 22759 free pages when idle): the reserve is 945 pages (3.7 MiB); the hog was ended with its 22412 pages (87.5 MiB) a few hundred milliseconds after it reached the wall and the free
+  pages afterwards were exactly the 22759 from before; with a slow hog and a worker that needs 64 KiB of fresh memory per round, the worker ran 63131 rounds with no wrong answer; a tmpfs filler got 34 MiB in before `ENOSPC`
+  (half of RAM, the 24 MiB initrd included); a 16 MiB process forking 24 children had children ended 4398 pages at a time while the parent got all 24; the lockup report named the task and `spin_forever+0x12` within the 3 s threshold.
 
 ## State when paused
 
@@ -231,11 +439,8 @@ and `oom.c` and `watchdog.c` only hold the counters that `/proc/kstats` shows.
   * `hardening_sysfuzz` is written and syntax checked, and has not been run. `tools/fuzz.py` is the cleaned-up version of the scripts that made the runs above; it was written at the pause and only
     its syntax and `--help` have been checked, so the first real run may need a fix.
   * The review items under "Open" are written down, not fixed.
-* **Not started**:
-  * Resource exhaustion: limits per user (processes, threads, memory), a reserve of pages for the kernel, the OOM killer (`oom_kills` in `/proc/kstats`), a size limit for tmpfs as a whole, and the guest
-    programs and tests for them (`memhog`, a fork bomb, filling `/tmp`, running out of descriptors). `storage_small_ram` must keep passing.
-  * SMAP: `CR4.SMAP`, `stac`/`clac` around the user-copy routines, `clac` at the kernel entries, and crash tests `smep` and `smap`.
-  * The soft-lockup detector with `panic_on_lockup` (off by default).
+* **Not started** (at that pause; the first three were done in the second round of 2026-11-17, see "SMAP and SMEP", "Resource limits", "The OOM killer" and "The lockup detector"):
+  * ~~Resource exhaustion~~, ~~SMAP~~, ~~the soft-lockup detector~~: done.
   * Panic screens: see below; no code has been written.
   * A test that an ordinary user cannot take init down (`kill(1)`, `kill(-1)`, `setpgid` into init's group, `TIOCSPGRP` of a pty to group 1); the random calls no longer try these.
   * Failure injection for allocations (a `failalloc=N` command line word), so the fuzzer can reach the `ENOMEM` paths.
@@ -256,7 +461,7 @@ and `oom.c` and `watchdog.c` only hold the counters that `/proc/kstats` shows.
    `LEAK`, `INCIDENT`; after a panic replay with `--only N`). A failing run's logs are `build/fuzz-serial.log` and `build/fuzz-qemu.log`. Add every bug found to "What was found".
 4. Write the init protection test (a guest program in `user/test/`, run as `kerneltest=initguard` or from a test shell as an ordinary user): `kill(1, SIGKILL)`, `kill(-1, SIGTERM)` from a throw-away session,
    `setpgid(0, 1)`, `ioctl(pty, TIOCSPGRP, &1)` followed by a Ctrl-\ through the master; afterwards `/proc/1/status` must still exist and no kernel warning must have been logged.
-5. The remaining features, in this order of value for a PC without a serial port (the original order was 2, 3, 4, 5):
+5. The remaining features:
    * **Panic screens** (small, the biggest real gap). Today `panic()` and `panic_frame()` call `cli()`, stop silently on a second panic, and print through `printk`: the in-memory log, the serial port and
      `fbcon_write`. There are no locks in that path (one CPU, interrupts off), `printk` formats into a stack buffer, `ksym_lookup` reads a static table and `incident_quip` and `task_print_current` read static data and
      `current` (a corrupted `current` would fault, and a second fault halts silently); but `fbcon_write` draws nothing while the
@@ -268,27 +473,7 @@ and `oom.c` and `watchdog.c` only hold the counters that `/proc/kstats` shows.
      in `kernel/main.c` (`crash=KIND` on the command line, tests in `tests/case_core.py`) with kinds that need this: `desktop` (panic after the window server took the screen: check the screen by sampling
      pixels of the banner colour with the harness's `screendump`, see `tests/debug_pixels.py`), `escape` (panic in the middle of an escape sequence), `nested` (a fault inside the panic text), `badframe`
      (a backtrace from a garbage frame pointer: exercises `__kprobe_fault`), `stack` (kernel stack overflow into the guard page: arrives as a double fault on its own stack), `heapheld` (panic with the heap in a half-updated state).
-   * **SMAP** (`kernel/arch/x86_64/cpu.c` sets `CR4.SMEP` today; `CPU_HAS_SMAP` exists in `cpuinfo.h`). Kernel code reaches user memory through two assembly routines only, `__copy_user` and
-     `__clear_user` in `kernel/arch/x86_64/uaccess.asm` (the C helpers in `kernel/sys/uaccess.c`, including `strnlen_user` and `strncpy_from_user`, all call them); a fault inside
-     `[__uaccess_start, __uaccess_end)` that demand paging cannot satisfy is redirected to `__uaccess_fault`. Put `stac` at the start of both routines and `clac` before each `ret` and at `__uaccess_fault`;
-     put `clac` at `isr_common` and the `syscall` entry as well (`MSR_SFMASK` is 0x47700, which already clears `AC` on `syscall`; do not rely on the CPU doing it for interrupts); then set `CR4.SMAP`.
-     Every place that dereferences a user pointer directly (drivers' `ioctl` handlers, `/proc` writers, the `exec` and signal code) will fault once it is on: run the whole suite and the fuzzer with it on to
-     find them (QEMU's `-cpu max` and the Skylake model both have SMAP). `process_pagefault` (`kernel/sys/process.c`) today demand-pages a user address even when the fault came from kernel code outside the
-     uaccess range; refuse that case, so a stray kernel access to user memory is a panic with a name instead of a quiet success. Crash tests: `crash=smep` (the kernel jumps to a user page) and `crash=smap`
-     (the kernel reads a user address outside the uaccess code); both must panic with a message that names the feature.
-   * **Resource exhaustion and the OOM killer.** Today an empty page allocator makes `uvm_fault_locked` (`kernel/sys/uvm.c`) log `[Yuyuko] out of memory while mapping page ...` and leave the fault
-     unresolved, so the faulting process gets `SIGSEGV` (a fault inside a user copy gives `EFAULT`); nothing else about running out of memory has been examined. The existing limits are system-wide
-     (256 processes, `MAX_PROCS`; 1024 threads and 256 per process, `shared/syscall.h`; 64 descriptors per process, `MAX_FD`): there is none per user, and nothing bounds the memory of a process, the
-     total size of tmpfs or the buffers of pipes and sockets, so memory is what a hostile or broken program can use up. Plan: a reserve of pages that only the kernel's own allocations (stacks,
-     page tables, heap) may use, while allocations made on behalf of a process (page faults, `mmap` population, tmpfs, pipe and socket buffers) fail at the watermark; at the watermark an OOM killer picks the
-     process with the most pages (never pid 1, kernel threads or the caller's session leader if there is another choice), logs `[OOM] killed NAME (pid N, M MiB)`, sends `SIGKILL`, counts it in `oom_kills`,
-     and lets the allocation wait for it with a timeout instead of killing again; nothing to kill means `ENOMEM` (a fault gets `SIGSEGV`). A size limit for tmpfs as a whole (half of RAM) so that filling `/tmp`
-     gives `ENOSPC` rather than killing an innocent process; per-user limits on processes and threads. Guest programs in `user/test/`: `memhog`, `forkbomb`, `tmpfill`, `fdhog`, run as an ordinary user with
-     `mem=64M`; the machine must answer afterwards, kstats must return to their old values, and `storage_small_ram` must still pass.
-   * **Soft-lockup detector.** Tick based: the timer interrupt counts consecutive ticks in which the same task is running in kernel mode (or interrupts were found disabled for too long, measured with the TSC
-     in `irq_save`/`irq_restore` as a debug option); after N seconds it logs one `[WATCHDOG]` line with a backtrace, counts it in `watchdog_reports`, and panics only if `panic_on_lockup` is on the command line
-     (default off). A user process spinning in user mode must not be reported. A hard lockup (interrupts off for good) needs an NMI source; QEMU's TCG does not emulate performance counter NMIs, so it cannot be tested
-     here and is better left out. Test: a `crash=lockup` kind that spins in the kernel with interrupts on, once with and once without `panic_on_lockup`.
+   * (SMAP, resource exhaustion with the OOM killer and the soft-lockup detector were done in the second round, 2026-11-17: the sections above say how they work and what they do not cover.)
 6. Failure injection: a `failalloc=N` command line word that makes every Nth `kmalloc` and page allocation fail, and a `sysfuzz` option that uses it; this is the way to reach the `ENOMEM` paths (Open, 4).
 7. Where things are: `kernel/warn.c`, `kernel/mm/{heap,pmm,vmm,oom}.c`, `kernel/sched/watchdog.c`, `kernel/arch/x86_64/{backtrace.c,kprobe.asm,trap.c,cpu.c}`, `kernel/panic.c`, `kernel/printk.c`,
    `kernel/gfx/fbcon.c`, `kernel/drivers/fbdev.c`, `kernel/sys/{syscalls,exec,signal,uaccess,futex,thread,process}.c`, `kernel/fs/{tmpfs,vfs,pipe,socket}.c`, `kernel/drivers/{tty,pty}.c`, `user/test/*`,

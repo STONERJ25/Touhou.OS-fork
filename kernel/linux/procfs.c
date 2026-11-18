@@ -684,18 +684,28 @@ static void pid_smaps(PidCtx *c) {
     }
 }
 
-/* /proc/<pid>/limits: the limits getrlimit(2) reports for this personality (kernel/linux/syscall.c, rlimit_of): an 8 MiB stack, 64 descriptors, no core files. */
+/* /proc/<pid>/limits: the soft and hard limits of the process, the ones getrlimit(2) reports and the kernel enforces (kernel/sys/rlimit.c, docs/HARDENING.md). */
+static void limit_text(char *out, size_t n, u64 v) {
+    if (v == RLIM_INFINITY) strlcpy(out, "unlimited", n);
+    else snprintf(out, n, "%lu", (unsigned long)v);
+}
+
 static void pid_limits(PidCtx *c) {
-    static const struct { const char *name; const char *soft, *hard, *unit; } L[] = {
-        { "Max cpu time", "unlimited", "unlimited", "seconds" }, { "Max file size", "unlimited", "unlimited", "bytes" }, { "Max data size", "unlimited", "unlimited", "bytes" },
-        { "Max stack size", "8388608", "unlimited", "bytes" }, { "Max core file size", "0", "unlimited", "bytes" }, { "Max resident set", "unlimited", "unlimited", "bytes" },
-        { "Max processes", "256", "256", "processes" }, { "Max open files", "64", "64", "files" }, { "Max locked memory", "65536", "65536", "bytes" },
-        { "Max address space", "unlimited", "unlimited", "bytes" }, { "Max file locks", "unlimited", "unlimited", "locks" }, { "Max pending signals", "128", "128", "signals" },
-        { "Max msgqueue size", "819200", "819200", "bytes" }, { "Max nice priority", "0", "0", "" }, { "Max realtime priority", "0", "0", "" },
-        { "Max realtime timeout", "unlimited", "unlimited", "us" },
+    static const struct { const char *name; int res; const char *unit; } L[] = {
+        { "Max cpu time", RLIMIT_CPU, "seconds" }, { "Max file size", RLIMIT_FSIZE, "bytes" }, { "Max data size", RLIMIT_DATA, "bytes" },
+        { "Max stack size", RLIMIT_STACK, "bytes" }, { "Max core file size", RLIMIT_CORE, "bytes" }, { "Max resident set", RLIMIT_RSS, "bytes" },
+        { "Max processes", RLIMIT_NPROC, "processes" }, { "Max open files", RLIMIT_NOFILE, "files" }, { "Max locked memory", RLIMIT_MEMLOCK, "bytes" },
+        { "Max address space", RLIMIT_AS, "bytes" }, { "Max file locks", RLIMIT_LOCKS, "locks" }, { "Max pending signals", RLIMIT_SIGPENDING, "signals" },
+        { "Max msgqueue size", RLIMIT_MSGQUEUE, "bytes" }, { "Max nice priority", RLIMIT_NICE, "" }, { "Max realtime priority", RLIMIT_RTPRIO, "" },
+        { "Max realtime timeout", RLIMIT_RTTIME, "us" },
     };
     bp(c->o, "%-25s %-20s %-20s %-10s\n", "Limit", "Soft Limit", "Hard Limit", "Units");
-    for (unsigned i = 0; i < ARRAY_SIZE(L); i++) bp(c->o, "%-25s %-20s %-20s %-10s\n", L[i].name, L[i].soft, L[i].hard, L[i].unit);
+    for (unsigned i = 0; i < ARRAY_SIZE(L); i++) {
+        char soft[24], hard[24];
+        limit_text(soft, sizeof soft, c->p->rlim.cur[L[i].res]);
+        limit_text(hard, sizeof hard, c->p->rlim.max[L[i].res]);
+        bp(c->o, "%-25s %-20s %-20s %-10s\n", L[i].name, soft, hard, L[i].unit);
+    }
 }
 
 static void pid_mounts(PidCtx *c) { c->o->n += gen_mounts_view(c->o->b + c->o->n, c->o->cap - c->o->n, false); }

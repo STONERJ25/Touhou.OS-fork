@@ -212,6 +212,7 @@ extern const FsType g_procfs_type;
 extern const FsType g_fat32_type;
 int    tmpfs_add_special(VNode *dir, const char *name, u32 mode, const VNodeOps *ops, void *priv, u64 rdev, VNode **out);
 void   tmpfs_stats(u64 *pages_used);
+u64    tmpfs_file_pages(const VNode *v);                                /* pages of data a tmpfs regular file holds (0 for anything else); the OOM killer counts what a process keeps alive */
 
 /* Adds a read-only text file /proc/<name> generated on every read (drivers use this for /proc/usb and the like). */
 int    procfs_register(const char *name, size_t (*gen)(char *buf, size_t cap));

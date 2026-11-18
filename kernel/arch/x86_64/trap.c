@@ -6,6 +6,8 @@
 #include "task.h"
 #include "fbcon.h"
 #include "panicrec.h"
+#include "cpuinfo.h"
+#include "process.h"                                                    /* USER_TOP */
 
 static const char *const exc_name[32] = {
     "Divide Error (#DE)", "Debug (#DB)", "Non-Maskable Interrupt", "Breakpoint (#BP)",
@@ -76,6 +78,15 @@ static void handle_exception(TrapFrame *tf) {
     }
     if (v == 14) {
         u64 cr2 = read_cr2();
+        /* SMEP and SMAP (docs/HARDENING.md): a protection fault taken in kernel mode on a user address is the kernel doing what it must never do. The copy routines of
+         * uaccess.asm open the window (EFLAGS.AC = 1) for their one string instruction, so a present user page that faults with AC clear was reached around them, and a
+         * fetch from a user page is a jump through a pointer a program could have planted. Both are named here, before the fault is offered to demand paging. A page that is
+         * not present is left to the old path: a garbage or null pointer is still a "BOUNDARY VIOLATION: not-present page" (and a valid but untouched user page is mapped,
+         * which makes the retry a present-page fault that lands here). */
+        if (!from_user && cr2 < USER_TOP && (tf->error & 16) && (tf->error & 1) && g_cpu.smep_on)
+            panic_frame(tf, "SMEP VIOLATION: the kernel tried to execute the user address %#lx (rip %#lx)", cr2, tf->rip);
+        if (!from_user && cr2 < USER_TOP && (tf->error & 1) && !(tf->error & 16) && !(tf->rflags & RFLAGS_AC) && g_cpu.smap_on)
+            panic_frame(tf, "SMAP VIOLATION: the kernel %s the user address %#lx outside the copy window (EFLAGS.AC clear)", (tf->error & 2) ? "wrote" : "read", cr2);
         if (g_pagefault_hook && g_pagefault_hook(tf, cr2)) return;
         if (from_user && g_user_fault_hook && g_user_fault_hook(tf, cr2)) return;
         char why[160];
@@ -92,6 +103,10 @@ static void handle_exception(TrapFrame *tf) {
 
 void trap_handler(TrapFrame *tf) {
     u64 v = tf->vector;
+    if (g_smap_enabled && unlikely(read_rflags() & RFLAGS_AC)) {        /* isr.asm cleared it: a handler that runs with AC set has SMAP switched off (tests/case_hardening2.py sets AC in user mode and waits for ticks) */
+        static bool said;
+        if (!said) { said = true; KWARN("EFLAGS.AC is set inside the handler of vector %lu (rip %#lx)", v, tf->rip); }
+    }
     if (v < 32) {
         handle_exception(tf);
     } else if (v < 48) {

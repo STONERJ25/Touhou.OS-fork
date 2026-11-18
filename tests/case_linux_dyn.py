@@ -444,7 +444,9 @@ def linux_dyn_linuxroot_unpacks():
             out, rc = root_run(vm, "ls /linux/dev; cat /linux/etc/resolv.conf")
             real, _ = root_run(vm, "cat /etc/resolv.conf")
             assert "zero" not in out, f"{n}: the device node must not be made: {out!r}"
-            assert out.strip().endswith(real.strip()) and "1.2.3.4" not in out, f"{n}: resolv.conf comes from the machine: {out!r} vs {real!r}"
+            # the IPv6 resolver of QEMU's network arrives with a router advertisement (a line marked "# RDNSS") some seconds after the IPv4 one, so it may be in one copy and not yet in the other
+            plain = lambda t: "\n".join(l for l in t.strip().splitlines() if "# RDNSS" not in l)
+            assert plain(out).endswith(plain(real)) and "1.2.3.4" not in out, f"{n}: resolv.conf comes from the machine: {out!r} vs {real!r}"
             out, rc = root_run(vm, f"linuxroot /tmp/{n} 2>&1")
             assert rc != 0 and "already holds" in out, f"{n}: {out!r}"
             out, rc = root_run(vm, "su reimu -c 'linuxroot -d' 2>&1")
