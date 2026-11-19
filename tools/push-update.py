@@ -78,6 +78,7 @@ class Ssh:
         if hop:
             self.base += hop.ssh_args() + ["-o", hop.proxy_jump()]
         self.hop = hop
+        self.marker = hop.path.name if hop and hop.path else None      # (names the jump host's temporary config file: what finds a ssh that outlived its parent)
         self.last_err = ""                          # what ssh said (stderr) the last time it did not finish with status 0
         self.target = f"{args.user}@{args.host}"
         # a Ctrl+C at this terminal must not reach the ssh client (and so cut the connection) in the middle of an update: the script decides what to do with it
@@ -85,18 +86,14 @@ class Ssh:
         self.send_timeout = args.send_timeout
 
     def run(self, command, stdin=None, timeout=120):
-        """(exit status, stdout, stderr); the status is None when ssh did not finish in time (it is stopped)."""
-        p = subprocess.Popen(self.base + [self.target, command], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **self.popen)
-        try:
-            out, err = p.communicate(stdin, timeout=timeout)
-        except subprocess.TimeoutExpired:
-            sshvia.kill_tree(p)
-            p.communicate()
+        """(exit status, stdout, stderr); the status is None when ssh did not finish in time (it and what it started are stopped; sshvia.run_capture says why the output is kept in files)."""
+        rc, out, err = sshvia.run_capture(self.base + [self.target, command], timeout, stdin=stdin, marker=self.marker)
+        if rc is None:
             self.last_err = "ssh did not finish in time"
             return None, b"", b""
-        if p.returncode != 0 and err:
+        if rc != 0 and err:
             self.last_err = err.decode("utf-8", "replace").strip()
-        return p.returncode, out, err
+        return rc, out, err
 
     def stream(self, command, data, echo):
         """Runs command with data on its standard input, printing its output lines as they come. Returns (exit status, all output); the status is None on a timeout."""
@@ -124,7 +121,7 @@ class Ssh:
         try:
             p.wait(timeout=self.send_timeout)
         except subprocess.TimeoutExpired:
-            sshvia.kill_tree(p)
+            sshvia.kill_tree(p, self.marker)
             p.wait()
             t.join(5)
             return None, "\n".join(lines)

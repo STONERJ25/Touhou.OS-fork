@@ -6,6 +6,8 @@
   python tools/remote-update.py wake                              send the magic packet from the jump host and wait until the machine answers a login
   python tools/remote-update.py push [push-update.py options]     (wakes it if it is off) push build/esp, restart on trial, confirm
   python tools/remote-update.py push --off-after                  ... and switch it off again when it is confirmed (Wake-on-LAN is armed at power-off)
+  python tools/remote-update.py check [dell-check.py options]     (wakes it if it is off) run the whole on-device check of tools/dell-check.py through the jump host, write its report
+  python tools/remote-update.py check --off-after                 ... and switch the machine off again afterwards
   python tools/remote-update.py off                                sudo poweroff
   python tools/remote-update.py pin                               fetch the machine's ssh host key through the jump host and keep it, if it has the pinned fingerprint
 
@@ -103,9 +105,10 @@ class Remote:
     REWAKE_AFTER = 100          # seconds without an answer before the magic packet is sent once more
     DISCOVER_AFTER = 120        # seconds without an answer before the jump host is asked where the machine has gone
 
-    def __init__(self, cfg, ssh="ssh", say=lambda text: print(text, flush=True)):
+    def __init__(self, cfg, ssh="ssh", say=lambda text: print(text, flush=True), scp="scp"):
         self.cfg = cfg
         self.ssh_exe = ssh
+        self.scp_exe = scp
         self.say = say
         self.hop = None
         self.last_err = ""
@@ -186,42 +189,22 @@ class Remote:
         """Fetches the machine's host key through the same route (authentication is not attempted: the key is all that is wanted), checks its fingerprint against the config and keeps it.
         Returns (status, message): "ok" (kept), "nokey" (the machine gave no key: it is off, or sshd is not running) or "refused" (a key that is not the pinned one, or nothing to check it against)."""
         c = self.cfg
-        fd, tmp = tempfile.mkstemp(prefix="touhou-hostkey-")
-        os.close(fd)
-        try:
-            argv = [shutil.which(self.ssh_exe) or self.ssh_exe, "-p", str(c["port"]), "-o", "BatchMode=yes", "-o", f"UserKnownHostsFile={Path(tmp).as_posix()}",
-                    "-o", f"HostKeyAlias={c['host_key_alias']}", "-o", "StrictHostKeyChecking=accept-new", "-o", "PreferredAuthentications=none", "-o", "ConnectTimeout=30",
-                    "-o", "LogLevel=ERROR"]
-            if self.hop:
-                argv += self.hop.ssh_args() + ["-o", self.hop.proxy_jump()]
-            argv += [f"{c['user']}@{self.host}", "true"]
-            try:
-                subprocess.run(argv, capture_output=True, timeout=90, stdin=subprocess.DEVNULL)
-            except (subprocess.TimeoutExpired, OSError) as e:
-                return "nokey", f"could not fetch the host key: {e}"
-            lines = [ln for ln in Path(tmp).read_text(encoding="utf-8").splitlines() if ln.strip() and not ln.startswith("#")]
-            if not lines:
-                return "nokey", f"the machine at {self.host} gave no host key (is it on, and is sshd running?)"
-            keygen = shutil.which("ssh-keygen") or "ssh-keygen"
-            shown = subprocess.run([keygen, "-lf", tmp], capture_output=True, text=True).stdout
-            want = c["fingerprint"]
-            good = [ln for ln, fp in zip(lines, shown.splitlines()) if want and want in fp]
-            if want and not good:
-                return "refused", f"the machine's host key is not the pinned one: it shows {' / '.join(x.split()[1] for x in shown.splitlines() if len(x.split()) > 1)}, the config says {want}. Refusing."
-            if not want:
-                if not trust_first_use:
-                    return "refused", "no fingerprint is configured (--fingerprint SHA256:...), so the host key cannot be checked: it is shown below; give --trust-first-use to keep it as it is\n" + shown
-                good = lines
-            kh = self.known_hosts()
-            kh.parent.mkdir(parents=True, exist_ok=True)
-            with open(kh, "a", encoding="utf-8", newline="\n") as f:
-                f.write("\n".join(good) + "\n")
-            return "ok", f"host key kept in {kh} ({want or 'trusted at first sight'})"
-        finally:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
+        lines, shown, err = sshvia.fetch_host_key(self.ssh_exe, c["user"], self.host, c["port"], c["host_key_alias"], hop=self.hop)
+        if not lines:
+            return "nokey", err
+        want = c["fingerprint"]
+        good = sshvia.matching_keys(lines, shown, want)
+        if want and not good:
+            return "refused", f"the machine's host key is not the pinned one: it shows {' / '.join(x.split()[1] for x in shown.splitlines() if len(x.split()) > 1)}, the config says {want}. Refusing."
+        if not want:
+            if not trust_first_use:
+                return "refused", "no fingerprint is configured (--fingerprint SHA256:...), so the host key cannot be checked: it is shown below; give --trust-first-use to keep it as it is\n" + shown
+            good = lines
+        kh = self.known_hosts()
+        kh.parent.mkdir(parents=True, exist_ok=True)
+        with open(kh, "a", encoding="utf-8", newline="\n") as f:
+            f.write("\n".join(good) + "\n")
+        return "ok", f"host key kept in {kh} ({want or 'trusted at first sight'})"
 
     # ---- wake and wait
     def wake(self):
@@ -357,6 +340,35 @@ class Remote:
             argv += ["--ssh", self.ssh_exe]
         return argv + list(extra)
 
+    def check_argv(self, extra):
+        c = self.cfg
+        argv = ["--host", self.host, "--user", c["user"], "--port", str(c["port"]), "--key", c["key"], "--known-hosts", str(self.known_hosts()), "--host-key-alias", c["host_key_alias"]]
+        if c["fingerprint"]:
+            argv += ["--fingerprint", c["fingerprint"]]
+        if self.hop:
+            argv += ["--via", c["via"]]
+            if c["via_key"]:
+                argv += ["--via-key", c["via_key"]]
+            for o in c["via_options"]:
+                argv += ["--via-option", o]
+        if self.ssh_exe != "ssh":
+            argv += ["--ssh", self.ssh_exe]
+        if self.scp_exe != "scp":
+            argv += ["--scp", self.scp_exe]
+        return argv + list(extra)
+
+    def cmd_check(self, extra, off_after=False, no_wake=False):
+        """Wakes the machine if it is off, runs tools/dell-check.py on it (the report goes where dell-check puts it), and switches it off if asked, whatever the check found."""
+        rc = self.ensure_up(wake=not no_wake)
+        if rc != 0:
+            return rc
+        rc = load_tool("dell-check.py").main(self.check_argv(extra))
+        if off_after:
+            self.say("remote-update: the check is over: switching the machine off")
+            off = self.cmd_off()
+            return rc if rc else off
+        return rc
+
     def cmd_push(self, extra, off_after=False, no_wake=False):
         # what needs no network first: the files, the initrd, the key guard (so that the machine is not woken for a push that would be refused)
         rc = self.push_update.run(self.push_argv(extra) + ["--dry-run"])
@@ -373,9 +385,10 @@ class Remote:
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("command", choices=["setup", "status", "wake", "push", "off", "pin"])
+    ap.add_argument("command", choices=["setup", "status", "wake", "push", "check", "off", "pin"])
     ap.add_argument("--config", default=str(CONFIG), help=f"the config file (default {CONFIG})")
     ap.add_argument("--ssh", default="ssh", help="the ssh client (default: ssh from the PATH)")
+    ap.add_argument("--scp", default="scp", help="the scp client, for `check` (default: scp from the PATH)")
     for name in ("via", "via-key", "host", "user", "key", "mac", "wake-bind", "broadcast", "fingerprint", "known-hosts", "host-key-alias"):
         ap.add_argument("--" + name, default=None)
     ap.add_argument("--port", type=int, default=None)
@@ -383,13 +396,13 @@ def main(argv=None):
     ap.add_argument("--ssh-option", dest="ssh_options", action="append", default=None, help="an ssh option for the machine only (repeatable)")
     ap.add_argument("--wake-seconds", type=int, default=None)
     ap.add_argument("--boot-wait", type=int, default=None, help="seconds to wait for the machine to answer after the wake-up (default 300)")
-    ap.add_argument("--no-wake", action="store_true", help="(push) do not wake the machine: stop if it is off")
-    ap.add_argument("--off-after", action="store_true", help="(push) switch the machine off after a confirmed update")
+    ap.add_argument("--no-wake", action="store_true", help="(push, check) do not wake the machine: stop if it is off")
+    ap.add_argument("--off-after", action="store_true", help="(push) switch the machine off after a confirmed update; (check) after the check")
     ap.add_argument("--trust-first-use", action="store_true", help="(pin) keep the host key without a fingerprint to check it against: for a machine that is not the real one only")
     args, rest = ap.parse_known_args(argv)
     if rest and rest[0] == "--":
         rest = rest[1:]
-    if rest and args.command != "push":
+    if rest and args.command not in ("push", "check"):
         ap.error("unexpected arguments: " + " ".join(rest))
     cfg = load_config(args.config)
     for key in ("via", "via_key", "host", "user", "key", "mac", "wake_bind", "broadcast", "fingerprint", "known_hosts", "host_key_alias", "port", "via_options", "ssh_options",
@@ -403,7 +416,7 @@ def main(argv=None):
         print("remote-update: no machine address: give --host ADDRESS or run `setup` (the config is " + str(args.config) + ")", file=sys.stderr)
         return 2
     try:
-        r = Remote(cfg, ssh=args.ssh)
+        r = Remote(cfg, ssh=args.ssh, scp=args.scp)
     except ValueError as e:
         print(f"remote-update: {e}", file=sys.stderr)
         return 2
@@ -422,6 +435,8 @@ def main(argv=None):
             status, text = r.pin(args.trust_first_use)
             print("remote-update: " + text)
             return 0 if status == "ok" else 1
+        if args.command == "check":
+            return r.cmd_check(rest, off_after=args.off_after, no_wake=args.no_wake)
         return r.cmd_push(rest, off_after=args.off_after, no_wake=args.no_wake)
     except PinRefused as e:
         print("remote-update: " + str(e), file=sys.stderr)

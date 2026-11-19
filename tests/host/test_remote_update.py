@@ -89,6 +89,12 @@ if command == "true":                                          # a login to the 
         sys.exit(0)
     sys.stderr.write("channel 0: open failed: connect failed: No route to host\\n")
     sys.exit(255)
+if up and command == "echo up":                               # what tools/dell-check.py asks first
+    print("up")
+    sys.exit(0)
+if up and (command.endswith(":/tmp/") or command.startswith(("dmesg", "sudo update status", "uname", "cat ", "ifconfig", "ls "))):    # its state stage, and scp
+    print("fake output of " + command)
+    sys.exit(0)
 sys.stderr.write("fake ssh: no answer for %%r\\n" %% command)
 sys.exit(255)
 '''
@@ -152,6 +158,36 @@ class KillTreeTests(unittest.TestCase):
         sshvia.kill_tree(p)
         p.communicate(timeout=30)
         self.assertLess(time.time() - t0, 15)
+
+    def test_run_capture_does_not_wait_for_a_child_that_outlives_its_parent(self):
+        """The case that the real Dell showed (2026-11-19): the first ssh was already gone when the timeout came, so killing the tree found nothing, and the second ssh went on holding
+        the pipe that was being waited on. The output goes to files now: nothing waits for a child."""
+        code = "import subprocess, sys; subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])"
+        t0 = time.time()
+        rc, out, err = sshvia.run_capture([sys.executable, "-c", code], 20)
+        self.assertEqual(rc, 0)
+        self.assertLess(time.time() - t0, 10)
+
+    def test_run_capture_stops_what_does_not_finish_in_time_and_returns_the_output(self):
+        t0 = time.time()
+        rc, out, err = sshvia.run_capture([sys.executable, "-c", "import sys, time; print('hello'); sys.stdout.flush(); time.sleep(60)"], 3)
+        self.assertIsNone(rc)
+        self.assertLess(time.time() - t0, 20)
+        self.assertIn(b"hello", out)
+        rc, out, err = sshvia.run_capture([sys.executable, "-c", "import sys; sys.stdin.buffer.read(); print('got it'); sys.exit(3)"], 20, stdin=b"data")
+        self.assertEqual((rc, out.strip()), (3, b"got it"))
+
+    @unittest.skipUnless(os.name == "nt", "the sweep is for Windows")
+    def test_kill_marked_stops_a_process_that_carries_the_marker(self):
+        marker = "touhou-marker-" + str(os.getpid())
+        p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)", marker])
+        time.sleep(1.0)
+        sshvia.kill_marked(marker)
+        for _ in range(50):
+            if p.poll() is not None:
+                break
+            time.sleep(0.2)
+        self.assertIsNotNone(p.poll(), "the process with the marker was not stopped")
 
 
 class HopTests(unittest.TestCase):
@@ -418,6 +454,81 @@ class PushViaTests(unittest.TestCase):
         r = subprocess.run([sys.executable, str(TOOLS / "push-update.py"), "--host", "x", "--via", "a b", "--dry-run"], capture_output=True, text=True, timeout=60)
         self.assertEqual(r.returncode, 2)
         self.assertIn("not a jump host", r.stderr)
+
+
+class DellCheckViaTests(unittest.TestCase):
+    """tools/dell-check.py through a jump host (only its state stage: the rest runs programs on the machine and compares them with a real Linux)."""
+
+    def setup_files(self, f):
+        for name in ("jumpkey", "machinekey"):
+            (f.dir / name).write_text("not a key\n")                      # (dell-check only wants the file to exist: the fake ssh never reads it)
+        return f.dir / "check_known", f.dir / "report.log"
+
+    def run_check(self, f, *extra, fingerprint=None):
+        known, report = self.setup_files(f)
+        cmd = [sys.executable, str(TOOLS / "dell-check.py"), "--host", "192.168.1.185", "--via", "me@jump.example:2222", "--via-key", f.cfg["via_key"], "--key", f.cfg["key"],
+               "--fingerprint", fingerprint or f.fingerprint, "--known-hosts", str(known), "--ssh", str(f.ssh), "--scp", str(f.ssh), "--only", "state", "--report", str(report), *extra]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        return r, known, report
+
+    def test_the_state_stage_runs_through_the_jump_host_with_the_key_pinned(self):
+        f = Fake(self)
+        f.switch_on()
+        r, known, report = self.run_check(f)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("through me@jump.example:2222", r.stdout)
+        self.assertIn("pinned, fetched through", r.stdout)
+        self.assertIn("touhou-machine ssh-ed25519 ", known.read_text())
+        self.assertIn("fake output of uname -a", report.read_text())
+        logins = [c for c in f.calls() if c["argv"][-1] == "echo up"]
+        self.assertEqual(len(logins), 1)
+        argv = logins[0]["argv"]
+        for want in ("ProxyJump=me@jump.example:2222", "HostKeyAlias=touhou-machine", "LogLevel=ERROR"):
+            self.assertIn(want, argv)
+        self.assertIn("IdentityFile", logins[0]["config"])
+
+    def test_a_host_key_that_is_not_the_pinned_one_is_refused_before_any_login(self):
+        f = Fake(self)
+        f.switch_on()
+        r, known, report = self.run_check(f, fingerprint="SHA256:" + "B" * 43)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("refusing to go on", r.stdout)
+        self.assertFalse(known.exists())
+        self.assertEqual([c for c in f.calls() if c["argv"][-1] == "echo up"], [])
+
+    def test_a_machine_that_is_off_is_reported(self):
+        f = Fake(self)
+        r, known, report = self.run_check(f)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("gave no host key", r.stdout)
+
+    def test_the_remote_config_supplies_the_route(self):
+        f = Fake(self)
+        f.switch_on()
+        known, report = self.setup_files(f)
+        cfg = f.dir / "remote.json"
+        cfg.write_text(json.dumps({"via": "me@jump.example:2222", "via_key": f.cfg["via_key"], "host": "192.168.1.185", "key": f.cfg["key"], "fingerprint": f.fingerprint,
+                                   "known_hosts": str(known), "host_key_alias": "cfg-alias"}))
+        r = subprocess.run([sys.executable, str(TOOLS / "dell-check.py"), "--remote", str(cfg), "--ssh", str(f.ssh), "--scp", str(f.ssh), "--only", "state", "--report", str(report)],
+                           capture_output=True, text=True, timeout=180)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("cfg-alias ssh-ed25519 ", known.read_text())
+        self.assertTrue(any("HostKeyAlias=cfg-alias" in c["argv"] for c in f.calls() if c["argv"][-1] == "echo up"))
+
+    def test_remote_update_check_wakes_runs_the_check_and_switches_off(self):
+        f = Fake(self)
+        known, report = self.setup_files(f)
+        mod = load("remote-update.py")
+        mod.Remote.POLL = 0.05
+        said = []
+        r = mod.Remote(dict(f.cfg), ssh=str(f.ssh), say=said.append, scp=str(f.ssh))
+        self.addCleanup(r.close)
+        rc = r.cmd_check(["--only", "state", "--report", str(report)], off_after=True)
+        self.assertEqual(rc, 0, said)
+        self.assertEqual(len(f.wakes()), 1)
+        self.assertIn("fake output of uname -a", report.read_text())
+        self.assertFalse((f.state / "up").exists(), "switched off at the end")
+        self.assertIn("the machine is off", "\n".join(said))
 
 
 if __name__ == "__main__":

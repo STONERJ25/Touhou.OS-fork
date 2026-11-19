@@ -42,6 +42,7 @@ python tools/remote-update.py push                        # wakes it if it is of
 python tools/remote-update.py push --off-after            # ... and switches it off again once the update is confirmed
 python tools/remote-update.py push --cmdline "..." -- --replace-trial      # options after `push` go to tools/push-update.py
 python tools/remote-update.py wake                        # only wake it and wait until it answers a login
+python tools/remote-update.py check --off-after           # wake it, run the whole on-device check of tools/dell-check.py through the jump host, switch it off
 python tools/remote-update.py off                         # sudo poweroff
 ```
 
@@ -50,6 +51,8 @@ refused; asks the jump host to log in and to prove it has python3; looks for the
 after 100 seconds without an answer) and waits for a login for up to five minutes (`boot_wait`); after two minutes it asks the jump host where the machine has gone, by MAC address (the ARP table, after a
 datagram to each address of the /24), and goes on with the address it finds. Then it is `push-update.py`, unchanged: the files, the trial restart, the proof of the restart by a token in `/tmp`, the confirmation.
 The exit status is that of `push-update.py` (0 done, 3 the machine came back on the PREVIOUS files, 4 it did not come back in time); 5 means the jump host could not be used, 6 that the machine did not come up.
+
+`check` runs [`tools/dell-check.py`](../tools/dell-check.py) (the Linux personality and the Linux root against the stored outputs of a real Linux, the machine's state, a write to its volume; about 140 seconds for 50 checks on the real machine) with the same route, host key and alias, and writes its report to `docs/logs/`; `dell-check.py --remote` does the same without the wrapper, from `~/.touhou-os/remote.json`.
 
 `tools/push-update.py` and `tools/wol.py` take the same route on their own: `--via [USER@]HOST[:PORT]`, `--via-key FILE`, `--via-option OPT` (an ssh option for the jump host only). `wol.py --via` pipes itself to `python3 -`
 on the jump host (`--remote-command CMD` runs an installed helper instead, for a login that may run nothing else).
@@ -77,6 +80,13 @@ on the jump host (`--remote-command CMD` runs an installed helper instead, for a
 | exit 3, `came back on the PREVIOUS files` | the new files did not come up; the machine is on the old system and reachable. `push-update.py`'s message and `status` say more. |
 | the dev PC loses its connection during the five minutes after the restart | the update is not confirmed: the machine restarts after five minutes (a counted start), and again; the third start is the previous system. Run `push` again when the connection is back (it confirms a start on trial that carries its version). |
 
+## A note on ssh through a jump host on Windows
+
+The ssh client starts a second ssh (`ssh -W`) to make the forward, and that one inherits the first one's standard error. When the machine has just been switched off, the second can sit in its
+connection attempt for minutes, and if the first has gone by then it is not found as the first one's child any more, so a wait for the output (a pipe) lasts as long. The tools therefore keep the
+output of every ssh in temporary files (`sshvia.run_capture`), stop the process tree on a timeout and, as a last resort, stop any process whose command line names the run's temporary jump-host
+config file (`sshvia.kill_marked`). It showed on the real machine as an `off` that took minutes to say that the machine was off.
+
 ## Limits
 
 The jump host has to be up (there is no way to switch *it* on from far away), and so does the LAN. The dev PC has to stay connected from the restart until the confirmation (about two minutes; the machine
@@ -89,4 +99,4 @@ the parked design in [UPDATE.md](UPDATE.md)) would take the dev PC out of that w
 fake ARP table, and the whole flow of `remote-update.py` against a fake ssh: a machine that is on is not woken, one that is off is woken and waited for, one that never answers gets a second packet and a
 report, a wrong host key is refused before any login, a refused push does not wake the machine. `python tests/run_all.py update_push_through_a_jump_host` (QEMU, the real OpenSSH client): the machine's own
 sshd is the jump host (forwarding to itself), the host key is pinned and a wrong fingerprint refused, `push` runs the whole update through the jump host and confirms it, `off` powers the machine off.
-The wake-up itself can only be tried on the real machine; it was, on 2026-11-18: wake, pin, push through a jump host, confirm, power off, wake again, each as described above.
+The wake-up itself can only be tried on the real machine; it was, on 2026-11-18: wake, pin, push through a jump host, confirm, power off, wake again, each as described above; and on 2026-11-19 the whole on-device check through the jump host (50 passed).

@@ -14,6 +14,7 @@ finds; then the key; then the defaults; then the user's own ~/.ssh/config, so th
 """
 import os
 import re
+import shutil
 import signal
 import subprocess
 import tempfile
@@ -115,10 +116,23 @@ def popen_flags():
     return {"start_new_session": True}
 
 
-def kill_tree(proc):
+def kill_marked(marker):
+    """Windows: stops every process whose command line contains `marker`. A ssh that was started as the jump host's ProxyJump child can outlive the ssh that started it (killing the parent first
+    leaves it, and taskkill /T finds it only through a parent that still exists); its command line names the jump host's temporary config file, which is unique to one run."""
+    if os.name != "nt" or not marker:
+        return
+    script = ("Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine.Contains('" + marker.replace("'", "") +
+              "') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }")
+    try:
+        subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script], capture_output=True, timeout=30, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def kill_tree(proc, marker=None):
     """Stops a process started with popen_flags() and the processes it started. Through a jump host the client starts a second ssh (ssh -W) that inherits the first one's standard error; when
-    only the first is killed, that one stays until its own connection attempt ends (two minutes for one that is waiting on a machine that has just gone off) and keeps the pipes open, so the
-    wait for the output (communicate) takes as long."""
+    only the first is killed, that one stays until its own connection attempt ends (two minutes for one that is waiting on a machine that has just gone off). `marker` (the name of the jump
+    host's temporary config file) also finds such a child after its parent has gone."""
     if os.name == "nt":
         try:
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True, timeout=20, stdin=subprocess.DEVNULL)
@@ -133,3 +147,66 @@ def kill_tree(proc):
         proc.kill()
     except OSError:
         pass
+    kill_marked(marker)
+
+
+def run_capture(argv, timeout, stdin=None, marker=None):
+    """(returncode, stdout, stderr) of a command; the returncode is None when it did not finish in `timeout` seconds (it and what it started are stopped). The output goes to temporary files, not
+    pipes: through a jump host a second ssh inherits the standard error of the first, and a pipe that it holds open is waited on until it gives up (two minutes for a machine that has just
+    gone off), however the first one ended. A file that nobody waits for costs nothing."""
+    with tempfile.TemporaryFile() as fo, tempfile.TemporaryFile() as fe:
+        p = subprocess.Popen(argv, stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL, stdout=fo, stderr=fe, **popen_flags())
+        if stdin is not None:
+            try:
+                p.stdin.write(stdin)
+                p.stdin.close()
+            except OSError:
+                pass                                            # it ended early: its message is the answer
+        try:
+            p.wait(timeout=timeout)
+            rc = p.returncode
+        except subprocess.TimeoutExpired:
+            kill_tree(p, marker)
+            try:
+                p.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                pass
+            rc = None
+        fo.seek(0)
+        fe.seek(0)
+        return rc, fo.read(), fe.read()
+
+
+def fetch_host_key(ssh, user, host, port, alias, hop=None, keygen="ssh-keygen", timeout=90):
+    """The host key(s) a machine shows, as known_hosts lines under `alias`, fetched through the jump host (if any) without trying to log in: the client starts the key exchange, records the key
+    in a temporary file and is then refused (PreferredAuthentications=none). Returns (lines, shown, error): `shown` is what `ssh-keygen -lf` prints for them, one line per key in the same order;
+    `lines` is [] and `error` says why when the machine gave no key (it is off, sshd is not running, nothing answers)."""
+    fd, tmp = tempfile.mkstemp(prefix="touhou-hostkey-")
+    os.close(fd)
+    try:
+        argv = [shutil.which(ssh) or ssh, "-p", str(port), "-o", "BatchMode=yes", "-o", f"UserKnownHostsFile={Path(tmp).as_posix()}", "-o", f"HostKeyAlias={alias}",
+                "-o", "StrictHostKeyChecking=accept-new", "-o", "PreferredAuthentications=none", "-o", "ConnectTimeout=30", "-o", "LogLevel=ERROR"]
+        if hop:
+            argv += hop.ssh_args() + ["-o", hop.proxy_jump()]
+        argv += [f"{user}@{host}", "true"]
+        try:
+            rc, _, _ = run_capture(argv, timeout, marker=hop.path.name if hop and hop.path else None)
+        except OSError as e:
+            return [], "", f"cannot run ssh: {e}"
+        if rc is None:
+            return [], "", "no answer in time"
+        lines = [ln for ln in Path(tmp).read_text(encoding="utf-8").splitlines() if ln.strip() and not ln.startswith("#")]
+        if not lines:
+            return [], "", f"the machine at {host} gave no host key (is it on, and is sshd running?)"
+        shown = subprocess.run([shutil.which(keygen) or keygen, "-lf", tmp], capture_output=True, text=True, stdin=subprocess.DEVNULL).stdout
+        return lines, shown, None
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def matching_keys(lines, shown, want):
+    """The known_hosts lines whose fingerprint (as ssh-keygen -l printed it) contains `want`."""
+    return [ln for ln, fp in zip(lines, shown.splitlines()) if want and want in fp]

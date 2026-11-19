@@ -5,6 +5,8 @@
   python tools/dell-check.py --host 127.0.0.1 --port 2222 --trust-first-use      a QEMU guest with sshd (its host key changes at every start)
   python tools/dell-check.py --host H --fingerprint F --only state,free,static   some stages (state free static root scripts dynamic volume)
   python tools/dell-check.py --list                                              what would run, nothing else
+  python tools/dell-check.py --remote                                            from far away, through the jump host of ~/.touhou-os/remote.json (docs/REMOTE_UPDATE.md)
+  python tools/remote-update.py check --off-after                                the same, after waking the machine, and switch it off at the end
 
 It is the real-machine twin of tests/case_linux*.py: the same programs, the same arguments, the same stored outputs of a real Linux (tests/linux/golden), but the machine is
 reached over ssh as `marisa` (docs/SSH.md, the dev key, sudo) and the outputs come back through a pipe, which is exactly how tools/linux-oracle.py captured them. The programs come
@@ -21,18 +23,26 @@ Linux personality. The stages, in the order of rising risk:
 
 The report goes to docs/logs/ (not published: logs of the real machine). The host key is pinned: the tool refuses a machine whose ed25519 key does not have the fingerprint given
 with --fingerprint (--trust-first-use is for a QEMU guest only). Only the standard library and the ssh, scp, ssh-keyscan and ssh-keygen clients are needed.
+
+--via [USER@]HOST[:PORT] (with --via-key and --via-option) reaches the machine through a jump host, as tools/push-update.py does (docs/REMOTE_UPDATE.md): the machine's host key is then fetched
+through the jump host, checked against --fingerprint and kept in --known-hosts under an alias (--host-key-alias, default touhou-machine), and every ssh and scp goes through it. --remote
+takes all of that from ~/.touhou-os/remote.json (or --remote FILE), the file tools/remote-update.py writes; options on the command line win.
 Exit status: 0 everything compared equal, 1 a difference or a failure, 2 bad arguments or the machine could not be reached.
 """
 import argparse
 import difflib
 import hashlib
 import importlib.util
+import json
 import os
 import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import sshvia  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 GOLDEN = ROOT / "tests" / "linux" / "golden"
@@ -91,30 +101,61 @@ class Report:
 class Machine:
     """The machine over ssh: run() a command (stdout and stderr apart, no input), put() files into its /tmp."""
 
-    def __init__(self, a, known_hosts):
+    def __init__(self, a, known_hosts, hop=None, alias=None):
         self.host, self.user, self.port = a.host, a.user, str(a.port)
         self.opts = ["-i", a.key, "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", "-o", f"UserKnownHostsFile={Path(known_hosts).resolve().as_posix()}",
-                     "-o", "StrictHostKeyChecking=" + ("accept-new" if a.trust_first_use else "yes"), "-o", "ConnectTimeout=25", "-o", "ServerAliveInterval=20", "-q"]
+                     "-o", "StrictHostKeyChecking=" + ("accept-new" if a.trust_first_use else "yes"), "-o", "ConnectTimeout=" + ("30" if hop else "25"), "-o", "ServerAliveInterval=20"]
+        if alias:
+            self.opts += ["-o", f"HostKeyAlias={alias}"]                 # (the key is kept under a name, not the address: the address may change, and the file may be shared)
+        if hop:
+            self.opts += hop.ssh_args() + ["-o", hop.proxy_jump()]
+        # ssh keeps its error text (it says which hop refused); scp stays quiet (its progress meter would be noise)
+        self.marker = hop.path.name if hop and hop.path else None        # (names the jump host's temporary config file: what finds a ssh that outlived its parent)
+        self.ssh_opts = self.opts + ["-o", "LogLevel=ERROR"]
+        self.scp_opts = self.opts + ["-q"]
         self.ssh, self.scp = a.ssh, a.scp
 
     def run(self, cmd, timeout=120):
-        try:
-            p = subprocess.run([self.ssh, *self.opts, "-p", self.port, "-n", f"{self.user}@{self.host}", cmd], capture_output=True, timeout=timeout)
-        except subprocess.TimeoutExpired:
+        rc, out, err = sshvia.run_capture([self.ssh, *self.ssh_opts, "-p", self.port, "-n", f"{self.user}@{self.host}", cmd], timeout, marker=self.marker)
+        if rc is None:
             return 124, "", f"(no answer within {timeout} s)"
-        return p.returncode, p.stdout.decode("utf-8", "replace").replace("\r", ""), p.stderr.decode("utf-8", "replace").replace("\r", "")
+        return rc, out.decode("utf-8", "replace").replace("\r", ""), err.decode("utf-8", "replace").replace("\r", "")
 
     def put(self, files, remote_dir="/tmp", timeout=600):
-        cmd = [self.scp, *self.opts, "-P", self.port, *[str(f) for f in files], f"{self.user}@{self.host}:{remote_dir}/"]
-        try:
-            p = subprocess.run(cmd, capture_output=True, timeout=timeout)
-        except subprocess.TimeoutExpired:
+        cmd = [self.scp, *self.scp_opts, "-P", self.port, *[str(f) for f in files], f"{self.user}@{self.host}:{remote_dir}/"]
+        rc, _, err = sshvia.run_capture(cmd, timeout, marker=self.marker)
+        if rc is None:
             return False, f"scp: no answer within {timeout} s"
-        return p.returncode == 0, p.stderr.decode("utf-8", "replace")
+        return rc == 0, err.decode("utf-8", "replace")
 
 
-def pin_host_key(a, path):
+def pin_through(a, path, hop, alias):
+    """Fetches the machine's host key through the jump host (no login is tried), checks its fingerprint against --fingerprint and appends it to the known_hosts file under `alias`."""
+    lines, shown, err = sshvia.fetch_host_key(a.ssh, a.user, a.host, a.port, alias, hop=hop, keygen=a.ssh_keygen)
+    if not lines:
+        return False, err
+    if a.trust_first_use:
+        good = lines
+    else:
+        if not a.fingerprint:
+            return False, "give --fingerprint SHA256:... (the pinned ed25519 host key), or --trust-first-use for a QEMU guest"
+        good = sshvia.matching_keys(lines, shown, a.fingerprint)
+        if not good:
+            return False, f"the host key of {a.host} is {shown.strip()!r}, not {a.fingerprint}: refusing to go on"
+    p = Path(path)
+    have = set(p.read_text(encoding="utf-8").splitlines()) if p.is_file() else set()
+    new = [ln for ln in good if ln not in have]
+    if new:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "a", encoding="utf-8", newline="\n") as f:
+            f.write("\n".join(new) + "\n")
+    return True, (f"host key {a.fingerprint} (pinned, fetched through {a.via})" if a.fingerprint else f"host key accepted on first use (fetched through {a.via})")
+
+
+def pin_host_key(a, path, hop=None, alias=None):
     """Writes known_hosts with the machine's ed25519 key after checking its fingerprint against --fingerprint (or accepting it, with --trust-first-use)."""
+    if hop:
+        return pin_through(a, path, hop, alias)
     if a.trust_first_use:
         return True, "host key accepted on first use (a QEMU guest)"
     if not a.fingerprint:
@@ -280,12 +321,17 @@ def stage_volume(m, rep):
     rep.result("the copy on the volume has the archive's sha256", got == want, f"      wanted {want}, got {got or err.strip()!r}")
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--host")
-    ap.add_argument("--port", type=int, default=22)
-    ap.add_argument("--user", default="marisa")
-    ap.add_argument("--key", default=str(Path.home() / ".ssh" / "touhou_ed25519"))
+    ap.add_argument("--port", type=int, default=None, help="default 22")
+    ap.add_argument("--user", default=None, help="default marisa")
+    ap.add_argument("--key", default=None, help="default ~/.ssh/touhou_ed25519")
+    ap.add_argument("--via", default=None, metavar="[USER@]HOST[:PORT]", help="reach the machine through this jump host (ssh ProxyJump)")
+    ap.add_argument("--via-key", default=None, metavar="FILE", help="the private key for the jump host")
+    ap.add_argument("--via-option", action="append", default=None, metavar="OPT", help="an extra ssh option for the jump host only (repeatable)")
+    ap.add_argument("--host-key-alias", default=None, help="the name the machine's host key is kept under (default touhou-machine with a jump host)")
+    ap.add_argument("--remote", nargs="?", const="", default=None, metavar="FILE", help="take the machine, the jump host, the keys and the fingerprint from ~/.touhou-os/remote.json (or FILE); options given here win")
     ap.add_argument("--fingerprint", help="the pinned ed25519 host key, SHA256:...")
     ap.add_argument("--trust-first-use", action="store_true", help="accept whatever host key the machine shows (a QEMU guest only)")
     ap.add_argument("--known-hosts", help="where the pinned key is written (default: a temporary file)")
@@ -297,7 +343,25 @@ def main():
     ap.add_argument("--scp", default="scp")
     ap.add_argument("--ssh-keyscan", default="ssh-keyscan")
     ap.add_argument("--ssh-keygen", default="ssh-keygen")
-    a = ap.parse_args()
+    a = ap.parse_args(argv)
+    if a.remote is not None:
+        cfg_path = Path(a.remote).expanduser() if a.remote else Path.home() / ".touhou-os" / "remote.json"
+        try:
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            print(f"dell-check: cannot read {cfg_path}: {e} (tools/remote-update.py setup writes it)", file=sys.stderr)
+            return 2
+        for mine, theirs in (("host", "host"), ("user", "user"), ("port", "port"), ("key", "key"), ("via", "via"), ("via_key", "via_key"), ("fingerprint", "fingerprint"),
+                             ("known_hosts", "known_hosts"), ("host_key_alias", "host_key_alias")):
+            if getattr(a, mine) is None and cfg.get(theirs) is not None:
+                setattr(a, mine, cfg[theirs])
+        if a.via_option is None and cfg.get("via_options"):
+            a.via_option = list(cfg["via_options"])
+    a.port = a.port or 22
+    a.user = a.user or "marisa"
+    a.key = str(Path(a.key).expanduser()) if a.key else str(Path.home() / ".ssh" / "touhou_ed25519")
+    if a.known_hosts:
+        a.known_hosts = str(Path(a.known_hosts).expanduser())
     stages = [s for s in (a.only.split(",") if a.only else STAGES) if s]
     bad = [s for s in stages if s not in STAGES]
     if bad:
@@ -320,6 +384,15 @@ def main():
         return 2
     report_path = Path(a.report) if a.report else LOGS / f"real-machine-{time.strftime('%Y-%m-%d')}.log"
     rep = Report(report_path)
+    hop = None
+    if a.via:
+        try:
+            hop = sshvia.Hop(a.via, key=a.via_key, options=a.via_option or [])
+        except ValueError as e:
+            print(f"dell-check: {e}", file=sys.stderr)
+            return 2
+        hop.open()
+    alias = a.host_key_alias or ("touhou-machine" if hop else None)
     tmp = None
     known = a.known_hosts
     if not known:
@@ -327,11 +400,11 @@ def main():
         tmp.close()
         known = tmp.name
     try:
-        ok, why = pin_host_key(a, known)
-        rep.say(f"dell-check: {time.strftime('%Y-%m-%d %H:%M:%S')}, machine {a.host}:{a.port}, stages {' '.join(stages)}; {why}")
+        ok, why = pin_host_key(a, known, hop, alias)
+        rep.say(f"dell-check: {time.strftime('%Y-%m-%d %H:%M:%S')}, machine {a.host}:{a.port}" + (f" through {a.via}" if hop else "") + f", stages {' '.join(stages)}; {why}")
         if not ok:
             return 2
-        m = Machine(a, known)
+        m = Machine(a, known, hop, alias)
         rc, out, err = m.run("echo up", 60)
         if rc != 0 or out.strip() != "up":
             rep.say(f"cannot log in as {a.user}@{a.host}: status {rc}, {err.strip()[:300]}")
@@ -372,6 +445,8 @@ def main():
         return 1 if rep.failed else 0
     finally:
         rep.save()
+        if hop:
+            hop.close()
         if tmp:
             try:
                 os.unlink(tmp.name)
