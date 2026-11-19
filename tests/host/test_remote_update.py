@@ -15,6 +15,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -138,6 +139,19 @@ class ParseViaTests(unittest.TestCase):
         for bad in ("", "me@", "@host", "host:0", "host:70000", "a b", "me@host:port", "2001:db8::5"):
             with self.assertRaises(ValueError, msg=repr(bad)):
                 sshvia.parse_via(bad)
+
+
+class KillTreeTests(unittest.TestCase):
+    def test_a_child_that_holds_the_pipes_does_not_keep_the_wait_going(self):
+        """Through a jump host the ssh client starts a second ssh that inherits its standard error. Killing only the first left communicate() waiting for the second, which sat in a
+        connection attempt to a machine that had just gone off for two minutes (the first `off` of 2026-11-18 took that long). kill_tree stops both."""
+        code = "import subprocess, sys, time; subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); time.sleep(60)"
+        p = subprocess.Popen([sys.executable, "-c", code], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **sshvia.popen_flags())
+        time.sleep(1.5)
+        t0 = time.time()
+        sshvia.kill_tree(p)
+        p.communicate(timeout=30)
+        self.assertLess(time.time() - t0, 15)
 
 
 class HopTests(unittest.TestCase):

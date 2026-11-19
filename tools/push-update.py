@@ -69,10 +69,10 @@ class Ssh:
         exe = shutil.which(args.ssh) or args.ssh
         key = Path(args.key).expanduser()
         hop = getattr(args, "hop", None)
-        # (through a jump host the connect takes longer, and ssh's error text matters: it says which of the two hops refused, so it is not silenced with -q)
+        # (through a jump host the connect takes longer; and ssh's error text is kept, not silenced with -q: it says which of the two hops refused, and why a login failed)
         self.base = [exe, "-p", str(args.port), "-i", str(key), "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
                      "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=" + ("30" if hop else "10"), "-o", "ServerAliveInterval=15",
-                     "-o", "ServerAliveCountMax=8"] + (["-o", "LogLevel=ERROR"] if hop else ["-q"])
+                     "-o", "ServerAliveCountMax=8", "-o", "LogLevel=ERROR"]
         for o in args.ssh_option:
             self.base += ["-o", o]
         if hop:
@@ -81,16 +81,16 @@ class Ssh:
         self.last_err = ""                          # what ssh said (stderr) the last time it did not finish with status 0
         self.target = f"{args.user}@{args.host}"
         # a Ctrl+C at this terminal must not reach the ssh client (and so cut the connection) in the middle of an update: the script decides what to do with it
-        self.flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+        self.popen = sshvia.popen_flags()
         self.send_timeout = args.send_timeout
 
     def run(self, command, stdin=None, timeout=120):
         """(exit status, stdout, stderr); the status is None when ssh did not finish in time (it is stopped)."""
-        p = subprocess.Popen(self.base + [self.target, command], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=self.flags)
+        p = subprocess.Popen(self.base + [self.target, command], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **self.popen)
         try:
             out, err = p.communicate(stdin, timeout=timeout)
         except subprocess.TimeoutExpired:
-            p.kill()
+            sshvia.kill_tree(p)
             p.communicate()
             self.last_err = "ssh did not finish in time"
             return None, b"", b""
@@ -100,7 +100,7 @@ class Ssh:
 
     def stream(self, command, data, echo):
         """Runs command with data on its standard input, printing its output lines as they come. Returns (exit status, all output); the status is None on a timeout."""
-        p = subprocess.Popen(self.base + [self.target, command], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=self.flags)
+        p = subprocess.Popen(self.base + [self.target, command], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **self.popen)
         lines = []
 
         def pump():
@@ -124,7 +124,7 @@ class Ssh:
         try:
             p.wait(timeout=self.send_timeout)
         except subprocess.TimeoutExpired:
-            p.kill()
+            sshvia.kill_tree(p)
             p.wait()
             t.join(5)
             return None, "\n".join(lines)

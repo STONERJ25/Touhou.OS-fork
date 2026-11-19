@@ -14,6 +14,8 @@ finds; then the key; then the defaults; then the user's own ~/.ssh/config, so th
 """
 import os
 import re
+import signal
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -103,3 +105,31 @@ class Hop:
     def destination(self):
         """The arguments that name the jump host itself as the machine to log in to (to run a command on it)."""
         return (["-p", str(self.port)] if self.port else []) + [f"{self.user}@{self.host}" if self.user else self.host]
+
+
+def popen_flags():
+    """Popen arguments that put an ssh client in a process group of its own: a Ctrl+C at the terminal must not reach it (it would cut the connection in the middle of an update), and
+    kill_tree() can stop it together with the second ssh that ProxyJump starts."""
+    if os.name == "nt":
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {"start_new_session": True}
+
+
+def kill_tree(proc):
+    """Stops a process started with popen_flags() and the processes it started. Through a jump host the client starts a second ssh (ssh -W) that inherits the first one's standard error; when
+    only the first is killed, that one stays until its own connection attempt ends (two minutes for one that is waiting on a machine that has just gone off) and keeps the pipes open, so the
+    wait for the output (communicate) takes as long."""
+    if os.name == "nt":
+        try:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True, timeout=20, stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    else:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+    try:
+        proc.kill()
+    except OSError:
+        pass

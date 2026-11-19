@@ -99,6 +99,10 @@ class UpdateGuest:
             while ":22" not in self.run("netstat -l")[0]:
                 assert time.time() < deadline, "sshd never started listening:\n" + self.run("dmesg | grep sshd")[0]
                 time.sleep(1)
+            # The first login to a freshly started guest can take over ten seconds when the host is busy or running this QEMU on a slow core (2026-11-18: 12 s, where the next ones take 0.3 s:
+            # the sshd's first key exchange under TCG), and the push tool gives a connection ten seconds. One login here, with a long limit, so that the tests do not depend on that.
+            warm = self.ssh("true", timeout=120)
+            assert warm.returncode == 0, ("the first ssh login failed", warm.stderr)
         except BaseException:
             self.vm.stop()
             raise
