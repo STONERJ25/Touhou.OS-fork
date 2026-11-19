@@ -26,7 +26,8 @@ python tools/push-update.py --host ADDRESS                     # sends it, resta
 ```
 
 `ADDRESS` is the machine's address or name; the login is `marisa` with `~/.ssh/touhou_ed25519` ([SSH.md](SSH.md) has the key and what to do
-on a new PC). The script prints what the machine says, line by line:
+on a new PC). **From another network** the same push goes through a jump host that also switches the machine on (`--via`, `tools/remote-update.py`): [REMOTE_UPDATE.md](REMOTE_UPDATE.md).
+The script prints what the machine says, line by line:
 
 ```
 push-update: version 6df1c46, 2 files, 8589717 bytes for marisa@192.168.1.20

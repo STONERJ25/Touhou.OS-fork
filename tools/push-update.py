@@ -6,6 +6,7 @@
   python tools/push-update.py --host H --loader                    also replace the loader (EFI/BOOT/BOOTX64.EFI)
   python tools/push-update.py --host H --cmdline "text blk.ro"     also replace cmdline.txt (the whole line)
   python tools/push-update.py --host H --dry-run                   show what would be sent
+  python tools/push-update.py --host 192.168.1.185 --via me@jump.example   reach the machine through a jump host (docs/REMOTE_UPDATE.md; tools/remote-update.py also wakes it)
 
 The machine runs `sudo update recv` (the `update` applet), which checks the hashes, writes the ESP so that a power cut leaves every file
 whole, keeps the previous kernel and initrd as kernel.old and initrd.old and puts the new files on trial. This script then waits until
@@ -34,6 +35,9 @@ import sys
 import threading
 import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import sshvia  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 NAMES = ["kernel.elf", "initrd.img", "cmdline.txt", "EFI/BOOT/BOOTX64.EFI"]
@@ -64,11 +68,17 @@ class Ssh:
     def __init__(self, args):
         exe = shutil.which(args.ssh) or args.ssh
         key = Path(args.key).expanduser()
+        hop = getattr(args, "hop", None)
+        # (through a jump host the connect takes longer, and ssh's error text matters: it says which of the two hops refused, so it is not silenced with -q)
         self.base = [exe, "-p", str(args.port), "-i", str(key), "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
-                     "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15",
-                     "-o", "ServerAliveCountMax=8", "-q"]
+                     "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=" + ("30" if hop else "10"), "-o", "ServerAliveInterval=15",
+                     "-o", "ServerAliveCountMax=8"] + (["-o", "LogLevel=ERROR"] if hop else ["-q"])
         for o in args.ssh_option:
             self.base += ["-o", o]
+        if hop:
+            self.base += hop.ssh_args() + ["-o", hop.proxy_jump()]
+        self.hop = hop
+        self.last_err = ""                          # what ssh said (stderr) the last time it did not finish with status 0
         self.target = f"{args.user}@{args.host}"
         # a Ctrl+C at this terminal must not reach the ssh client (and so cut the connection) in the middle of an update: the script decides what to do with it
         self.flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
@@ -82,7 +92,10 @@ class Ssh:
         except subprocess.TimeoutExpired:
             p.kill()
             p.communicate()
+            self.last_err = "ssh did not finish in time"
             return None, b"", b""
+        if p.returncode != 0 and err:
+            self.last_err = err.decode("utf-8", "replace").strip()
         return p.returncode, out, err
 
     def stream(self, command, data, echo):
@@ -214,6 +227,9 @@ def run(argv=None):
     ap.add_argument("--key", default="~/.ssh/touhou_ed25519", help="the private key (default ~/.ssh/touhou_ed25519)")
     ap.add_argument("--ssh", default="ssh", help="the ssh client (default: ssh from the PATH)")
     ap.add_argument("--ssh-option", action="append", default=[], metavar="OPT", help="an extra ssh -o option, e.g. UserKnownHostsFile=FILE (repeatable)")
+    ap.add_argument("--via", default=None, metavar="[USER@]HOST[:PORT]", help="reach the machine through this jump host (ssh ProxyJump; --host is then an address as the jump host sees it)")
+    ap.add_argument("--via-key", default=None, metavar="FILE", help="the private key for the jump host (default: whatever ssh would use for it)")
+    ap.add_argument("--via-option", action="append", default=[], metavar="OPT", help="an extra ssh option for the jump host only, e.g. UserKnownHostsFile=FILE (repeatable)")
     ap.add_argument("--src", default=str(ROOT / "build" / "esp"), help="where kernel.elf and initrd.img are (default build/esp)")
     ap.add_argument("--version", default=None, help="shown by `update status` (default: git describe)")
     ap.add_argument("--cmdline", default=None, metavar="TEXT", help="also replace cmdline.txt with this whole line (careful: it replaces the installed one)")
@@ -229,7 +245,22 @@ def run(argv=None):
     ap.add_argument("--no-key-check", action="store_true", help="do not check that the initrd authorizes the key this tool logs in with (an image built in a checkout without assets/local/ssh has no keys: the machine could not be reached again)")
     ap.add_argument("--dry-run", action="store_true", help="show what would be sent and stop")
     args = ap.parse_args(argv)
+    args.hop = None
+    if args.via:
+        try:
+            args.hop = sshvia.Hop(args.via, key=args.via_key, options=args.via_option)
+        except ValueError as e:
+            print(f"push-update: {e}", file=sys.stderr)
+            return 2
+        args.hop.open()
+    try:
+        return push(args)
+    finally:
+        if args.hop:
+            args.hop.close()
 
+
+def push(args):
     src = Path(args.src)
     files = []
     for name in ("kernel.elf", "initrd.img"):
@@ -270,7 +301,7 @@ def run(argv=None):
     except ValueError as e:
         print(f"push-update: {e}", file=sys.stderr)
         return 2
-    print(f"push-update: version {version}, {len(files)} files, {len(stream)} bytes for {args.user}@{args.host}")
+    print(f"push-update: version {version}, {len(files)} files, {len(stream)} bytes for {args.user}@{args.host}" + (f" through {args.via}" if args.hop else ""))
     for name, data in files:
         note = f"  (gzip, unpacks to {len(tar)} bytes: {100 * len(data) / max(1, len(tar)):.1f}%)" if name == "initrd.img" and tar is not data else ""
         print(f"  {name:22} {len(data):>10} bytes  {hashlib.sha256(data).hexdigest()[:16]}{note}")
@@ -284,6 +315,10 @@ def run(argv=None):
         if token is None:
             print(f"push-update: the machine did not take a token in {TOKEN} (a login that writes a file in /tmp): nothing was sent. The restart is proved by the token being gone.",
                   file=sys.stderr)
+            if ssh.last_err:
+                print("push-update: ssh said: " + ssh.last_err, file=sys.stderr)
+            if args.hop:
+                print(f"push-update: the connection runs through the jump host {args.via}: is the machine on (tools/remote-update.py wake), and does the jump host accept this PC's key?", file=sys.stderr)
             return 1
     cmd = "sudo update recv" + ("" if args.no_reboot else " --reboot=3") + (" --loader" if args.loader else "") + \
           (" --no-trial" if args.no_trial else "") + (" --replace-trial" if args.replace_trial else "") + (" --force" if args.force else "")

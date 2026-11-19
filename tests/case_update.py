@@ -25,10 +25,11 @@ from harness import test, Qemu, BUILD, scaled
 from qemu import free_port
 from case_espgrant import installed_base, esp_files, esp_check
 from case_install import IMG_DIR
-from case_ssh import SSH, WORK, make_key
+from case_ssh import SSH, WORK, make_key, host_key_seen
 
 ROOT = Path(__file__).resolve().parent.parent
 PUSH = ROOT / "tools" / "push-update.py"
+REMOTE = ROOT / "tools" / "remote-update.py"
 ROOT_PROMPT = r"root@gensokyo \S+ # "
 
 _spec = importlib.util.spec_from_file_location("push_update", PUSH)
@@ -426,3 +427,49 @@ def update_restart_is_proved_by_a_token_in_tmp():
     assert look(0, b"cat: /tmp/.push-update-token: No such file\nEND\n", "abc123") == "new"
     assert look(255, b"", "abc123") is None and look(None, b"", "abc123") is None          # no answer
     assert look(0, b"", "abc123") is None                                                  # a login that ran nothing proves nothing
+
+
+@test
+def update_push_through_a_jump_host():
+    """The update from far away (docs/REMOTE_UPDATE.md): tools/remote-update.py reaches the machine through a jump host (ssh ProxyJump, the jump host's own key and options in a private
+    config file), refuses a host key that is not the pinned fingerprint, keeps the right one, pushes, the machine restarts on trial and is confirmed, and `off` switches it off. The jump host
+    here is the machine's own sshd forwarding to itself, so the route is the real OpenSSH client and the real sshd of TouhouOS (direct-tcpip); what this cannot show (the wake-up, a jump
+    host that is another PC) is tests/host/test_remote_update.py with a fake ssh, and the real server by hand"""
+    import json
+    src = new_system("via", gz=True)
+    with UpdateGuest("update-via") as g:
+        key = str(make_key("main")[0])
+        pinned = WORK / "known_hosts_via_pinned"
+        pinned.unlink(missing_ok=True)
+        cfg = {"via": f"marisa@127.0.0.1:{g.port}", "via_key": key, "via_options": [f"UserKnownHostsFile={g.known.as_posix()}", "StrictHostKeyChecking=accept-new"],
+               "host": "127.0.0.1", "port": 22, "key": key, "fingerprint": host_key_seen(g), "known_hosts": pinned.as_posix(), "host_key_alias": "update-via", "boot_wait": 120}
+        cfgfile = WORK / "remote_via.json"
+        cfgfile.write_text(json.dumps(cfg), encoding="utf-8")
+
+        def tool(*args, timeout=900):
+            return subprocess.run([sys.executable, str(REMOTE), "--config", str(cfgfile), "--ssh", SSH, *args], capture_output=True, text=True, timeout=scaled(timeout))
+
+        # a host key that is not the pinned one is refused, and nothing is kept or sent
+        r = tool("status", "--fingerprint", "SHA256:" + "A" * 43)
+        assert r.returncode == 1 and "not the pinned one" in r.stderr, (r.returncode, r.stdout, r.stderr)
+        assert not pinned.exists(), "a host key that did not match was kept"
+        # the right one is kept, and the machine answers through the jump host
+        r = tool("status")
+        assert r.returncode == 0, (r.returncode, r.stdout, r.stderr)
+        for want in ("the jump host marisa@127.0.0.1", "takes the key", "host key kept in", "the machine is on (127.0.0.1)", "this start: the installed files"):
+            assert want in r.stdout, (want, r.stdout)
+        assert "update-via ssh-ed25519 " in pinned.read_text(), pinned.read_text()
+        # the push, restart on trial and confirmation, all through the jump host
+        old_len = kernel_bytes_in_log(g)[-1]
+        r = tool("push", "--src", str(src), "--version", "via-v1", "--no-key-check", "--wait", str(int(scaled(300))))
+        assert r.returncode == 0, (r.returncode, r.stdout, r.stderr)
+        for want in ("through marisa@127.0.0.1:", "received kernel.elf", "all hashes match", "restarting in", "the machine is back",
+                     "this start: the new files, on trial (start 1 of 2)", "confirmed: the new files are the installed system", "push-update: done."):
+            assert want in r.stdout, (want, r.stdout)
+        assert kernel_bytes_in_log(g)[-1] == (src / "kernel.elf").stat().st_size and old_len != kernel_bytes_in_log(g)[-1]
+        out = g.run("cat /etc/update-marker; update status")[0]
+        assert "pushed via" in out and "installed by the last push: version via-v1" in out and "update.try: absent" in out, out
+        # and off
+        r = tool("off")
+        assert r.returncode == 0 and "the machine is off" in r.stdout, (r.returncode, r.stdout, r.stderr)
+        assert g.vm.wait_exit(120) is not None, "the machine did not power off"
