@@ -103,7 +103,7 @@ class Remote:
     REWAKE_AFTER = 100          # seconds without an answer before the magic packet is sent once more
     DISCOVER_AFTER = 120        # seconds without an answer before the jump host is asked where the machine has gone
 
-    def __init__(self, cfg, ssh="ssh", say=print):
+    def __init__(self, cfg, ssh="ssh", say=lambda text: print(text, flush=True)):
         self.cfg = cfg
         self.ssh_exe = ssh
         self.say = say
@@ -332,11 +332,11 @@ class Remote:
         if rc != 0:
             return 0 if rc == 6 else rc
         ssh = self.machine_ssh()
-        ssh.run("sudo poweroff", timeout=60)
+        ssh.run("sudo poweroff", timeout=25)                 # (the connection may hang while the machine goes down: it is not waited for)
         end = time.time() + 120
         while time.time() < end:
-            time.sleep(5)
-            if not self.machine_up(timeout=20):
+            time.sleep(4)
+            if not self.machine_up(timeout=15):
                 self.say("remote-update: the machine is off (it no longer answers); Wake-on-LAN is armed")
                 return 0
         self.say("remote-update: the machine still answers two minutes after `poweroff`: look at it")

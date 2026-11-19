@@ -89,4 +89,4 @@ the parked design in [UPDATE.md](UPDATE.md)) would take the dev PC out of that w
 fake ARP table, and the whole flow of `remote-update.py` against a fake ssh: a machine that is on is not woken, one that is off is woken and waited for, one that never answers gets a second packet and a
 report, a wrong host key is refused before any login, a refused push does not wake the machine. `python tests/run_all.py update_push_through_a_jump_host` (QEMU, the real OpenSSH client): the machine's own
 sshd is the jump host (forwarding to itself), the host key is pinned and a wrong fingerprint refused, `push` runs the whole update through the jump host and confirms it, `off` powers the machine off.
-The wake-up itself can only be tried on the real machine.
+The wake-up itself can only be tried on the real machine; it was, on 2026-11-18: wake, pin, push through a jump host, confirm, power off, wake again, each as described above.

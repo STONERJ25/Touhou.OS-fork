@@ -80,6 +80,9 @@ if not proxied and "-F" in args and command.startswith("python3"):      # a comm
         print("192.168.1.5")
         sys.exit(0)
     sys.exit(1)
+if command == "sudo poweroff" and up:                          # the machine goes down and the connection with it
+    os.remove(path("up"))
+    sys.exit(255)
 if command == "true":                                          # a login to the machine
     if up:
         sys.exit(0)
@@ -307,6 +310,21 @@ class RemoteFlowTests(unittest.TestCase):
         self.assertIn(f.fingerprint, text)
         status, text = r.pin(trust_first_use=True)
         self.assertEqual(status, "ok")
+
+    def test_off_powers_the_machine_down_and_notices(self):
+        f = Fake(self)
+        f.switch_on()
+        r = self.remote(f)
+        self.assertEqual(r.cmd_off(), 0)
+        self.assertIn("the machine is off", "\n".join(self.said))
+        self.assertFalse((f.state / "up").exists())
+        self.assertTrue(any(c["argv"][-1] == "sudo poweroff" for c in f.calls()))
+
+    def test_off_on_a_machine_that_is_off_does_nothing(self):
+        f = Fake(self)
+        r = self.remote(f)
+        self.assertEqual(r.cmd_off(), 0)
+        self.assertFalse(any(c["argv"][-1] == "sudo poweroff" for c in f.calls()))
 
     def test_a_jump_host_that_does_not_answer_is_reported(self):
         f = Fake(self)
