@@ -69,9 +69,7 @@ long lnx_ioctl(TrapFrame *tf) {
     }
     if (req == LNX_FIOCLEX || req == LNX_FIONCLEX) {
         int fd = (int)A0(tf);
-        if (!fd_get(current->proc, fd)) return -EBADF;
-        if (req == LNX_FIOCLEX) current->proc->fd_flags[fd] |= FD_CLOEXEC; else current->proc->fd_flags[fd] &= (u8)~FD_CLOEXEC;
-        return 0;
+        return req == LNX_FIOCLEX ? fd_setflags(current->proc, fd, FD_CLOEXEC, 0) : fd_setflags(current->proc, fd, 0, FD_CLOEXEC);     /* under the table lock; -EBADF when not open */
     }
     if (req == 0x80045430u || req == 0x40045431u || req == 0x80045439u) return lnx_pty_ioctl((int)A0(tf), req, A2(tf));      /* TIOCGPTN, TIOCSPTLCK, TIOCGPTLCK (l3.c) */
     if (req == LNX_TCSBRK || req == LNX_TCXONC || req == LNX_TCFLSH || req == LNX_TCSBRKP) {

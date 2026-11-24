@@ -296,7 +296,7 @@ static EspGrant *claimable(BlockDev *part) {
     for (int i = 0; i < MAX_GRANTS; i++) {
         EspGrant *g = &g_grants[i];
         if (g->part != part || g->holder) continue;
-        for (int k = 0; k < MAX_FD; k++)
+        for (int k = 0; k < fd_slots(p); k++)
             if (p->fds[k] == g->f) return g;
     }
     return NULL;

@@ -22,6 +22,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <http.h>
+#include <netconn.h>
 
 typedef struct {
     const HttpOptions *o;
@@ -101,35 +102,20 @@ typedef struct {
     int timeout_ms;
 } conn;
 
+/* Every address of the name, IPv6 and IPv4 (AI_ADDRCONFIG: the families this machine has), in RFC 6724 order interleaved by family,
+ * started 250 ms apart and given 2 s each, the last ones the whole timeout (netconn.c, RFC 8305): a family that is broken here costs a
+ * quarter of a second, not the timeout. */
 static int tcp_open(fetch *f, int timeout_ms) {
-    struct addrinfo hints, *res = NULL;
-    memset(&hints, 0, sizeof hints);
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    char port[8];
-    snprintf(port, sizeof port, "%d", f->url.port);
-    int rc = getaddrinfo(f->url.host, port, &hints, &res);
-    if (rc != 0 || !res) return fail(f->r, HTTP_E_DNS, "%s: the name does not resolve (%s)", f->url.host, gai_strerror(rc));
-    int fd = -1, err = 0;
-    for (struct addrinfo *a = res; a; a = a->ai_next) {
-        fd = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
-        if (fd < 0) { err = errno; continue; }
-        struct timeval tv = { timeout_ms / 1000, (timeout_ms % 1000) * 1000 };
-        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);    /* bounds connect() */
-        char addr[32];
-        const unsigned char *ip = (const unsigned char *)&((struct sockaddr_in *)a->ai_addr)->sin_addr;
-        snprintf(addr, sizeof addr, "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
-        event(f->o, "connecting to %s (%s) port %d", f->url.host, addr, f->url.port);
-        if (connect(fd, a->ai_addr, a->ai_addrlen) == 0) break;
-        err = errno;
-        close(fd);
-        fd = -1;
-    }
-    freeaddrinfo(res);
+    char addr[64] = "";
+    int gai = 0, err = 0;
+    event(f->o, "connecting to %s port %d", f->url.host, f->url.port);
+    int fd = netconn_tcp(f->url.host, f->url.port, timeout_ms < NETCONN_ATTEMPT_MS ? timeout_ms : NETCONN_ATTEMPT_MS, timeout_ms, addr, sizeof addr, &gai, &err);
+    if (fd < 0 && gai) return fail(f->r, HTTP_E_DNS, "%s: the name does not resolve (%s)", f->url.host, gai_strerror(gai));
     if (fd < 0) {
         if (err == ETIMEDOUT || err == EAGAIN) return fail(f->r, HTTP_E_TIMEOUT, "%s port %d: no answer to the connection attempt", f->url.host, f->url.port);
         return fail(f->r, HTTP_E_CONNECT, "%s port %d: %s", f->url.host, f->url.port, strerror(err));
     }
+    event(f->o, "connected to %s (%s) port %d", f->url.host, addr, f->url.port);
     struct timeval none = { 0, 0 };
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &none, sizeof none);
     int one = 1;

@@ -1,0 +1,3 @@
+rounds without a mistake: 6 of 6
+descriptors of the first process before and after equal: 1
+exit status: 0

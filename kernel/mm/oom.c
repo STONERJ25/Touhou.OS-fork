@@ -78,7 +78,7 @@ static u64 user_pages(paddr_t pml4) {
 /* Pages of tmpfs files that nobody can open again (no name) but this process still holds: they go back to the allocator when it dies. */
 static u64 orphan_tmpfs_pages(const Process *p) {
     u64 n = 0;
-    for (int i = 0; i < MAX_FD; i++) {
+    for (int i = 0; i < fd_slots(p); i++) {
         const File *f = p->fds[i];
         if (!f || !f->vn || f->vn->nlink != 0 || !S_ISREG(f->vn->mode)) continue;
         bool seen = false;

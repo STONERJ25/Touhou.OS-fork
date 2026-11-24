@@ -169,6 +169,45 @@ The detector never touches the timer: it does not feed it, stop it or change its
 cut short). It does not run until the boot is complete (the boot thread's check and repair of the volume are the loader-armed timer's, fed from `tcowdt_boot_feed`); work in the kernel that is
 long on purpose and alive (the block layer calls `lockup_touch()` on every request) does not count. On a start under trial (`update.trial=N`) a panic from `panic_on_lockup` ends in the loader's fallback like any other.
 
+## Elapsed time and unsigned subtraction
+
+The kernel's clock for timeouts is `uptime_ms()` (`kernel/drivers/timer.c`: the tick count times 1000 / `TIMER_HZ`; `net_now()` is the same number). It **never goes backwards**
+and does not wrap in any machine's life, so one reading is never older than an earlier one. The trap is elsewhere: the two numbers of a `now - stamp` are read at different
+moments by different code. If `now` is read first and the stamp is written afterwards (by the receive path inside the same poll, by a thread that was scheduled in between,
+by an interrupt handler), the stamp is the newer one and the unsigned difference is 2^64-1: every "older than N" test fires at once, every "at least N" too. That forgot the
+gateway's ARP entry the moment it was learned ([NETWORK.md](NETWORK.md), "The first-connection stall", 2026-11-24).
+
+**The rule:** where somebody else writes the stamp, use `kernel/include/ktime_elapsed.h` (included by `ktime.h`): `ktime_elapsed(now, stamp)` is 0 for a stamp from the
+future, `ktime_older_than(now, stamp, ms)` and `ktime_at_least(now, stamp, ms)` are the two comparisons, `ktime_left(deadline, now)` is 0 after the deadline. Comparisons of
+the shape `now >= deadline` and sums (`stamp + N`) cannot wrap and are fine as they are. Host test: `tests/host/test_ktime_elapsed.py` (the boundary cases against Python's
+whole numbers). Counters that do wrap keep their own arithmetic: the ACPI PM timer is masked to its width (`drivers/timer.c`), TCP sequence numbers use `SEQ_LT` and friends.
+
+The audit of 2026-11-24 (every `now - x`, `uptime_ms() - x`, `net_now() - x` and `x - now` under `kernel/`, read one by one; "same context" = the stamp is written by the
+code that read `now`, or under the lock or with the interrupts off that the reader holds, with the reading taken inside):
+
+| Place | Can the stamp be newer than `now`? | If so | Verdict |
+|---|---|---|---|
+| `net/net.c` `arp_tick` (entry `updated`) | **yes**: `now` was read before the poll that handles the ARP answer | the entry is forgotten at once, the next packets ask again and overflow the queue: a retransmission timeout | **fixed** (`now` is read after the poll; `ktime_older_than`); test `net_first_connection_that_speaks_first_is_not_delayed` |
+| `net/ndp.c` `nd6_tick`, STALE collection (`used`) | **yes**, the same way (the receive path stamps `used`); only for an entry already STALE | a neighbour entry is dropped ten minutes early: one more solicitation | **fixed** (same reorder; `ktime_older_than`); no deterministic test: it needs the millisecond to turn inside one poll for a STALE entry |
+| `drivers/tcowdt.c` `tcowdt_seconds_left`, `/proc/watchdog` "last fed", the "nobody has fed it" line (`last_feed`) | **yes**: read without the lock; user space's feed (another thread) or the kernel thread's can land between the two readings | "0 s left" or "fed 18446744073709551 s ago" printed once; the hardware timer itself is not affected | **fixed** (`ktime_elapsed`); not testable from outside (a one-tick window) |
+| `drivers/usb/usb.c` `usb_settled_now` (`g_usb_last_active`, written by usbd) | **yes**: the caller is the boot thread, the stamp is usbd's | "the bus has been quiet for `SETTLE_QUIET_MS`" is true the moment usbd was active: the boot goes on before a late hub port reported (a stick mounted late) | **fixed** (`ktime_at_least`); a one-tick window at boot, no deterministic test |
+| `fs/fat32.c` flusher (`last_op_ms`, `dirty_since_ms`; `err_logged_ms`) | **yes** for the first two: writers stamp them under the volume's lock, the flusher reads `now` before it takes it | a flush while a writer is in the middle of a burst (correct, only early); `err_logged_ms` is the flusher's own | **fixed** (`ktime_at_least`); harmless when it happened, no test |
+| `arch/x86_64/thermal.c` `power_update` (`base_ms`) | **yes**: `now` is read before `irq_save`; two readers of `/proc` at once | one power window thrown away ("unknown" watts once) | **fixed** (`ktime_elapsed`); needs RAPL, which QEMU does not have |
+| `net/icmp6.c`, `net/ndp.c` `na_allowed`, `net/net.c` `icmp_allowed` (rate windows) | no: read and written by the same function under the network lock | | fine |
+| `net/tcp.c` RTT samples (`rtt_time`) | no: `net_now()` read in the function that subtracts, the stamp is from an earlier send, all under the network lock | | fine |
+| `net/tcp.c` `tcp_tick`, `net/dhcp.c`, `net/ip6.c`, `net/ndp.c` timers, `net/net.c` reassembly | no subtraction: `now >= deadline` | a deadline armed after `now` simply waits for the next tick | fine |
+| `net/dhcp.c` `secs` field, `net/ntp.c` `/proc` age and clock base | no: the clock is read after the stamp (ntp: snapshot first, then `uptime_ms()`; the base with interrupts off) | | fine |
+| `net/sock.c` `sk_block`, `net/ntp.c` `udp_rx`, `fs/epoll.c`, `fs/pollq.c`, `sched/task.c` sleep, `fs/timerfd.c`, `linux/timers.c`, `linux/epoll.c`, `sys/syscalls.c` alarm, `net/net6ctl.c`, `net/ndp.c` lifetimes | `deadline - now`: every one is behind `now >= deadline` or `deadline > now ? ... : 0` | | fine |
+| `fs/timerfd.c` `tfd_update`, `linux/timers.c` `timer_fire`, `sys/process.c` `alarm_cb` (`now - expiry`) | no: behind `now >= expiry`, interrupts off | | fine |
+| `drivers/e1000.c` watchdogs (`link_since`, `tx_stuck_since`, `last_probe`, `rx_check_at`, `probe_at`) | no: all read and written in the poll or the transmit path, both under the network lock, each with its own fresh `net_now()` | | fine |
+| `drivers/netcons.c` (`probe_at`, `partial_since`, `refill_at`) | no: one `now` per pass, the stamps are that pass's own | | fine |
+| `drivers/audio/audio.c` `pass` (`last_move_ms`, `last_tick_ms`, `idle_since`, `hk_ms`) | no: `now` is read with `g.lock` held, the stamps are written under it | | fine |
+| `drivers/usb/storage.c` unit state machine (`started_at`) | no: stamped and compared by usbd's own passes | | fine |
+| `mm/oom.c` (`start_ms`, `g_victim_ms`) | no: `now` is read with interrupts off; a process's start is older than any look at it | | fine |
+| `fs/fat_check.c` heartbeat, `drivers/tcowdt.c` `tcowdt_boot_feed` | no: the boot thread alone | | fine |
+| `drivers/ahci.c`, `virtio_blk.c`, `pci.c`, `blk_selftest.c`, `usb.c` waits, `fs/initrd.c`, `main.c`, `sys/futex.c` self-test (`uptime_ms() - t0`) | no: `t0` is a local taken earlier by the same code | | fine |
+| `sched/watchdog.c` (the lockup detector) | no clock subtraction at all: it counts ticks a task spent in the kernel (`kspin`) against a threshold | | fine |
+
 ## Failure modes
 
 | What goes wrong | What happens | What it looks like |

@@ -52,6 +52,20 @@ static int mkdir_p(const char *path, mode_t mode) {
     return mkdir(buf, mode) < 0 && errno != EEXIST ? -1 : 0;
 }
 
+/* mkfifo [-m MODE] NAME...: named pipes (POSIX mkfifo; they exist on tmpfs, so under /tmp). */
+APPLET(mkfifo) {
+    int i = 1, rc = 0;
+    mode_t mode = 0666;
+    for (; i < argc && argv[i][0] == '-' && argv[i][1]; i++) {
+        if (!strcmp(argv[i], "-m") && i + 1 < argc) mode = (mode_t)strtol(argv[++i], NULL, 8);
+        else { kb_error("invalid option '%s'", argv[i]); return 2; }
+    }
+    if (i >= argc) { kb_error("missing operand"); return 1; }
+    for (; i < argc; i++)
+        if (mkfifo(argv[i], mode) < 0) { kb_error("cannot create fifo '%s': %s", argv[i], strerror(errno)); rc = 1; }
+    return rc;
+}
+
 APPLET(mkdir) {
     int parents = 0, i = 1, rc = 0;
     mode_t mode = 0755;

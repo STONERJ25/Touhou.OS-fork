@@ -2,6 +2,7 @@
 #define K_KTIME_H
 
 #include "types.h"
+#include "ktime_elapsed.h"      /* ktime_elapsed(now, stamp): never `now - stamp` when somebody else writes the stamp */
 
 void rtc_init(void);
 u64  time_now_sec(void);                /* Unix time, UTC */

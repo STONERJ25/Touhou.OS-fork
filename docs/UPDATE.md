@@ -4,14 +4,14 @@ The owner's goal: stop reflashing the stick for every new build. Once TouhouOS i
 initrd travel over the LAN, are swapped on the EFI System Partition (ESP) in a way that survives a power cut, and the machine
 goes back to the previous kernel by itself when the new one does not come up.
 
-There are two designs on this page. **Pushing over ssh is the one that is built, tested and meant to be used.**
+There are two ways in, and both are built. **Pushing over ssh** needs the development PC connected from the restart to the confirmation; **pulling** ("upload and forget", since 2026-11-24) lets the machine fetch a signed build from any web server when it is on, install it on trial and confirm itself.
 
 | | Push over ssh | Pull from a server |
 |---|---|---|
-| Who starts it | the development PC: `python tools/push-update.py --host ADDRESS` | the OS: `update URL` (not written) |
-| Transport | the OS's own SSH server ([SSH.md](SSH.md)): encrypted, and only a listed key gets in | plain HTTP from `tools/serve-update.py` |
-| What makes it trustworthy | the login key; every file is also checked against the hash that was sent with it | an ECDSA signature over a manifest, which needs the TLS/ECDSA code of the parked `network-https` branch |
-| State | **done**, QEMU-tested with the real OpenSSH client | the server and the manifest format are done; the OS side is not ([below](#pulling-from-a-server-the-parked-design)) |
+| Who starts it | the development PC: `python tools/push-update.py --host ADDRESS` | the OS: `update pull URL`, or by itself with `update.pull=URL` on its command line ([below](#pulling-from-a-server)) |
+| Transport | the OS's own SSH server ([SSH.md](SSH.md)): encrypted, and only a listed key gets in | HTTP or HTTPS from any web server: `tools/serve-update.py serve`, or the folder `serve-update.py export DIR` writes |
+| What makes it trustworthy | the login key; every file is also checked against the hash that was sent with it | an ECDSA P-256 signature over the manifest, checked with the public key in the image (`/etc/update/pubkey`), and the anti-rollback number `issued` |
+| State | **done**, QEMU-tested with the real OpenSSH client | **done** in QEMU (`update_pull_`); not tried on the Dell yet |
 | Loader fallback to the previous kernel | **done** (`boot/update.c`) | the same |
 | Writing the ESP safely | **done** (the ESP write grant, `espgrant.h`) | the same |
 
@@ -251,14 +251,157 @@ case where the C code and zlib disagreed about a stream or about the bytes it de
 
 The power-cut behaviour of the ESP sequence itself is `espgrant_power_cut` (`tests/case_espgrant.py`).
 
-## Pulling from a server: the parked design
+The pull: `python tools/qemu-slot.py -- python tests/run_all.py update_pull_` (`tests/case_update_pull.py`; serve-update.py's own server in the test process with a throwaway key, the guest at `10.0.2.2`):
 
-The rest of this page is the first design, written before the push existed: the OS fetches a signed manifest and the files from
-`tools/serve-update.py` over HTTP. The pieces it shares with the push (writing the ESP, the loader fallback, the confirmation) are
-now done and described above; where the text below differs from the code (it says "task 5", names `update URL`, allows `N = 2` tries
-under a `TouhouUpdateTry` variable, and asks for the confirmation by `espgrant rm update.try`), the code and the section above are
-right. The pull client would add: the HTTP fetch, the manifest parser and the ECDSA check (libtls, now in `user/lib/tls`), and
-the same `update recv` machinery to write what it fetched.
+| Test | What it shows |
+|---|---|
+| `update_pull_whole_way` | no key: refused; then pull, restart on trial, the self-confirmation (`update.autoconfirm=15`), `update status`; the ESP holds the new pair, the old as `.old`, `update.iss`, `update.mf` with `pulled URL`; the same manifest again is "nothing new", an older one is refused (rollback protection) |
+| `update_pull_auto_words` | the automatic mode through the words alone (`update.pull=URL update.pull.delay=5 update.pull.interval=0 update.pull.then=poweroff update.autoconfirm=10`), nobody at the console: a start with a newer manifest pulls, restarts on trial, confirms itself, switches off; the next start says "nothing new" and switches off |
+| `update_pull_hung_kernel_falls_back_and_is_not_pulled_again` | the automatic mode pulls a kernel that hangs: two counted starts, the previous set; that start does not pull (and refuses a pull by hand), stays on; after `update rollback` the failed manifest is "nothing new" and an older one is refused (rollback protection after a fallback) |
+| `update_pull_number_survives_a_power_cut` | the plug is pulled right after "recorded issued N": `update.iss` has N, an older manifest is refused; the cut manifest is not "nothing new": it is fetched, verified and installed to its end (`done`) although the cut left the ESP dirty (the number without `done` explains it) |
+| `update_pull_refusals` | a wrong signature, another key, a hash that does not match, a file larger than listed, a damaged (CRLF) manifest, a path outside the four, an unreachable server: each refused with its reason, the ESP unchanged; the installed files are "nothing to do" and `--power-off-after` switches the machine off |
+
+`python tests/host/test_serve_update.py` has `export` (`TestExport`).
+
+## Pulling from a server
+
+**Built 2026-11-24** (`user/bin/kappabox/updpull.c`, the `update` applet). The machine fetches a signed manifest and the files it names from a web server, checks
+everything, and hands the verified set to **the same code a push takes** (`install_detached()` in `update.c`: the power-cut-safe ESP sequence, the kept previous
+set, `update.try`), then restarts on trial. The loader's count, the watchdog and the fallback are the push's, unchanged.
+
+### Quick start (the owner, once)
+
+```
+python tools/serve-update.py keygen                                     # once, on the development PC: ~/.touhou-os/update-signing-key.pem (private; back it up)
+python tools/serve-update.py pubkey --format hex --out assets/local/update/pubkey.hex   # the public half, for the image
+python tools/build.py                                                   # the image now carries /etc/update/pubkey (build.py copies the file in)
+python tools/push-update.py --host ADDRESS --cmdline "...the machine's line... update.pull=http://SERVER/touhou"   # once, the old way: an image with the key and the word
+```
+
+and then, for every new build, "upload and forget":
+
+```
+python tools/build.py
+python tools/serve-update.py export OUTDIR --cmdline "...the same line, with update.pull=..."   # OUTDIR/manifest and OUTDIR/files/<path>
+(copy OUTDIR to the web server, so that http://SERVER/touhou/manifest is the manifest)
+```
+
+`export` writes exactly what `serve` answers with (the same signing, `--src`, `--cmdline`, `--no-cmdline`, `--version`, `--issued`), each file under a temporary name and renamed,
+the manifest last. Any static web server works (a PC on the LAN, a public file host that serves the bytes unchanged: no compression, no HTML wrapper); `serve` itself still works
+for a quick test. **The image's key** comes from `$TOUHOU_UPDATE_PUBKEY_FILE`, else `assets/local/update/pubkey.hex` (130 hex digits, `04 || X || Y`); an image built without
+either has no `/etc/update/pubkey` and pulls nothing ("no signing key in this image"): there is never a built-in key. `cmdline.txt` in the manifest replaces the installed command
+line, so it must carry `update.pull=` itself, or the next start stops pulling; `--no-cmdline` leaves the installed one alone.
+
+### `update pull URL [--now] [--no-reboot] [--power-off-after] [--loader]`
+
+As root. In this order, and **nothing is written to the ESP before every byte is verified**:
+
+1. Refused on a start that fell back (`update.fellback`). The image's key is read from `/etc/update/pubkey`.
+2. `GET URL/manifest` (http or https; at most 4096 bytes, a larger answer is cut off and refused; 60 s for the whole fetch, 20 s of silence at most). Parsed strictly by the
+   grammar below (any byte sequence `serve-update.py` would not write is refused); the `key` line must be this image's key id ("signed by key X, not by this image's key Y"),
+   then ECDSA P-256 over SHA-256 of the body with libtls's `tlsc_ecdsa_verify`.
+3. Every path must be one of `kernel.elf`, `initrd.img`, `cmdline.txt`, `EFI/BOOT/BOOTX64.EFI`, within its size limit (those of `update recv`).
+4. The ESP is mounted read-only: **`update.iss`** holds the `issued` of the last pull that was begun here, and the word `done` when that install ran to its end
+   ([below](#the-anti-rollback-number-and-a-power-cut)). A smaller `issued` is refused (rollback protection); an equal one that is `done` is
+   "nothing new" (exit 0: the periodic check of an unchanged server, and the case of a pulled build that fell back, which must not be installed again); an equal one that is
+   not `done` goes on to the comparison of the files (the install was cut short). Files whose installed
+   copy has the listed size and hash are not fetched; the kernel and initrd go as a pair; a different loader is skipped (with a note) unless `--loader`.
+5. Each file that is new: `GET URL/files/PATH` into memory, at most the listed size (more is refused: "more than the N bytes it may have"), hashed as it arrives, then checked
+   for size, SHA-256 and kind (the push's checks: ELF, gzip/tar initrd, printable command line). The deadline is 120 s plus one second per 64 KiB.
+6. The verified set goes to the push's code: **first `update.iss` with the manifest's number** ("recorded issued N in update.iss"), then `update.try` (with a line `pulled`,
+   and the manifest's `issued`), the `.old` set, the renames; `update.mf` (with `pulled URL`) and `update.iss` once more, now with `done`, after. Then the restart, 3 s later (`--now`: at once; `--no-reboot`: not at all). An update still on trial blocks it, as it blocks a push.
+
+Exit status: 0 installed or unchanged (`update: result: installed` / `result: unchanged`), 2 refused (signature, key, rollback, hash, size, path, a bad file), 1 could not
+(no key, no network, server error, the ESP). `--power-off-after`: switch off when nothing was installed (refused, failed or unchanged).
+
+### The automatic mode: command-line words
+
+| Word | Default | What |
+|---|---|---|
+| `update.pull=URL` | (none: no automatic mode) | init starts `update auto` in the background (it never delays the desktop or the shell) |
+| `update.pull.delay=SECONDS` | 90 | wait this long after the start before the first pull (the network comes up meanwhile) |
+| `update.pull.interval=SECONDS` | 21600 | pull again this often; 0 = once per start |
+| `update.pull.then=poweroff` | (stay on) | switch off after a pull that installed nothing, or after the self-confirmation: the "wake, check, sleep" life of a machine the home server wakes |
+| `update.autoconfirm=SECONDS` | 180 when `update.pull` is set | on a pulled trial start, the self-confirmation runs after this long; `off` leaves it to a person |
+
+`update auto` does nothing on a start that fell back (it stays on, for a person to look: no pull, no power-off); on a trial start it does only the self-confirmation; otherwise
+it pulls. A number is decimal digits only, at most nine: an empty value, a sign or anything else keeps the default (so `update.autoconfirm=` is 180 s, not 0). An interval
+between 1 and 59 is raised to 60 ("is raised to 60 seconds"). A redirect from `https` to plain `http` is refused. `update.autoconfirm` must stay below `update.watchdog`
+(300 s by default), or the watchdog restarts the machine before the self-confirmation runs.
+
+### The anti-rollback number and a power cut
+
+*(2026-11-24, the second review: [UPDATE_PULL_REVIEW.md](UPDATE_PULL_REVIEW.md), findings 1 and 2.)* `issued` is a counter, not a time: the machine's clock plays no part, the
+rule is only "never smaller than the last one begun here". `serve-update.py` writes the time of signing unless `--issued N` is given.
+
+The number is kept in `update.iss` on the ESP and is written in two steps around the install, each through the power-cut-safe sequence (staged, compared, renamed):
+
+1. **Before the first rename**: `issued N`. From this moment no file of manifest N can be on the ESP without its number, so no power cut leaves new files with an old number
+   (which would let an older signed manifest in afterwards, and would stop the trial start from confirming itself, since it compares the two).
+2. **After the last rename**, together with `update.mf`: `issued N` and the line `done`.
+
+What a power cut at each point leaves, and what the next pull does:
+
+| The cut | On the ESP | The next pull of manifest N | An older manifest |
+|---|---|---|---|
+| before step 1 | the old number, the old files | installs it | the old rule |
+| after step 1, before the trial is armed | N without `done`, the old files | "was begun here and not finished: comparing the files", installs it | refused |
+| during the renames (`update.try` armed) | N without `done`, files old or new, on trial | the trial decides first (the loader counts the starts; "an earlier update is still on trial") | refused |
+| after the renames, before step 2 | N without `done`, the new files, on trial | the files are the installed ones: unchanged | refused |
+| after step 2 | N, `done` | "nothing new" | refused |
+
+**The dirty volume.** A power cut during the install leaves the ESP flagged "not cleanly unmounted", and a push refuses such a volume without `--force`. A volume that was not cleanly unmounted is mounted with force by `update pull` and `update auto` only when the ESP itself explains the dirt: `update.iss` has `issued N` without `done` (a pull of this machine was cut short) or `update.try` is there (a trial is open). The safe sequence copes with what its own cut left. Dirt that nothing explains (another system or a crash wrote there) is still refused, with a hint; the read-only look at the number and the hashes always works.
+
+So the first step cannot lock a good manifest out (it only says "N was begun"), and the second cannot be forged by a cut (it comes last). The number that counts is the
+**largest** of `update.iss`, `update.mf` (when it has a `pulled` line) and `update.try` (when it says `pulled`): one damaged or deleted file does not open the door.
+
+Two things follow that the owner should know. **A manifest with a huge `issued` locks out every later one with a smaller number**, for good as far as the server is concerned:
+only the owner's key can sign such a manifest, so it is a slip (`--issued` with a wrong number), and the way out is a person at the machine deleting `update.iss` and `update.mf`
+from the ESP (or a push, which does not look at the number). Whether the machine should refuse numbers far in the future is left to the owner. And: if the power fails between
+the renames and step 2, and that build then fails and is rolled back by hand, the next pull installs it once more (not `done`, files differ): one extra round, never a loop.
+
+### The self-confirmation (the test of health)
+
+On a trial start (`update.trial=N`, nothing written to the ESP since the start) whose `update.try` says `pulled`, after `update.autoconfirm` seconds, up to three tries 10 s apart:
+fetch `URL/manifest` **again through this start's own network driver, TCP/IP, HTTP client (and TLS for https)**, verify it with **this start's** key and ECDSA/SHA-256 code, and
+require that its `issued` is the one in `update.iss` and that its `kernel.elf` and `initrd.img` hashes are those of the files on the ESP (the ones this start runs). Then it runs
+`update confirm` (which also tells the watchdog to stand down) and, with `update.pull.then=poweroff`, switches off. If any of it fails it does nothing: the watchdog restarts the
+machine (a counted start) and after the second the loader brings the previous set back, exactly as for a push. A broken new system cannot pass by accident: it would have to bring
+up its network, complete an HTTP exchange and verify a P-256 signature correctly, and a hung or panicking kernel never gets that far.
+
+### What each pull failure leaves
+
+| Failure | Message (exit status) | ESP |
+|---|---|---|
+| no key in the image | "no signing key in this image" (1) | untouched |
+| server unreachable, stalls, answers non-200 | the URL and the reason, "nothing was changed" (1) | untouched |
+| manifest larger than 4096 bytes, damaged, not canonical | "the manifest is refused: ..." (2) | untouched |
+| signed by another key / wrong signature | "signed by key X, not by this image's key Y" / "the signature does not match" (2) | untouched |
+| `issued` older than the last pull begun here | "... (rollback protection); nothing was changed" (2) | untouched |
+| `update.iss` cannot be written | "cannot write update.iss (...): nothing else was changed" (1) | untouched |
+| a redirect from https to http | "redirected from https to plain http, which an update does not follow" (2) | untouched |
+| a path that is not one of the four, a size beyond the limits | "... is not a file an update may carry" (2) | untouched |
+| a file larger than listed / its hash differs / wrong kind | "more than the N bytes it may have" / "arrived damaged" / the push's reason (2) | untouched |
+| the ESP is dirty and neither `update.iss` (a number without `done`) nor `update.try` explains it | "... was not cleanly unmounted ... (nothing on the ESP explains it ...)" (1) | untouched |
+| power cut, crash during the write | as for a push (the same sequence) | each file old or new; `update.iss` already has the number (the table above) |
+| the new files do not come up, or cannot reach the server | no self-confirmation; the watchdog restarts; the third start is the previous set; `update auto` then does nothing ("fell back") and the same manifest is "nothing new" | previous set back |
+
+### What is not done or not verified
+
+- Not tried on the Dell.
+- The refusal of a dirty ESP that nothing explains has no test of its own.
+- A fetch's deadline is only looked at while body bytes arrive; before the body only libhttp's 20 s of silence applies, so a server that trickles its headers can hold a pull
+  for a long time (nothing is installed). A whole-request deadline belongs in `user/lib/http`. Redirects to another host are followed (the signature decides what is installed).
+- The self-confirmation proves the network stack, HTTP, SHA-256 and ECDSA of the new build and nothing else (a broken desktop confirms itself; the `.old` set stays for `update rollback`).
+- The files are held in memory while they are fetched (not in `/tmp`, which is RAM as well): a 24 MB set needs that much free memory.
+- HTTPS uses the image's trust store (`/etc/ssl/cacert.pem`); plain HTTP is as safe for integrity, since the signature covers everything.
+
+Pulls go through libhttp, which since 2026-11-24 speaks IPv6 too: a server name with AAAA and A records is tried over both families with a fallback (docs/NETWORK.md, "Names and families in the programs"), and `http://[addr]:port/` URLs parse.
+
+## The first pull design (2026-10-24, for the record)
+
+The text from here to "Writing the ESP" is the first design, written before the push existed. Where it differs from the code (it says "task 5", names `update URL`,
+writes `PATH.new` during the download, and asks for the confirmation by `espgrant rm update.try`), the code and the section above are right.
 
 ### Quick start for the pull server (on the development PC)
 

@@ -103,6 +103,11 @@ Stopping and continuing processes (`SIGSTOP`/`SIGCONT`, `waitpid(WUNTRACED)`, Ct
 jobs), nice values and the scheduler's time slices, hard links and `/proc/<pid>/fd`, `cwd`, `exe` are in
 [JOBCONTROL.md](JOBCONTROL.md), which also says what a shell has to do on top of it.
 
+`fork` is copy-on-write: parent and child share every private page read-only (a software bit of the page-table entry marks
+it, the page's reference count says how many map it) and the first write, by a program or by the kernel on its behalf, gives
+the writer its own copy. `cow=off` on the kernel command line keeps the old eager copy. The rules for everything that touches
+user page-table entries or writes user memory through the direct map are in [COW.md](COW.md).
+
 ## Testing
 
 `python tools/build.py` builds everything into `build/`; `python tests/run_all.py [name-filter]` runs the whole suite in QEMU

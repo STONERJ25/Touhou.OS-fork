@@ -7,11 +7,12 @@
   python tools/serve-update.py serve [--bind 0.0.0.0] [--port 8080]  build, sign and serve manifest and files
   python tools/serve-update.py verify MANIFEST [--pub KEY] [--src DIR]   check a manifest (and the files in DIR)
   python tools/serve-update.py check URL [--pub KEY]                 fetch from a running server and check everything
+  python tools/serve-update.py export DIR                            the same as serve, written into DIR for any static web server
 
 An installed TouhouOS boots from an EFI System Partition that holds EFI/BOOT/BOOTX64.EFI, kernel.elf, initrd.img and
 cmdline.txt (the layout of build/esp and of tools/mkimage.py). This tool lists those four files with their sizes and
 SHA-256 hashes in a small text manifest, signs it with ECDSA P-256, and serves the manifest at /manifest and each file at
-/files/<path>. The OS side (the `update URL` tool, not written yet) checks the signature with the public key baked into
+/files/<path>. The OS side (`update pull URL`, user/bin/kappabox/updpull.c) checks the signature with the public key baked into
 its image, then the hash of every file it downloads. docs/UPDATE.md has the exact format and the update protocol.
 
 Where the files come from: --src (default build/esp, what `python tools/build.py` produces). cmdline.txt is special:
@@ -565,6 +566,32 @@ def cmd_serve(a):
         srv.server_close()
 
 
+def export_dir(out, manifest, files):
+    """Writes the layout `serve` answers with into a directory any static web server can serve: OUT/manifest and OUT/files/<path>.
+    Files are written beside under a temporary name and renamed, the manifest last, so a server that is read while this runs offers the old
+    manifest (whose files may already be the new ones: the OS refuses those by their hash and tries again later) or the new one, never half a file."""
+    out = Path(out)
+    m = parse_manifest(manifest)
+    for e in m.files:
+        check_file(e, files[e.path])
+        dst = out.joinpath("files", *e.path.split("/"))
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dst.with_name(dst.name + ".part")
+        tmp.write_bytes(files[e.path])
+        os.replace(tmp, dst)
+    tmp = out / "manifest.part"
+    tmp.write_bytes(manifest)
+    os.replace(tmp, out / "manifest")
+    return m
+
+
+def cmd_export(a):
+    manifest, files, note = _signed(a)
+    m = export_dir(a.dir, manifest, files)
+    print(f"serve-update: wrote {Path(a.dir) / 'manifest'} and {len(m.files)} file(s) under {Path(a.dir) / 'files'}\n{describe(m)}\n  cmdline.txt: {note}")
+    print("  put the folder on any web server; the machine pulls from its URL (update pull URL, or update.pull=URL on its command line)")
+
+
 def cmd_verify(a):
     key = load_public_key(a.pub or a.key or default_key_path())
     try:
@@ -607,8 +634,11 @@ def main(argv=None):
     p.add_argument("--out", help="write to this file instead of standard output")
     p.set_defaults(fn=cmd_pubkey)
 
-    for name, fn, what in (("manifest", cmd_manifest, "build and sign a manifest"), ("serve", cmd_serve, "build, sign and serve")):
+    for name, fn, what in (("manifest", cmd_manifest, "build and sign a manifest"), ("serve", cmd_serve, "build, sign and serve"),
+                           ("export", cmd_export, "build and sign, and write manifest and files into a folder for any static web server")):
         p = sub.add_parser(name, help=what)
+        if name == "export":
+            p.add_argument("dir", help="the folder to write (DIR/manifest, DIR/files/<path>)")
         key_arg(p)
         p.add_argument("--src", help="directory laid out like the ESP (default build/esp)")
         p.add_argument("--cmdline", help="the kernel command line to ship as cmdline.txt")
@@ -617,7 +647,7 @@ def main(argv=None):
         p.add_argument("--issued", type=int, help="issue time in Unix seconds (default: now)")
         if name == "manifest":
             p.add_argument("--out", help="write the manifest here instead of standard output")
-        else:
+        elif name == "serve":
             p.add_argument("--bind", default="0.0.0.0", help="address to listen on (default 0.0.0.0: every interface)")
             p.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"port (default {DEFAULT_PORT}; 0 picks a free one)")
         p.set_defaults(fn=fn)

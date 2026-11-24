@@ -8,6 +8,7 @@
  * real Linux by the Python corpus (tests/linux/py, tests/case_linux_py.py); no implementation of Linux, glibc or CPython was read.
  */
 #include "linux.h"
+#include "initcall.h"
 #include "kernel.h"
 #include "cpu.h"
 #include "calls.h"
@@ -249,24 +250,37 @@ long lnx_splice(TrapFrame *tf) {
 /* ------------------------------------------------------------------ mknod, memfd_create */
 
 /* mknod(path, mode, dev) and mknodat: a regular file (the type bits may be left out). Device nodes need privileges this system does not hand out (EPERM, as for a user without
- * CAP_MKNOD), and a named pipe or a socket file cannot be made yet (EPERM too: mkfifo and mknod "work" only in the sense that the error is the one a restricted system gives).
+ * CAP_MKNOD), and a socket file cannot be made yet (EPERM too). A named pipe (S_IFIFO: mkfifo(3)) is made on tmpfs, which holds the Linux root and /tmp (2026-11-24: the node
+ * is created as an empty file and turned into a FIFO before anybody else has it; its opens are kernel/fs/pipe.c's fifo_open); elsewhere it is EPERM.
  * The symptom of the missing call was os.mkfifo and os.mknod raising ENOSYS. */
 static long do_mknod(int dirfd, u64 upath, u32 mode) {
     u32 type = mode & S_IFMT;
     if (!type) type = S_IFREG;
-    if (type != S_IFREG) return (type == S_IFCHR || type == S_IFBLK || type == S_IFIFO || type == S_IFSOCK) ? -EPERM : -EINVAL;
+    if (type != S_IFREG && type != S_IFIFO) return (type == S_IFCHR || type == S_IFBLK || type == S_IFSOCK) ? -EPERM : -EINVAL;
     char *path;
     VNode *base;
     File *hold, *f;
     long rc = at_path(dirfd, upath, &path, &base, &hold);
     if (rc) return rc;
-    rc = vfs_open(path, O_CREAT | O_EXCL | O_WRONLY, mode & 07777 & ~me()->umask, &me()->cred, base, &f);
-    if (rc == 0) file_put(f);
+    rc = vfs_open(path, O_CREAT | O_EXCL | (type == S_IFIFO ? O_RDONLY : O_WRONLY), mode & 07777 & ~me()->umask, &me()->cred, base, &f);
+    if (rc == 0 && type == S_IFIFO) {
+        VNode *v = f->vn;
+        bool tmp = v->mount && v->mount->type == &g_tmpfs_type && S_ISREG(v->mode) && v->size == 0;
+        if (tmp) v->mode = S_IFIFO | (v->mode & 07777);
+        file_put(f);
+        if (!tmp) { vfs_unlink(path, &me()->cred, base); rc = -EPERM; }
+    } else if (rc == 0) file_put(f);
     at_done(path, hold);
     return rc;
 }
 
 long lnx_mknod(TrapFrame *tf) { return do_mknod(AT_FDCWD, A0(tf), (u32)A1(tf)); }
+
+/* The native personality's mknod (SYS_mknod: mkfifo(3) of the project's libc and the `mkfifo` command) is the same function: a path of a native process is resolved
+ * from its own working directory and the real root by at_path. Registered here and not in kernel/sys/syscalls.c's table because the work is here. */
+static long sys_mknod(TrapFrame *tf) { return do_mknod(AT_FDCWD, A0(tf), (u32)A1(tf)); }
+static void native_mknod_init(void) { syscall_register(SYS_mknod, sys_mknod); }
+INITCALL(native_mknod_init);
 long lnx_mknodat(TrapFrame *tf) { return do_mknod((int)A0(tf), A1(tf), (u32)A2(tf)); }
 
 /* memfd_create(name, flags): an anonymous file in memory (a tmpfs file that is unlinked at once). libffi uses one for the executable memory of closures, and Python's
@@ -401,7 +415,7 @@ long lnx_open_ptmx(int flags) {
         if (flags & O_NONBLOCK) f->flags |= O_NONBLOCK;
         file_set_path(f, "/dev/ptmx");
     }
-    if (flags & O_CLOEXEC) me()->fd_flags[fd] |= FD_CLOEXEC;
+    if (flags & O_CLOEXEC) fd_setflags(me(), (int)fd, FD_CLOEXEC, 0);
     return fd;
 }
 

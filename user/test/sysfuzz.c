@@ -334,7 +334,7 @@ static u64 gen_fd(W *w) {
     switch (below(r, 10)) {
     case 0: return (u64)(long)(int)(0xffffffff - below(r, 3));                  /* -1, -2, -3 */
     case 1: return below(r, 3);                                                 /* 0, 1, 2: already /dev/null */
-    case 2: return 60 + below(r, 12);                                           /* around MAX_FD */
+    case 2: return pct(r, 50) ? 60 + below(r, 12) : 1018 + below(r, 12);     /* around the inline table (64) and the soft limit (1024) */
     case 3: return g_edge[below(r, NEDGE)];
     case 4: return below(r, 70);
     default: return w->nfds ? (u64)w->fds[below(r, (u64)w->nfds)] : 3;

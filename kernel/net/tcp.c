@@ -963,8 +963,16 @@ size_t tcp_read(Sock *s, u8 *out, size_t n, bool peek) {
     if (k > first) memcpy(out + first, s->rbuf, k - first);
     if (peek) return k;
     s->rd_nxt += (u32)k;
-    if (s->state != TCPS_CLOSED && s->state != TCPS_TIME_WAIT) {
-        u32 newedge = s->rd_nxt + TCP_BUF;                       /* the window edge we could advertise now */
+    /* A window update (RFC 9293 3.8.6.2.2, RFC 1122 4.2.3.3) when the edge we can advertise has moved by a segment. The edge is the one the
+     * header can carry: without window scaling at most 65535 bytes past rcv_nxt, although the ring holds 128 KiB. Comparing with the ring's
+     * edge instead (as this did until 2026-11-24) made every read() send an ACK once the ring was half empty, and after the peer's FIN, with
+     * nothing new to acknowledge, those were identical bare ACKs, one per read (the repeats the net-stall captures showed). After a FIN the
+     * peer sends nothing more, so a window update has no reader. */
+    if (s->state != TCPS_CLOSED && s->state != TCPS_TIME_WAIT && !s->fin_rcvd) {
+        u32 room = TCP_BUF - (s->rcv_nxt - s->rd_nxt);
+        if (!s->ws_on && room > 65535) room = 65535;
+        else if (s->ws_on) room &= ~((1u << s->rcv_ws) - 1);    /* what the scaled field can say */
+        u32 newedge = s->rcv_nxt + room;                         /* the window edge we could advertise now */
         if (SEQ_GEQ(newedge, s->rcv_adv + MIN((u32)TCP_BUF / 2, (u32)s->mss))) tcp_ack_now(s);
     }
     return k;

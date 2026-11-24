@@ -50,6 +50,7 @@ typedef struct Task {
     int  utid;                  /* thread id seen by user space (gettid); the first thread's id is the pid */
     int  tgid;                  /* pid of the process this thread belongs to (0 for kernel threads); stays valid after the Process is gone */
     u64  fs_base;               /* TLS base, loaded into IA32_FS_BASE when this thread runs */
+    u64  gs_base;               /* user GS base (SYS_gsbase), loaded into IA32_GS_BASE when this thread runs; the kernel itself never uses gs (no swapgs) */
     u64  clear_tid;             /* user address that is zeroed and futex-woken when the thread exits (0 = none) */
     u64  sig_blocked;           /* per-thread signal mask (a set: signal n is bit n, signal 64 is bit 0; see siginfo.h) */
     u64  sig_pending;           /* signals aimed at this thread (tgkill, synchronous faults) */
@@ -70,6 +71,7 @@ typedef struct Task {
 typedef struct ThreadInit {
     int  utid;
     u64  fs_base;
+    u64  gs_base;
     u64  clear_tid;
     u64  sig_blocked;
 } ThreadInit;
@@ -101,6 +103,7 @@ void  task_sleep_ms(u64 ms);
 void  task_for_each(void (*fn)(Task *t, void *ctx), void *ctx);
 void  task_interrupt(Task *t);                      /* wake a task blocked in an interruptible wait */
 void  task_set_fs_base(Task *t, u64 base);          /* TLS base; takes effect at once when t is the running task */
+void  task_set_gs_base(Task *t, u64 base);          /* the user GS base (docs/WINDOWS.md); the same rules */
 
 /* Set by the process layer: true if the current task has a deliverable signal. */
 extern bool (*g_signal_pending_hook)(void);

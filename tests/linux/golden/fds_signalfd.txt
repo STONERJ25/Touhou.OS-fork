@@ -1,0 +1,42 @@
+signalfd made: 1
+close-on-exec: 1
+non-blocking: 1
+read, nothing pending: -1 (EAGAIN)
+read, 64-byte buffer: -1 (EINVAL)
+poll, nothing pending: 0
+poll after raise: 1
+poll revents POLLIN: 1
+read after raise: 128
+ssi_signo is SIGUSR1: 1
+ssi_code (SI_TKILL): -6
+ssi_pid is ours: 1
+ssi_uid is ours: 1
+SIGUSR1 still pending: 0
+signalfd(sfd, ...) returns sfd: 1
+one read, four records (bytes): 512
+record: signal SIGUSR2, code 0, int 0, from us 1
+record: signal SIGRTMIN+1, code -1, int 41, from us 1
+record: signal SIGRTMIN+1, code -1, int 42, from us 1
+record: signal SIGRTMIN+1, code -1, int 43, from us 1
+nothing of the set pending: 0
+blocking read: bytes: 128
+from the child: signal is SIGUSR1: 1
+from the child: code (SI_USER): 0
+from the child: pid is the child: 1
+SIGCHLD read: bytes: 128
+SIGCHLD: signal: 1
+SIGCHLD: code (CLD_EXITED): 1
+SIGCHLD: status: 7
+SIGCHLD: pid is the child: 1
+waitpid: 1
+epoll, nothing pending: 0
+epoll after raise: 1
+epoll data: 5
+epoll after the read: 0
+bad flags: -1 (EINVAL)
+a pipe is not a signalfd: -1 (EINVAL)
+a closed descriptor: -1 (EBADF)
+sizemask 4: -1 (EINVAL)
+SIGKILL and SIGSTOP accepted (ignored): 1
+and never read: -1 (EAGAIN)
+exit status: 0

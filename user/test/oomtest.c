@@ -202,8 +202,9 @@ static int tmpfill(const char *dir) {
 /* ---------------------------------------------------------------- descriptor leak */
 
 static int fdleak(void) {
-    int fds[256], n = 0, err = 0;
-    for (; n < 256; n++) {
+    static int fds[4096];                           /* the hard RLIMIT_NOFILE: a leak ends at the soft limit (1024 by default) long before */
+    int n = 0, err = 0;
+    for (; n < 4096; n++) {
         fds[n] = open("/dev/null", O_RDONLY);
         if (fds[n] < 0) { err = errno; break; }
     }

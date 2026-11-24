@@ -72,6 +72,12 @@ long lnx_epoll_pwait(TrapFrame *tf);
 long lnx_epoll_pwait2(TrapFrame *tf);
 long lnx_eventfd(TrapFrame *tf);
 long lnx_eventfd2(TrapFrame *tf);
+long lnx_signalfd(TrapFrame *tf);
+long lnx_signalfd4(TrapFrame *tf);
+long lnx_pidfd_open(TrapFrame *tf);
+long lnx_pidfd_send_signal(TrapFrame *tf);
+long lnx_pidfd_getfd(TrapFrame *tf);
+int  pidfd_pid(const File *f);               /* kernel/fs/pidfd.c: the pid a pidfd names, -EBADF for another file */
 long lnx_timerfd_create(TrapFrame *tf);
 long lnx_timerfd_settime(TrapFrame *tf);
 long lnx_timerfd_gettime(TrapFrame *tf);

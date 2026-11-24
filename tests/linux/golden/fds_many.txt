@@ -1,0 +1,48 @@
+setrlimit NOFILE 1024/4096: 0
+soft: 1024
+hard: 4096
+stopped with: 0
+errno: EMFILE
+highest descriptor: 1022
+pipes made: 340
+dups made: 340
+open per /proc/self/fd: 1022
+dup2 to 1024: -1
+errno: EBADF
+F_DUPFD from 1024: -1
+errno: EINVAL
+poll with 1025 entries: -1
+errno: EINVAL
+poll with 1024 entries: 0
+open after close_range: 3
+raise soft to 2048: 0
+raise hard above 4096 (not root, or above the kernel's table): 1
+soft now: 2048
+limits: soft: 2048
+limits: hard: 4096
+dup2 to 1000: 1000
+dup2 to 2000: 2000
+F_DUPFD_CLOEXEC from 1500: 1500
+F_DUPFD from 1500 (next free): 1501
+dup3 to 70 with O_CLOEXEC: 70
+dup3 to 71: 71
+FD_CLOEXEC of 1500: 1
+dup2 to 2048: -1
+errno: EBADF
+select 1000, empty: 0
+select 1000 after a write: 1
+1000 is in the set: 1
+read 1000: 1
+poll 2000 writable: 1
+open per /proc/self/fd: 10
+child: 1000 1, 1500 1, 2000 1, 70 1, open 10
+after exec: 1000 open (no close-on-exec): 1
+after exec: 1500 open (close-on-exec): 0
+after exec: 2000 open (no close-on-exec): 1
+after exec: 70 open (close-on-exec): 0
+after exec: 71 open (no close-on-exec): 1
+child exit status: 0
+the child's byte arrived on 1000: 1
+close 2000: 0
+close 2000 again: -1
+exit status: 0

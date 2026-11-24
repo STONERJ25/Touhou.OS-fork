@@ -166,6 +166,7 @@ static SigQ *list_take(Process *p, SigList *l, int sig, bool *more) {
 
 /* Records one instance of sig for the process (t == NULL) or for one of its threads. Returns 0 when an entry holds it, 1 when only the bit does (a native process, a
  * standard signal that was pending already, a full pool), -EAGAIN when a queued signal found no room. irq off. */
+void signalfd_notify(void);
 static int deposit(Process *p, Task *t, int sig, const SigInfo *info) {
     u64 *set = box_set(p, t);
     u64 bit = sigbit(sig);
@@ -187,6 +188,7 @@ static int deposit(Process *p, Task *t, int sig, const SigInfo *info) {
         }
     }
     *set |= bit;
+    signalfd_notify();                                                      /* poll, select and epoll on a signalfd look again (kernel/fs/signalfd.c) */
     return rc;
 }
 

@@ -61,7 +61,8 @@ long pollq_wait(PollEntry *e, int n, u64 deadline, unsigned flags);
 /* The same for the native poll(2) structure. */
 long pollq_poll(struct gpollfd *fds, u64 nfds, u64 deadline, unsigned flags);
 
-/* The most you can ask an fd for in one call: the descriptor table is 64 entries long, so poll and select cap the vector at this. */
+/* The longest vector one poll call takes (select builds at most this many entries too): a process has at most FD_HARD_MAX (4096) descriptors, but a vector may name
+ * one several times, and the entries are kernel memory for the length of the call, so the bound is this and not the table's. */
 #define PQ_MAX_ENTRIES 1024
 
 #endif

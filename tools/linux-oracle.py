@@ -88,6 +88,14 @@ HOSTED_PROGRAMS.update({                            # real-time signals, who sen
     "glibc_setxid": ([], {}),
     "glibc_sigsys": ([], {}),                       # signal 31 as an ordinary signal for a Linux program (freed on 2026-11-09)
 })
+HOSTED_PROGRAMS.update({                            # descriptors beyond 64, FIFOs, signalfd, pidfd (tests/case_linux_fds.py)
+    "fds_many": ([], {}),
+    "fds_fifo": ([], {}),
+    "fds_signalfd": ([], {}),
+    "fds_pidfd": ([], {}),
+    "fds_more": ([], {}),                           # the review round (docs/FDS_REVIEW.md): zombies, pidfd_getfd, FIFO poll, wake-ups
+    "fds_stress": ([], {}),                         # threads growing one descriptor table while they fork
+})
 HOSTED_PROGRAMS.update({                            # the Linux view of /proc as facts about its formats, static and dynamic (tests/case_linux_proc.py)
     "proc_probe": (["alpha", "beta"], {"FOO": "bar"}),
     "dyn_proc_probe": (["alpha", "beta"], {"FOO": "bar"}),

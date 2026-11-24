@@ -542,9 +542,8 @@ static long sys_getcwd(TrapFrame *tf) {
 }
 
 static long sys_dup(TrapFrame *tf) {
-    File *f = fd_get(me(), (int)A0(tf));
+    File *f = fd_get_ref(me(), (int)A0(tf));        /* the reference is taken under the table lock: a sibling thread's close cannot free the file first */
     if (!f) return -EBADF;
-    file_get(f);
     long fd = fd_install(me(), f, 0, 0);
     if (fd < 0) file_put(f);
     return fd;
@@ -552,15 +551,11 @@ static long sys_dup(TrapFrame *tf) {
 
 static long sys_dup2(TrapFrame *tf) {
     int oldfd = (int)A0(tf), newfd = (int)A1(tf);
-    File *f = fd_get(me(), oldfd);
+    File *f = fd_get_ref(me(), oldfd);                                 /* referenced under the table lock (docs/FDS_REVIEW.md, finding 3) */
     if (!f) return -EBADF;
-    if (newfd < 0 || newfd >= rlimit_nofile(me())) return -EBADF;      /* RLIMIT_NOFILE */
-    if (oldfd == newfd) return newfd;
-    if (me()->fds[newfd]) fd_close(me(), newfd);
-    file_get(f);
-    me()->fds[newfd] = f;
-    me()->fd_flags[newfd] = 0;
-    return newfd;
+    if (newfd < 0 || newfd >= rlimit_nofile(me())) { file_put(f); return -EBADF; }      /* RLIMIT_NOFILE */
+    if (oldfd == newfd) { file_put(f); return newfd; }
+    return fd_place(me(), newfd, f, 0);                                /* grows the table when newfd is beyond it */
 }
 
 static long sys_pipe(TrapFrame *tf) {
@@ -586,21 +581,23 @@ static long sys_pipe(TrapFrame *tf) {
 static long sys_fcntl(TrapFrame *tf) {
     Process *p = me();
     int fd = (int)A0(tf);
-    File *f = fd_get(p, fd);
+    File *f = fd_get_ref(p, fd);                    /* held for the whole call: a sibling thread may close fd meanwhile (docs/FDS_REVIEW.md, finding 3) */
     if (!f) return -EBADF;
+    long rc;
     switch (A1(tf)) {
-    case F_DUPFD: {
-        file_get(f);
-        long n = fd_install(p, f, (int)A2(tf), 0);
-        if (n < 0) file_put(f);
-        return n;
+    case F_DUPFD:
+        if ((int)A2(tf) < 0 || (int)A2(tf) >= rlimit_nofile(p)) { rc = -EINVAL; break; }      /* fcntl(2): the lowest number asked for is beyond RLIMIT_NOFILE */
+        rc = fd_install(p, f, (int)A2(tf), 0);     /* the table takes over the reference */
+        if (rc >= 0) return rc;
+        break;
+    case F_GETFD: rc = fd_getflags(p, fd); break;   /* the flags are read and written under the table lock (finding 2) */
+    case F_SETFD: rc = fd_setflags(p, fd, (u8)A2(tf), 0xff); break;
+    case F_GETFL: rc = f->flags; break;
+    case F_SETFL: f->flags = (f->flags & O_ACCMODE) | ((int)A2(tf) & (O_APPEND | O_NONBLOCK)); rc = 0; break;
+    default: rc = -EINVAL;
     }
-    case F_GETFD: return p->fd_flags[fd];
-    case F_SETFD: p->fd_flags[fd] = (u8)A2(tf); return 0;
-    case F_GETFL: return f->flags;
-    case F_SETFL: f->flags = (f->flags & O_ACCMODE) | ((int)A2(tf) & (O_APPEND | O_NONBLOCK)); return 0;
-    default: return -EINVAL;
-    }
+    file_put(f);
+    return rc;
 }
 
 static long sys_ftruncate(TrapFrame *tf) {

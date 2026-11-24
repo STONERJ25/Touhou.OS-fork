@@ -1,0 +1,39 @@
+mkfifo: 0 (none)
+mkfifo again: -1 (EEXIST)
+mknod S_IFIFO: 0 (none)
+stat: is a FIFO: 1
+stat: permissions: 420
+stat: size: 0
+write-only, non-blocking, no reader: -1 (ENXIO)
+read-only, non-blocking, no writer: opened: 1
+read with no writer (end of file): 0 (none)
+write-only, non-blocking, with a reader: opened: 1
+reader, empty: none
+writer, empty: OUT 
+write 5: 5
+FIONREAD: 5
+reader, 5 bytes: IN 
+fstat: is a FIFO: 1
+lseek: -1 (ESPIPE)
+epoll: ready: 1
+epoll: data: 7
+select: readable: 1
+reader, writer gone, data left: IN HUP 
+read: 5
+reader, writer gone, empty: HUP 
+read (end of file): 0 (none)
+writer, reader gone: OUT ERR 
+write without a reader: -1 (EPIPE)
+SIGPIPE caught: 1
+read-write: opened: 1
+read-write: write: 3
+read-write: read: 3
+read after everybody closed (data gone): 0 (none)
+blocking open met its writer: 1
+read until end of file: from the child (0)
+ping-pong: 200 rounds: 1
+ping-pong: value: 200
+after unlink: still answers: 1
+child exit: 0
+open after unlink: -1 (other)
+exit status: 0

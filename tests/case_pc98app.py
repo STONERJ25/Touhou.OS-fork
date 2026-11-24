@@ -426,11 +426,23 @@ def pc98app_is_in_the_start_menu_and_on_the_desktop():
         g.shot("from-the-menu")
         assert (screen(vm) == np.array([0xEC, 0xE6, 0xD6])).all(axis=2).sum() > 1000, "no window"
         g.sh("kill $(pidof pc98app) 2>/dev/null; sleep 1")
-        g.double_click(58, 690)                                                       # the PC-98 icon on the desktop: the eighth of the column (y 660..744, the panel covers its lower edge), after the Browser's
-        end = time.time() + scaled(60)
-        while time.time() < end and not g.sh("ps | grep pc98app | grep -v grep | wc -l").strip().endswith("1"):
-            time.sleep(1)
-        assert g.sh("ps | grep pc98app | grep -v grep | wc -l").strip().endswith("1"), "the desktop icon did not start the program"
+        # The PC-98 icon on the desktop: the eighth of the column (y 660..744, the panel covers its lower edge), after the Browser's. A double click is two presses within
+        # 400 ms on the GUEST's clock, stamped when the desktop's event loop takes the press from its queue (user/lib/kappa/src/app.c, k_now_ms()), not when the pointer
+        # moved: the harness sends the presses 100 ms apart, but a desktop that repaints for longer than 300 ms between them (the first press selects the icon and redraws,
+        # the window that was just killed uncovers the whole screen; a loaded host stretches both) sees two single clicks and starts nothing. So: up to three double clicks,
+        # each given twenty seconds for the process to appear (a start takes one or two; a late start after a second double click would show as two processes and fail).
+        started = False
+        for attempt in range(3):
+            g.double_click(58, 690)
+            end = time.time() + scaled(20)
+            while time.time() < end and not started:
+                started = g.sh("ps | grep pc98app | grep -v grep | wc -l").strip().endswith("1")
+                if not started:
+                    time.sleep(1)
+            if started:
+                break
+            print(f"  (pc98app: double click {attempt + 1} on the desktop icon started nothing; again)", flush=True)
+        assert started, "the desktop icon did not start the program after three double clicks"
     finally:
         vm.stop()
 

@@ -123,6 +123,8 @@
 #define SYS_getrlimit     120     /* (resource, struct grlimit *): the calling process's soft and hard limit */
 #define SYS_setrlimit     121     /* (resource, const struct grlimit *): soft up to hard for anyone, the hard limit only down (root: up too) */
 #define SYS_prlimit       122     /* (pid, resource, const struct grlimit *new or NULL, struct grlimit *old or NULL): both at once, for another process of the same user (or any, as root) */
+#define SYS_mknod         123     /* (path, mode): a node that is not a directory: S_IFREG (or no type) an empty file, S_IFIFO a named pipe (tmpfs only: EPERM elsewhere); devices and sockets EPERM */
+#define SYS_gsbase        127     /* (u64 base, or (u64)-1 to only read): the calling thread's GS base (IA32_GS_BASE); returns the previous one (docs/WINDOWS.md: the TEB of winrun) */
 #define SYS_nsyscalls     128
 
 /* System call personalities. A process makes its calls either with the numbers and structures of this header (native) or with those of x86-64 Linux. */

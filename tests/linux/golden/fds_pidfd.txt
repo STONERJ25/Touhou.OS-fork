@@ -1,0 +1,35 @@
+pidfd of ourselves: 1
+close-on-exec: 1
+fdinfo Pid is ours: 1
+pid 0: -1 (EINVAL)
+pid -1: -1 (EINVAL)
+unknown flags: -1 (EINVAL)
+no such process: -1 (ESRCH)
+PIDFD_NONBLOCK accepted: 1
+send SIGUSR1 with a siginfo to ourselves: 0 (none)
+sigwaitinfo: 1
+value: 77
+code: -1
+an undefined flag: -1 (EINVAL)
+pidfd of the child: 1
+fdinfo Pid is the child: 1
+ready while it runs: 0
+signal 0: 0 (none)
+SIGTERM: 0 (none)
+ready after it died: 1
+waitid(P_PIDFD): 0 (none)
+waitid: pid is the child: 1
+waitid: code (CLD_KILLED): 2
+waitid: status (SIGTERM): 15
+still ready after the reap: 1
+signal after the reap: -1 (ESRCH)
+waitid again: -1 (ECHILD)
+ready when it has exited: 1
+waitid(P_PIDFD): 0 (none)
+waitid: code (CLD_EXITED): 1
+waitid: status: 3
+send through a pipe: -1 (EBADF)
+send through a closed descriptor: -1 (EBADF)
+waitid on a pipe: -1 (EBADF)
+waitid on a closed descriptor: -1 (EBADF)
+exit status: 0

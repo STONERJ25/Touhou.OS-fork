@@ -592,7 +592,7 @@ static void pid_status(PidCtx *c) {
     u64 blocked = lt ? lt->sig_blocked : 0, pending = lt ? lt->sig_pending : 0;
     bool root = p->cred.uid == 0;
     bp(o, "Name:\t%.15s\nUmask:\t%04o\nState:\t%c (%s)\nTgid:\t%d\nNgid:\t0\nPid:\t%d\nPPid:\t%d\nTracerPid:\t0\nUid:\t%u\t%u\t%u\t%u\nGid:\t%u\t%u\t%u\t%u\nFDSize:\t%d\nGroups:\t",
-       p->name, p->umask, st, state_word(st), p->pid, tid, p->ppid, p->ruid, p->cred.uid, p->cred.uid, p->cred.uid, p->rgid, p->cred.gid, p->cred.gid, p->cred.gid, MAX_FD);
+       p->name, p->umask, st, state_word(st), p->pid, tid, p->ppid, p->ruid, p->cred.uid, p->cred.uid, p->cred.uid, p->rgid, p->cred.gid, p->cred.gid, p->cred.gid, fd_slots(p));
     for (u32 i = 0; i < p->cred.ngroups; i++) bp(o, "%u ", p->cred.groups[i]);
     bp(o, "\nNStgid:\t%d\nNSpid:\t%d\nNSpgid:\t%d\nNSsid:\t%d\nKthread:\t0\n", p->pid, tid, p->pgid, p->sid);
     u64 rss_anon = (vi.rss - vi.rss_file) * 4, rss_file = vi.rss_file * 4;
@@ -830,10 +830,12 @@ static ssize_t fdinfo_read(const LpNode *ln, void *buf, size_t n, u64 off) {
     size_t len = 0;
     u64 fl = irq_save();
     Process *p = process_by_pid(ln->pid);
-    File *f = p && ln->fd >= 0 && ln->fd < MAX_FD ? p->fds[ln->fd] : NULL;
+    File *f = p && ln->fd >= 0 && ln->fd < fd_slots(p) ? p->fds[ln->fd] : NULL;
     if (f) {
         len = (size_t)snprintf(tmp, sizeof tmp, "pos:\t%lu\nflags:\t0%o\nmnt_id:\t%u\nino:\t%lu\n", (unsigned long)f->off, (unsigned)(f->flags | ((p->fd_flags[ln->fd] & FD_CLOEXEC) ? O_CLOEXEC : 0)),
                                f->vn && f->vn->mount ? f->vn->mount->id : 0, (unsigned long)(f->vn ? f->vn->ino : 0));
+        int pp = pidfd_pid(f);                                            /* a pidfd says which process it names (pidfd_open(2), proc(5)) */
+        if (pp > 0 && len < sizeof tmp) len += (size_t)snprintf(tmp + len, sizeof tmp - len, "Pid:\t%d\n", process_by_pid(pp) ? pp : -1);
     }
     irq_restore(fl);
     return f ? slice_out(tmp, len, buf, n, off) : -ENOENT;
@@ -906,7 +908,7 @@ static ssize_t lp_readlink(VNode *v, char *buf, size_t n) {
             else if (ln->kind == LK_LINK_CWD) strlcpy(tmp, p->cwd_path, sizeof tmp);
             else if (ln->kind == LK_LINK_ROOT) strlcpy(tmp, p->root && !me->root ? "/linux" : "/", sizeof tmp);
             else if (ln->kind == LK_LINK_FD) {
-                File *f = ln->fd >= 0 && ln->fd < MAX_FD ? p->fds[ln->fd] : NULL;
+                File *f = ln->fd >= 0 && ln->fd < fd_slots(p) ? p->fds[ln->fd] : NULL;
                 if (f) describe_fd(f, tmp, sizeof tmp);
             }
         }
@@ -1050,10 +1052,10 @@ static int task_dir_lookup(VNode *dir, const LpNode *dn, const char *name, VNode
 
 static int fd_dir_lookup_lp(VNode *dir, const LpNode *dn, const char *name, VNode **out) {
     int fd;
-    if (!number_name(name, &fd) || fd >= MAX_FD) return -ENOENT;
+    if (!number_name(name, &fd) || fd >= FD_HARD_MAX) return -ENOENT;
     u64 fl = irq_save();
     Process *p = process_by_pid(dn->pid);
-    bool open = p && p->fds[fd];
+    bool open = p && fd < fd_slots(p) && p->fds[fd];
     irq_restore(fl);
     if (!open) return -ENOENT;
     bool info = dn->kind == LK_FDINFO_DIR;
@@ -1173,7 +1175,7 @@ static int fd_dir_readdir_lp(const LpNode *dn, u64 cookie, DirEntry *out) {
     int found = -1;
     u64 k = 0, fl = irq_save();
     Process *p = process_by_pid(dn->pid);
-    if (p) for (int i = 0; i < MAX_FD && found < 0; i++) if (p->fds[i] && k++ == cookie) found = i;
+    if (p) for (int i = 0; i < fd_slots(p) && found < 0; i++) if (p->fds[i] && k++ == cookie) found = i;
     irq_restore(fl);
     if (found < 0) return 0;
     char num[16];

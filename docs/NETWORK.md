@@ -194,8 +194,7 @@ IPv6 is added beside IPv4, not into it: the IPv4 code keeps its structures and i
   `::1 localhost` from `/etc/hosts`, understands a scope (`fe80::1%eth0`), and orders the answers by RFC 6724 section 6: the source address that a connected datagram socket picks tells whether a destination can be
   reached at all, its scope and its label; then rules 1, 2, 5, 6, 8, 9 and the order the servers gave (so an address of a global prefix beats IPv4, which beats `fec0::/10`, whose precedence is 1: QEMU's own prefix is the
   one that is tried last). `/etc/resolv.conf` may name IPv6 servers (`nameserver fec0::3`, `nameserver fec0::2#5353`; 3 at most); `nslookup` and `host` ask them over IPv6 and answer an address with its `ip6.arpa`
-  name. `fetch` and `wget` take `http://[::1]:8080/` and names with AAAA records (every address in order until one answers, six seconds each except the last, so a router that
-  advertises a prefix but has no way out costs six seconds, not the whole timeout); `https://` (libhttp, TLS) is still IPv4 only.
+  name. The programs and what they do with both families are in "Names and families in the programs" below.
 * **QEMU's user-mode network, as the tests see it** (observed, not documented by QEMU): the prefix is `fec0::/64` (site-local, scope `site`), the virtual router is `fe80::2` with the hardware address
   `52:56:00:00:00:02` and also answers as `fec0::2`, **which is the host: a TCP connection or UDP datagram to `fec0::2` reaches the host's own `::1`** (so the Python servers of the tests listen on `::1`);
   `fec0::3` is its name server. QEMU sends a router advertisement only in answer to a router solicitation (default router lifetime 1800 s, the prefix with the on-link and autonomous flags, an RDNSS option
@@ -207,8 +206,33 @@ IPv6 is added beside IPv4, not into it: the IPv4 code keeps its structures and i
 * **Limits that keep the tables bounded**: 8 addresses per card (4 from advertisements), 64 neighbours (4 queued packets each), 32 routes (16 learned), 16 path MTUs, 4 reassembly queues of at most 64 KiB and 64
   fragments, 8 extension headers per packet, 3 RDNSS servers, 200 ICMPv6 errors, 1000 echo replies and 100 neighbour advertisements a second. Every queue has a timer and every timer a limit.
 * **Not done**: MLD (no listener reports, no multicast group membership for sockets: a multicast datagram only reaches a socket bound to `::`), DHCPv6, redirects, temporary (RFC 8981) and opaque (RFC 7217)
-  addresses, optimistic DAD, jumbograms, IPsec headers, forwarding, `SO_BINDTODEVICE`, raw IPv6 sockets, `IPV6_PKTINFO` and the other control messages, IPv6 for libhttp (https, the Browser, the update tools) and
-  for ssh, TCP selective acknowledgements (shared with IPv4), IPv6 over PPP or tunnels.
+  addresses, optimistic DAD, jumbograms, IPsec headers, forwarding, `SO_BINDTODEVICE`, raw IPv6 sockets, `IPV6_PKTINFO` and the other control messages, TLS to an IPv6 literal (libtls; names with AAAA records work),
+  TCP selective acknowledgements (shared with IPv4), IPv6 over PPP or tunnels.
+
+### Names and families in the programs
+
+Surveyed and changed on 2026-11-24 (agent `ipv6-apps`). Before: the resolver and `getaddrinfo` already asked A and AAAA, honoured `AI_ADDRCONFIG`,
+sorted by RFC 6724 and read `::1` from `/etc/hosts`; `fetch`/`wget` used both families one address after the other (six seconds each); but libhttp
+(`https_get`, `fetch https://`, `update pull`, the Browser), the ssh client library (`ssh`, `ssh-keyscan`, `ssh -L/-D/-R` targets) and `sntp` asked
+for `AF_INET` only, libhttp refused `http://[...]/`, `ssh -6` said "IPv6 is not available", and `fetch` refused `https://[addr]/` up front.
+
+| program | how it resolves | families now | IPv6 literals | fallback |
+|---|---|---|---|---|
+| resolver, `getaddrinfo` (`user/libc/src/netdb.c`) | `/etc/hosts`, cache, servers of `resolv.conf` (IPv4 or IPv6), A then AAAA | both; `AI_ADDRCONFIG`, `AI_V4MAPPED`, `AI_ALL`, `AI_NUMERICHOST`, `AI_PASSIVE`; RFC 6724 order | `::1`, `fe80::1%eth0` | - |
+| `netconn` (`user/libc/src/netconn.c`, new) | `getaddrinfo` with `AI_ADDRCONFIG` (again without it when that leaves nothing) | both, interleaved by family (RFC 8305 section 4) | with or without `[...]` | next address after 250 ms, or at once when one fails; 2 s per attempt, the last ones the whole timeout |
+| `fetch`, `wget` (plain http) | `netconn_tcp` | both | `http://[fec0::2]:8080/` | netconn |
+| libhttp: `https_get`, `fetch https://`, `update pull`, Browser | `netconn_tcp` | both | `http://[addr]:port/` parsed (RFC 3986 3.2.2, zones as `%25`), `Host: [addr]:port`, redirects keep the brackets | netconn |
+| libtls | - | - | an IPv6 literal as server name is refused (`host_ok`; the certificate's iPAddress check knows IPv4 only): not this agent's files | - |
+| `ssh`, `ssh-keyscan`, forwarding targets (`sshc_tcp_connect`) | `getaddrinfo`, family from `AddressFamily` / `-4` / `-6` | both (`any`, the default), or one | `fec0::2`, `user@[fec0::2]`, `ssh://user@[fec0::2]:2222` | netconn |
+| `ssh -L/-D/-R` listeners | `inet_pton(AF_INET)` | IPv4 only (unchanged) | no | - |
+| `sntp`, `ntpdate` | `getaddrinfo` (UDP) with `AI_ADDRCONFIG` | both | `fec0::2`, `[fec0::2]` | the three tries go to the first three interleaved addresses in turn |
+| `ping`, `ping6`, `nslookup`, `host`, `nc` | as before (already dual-stack, see "Using it") | both | yes | `ping` uses IPv6 when there is no A record |
+
+What "fallback" costs: on the host (`tests/host/test_netaddr.py`, Linux loopback with an IPv6 port whose SYNs are dropped) the IPv4 address won after
+250 ms; in QEMU (`net6apps_names_literals_fallback`: the first address an on-link `2001:db8::99` that nobody answers for) `fetch` and `https_get` must
+finish within 3 s of the guest's clock. A refused IPv6 address (RST) costs nothing: the next attempt starts at once.
+Not done: the asynchronous DNS part of RFC 8305 (A and AAAA are asked one after the other and both awaited, so a server that never answers AAAA still
+costs the resolver's timeout), NAT64, remembering which family worked, IPv6 listeners for `ssh -L/-D`.
 
 ## The cards
 
@@ -372,6 +396,7 @@ The "internet" of the QEMU tests is a set of Python servers on the host's loopba
 | `net_tcp_host` | `nc` to a Python echo server on the host through 10.0.2.2, half-close included; a refused port; an unanswered ARP (10.0.2.77) ends in "No route to host" after about three seconds |
 | `net_fetch_host` | `fetch`/`wget` against a Python HTTP server: redirects, chunked body, 200 KB with an md5 check, a 404 |
 | `net_httpd_hostfwd` | the guest's `httpd` answers requests that enter through QEMU's `hostfwd` |
+| `net_first_connection_that_speaks_first_is_not_delayed` | the first connection to a fresh guest's sshd from a client that writes at once gets the banner within 3 s; the capture of it (`TOUHOU_PCAP`) holds one ARP question for the gateway and no segment of the server twice ([the first-connection stall](#the-first-connection-stall)) |
 | `net_dns_host` | `nslookup`/`host` (A, CNAME, MX, TXT, NS, PTR, NXDOMAIN), the search list, and getaddrinfo through a CNAME for `ping` and `fetch`, against a Python DNS responder |
 | `net_sntp_host` | `sntp`/`ntpdate` against a Python NTP responder two hours ahead: offset measured, clock stepped by root, refused for others |
 | `net_link_e1000`, `_virtio`, `_rtl8139` | QEMU's `set_link` pulls and re-plugs the cable: the link goes down without hanging anything, plugging in again brings a new DHCP lease and a working network |
@@ -383,6 +408,7 @@ The "internet" of the QEMU tests is a set of Python servers on the host's loopba
 | `net6_nic_virtio`, `_e1000`, `_e1000e`, `_rtl8139`, `_e1000e_pch` | each card with QEMU's router: link-local address with duplicate address detection, the global address, default route and RDNSS server from the router advertisement, `ping6` of the router (link-local and global), the neighbour cache, a router's error message; the card lets neighbour discovery's multicast through |
 | `net6_host_tcp_udp_http` | TCP, UDP and HTTP through the card to Python servers on the host's `::1`, which the guest reaches as `fec0::2`: `nc` echoes, a 200 KB download with a checksum, redirects and a 404 through `fetch` and `wget` |
 | `net6_dns_host` | a Python DNS responder reached over IPv6: `nslookup` and `host` for AAAA, PTR under `ip6.arpa`, a CNAME to a name with only an AAAA record, `ping6` and `fetch` by such a name, `getaddrinfo`'s order by RFC 6724, `AI_V4MAPPED` and `AI_ALL`, and `fetch` going on to the third address when the first two fail |
+| `net6apps_names_literals_fallback` (`tests/case_net6_apps.py`) | Python servers on both loopbacks that say which family reached them: `https_get` (libhttp) to `http://[fec0::2]:P/` (`Host: [fec0::2]:P`) and to a name with only an AAAA record; a name with both families goes to IPv4 while the only IPv6 address is site-local; with `2001:db8::5/64` added, a name whose AAAA address nobody answers falls back to IPv4 within 3 s in `fetch` and `https_get`; `sntp` to `fec0::2` and `[fec0::2]`; `ssh -6` and `ssh user@[fec0::2]` reach a host port over IPv6. The pure parts: `python tools/hosttest.py discover -s tests/host -p test_netaddr.py` (interleaving, staggered attempts over real sockets, URL literals) |
 | `net6_addrconfig_without_a_router` | QEMU with `ipv6=off`: only the link-local address, `AI_ADDRCONFIG` leaves AAAA records out (they are not even asked for), and without the flag an address with no route sorts after the IPv4 one |
 | `net6_reassembly_and_headers` | fragments made by hand: in order, backwards, repeated, overlapping (the whole datagram is thrown away), atomic, no multiple of 8, beyond 65535, more than 64, ten datagrams for four queues, the timeout with "time exceeded"; extension headers: options by the top two bits, router alert, routing header type 0 and the others, a hop-by-hop header in the wrong place, an unknown protocol, nine headers in a row; parameter problems checked by code and pointer |
 | `net6_neighbour_discovery_robust` | duplicate address detection by hand (the address becomes a duplicate when another node answers or probes for it), 4000 solicitations from forged addresses (the cache holds at 64, the advertisements are rate limited), 3000 broken neighbour discovery messages, 2500 wild router advertisements (the tables stay bounded), a "packet too big" that lowers the fragment size and is never raised again |
@@ -394,9 +420,70 @@ The "internet" of the QEMU tests is a set of Python servers on the host's loopba
 The guest clock can run several times slower than wall time, so no test sleeps and then expects an effect: they wait for
 output with generous timeouts or retry.
 
+## The first-connection stall
+
+**The symptom (2026-11-18).** In a fresh QEMU guest the first connection to the sshd from a client that *speaks first* (every ssh client writes its version line at once) got the
+server's banner only after 11 to 14 seconds; a client that stayed silent until the banner came did not see it, later connections were fast, and so was a first connection
+made half a minute after the boot. `UpdateGuest` (tests/case_update.py) logged in once with a long limit to hide it. QEMU's user-mode network was the suspect.
+
+**The cause was ours: the ARP entry for the gateway was forgotten the moment it was learned.** `net_poll_once()` read the clock, *then* let the card's driver hand over the
+received frames, then ran the tick functions with the clock value from before. Handling an ARP answer stamps the entry with `net_now()`; when the millisecond turned during
+the poll (the usual case the first time through this code under an emulator: nothing is translated yet), the stamp was one millisecond *newer* than the tick's `now`, and
+`arp_tick()`'s unsigned `now - e->updated > 300000` (the five-minute expiry) was 2^64-1 > 300000: entry gone. The next segment had to ask again. While that second question
+was out, segments waited in the entry's queue, which held **two** and dropped the oldest. A silent client makes the server send one segment (the banner) and wait: no loss.
+A client that speaks first lets the sshd run straight through: banner, the ACK of the client's line, the KEXINIT: three segments, and the banner fell out of the queue. The
+peer then saw data beyond a hole, and the banner only arrived with the retransmission timer.
+
+**The evidence** (2026-11-24, `tools/net-stall-probe.py`, three boots before and four after; the frames of the second speak-first boot before the fix, `tools/pcapdump.py FILE --tcp 22`,
+seconds since the first frame; 10.0.2.2 is QEMU, 10.0.2.15 the guest):
+
+```
+ 3.544495  10.0.2.2:10096 > 10.0.2.15:22 [S]                      the client's SYN
+ 3.549329  ARP who-has 10.0.2.2 tell 10.0.2.15                    the SYN+ACK needs the gateway's address: first question
+ 3.549367  ARP 10.0.2.2 is-at 52:55:0a:00:02:02                   answered in 38 microseconds
+ 3.549660  10.0.2.15:22 > 10.0.2.2:10096 [S.]                     the queued SYN+ACK leaves
+ 3.549691  10.0.2.2 > 10.0.2.15 [.] ack=1                         handshake done
+ 3.549780  10.0.2.2 > 10.0.2.15 [.P] seq=1 len=15                 the client's line, right behind
+ 3.554077  ARP who-has 10.0.2.2 tell 10.0.2.15                    SECOND question, 5 ms after the first answer: the entry is gone
+ 3.554100  ARP 10.0.2.2 is-at 52:55:0a:00:02:02
+ 3.557977  10.0.2.15:22 > 10.0.2.2 [.] seq=21 ack=16              the ACK of the client's line: already numbered AFTER the banner (seq 1..20), which never left
+ 3.558013  10.0.2.15:22 > 10.0.2.2 [.P] seq=21 len=256            the KEXINIT; the two-packet queue dropped the banner when this was queued
+ 3.558018  10.0.2.2 > 10.0.2.15 [.] ack=1                         QEMU: "I am still waiting for byte 1"
+ 5.081244  10.0.2.15:22 > 10.0.2.2 [.P] seq=1 len=276             the retransmission timer, 1.5 s later: banner and KEXINIT together
+```
+
+Every capture before the fix (4 of 4, silent clients too) has the two questions; after it every capture has one (4 of 4) and no retransmission. Measured from `connect()` to the
+banner: speak-first 0.00 s and **1.54 s** before (two boots), 0.00, 0.00, 0.01 s after; silent 0.00 and 0.01 s before. The 11 to 14 seconds of 2026-11-18 were **not** reproduced
+on 2026-11-24 (the PC was faster that day: a guest listened 5 s after QEMU started): what was seen is one retransmission timeout. That evening the guests ran 2 to 6 times slower,
+which makes the millisecond turn in more polls (each one forgets the entry again) and each timeout doubles the next (1.5 + 3 + 6 s is the size of it), but that part is an
+inference, not a measurement. The other hypotheses: QEMU's user-mode network did everything right in every frame (it answered ARP in under 40 microseconds and never
+retransmitted); data arriving with the handshake's ACK was accepted (acknowledged as 16 in the frames above); the sshd wrote its banner before it read; the card's receive
+path delivered every frame within a millisecond (no frame waited for the next one).
+
+**The fix** (`kernel/net/net.c`): the clock is read after the frames were handled, so no stamp is newer than the tick's `now` (this covers the IPv6 neighbour cache's
+`now - e->used` too); `arp_tick()` checks `now > e->updated` before it subtracts; the queue of an unresolved address holds 8 packets instead of 2 (RFC 1122 2.3.2.2 asks for at
+least the newest one). The warm-up login in `UpdateGuest` is gone. A real machine had the same bug with a smaller chance per answer (the millisecond has to turn inside one
+poll), and every loss there costs a retransmission timeout on the first conversation with a neighbour: worth a look at the Dell's first login after a boot.
+
+**The recipe, for the next mystery on the wire.** `TOUHOU_PCAP=build/x.pcap` in the environment of any QEMU test makes the harness (`tests/harness.py`) add
+`-object filter-dump,id=pcap0,netdev=net0,file=...`: QEMU writes every frame between the guest's card and its user-mode network to a classic pcap file (`{name}` in the path
+becomes the guest's name, for tests with several guests). `python tools/pcapdump.py build/x.pcap [--tcp PORT] [--abs]` prints one line per frame (time since the first frame
+and since the line before, ARP, IPv4/IPv6, ICMP, UDP, TCP with flags, relative sequence numbers, window, payload length); Wireshark reads the same file.
+`python tools/qemu-slot.py -- python tools/net-stall-probe.py --modes speak,silent,delayed --runs 2 --pcap build/stall` boots a guest per measurement and prints the time
+from `connect()` to the sshd's banner for each kind of first connection.
+
+Also seen in these captures and not looked into: after the client's FIN the guest sends about sixteen identical bare ACKs within a millisecond (probably one window update
+per one-byte `read` of the sshd's line reader). Harmless here, but it is noise a real network would carry.
+
+**The repeated bare ACKs after a FIN** (2026-11-24): every capture of an ssh login showed about 16 identical bare ACKs from the guest after the
+client's FIN. The window-update rule in `tcp_read` compared the edge of the 128 KiB ring with the edge last advertised, but a connection without
+window scaling (QEMU's slirp offers none) can advertise at most 65535 bytes, so once the ring was half empty every `read()` sent an ACK; after the
+FIN nothing new was acknowledged and the window sat at 65535, so they were identical. Now the comparison uses the edge the header can carry, and no
+window update is sent after the peer's FIN (it sends nothing more). `net6apps_no_repeated_acks_after_fin` counted 16 repeats before the fix.
+
 ## Limits and known problems
 
-* No raw sockets, multicast group membership (IPv6: no MLD), VLANs, bridging or forwarding (the stack is a host, not a router); TLS is a library in user space ([TLS.md](TLS.md)), and `https://` over IPv6 is not supported (libhttp is IPv4 only). The "Not done" list under "IPv6" says what else is missing there.
+* No raw sockets, multicast group membership (IPv6: no MLD), VLANs, bridging or forwarding (the stack is a host, not a router); TLS is a library in user space ([TLS.md](TLS.md)), and `https://` to an IPv6 *literal* is refused by libtls (a name with an AAAA record works). The "Not done" list under "IPv6" says what else is missing there.
 * One IPv4 address per interface (IPv6: up to 8); setting an IPv4 address drops that interface's IPv4 routes.
 * A socket has fixed 128 KiB rings; `SO_SNDBUF`/`SO_RCVBUF` are accepted and ignored. At most 4096 sockets.
 * UDP receive queues are capped at 128 KiB per socket; ICMP sockets deliver whole IP packets (header included), ICMPv6 sockets the ICMPv6 message without the IPv6 header (as Linux's do).

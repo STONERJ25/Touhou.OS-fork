@@ -14,6 +14,7 @@
  * 400 or more.
  */
 #include "netutil.h"
+#include <netconn.h>
 #include <getopt.h>
 #include <http.h>
 #include <tls.h>
@@ -73,38 +74,17 @@ static const char *host_text(const Url *u, char *buf, size_t n) {
     return buf;
 }
 
-/* Every address the name has, in RFC 6724 order, until one accepts the connection (an IPv6 literal or AAAA record first if that is what the system prefers). */
+/* Every address the name has, in RFC 6724 order interleaved by family, started 250 ms apart and given 2 s each, the last ones the whole timeout
+ * (netconn.c, a simplified RFC 8305): a router that advertises an IPv6 prefix but has no way out costs a quarter of a second, not the timeout. */
 static int connect_to(const Url *u, int timeout_s) {
-    struct addrinfo hints, *res = NULL, *ai;
-    memset(&hints, 0, sizeof hints);
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_flags = AI_ADDRCONFIG;
-    int rc = getaddrinfo(u->host, NULL, &hints, &res);
-    if (rc == EAI_NONAME && u->host6 == 0) {                                 /* AI_ADDRCONFIG left nothing: a literal address needs no configuration */
-        hints.ai_flags = 0;
-        rc = getaddrinfo(u->host, NULL, &hints, &res);
-    }
-    if (rc) { kb_error("%s: %s", u->host, gai_strerror(rc)); return -1; }
-    int fd = -1, err = 0;
-    for (ai = res; ai; ai = ai->ai_next) {
-        fd = socket(ai->ai_family, SOCK_STREAM, 0);
-        if (fd < 0) { err = errno; continue; }
-        struct timeval tv = { timeout_s, 0 };
-        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
-        struct timeval tvc = { ai->ai_next && timeout_s > 6 ? 6 : timeout_s, 0 };       /* an address that is not the last gets six seconds to answer: the next one may work (a router that advertises an IPv6 prefix but has no way out) */
-        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tvc, sizeof tvc);
-        struct sockaddr_storage sa;
-        memcpy(&sa, ai->ai_addr, ai->ai_addrlen);
-        if (sa.ss_family == AF_INET6) ((struct sockaddr_in6 *)&sa)->sin6_port = htons((unsigned short)u->port);
-        else ((struct sockaddr_in *)&sa)->sin_port = htons((unsigned short)u->port);
-        if (connect(fd, (struct sockaddr *)&sa, ai->ai_addrlen) == 0) { setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv); break; }
-        err = errno;
-        close(fd);
-        fd = -1;
-    }
-    freeaddrinfo(res);
+    char ip[64];
+    int gai = 0, err = 0;
+    int fd = netconn_tcp(u->host, (int)u->port, 0, timeout_s * 1000, ip, sizeof ip, &gai, &err);
+    if (fd < 0 && gai) { kb_error("%s: %s", u->host, gai_strerror(gai)); return -1; }
     if (fd < 0) { kb_error("connecting to %s:%u failed: %s", u->host, u->port, strerror(err)); return -1; }
+    struct timeval tv = { timeout_s, 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
     return fd;
 }
 
@@ -390,7 +370,6 @@ static int do_fetch(const char *start_url, const char *outname, int to_file_defa
     for (int hop = 0; hop <= o->max_redirects; hop++) {
         Url u;
         if (parse_url(url, &u) < 0) return 1;
-        if (u.tls && u.host6) { kb_error("https:// to an IPv6 address is not supported (libhttp is IPv4 only); plain http:// is"); return 1; }
         if (u.tls) return fetch_secure(url, outname, to_file_default, o, o->max_redirects - hop);
         if (!o->quiet) fprintf(stderr, "Connecting to %s:%u... ", u.host, u.port);
         int fd = connect_to(&u, o->timeout_s);

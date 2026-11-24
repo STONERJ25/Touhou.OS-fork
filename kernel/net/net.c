@@ -5,6 +5,7 @@
 #include "net.h"
 #include "net6k.h"
 #include "kernel.h"
+#include "ktime.h"
 #include "cpu.h"
 #include "mm.h"
 #include "irq.h"
@@ -398,7 +399,10 @@ void net_rx(NetDev *d, NetBuf *nb) {
 /* ------------------------------------------------------------------ ARP */
 
 #define ARP_MAX 64
-#define ARP_QUEUE 2
+/* How many packets wait for one address to be resolved; the oldest goes when one more arrives. It was 2, and a server that writes twice before the answer is back (the sshd's
+ * banner and its KEXINIT, with the ACK of the client's first line between them) lost the first segment to it: the peer then waits for the retransmission timer, a second or
+ * more (docs/NETWORK.md, "The first-connection stall"). RFC 1122 2.3.2.2 asks for at least one, the newest; a handful costs eight pointers an entry. */
+#define ARP_QUEUE 8
 
 typedef struct ArpEnt {
     u32 ip;
@@ -557,8 +561,10 @@ void arp_tick(u64 now) {
                 e->next_try = now + 1000;
                 if (e->dev) arp_send(e->dev, 1, NULL, e->ip, g_bcast_mac);
             }
-        } else if (e->state == 2 && now - e->updated > 300000) {
-            e->state = 0;                                      /* five minutes without a word: ask again when needed */
+        } else if (e->state == 2 && ktime_older_than(now, e->updated, 300000)) {
+            /* five minutes without a word: ask again when needed. (Not `now - updated`: these are unsigned milliseconds, and an entry stamped a millisecond AFTER the
+             * caller read its clock made the difference wrap to 2^64-1 and was thrown away the moment it was learned: the first-connection stall, docs/NETWORK.md.) */
+            e->state = 0;
         }
     }
 }
@@ -955,9 +961,13 @@ void icmp_input(NetDev *d, const u8 *p, size_t len, u32 src, u32 dst) {
 /* ------------------------------------------------------------------ the Yukari thread */
 
 static void net_poll_once(void) {
-    u64 now = net_now();
     for (NetDev *d = g_devs; d; d = d->next) if (d->poll) d->poll(d);
     lo_drain();
+    /* The clock is read AFTER the frames were handled: handling a frame stamps things with net_now() (an ARP entry's `updated`, a neighbour's `used`), and a `now` read before
+     * the poll is older than those stamps whenever the millisecond turns in between, which under an emulator's first pass through this code is the usual case. The tick
+     * functions subtract stamps from `now` unsigned: with the old order the ARP entry for the gateway was forgotten right after its answer arrived (10.0.2.2 asked twice in
+     * every capture of a first connection), and the segments sent while the second question was out overflowed the two-packet queue. */
+    u64 now = net_now();
     tcp_tick(now);
     arp_tick(now);
     ip_tick(now);

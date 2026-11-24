@@ -74,7 +74,7 @@ long lnx_accept4(TrapFrame *tf) {
     if (fd >= 0 && flags) {
         File *nf = fd_get(me(), (int)fd);
         if (nf && (flags & LNX_SOCK_NONBLOCK)) nf->flags |= O_NONBLOCK;
-        if (flags & LNX_SOCK_CLOEXEC) me()->fd_flags[fd] |= FD_CLOEXEC;
+        if (flags & LNX_SOCK_CLOEXEC) fd_setflags(me(), (int)fd, FD_CLOEXEC, 0);
     }
     return fd;
 }

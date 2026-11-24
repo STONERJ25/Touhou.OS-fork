@@ -129,6 +129,15 @@ long lnx_waitid(TrapFrame *tf) {
     case WAITID_ALL: break;
     case WAITID_PID: if (id <= 0) return -EINVAL; break;
     case WAITID_PGID: if (id < 0) return -EINVAL; break;
+    case 3: {                                                                   /* P_PIDFD: id is a pidfd (kernel/fs/pidfd.c), waited for as the pid it names */
+        File *f = fd_get_ref(me(), id);
+        if (!f) return -EBADF;
+        id = pidfd_pid(f);
+        file_put(f);
+        if (id < 0) return -EBADF;
+        idtype = WAITID_PID;
+        break;
+    }
     default: return -EINVAL;
     }
     WaitInfo w;

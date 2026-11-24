@@ -5,7 +5,7 @@
  * means is routed to it (NATIVE below); every call whose numbers, structures or semantics differ has a handler of its own (OWN).
  *
  * Written from the manual pages (section 2) and the psABI, checked against a real Linux by differential tests (tests/case_linux.py, tests/host/test_linux_abi.py).
- * Not implemented yet: 32-bit programs, inotify, io_uring, signalfd and the other calls that docs/COMPAT.md lists as missing. A call with no entry fails with
+ * Not implemented yet: 32-bit programs, inotify, io_uring and the other calls that docs/COMPAT.md lists as missing. A call with no entry fails with
  * ENOSYS and is named once in the kernel log ("not implemented"); "linux.trace" on the kernel command line logs every call.
  */
 #include "linux.h"
@@ -654,7 +654,7 @@ static long lnx_pipe2(TrapFrame *tf) {
         File *f = fd_get(me(), fds[i]);
         if (!f) continue;
         if (flags & O_NONBLOCK) f->flags |= O_NONBLOCK;
-        if (flags & O_CLOEXEC) me()->fd_flags[fds[i]] |= FD_CLOEXEC;
+        if (flags & O_CLOEXEC) fd_setflags(me(), fds[i], FD_CLOEXEC, 0);
     }
     return 0;
 }
@@ -664,7 +664,7 @@ static long lnx_dup3(TrapFrame *tf) {
     if ((int)A0(tf) == (int)A1(tf) || ((int)A2(tf) & ~O_CLOEXEC)) return -EINVAL;
     SyscallFn d2 = syscall_native(SYS_dup2);
     long r = d2 ? d2(tf) : -ENOSYS;
-    if (r >= 0 && ((int)A2(tf) & O_CLOEXEC)) me()->fd_flags[r] |= FD_CLOEXEC;
+    if (r >= 0 && ((int)A2(tf) & O_CLOEXEC)) fd_setflags(me(), (int)r, FD_CLOEXEC, 0);
     return r;
 }
 
@@ -786,7 +786,7 @@ static const LinuxCall g_calls[LINUX_NSYSCALLS] = {
     /* waiting for events (kernel/linux/epoll.c; poll itself is in the table above) */
     [LNX_ppoll] = OWN(lnx_ppoll), [LNX_select] = OWN(lnx_select), [LNX_pselect6] = OWN(lnx_pselect6), [LNX_epoll_create] = OWN(lnx_epoll_create),
     [LNX_epoll_create1] = OWN(lnx_epoll_create1), [LNX_epoll_ctl] = OWN(lnx_epoll_ctl), [LNX_epoll_wait] = OWN(lnx_epoll_wait), [LNX_epoll_pwait] = OWN(lnx_epoll_pwait),
-    [LNX_epoll_pwait2] = OWN(lnx_epoll_pwait2), [LNX_eventfd] = OWN(lnx_eventfd), [LNX_eventfd2] = OWN(lnx_eventfd2), [LNX_timerfd_create] = OWN(lnx_timerfd_create),
+    [LNX_epoll_pwait2] = OWN(lnx_epoll_pwait2), [LNX_eventfd] = OWN(lnx_eventfd), [LNX_eventfd2] = OWN(lnx_eventfd2), [LNX_signalfd] = OWN(lnx_signalfd), [LNX_signalfd4] = OWN(lnx_signalfd4), [LNX_pidfd_open] = OWN(lnx_pidfd_open), [LNX_pidfd_send_signal] = OWN(lnx_pidfd_send_signal), [LNX_pidfd_getfd] = OWN(lnx_pidfd_getfd), [LNX_timerfd_create] = OWN(lnx_timerfd_create),
     [LNX_timerfd_settime] = OWN(lnx_timerfd_settime), [LNX_timerfd_gettime] = OWN(lnx_timerfd_gettime),
     /* L3 (linux-python, kernel/linux/l3.c): what Python and its library ask for beyond L2. mmap and lseek above are handlers of l3.c too (shared anonymous memory, SEEK_DATA
      * and SEEK_HOLE); the priorities are the native calls, whose numbers and results are Linux's (the raw call returns 20 - nice). */

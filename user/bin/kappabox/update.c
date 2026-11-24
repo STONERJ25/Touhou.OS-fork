@@ -6,6 +6,8 @@
  *   update confirm [--anyway]                                                             this start works: end the trial
  *   update rollback [--anyway]                                                            put the previous kernel and initrd back for good
  *   update watchdog [SECONDS]                                                             (init starts it on a trial start) restart unless somebody confirms
+ *   update pull URL [--now] [--no-reboot] [--power-off-after] [--loader]                   fetch a signed update from a web server (updpull.c)
+ *   update auto | autoconfirm [SECONDS]                                                   (init starts `auto` with update.pull=URL) the automatic pull (updpull.c)
  *
  * The push (tools/push-update.py makes it) is a header and the files' bytes on standard input, carried by ssh to `sudo update recv`:
  *
@@ -30,11 +32,13 @@
 #include <abi.h>
 #include <crypto.h>
 #include <stdarg.h>
+#include <sys/resource.h>
 #include <z.h>
 
 #define TRY_NAME   "update.try"
 #define MF_NAME    "update.mf"
 #define OLD_RECORD "update.old"
+#define ISS_NAME   "update.iss"
 #define CONFIRMED  "/tmp/.update-confirmed"
 #define WRITTEN    "/tmp/.update-written"      /* root's file: this start has written to the ESP, so the files there are not the ones it runs */
 #define MAX_FILES  4
@@ -259,7 +263,13 @@ static void restart_later(int seconds) {
     pid_t pid = fork();
     if (pid != 0) return;
     setsid();
-    for (int fd = 0; fd < 64; fd++) close(fd);
+    /* every descriptor this process may hold, not only the first 64: the table has had a soft limit of 1024 since 2026-11 (RLIMIT_NOFILE), and one descriptor of the
+     * ssh connection left open here would keep the push tool waiting for the end of the session until the machine is down */
+    struct rlimit rl;
+    long top = getrlimit(RLIMIT_NOFILE, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY && rl.rlim_cur > 0 ? (long)rl.rlim_cur : 1024;
+    if (top < 64) top = 64;
+    if (top > 65536) top = 65536;
+    for (long fd = 0; fd < top; fd++) close((int)fd);
     open("/dev/null", O_RDWR); dup(0); dup(0);
     sleep((unsigned)seconds);
     sync();
@@ -299,7 +309,11 @@ static int check_old_set(const EspSession *s, char *why, size_t wn) {
 
 /* ------------------------------------------------------------------------------------------------ recv */
 
-typedef struct { int reboot_in, allow_loader, trial, force, replace_trial; } RecvOpts;
+typedef struct {
+    int reboot_in, allow_loader, trial, force, replace_trial;
+    const char *pulled;         /* `update pull`: the URL it came from (NULL for a push); update.try says "pulled", update.mf names the URL */
+    long long issued;           /* `update pull`: the manifest's anti-rollback number, kept in update.iss */
+} RecvOpts;
 
 static int recv_worker(PFile *files, int n, const char *version, const RecvOpts *o) {
     if (o->trial && !cmdline_word("update.loader=", NULL, 0)) {
@@ -310,14 +324,17 @@ static int recv_worker(PFile *files, int n, const char *version, const RecvOpts 
     EspSession s;
     char err[400];
     if (esp_open(&s, NULL, o->force, err, sizeof err)) {
-        kb_error("%s%s", err, strstr(err, "not cleanly unmounted") ? " (`update recv --force` mounts it anyway)" : "");
+        const char *hint = !strstr(err, "not cleanly unmounted") ? "" : o->pulled ?
+            " (nothing on the ESP explains it: no pull of this machine was cut short (update.iss) and no trial is open (update.try), so somebody else wrote there;"
+            " check the volume, or `update recv --force`)" : " (`update recv --force` mounts it anyway)";
+        kb_error("%s%s", err, hint);
         return 1;
     }
     say("the ESP (/dev/%s) is mounted read-write for this update", s.dev);
     int rc = 1, nlist = 0;
     EspFile list[MAX_FILES + 2];
     uint8_t *own_kernel = NULL, *own_initrd = NULL;
-    char try_text[160], mf[1400];
+    char try_text[200], mf[1400];
 
     int trial_open = exists_in(&s, TRY_NAME);
     if (trial_open) {
@@ -359,12 +376,39 @@ static int recv_worker(PFile *files, int n, const char *version, const RecvOpts 
     }
     if (ldr_new) list[nlist++] = (EspFile){ ldr->name, ldr->data, ldr->size };
 
-    snprintf(try_text, sizeof try_text, "version %s\nissued %lld\n", version, (long long)time(NULL));
+    /* "pulled" tells the self-confirmation of the trial start (`update autoconfirm`, updpull.c) that a pull installed these files; the loader only hashes the text */
+    /* (the loader counts the starts of a trial per hash of this text, boot/update.c: a pull's text has the manifest's number, not the time, so the line "written" makes
+     * the second install of one manifest, after a power cut, a trial of its own that starts at 1 again instead of going on where the first one stopped) */
+    char written[48] = "";
+    if (o->pulled) snprintf(written, sizeof written, "pulled\nwritten %lld\n", (long long)time(NULL));
+    snprintf(try_text, sizeof try_text, "version %s\nissued %lld\n%s", version, o->pulled ? o->issued : (long long)time(NULL), written);
     s.arm = (EspFile){ TRY_NAME, try_text, strlen(try_text) };   /* always: the marker guards the renames; a push that is not on trial removes it afterwards */
     s.disarm = !o->trial;
     s.record = trial_open ? NULL : OLD_RECORD;
     say("writing %d file%s%s", nlist, nlist == 1 ? "" : "s", o->trial ? " (on trial)" : " (not on trial)");
     mark_written();                                       /* from here on the ESP is not what this start runs (also if the write stops half-way: the safe side) */
+    /* The anti-rollback number goes to the disk BEFORE the first rename (docs/UPDATE.md, "The anti-rollback number and a power cut"): once any file of this manifest
+     * can be on the ESP, update.iss already holds its number, so no power cut leaves new files with an old number (which would let an older signed manifest in
+     * again). It is written without the word "done": a pull that finds its own number there without it compares the files instead of saying "nothing new", so a cut
+     * between this write and the renames does not lock the manifest out. The word is added after the last rename, below. */
+    if (o->pulled) {
+        char iss[40];
+        EspFile one = { ISS_NAME, iss, (size_t)snprintf(iss, sizeof iss, "issued %lld\n", o->issued) };
+        /* (this step must not arm the trial or write the record of the kept set: update.try belongs to the renames of the files, below. The first version of this
+         * step ran with s.arm set and left update.try on a disk whose files had not been touched; the power-cut test found it.) */
+        EspFile arm = s.arm;
+        const char *record = s.record;
+        int disarm = s.disarm;
+        s.arm = (EspFile){ NULL, NULL, 0 };
+        s.record = NULL;
+        s.disarm = 0;
+        int wr = esp_update(&s, &one, 1, 0, NULL, err, sizeof err);
+        s.arm = arm;
+        s.record = record;
+        s.disarm = disarm;
+        if (wr) { kb_error("cannot write %s (%s): nothing else was changed", ISS_NAME, err); goto out; }
+        say("recorded issued %lld in %s", o->issued, ISS_NAME);
+    }
     if (esp_update(&s, list, nlist, !trial_open, say_step, err, sizeof err)) {
         kb_error("%s", err);
         if (s.armed) kb_error("the replacement had begun: the ESP holds a mix of old and new files and update.try is armed, so the machine restarts on trial; push again");
@@ -372,7 +416,8 @@ static int recv_worker(PFile *files, int n, const char *version, const RecvOpts 
     }
     /* what is installed now, for `update status` (informational: the safety is update.try) */
     {
-        size_t m = (size_t)snprintf(mf, sizeof mf, "touhou-push 1\nversion %s\nissued %lld\n", version, (long long)time(NULL));
+        size_t m = (size_t)snprintf(mf, sizeof mf, "touhou-push 1\nversion %s\nissued %lld\n", version, o->pulled ? o->issued : (long long)time(NULL));
+        if (o->pulled) m += (size_t)snprintf(mf + m, sizeof mf - m, "pulled %.300s\n", o->pulled);
         for (int i = 0; i < n && m + 120 < sizeof mf; i++) {
             char hex[65];
             to_hex(files[i].got, hex);
@@ -381,8 +426,10 @@ static int recv_worker(PFile *files, int n, const char *version, const RecvOpts 
         s.arm = (EspFile){ NULL, NULL, 0 };
         s.disarm = 0;
         s.record = NULL;
-        EspFile one = { MF_NAME, mf, m };
-        if (esp_update(&s, &one, 1, 0, NULL, err, sizeof err)) kb_error("(the record of this update could not be written: %s)", err);
+        /* update.iss: the anti-rollback number of the last pull, apart from update.mf so that a push (which rewrites update.mf) does not reset it */
+        char iss[40];
+        EspFile two[2] = { { MF_NAME, mf, m }, { ISS_NAME, iss, (size_t)snprintf(iss, sizeof iss, "issued %lld\ndone\n", o->issued) } };
+        if (esp_update(&s, two, o->pulled ? 2 : 1, 0, NULL, err, sizeof err)) kb_error("(the record of this update could not be written: %s)", err);
     }
     rc = 0;
 out:
@@ -403,6 +450,8 @@ out:
     }
     return rc;
 }
+
+static int install_detached(PFile *files, int n, const char *version, const RecvOpts *o);
 
 static int cmd_recv(int argc, char **argv) {
     RecvOpts o = { .reboot_in = -1, .trial = 1 };
@@ -475,9 +524,12 @@ static int cmd_recv(int argc, char **argv) {
         say("received %s (%zu bytes, hash ok)", f->name, f->size);
     }
     say("version %s: %d file%s, %zu bytes, all hashes match", version, n, n == 1 ? "" : "s", total);
+    return install_detached(files, n, version, &o);
+}
 
-    /* From here on nothing may cut the work in the middle: it goes on in a process of its own, in a session of its own. If the ssh connection dies, sshd hangs up the
-     * programs of the connection and shoots them a second later; this one is no longer among them. */
+/* From here on nothing may cut the work in the middle: it goes on in a process of its own, in a session of its own. If the ssh connection dies, sshd hangs up the
+ * programs of the connection and shoots them a second later; this one is no longer among them. (`update pull` hands its verified files to the same function.) */
+static int install_detached(PFile *files, int n, const char *version, const RecvOpts *o) {
     pid_t pid = fork();
     if (pid < 0) { kb_error("cannot fork: %s", strerror(errno)); return 1; }
     if (pid > 0) {
@@ -490,7 +542,7 @@ static int cmd_recv(int argc, char **argv) {
     signal(SIGPIPE, SIG_IGN);
     signal(SIGINT, SIG_IGN);
     signal(SIGTERM, SIG_IGN);
-    _exit(recv_worker(files, n, version, &o));
+    _exit(recv_worker(files, n, version, o));
 }
 
 /* ------------------------------------------------------------------------------------------------ status, confirm, rollback */
@@ -644,6 +696,42 @@ static int cmd_watchdog(int argc, char **argv) {
     return 0;
 }
 
+/* ------------------------------------------------------------------------------------------------ what updpull.c shares
+ * `update pull` (updpull.c) fetches and verifies; writing the ESP and arming the trial is this file's, through the same install_detached() a push takes. */
+
+const char *upd_looks_wrong(const char *name, const uint8_t *d, size_t size) { return looks_wrong(name, d, size); }
+int upd_cmdline_word(const char *word, char *value, size_t cap) { return cmdline_word(word, value, cap); }
+int upd_written_here(void) { return written_here(); }
+
+int upd_confirm(void) {
+    char *args[] = { "update", "confirm", NULL };
+    return cmd_confirm(2, args);
+}
+
+/* names: the manifest's paths (each one of ALLOWED); data and sha: the fetched, verified bytes and their hashes */
+int upd_install(int n, const char *const *names, uint8_t *const *data, const size_t *sizes, const uint8_t (*sha)[32], const char *version, long long issued,
+                const char *url, int reboot_in, int allow_loader, int force) {
+    PFile files[MAX_FILES];
+    if (n < 1 || n > MAX_FILES) return 2;
+    for (int i = 0; i < n; i++) {
+        const Allowed *a = NULL;
+        for (size_t k = 0; k < sizeof ALLOWED / sizeof ALLOWED[0]; k++)
+            if (!strcmp(names[i], ALLOWED[k].name)) a = &ALLOWED[k];
+        if (!a || sizes[i] > a->max) return 2;
+        files[i].name = a->name;
+        files[i].size = sizes[i];
+        files[i].data = data[i];
+        memcpy(files[i].want, sha[i], 32);
+        memcpy(files[i].got, sha[i], 32);
+    }
+    RecvOpts o = { .reboot_in = reboot_in, .allow_loader = allow_loader, .trial = 1, .force = force, .pulled = url, .issued = issued };
+    return install_detached(files, n, version, &o);
+}
+
+int upd_cmd_pull(int argc, char **argv);
+int upd_cmd_auto(int argc, char **argv);
+int upd_cmd_autoconfirm(int argc, char **argv);
+
 APPLET(update) {
     signal(SIGPIPE, SIG_IGN);                  /* `update status | head`: a closed pipe must not skip the umount (the ESP stayed mounted read-only on the Dell and the next status said "busy") */
     if (argc >= 2 && !strcmp(argv[1], "recv")) return cmd_recv(argc, argv);
@@ -651,7 +739,11 @@ APPLET(update) {
     if (argc >= 2 && !strcmp(argv[1], "confirm")) return cmd_confirm(argc, argv);
     if (argc >= 2 && !strcmp(argv[1], "rollback")) return cmd_rollback(argc, argv);
     if (argc >= 2 && !strcmp(argv[1], "watchdog")) return cmd_watchdog(argc, argv);
+    if (argc >= 2 && !strcmp(argv[1], "pull")) return upd_cmd_pull(argc, argv);
+    if (argc >= 2 && !strcmp(argv[1], "auto")) return upd_cmd_auto(argc, argv);
+    if (argc >= 2 && !strcmp(argv[1], "autoconfirm")) return upd_cmd_autoconfirm(argc, argv);
     kb_error("usage: update recv [--reboot[=SECONDS]] [--loader] [--no-trial] [--replace-trial] [--force]\n"
-             "       update status | confirm [--anyway] | rollback | watchdog [SECONDS]");
+             "       update pull URL [--now] [--no-reboot] [--power-off-after] [--loader]\n"
+             "       update status | confirm [--anyway] | rollback | watchdog [SECONDS] | auto | autoconfirm [SECONDS]");
     return 2;
 }

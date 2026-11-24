@@ -384,7 +384,7 @@ static ssize_t proclink_readlink(VNode *v, char *buf, size_t n) {
         case PL_CWD: strlcpy(tmp, p->cwd_path, sizeof tmp); break;
         case PL_EXE: strlcpy(tmp, p->exe, sizeof tmp); break;
         case PL_FD: {
-            File *fl = (pl->fd >= 0 && pl->fd < MAX_FD) ? p->fds[pl->fd] : NULL;
+            File *fl = (pl->fd >= 0 && pl->fd < fd_slots(p)) ? p->fds[pl->fd] : NULL;
             if (fl) describe_file(fl, tmp, sizeof tmp);
             break;
         }
@@ -428,7 +428,7 @@ static int fd_dir_lookup(VNode *dir, const char *name, VNode **out) {
     int pid = (int)(long)dir->priv;
     u64 f = irq_save();
     Process *p = process_by_pid(pid);
-    bool open = p && fd < MAX_FD && p->fds[fd];
+    bool open = p && fd < fd_slots(p) && p->fds[fd];
     irq_restore(f);
     if (!open) return -ENOENT;
     VNode *v = make_proclink(dir->mount, pid, PL_FD, fd);
@@ -442,7 +442,7 @@ static int fd_dir_readdir(VNode *dir, u64 cookie, DirEntry *out) {
     u64 k = 0;
     u64 f = irq_save();
     Process *p = process_by_pid(pid);
-    if (p) for (int i = 0; i < MAX_FD && found < 0; i++) if (p->fds[i] && k++ == cookie) found = i;
+    if (p) for (int i = 0; i < fd_slots(p) && found < 0; i++) if (p->fds[i] && k++ == cookie) found = i;
     irq_restore(f);
     if (found < 0) return 0;
     out->ino = 0x10000 + (u64)pid * 8 + 0x102 + (u64)found;

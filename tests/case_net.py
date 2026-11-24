@@ -423,6 +423,49 @@ def net_httpd_hostfwd():
         assert ":8080" in out, out
 
 
+@test
+def net_first_connection_that_speaks_first_is_not_delayed():
+    """the first connection to a fresh guest's sshd from a client that writes its own line at once gets the banner within three seconds, and the wire shows why: the guest asks
+    for the gateway's MAC address once (it used to forget the answer the moment it arrived, ask again, and lose the banner segment to the two-packet queue of the second
+    question: the client then waited for the retransmission timer), and no segment of the server leaves twice. The capture is the harness's TOUHOU_PCAP option, read with
+    tools/pcapdump.py (docs/NETWORK.md, "The first-connection stall")"""
+    import os
+    import pcapdump
+    host_port = free_port()
+    pcap = BUILD / "t-net-firstconn.pcap"
+    pcap.unlink(missing_ok=True)
+    before = os.environ.get("TOUHOU_PCAP")
+    os.environ["TOUHOU_PCAP"] = str(pcap)
+    try:
+        with Guest("t-net-firstconn", net="e1000", root=True, hostfwd=[f"tcp:127.0.0.1:{host_port}-:22"], cmdline="sshd sshd.throttle=0") as g:
+            deadline = time.time() + scaled(60)
+            while ":22" not in g.out("netstat -l"):
+                assert time.time() < deadline, "sshd never started listening:\n" + g.out("dmesg | grep -i sshd")
+                time.sleep(1)
+            t0 = time.perf_counter()
+            with socket.create_connection(("127.0.0.1", host_port), timeout=30) as c:
+                c.sendall(b"SSH-2.0-firstconn\r\n")                # at once, as every ssh client does: the server's banner, the ACK of this line and its KEXINIT then leave back to back
+                c.settimeout(scaled(30))
+                banner = c.recv(256)
+                took = time.perf_counter() - t0
+                c.settimeout(scaled(10))
+                more = c.recv(4096)                                  # the KEXINIT (or the rest of it): the capture below then holds the whole opening
+            assert banner.startswith(b"SSH-2.0-"), banner
+            assert took < scaled(3), f"the banner took {took:.2f} s"
+            assert more, "nothing after the banner"
+    finally:
+        if before is None:
+            os.environ.pop("TOUHOU_PCAP", None)
+        else:
+            os.environ["TOUHOU_PCAP"] = before
+    tcp = pcapdump.Tcp(absolute=True)
+    lines = [pcapdump.describe(data, tcp)[2] for _, data in pcapdump.frames(pcap)]
+    asked = [x for x in lines if x.startswith("ARP   who-has 10.0.2.2 tell 10.0.2.15")]
+    assert len(asked) == 1, "the guest asked for the gateway's address %d times:\n%s" % (len(asked), "\n".join(lines[-40:]))
+    sent = [x for x in lines if x.startswith("TCP   10.0.2.15:22 >") and not x.endswith("len=0")]
+    assert sent and len(set(sent)) == len(sent), "a segment of the server left twice:\n" + "\n".join(lines[-40:])
+
+
 # ------------------------------------------------------------------------------------------------------------ DNS and NTP
 
 def _name(data, pos):

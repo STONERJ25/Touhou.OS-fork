@@ -25,7 +25,23 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
-from qemu import Qemu, BUILD, scaled, qemu_version  # noqa: E402,F401
+import os  # noqa: E402
+
+from qemu import Qemu as _Qemu, BUILD, scaled, qemu_version  # noqa: E402,F401
+
+
+class Qemu(_Qemu):
+    """tools/qemu.py's Qemu plus an optional packet capture: TOUHOU_PCAP=path makes QEMU write every frame that crosses the guest's network card (both directions) to a classic
+    pcap file (`-object filter-dump`), which tools/pcapdump.py or Wireshark reads. "{name}" in the path becomes the guest's name, for tests that boot more than one guest.
+    Without the variable nothing changes. docs/NETWORK.md ("The first-connection stall") shows what it is for."""
+
+    def _net_args(self):
+        a = super()._net_args()
+        path = os.environ.get("TOUHOU_PCAP")
+        if path and self.net:
+            path = path.replace("{name}", self.name).replace(chr(92), "/")
+            a += ["-object", f"filter-dump,id=pcap0,netdev=net0,file={path}"]
+        return a
 
 TESTS = []
 

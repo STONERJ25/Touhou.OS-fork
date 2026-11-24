@@ -8,6 +8,7 @@
  */
 #include "net6k.h"
 #include "kernel.h"
+#include "ktime.h"
 #include "mm.h"
 #include "random.h"
 #include "vfs.h"
@@ -630,7 +631,7 @@ void nd6_tick(u64 now) {
             nbr_solicit(e, true);
             break;
         case NS_STALE:
-            if (now - e->used > STALE_GC_MS) nbr_unlink(e);
+            if (ktime_older_than(now, e->used, STALE_GC_MS)) nbr_unlink(e);   /* (`used` is stamped by the receive path, which may have run after `now` was read) */
             break;
         default: break;
         }

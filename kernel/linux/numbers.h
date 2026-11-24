@@ -170,6 +170,11 @@
 #define LNX_timerfd_gettime     287
 #define LNX_accept4             288
 #define LNX_eventfd2            290
+#define LNX_signalfd            282             /* signalfd (kernel/fs/signalfd.c; docs/COMPAT.md, "Descriptors, FIFOs, signalfd and pidfd") */
+#define LNX_signalfd4           289
+#define LNX_pidfd_send_signal   424             /* pidfd (kernel/fs/pidfd.c) */
+#define LNX_pidfd_open          434
+#define LNX_pidfd_getfd         438
 #define LNX_epoll_create1       291
 #define LNX_recvmmsg            299
 #define LNX_sendmmsg            307

@@ -220,8 +220,8 @@ def net6_host_tcp_udp_http():
             assert "saved" in out and "hello from the other side" in out and rc == 0, (out, rc)
             out, rc = g.run(f"fetch -q {base}/missing; echo rc=$?")
             assert "rc=8" in out, out
-            out, rc = g.run(f"fetch -q https://[fec0::2]/; echo rc=$?")
-            assert "not supported" in out and "rc=1" in out, out                               # libhttp (https) is IPv4 only
+            out, rc = g.run(f"fetch -q https://[fec0::2]:{hport}/; echo rc=$?", timeout=180)
+            assert "not supported" not in out and "rc=5" in out, out                           # no longer refused by fetch; libtls itself still takes no IPv6 literal as a server name (docs/NETWORK.md)
             out, rc = g.run("ping6 -c 1 fec0::2; ss -t | head -3")
             assert "1 received" in out, out
     finally:

@@ -231,7 +231,7 @@ typedef void (*SshcGlobalReplyFn)(void *ctx, SshcConn *c, bool ok, SshcRd *data)
 
 struct SshcConn {
     int fd;
-    char peer[64];                                      /* the address we are connected to, for messages: "10.0.2.2" */
+    char peer[64];                                      /* the address we are connected to, for messages: "10.0.2.2" or "fec0::2" */
     unsigned peer_port;
     char err[300];                                      /* why the last call failed, in words fit for the user */
     long deadline_ms;                                   /* sshc_mono_ms() by which the handshake must be done (ConnectTimeout); 0 = none */
@@ -330,6 +330,7 @@ typedef struct {
  * to ask on or the user gave up (end of file). Declared here because the authentication and the host-key prompt both use it. */
 int  sshc_prompt(const char *prompt, bool echo, char *buf, size_t cap);
 extern bool sshc_batch;                                 /* BatchMode: sshc_prompt() refuses at once */
+extern int sshc_family;                                 /* AddressFamily: AF_UNSPEC (any, the default), AF_INET or AF_INET6, for sshc_tcp_connect() */
 
 /* 0 when logged in; -1 with c->err ("Permission denied (publickey,password).") otherwise. */
 int  sshc_authenticate(SshcConn *c, const SshcAuthOpts *o);

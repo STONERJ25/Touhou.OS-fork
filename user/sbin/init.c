@@ -275,6 +275,18 @@ static void start_update_watch(void) {
     }
 }
 
+/* The automatic pull (docs/UPDATE.md, "The automatic mode"): with update.pull=URL, `update auto` runs in the background. It decides the rest itself (nothing
+ * on a start that fell back; the self-confirmation on a trial start; otherwise a pull after update.pull.delay seconds), so the desktop and the shell do not wait. */
+static void start_update_pull(void) {
+    char url[8];
+    if (!cmdline_get("update.pull=", url, sizeof url) || access("/bin/update", X_OK) != 0) return;
+    if (fork() == 0) {
+        setsid();
+        execl("/bin/update", "update", "auto", (char *)NULL);
+        _exit(127);
+    }
+}
+
 /* The hardware watchdog's feeder (docs/RELIABILITY.md). The kernel reloads the TCO timer itself until /dev/watchdog is opened; from then on
  * this process does, once a second, so a user space that can no longer run it (a hung system) lets the timer run out and the machine restarts.
  * SIGTERM ends it with the magic close ('V'), which stops the watchdog on purpose; if it dies of anything else, init starts it again, and the
@@ -392,6 +404,7 @@ int main(void) {
     start_sshd();
     if (cmdline_has("vnc") && access("/bin/vncd", X_OK) == 0 && fork() == 0) { signal(SIGINT, SIG_DFL); setsid(); execl("/bin/vncd", "vncd", (char *)NULL); _exit(127); }   /* the VNC server, only with "vnc" (docs/VNC.md; it restarts itself) */
     start_update_watch();
+    start_update_pull();
 
     char autologin[32] = "reimu";
     if (cmdline_has("user=root")) snprintf(autologin, sizeof autologin, "root");

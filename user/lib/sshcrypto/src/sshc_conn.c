@@ -17,6 +17,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
+#include <netconn.h>
 #include <poll.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -54,61 +55,50 @@ static void set_nonblock(int fd) {
     if (fl >= 0) fcntl(fd, F_SETFL, fl | O_NONBLOCK);
 }
 
+int sshc_family = AF_UNSPEC;
+
+/* Every address of the name in the family AddressFamily allows (both by default), in RFC 6724 order interleaved by family, started 250 ms
+ * apart (netconn.c, a simplified RFC 8305), so a family that is broken here does not hold up the other. An IPv6 literal may come in brackets. */
 int sshc_tcp_connect(const char *host, int port, int timeout_ms, char *why, size_t wc, char *ip, size_t ic) {
+    char name[256];
+    size_t hl = strlen(host);
+    if (hl >= 2 && host[0] == '[' && host[hl - 1] == ']') { host++; hl -= 2; }
+    if (hl >= sizeof name) hl = sizeof name - 1;
+    memcpy(name, host, hl);
+    name[hl] = 0;
     struct addrinfo hints, *res = NULL;
     memset(&hints, 0, sizeof hints);
-    hints.ai_family = AF_INET;                              /* IPv4 only: this client has no IPv6 code (the network stack itself speaks IPv6 since 2026-11-17) */
+    hints.ai_family = sshc_family;
     hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_ADDRCONFIG;
     char service[16];
     snprintf(service, sizeof service, "%d", port);
-    int rc = getaddrinfo(host, service, &hints, &res);
+    int rc = getaddrinfo(name, service, &hints, &res);
+    if (rc == EAI_NONAME || rc == EAI_FAIL) {                           /* no address of that family configured: the loopback names still work */
+        hints.ai_flags = 0;
+        if (getaddrinfo(name, service, &hints, &res) == 0) rc = 0;
+    }
     if (rc != 0 || !res) {
-        snprintf(why, wc, "Could not resolve hostname %s: %s", host, rc ? gai_strerror(rc) : "no address");
+        snprintf(why, wc, "Could not resolve hostname %s: %s", name, rc ? gai_strerror(rc) : "no address");
         return -1;
     }
-    long until = timeout_ms > 0 ? sshc_mono_ms() + timeout_ms : 0;
-    int last = ECONNREFUSED;
-    for (struct addrinfo *ai = res; ai; ai = ai->ai_next) {
-        int fd = socket(ai->ai_family, ai->ai_socktype, 0);
-        if (fd < 0) { last = errno; continue; }
-        set_nonblock(fd);
-        int r = connect(fd, ai->ai_addr, ai->ai_addrlen);
-        if (r < 0 && errno == EINPROGRESS) {
-            for (;;) {
-                int ms = -1;
-                if (until) {
-                    long left = until - sshc_mono_ms();
-                    if (left <= 0) { errno = ETIMEDOUT; r = -1; break; }
-                    ms = left > 1000 ? 1000 : (int)left;
-                } else {
-                    ms = 1000;
-                }
-                struct pollfd p = { .fd = fd, .events = POLLOUT };
-                int pr = poll(&p, 1, ms);
-                if (pr < 0 && errno != EINTR) { r = -1; break; }
-                if (pr > 0) {
-                    int err = 0;
-                    socklen_t el = sizeof err;
-                    getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &el);
-                    if (err) { errno = err; r = -1; } else { r = 0; }
-                    break;
-                }
-            }
+    int err = 0;
+    const struct addrinfo *won = NULL;
+    int attempt = timeout_ms > 0 && timeout_ms < NETCONN_ATTEMPT_MS ? timeout_ms : NETCONN_ATTEMPT_MS;
+    int fd = netconn_connect(res, attempt, 0, timeout_ms > 0 ? timeout_ms : 0, &err, &won);
+    if (fd >= 0) {
+        int one = 1;
+        setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);          /* keystrokes should not wait for company */
+        if (ip && ic) {
+            const void *a = won->ai_family == AF_INET6 ? (const void *)&((struct sockaddr_in6 *)won->ai_addr)->sin6_addr
+                                                       : (const void *)&((struct sockaddr_in *)won->ai_addr)->sin_addr;
+            if (!inet_ntop(won->ai_family, a, ip, (socklen_t)ic)) sshc_cpy(ip, ic, name);
         }
-        if (r == 0) {
-            int one = 1;
-            setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);          /* keystrokes should not wait for company */
-            if (ip && ic) {
-                if (!inet_ntop(AF_INET, &((struct sockaddr_in *)ai->ai_addr)->sin_addr, ip, (socklen_t)ic)) sshc_cpy(ip, ic, host);
-            }
-            freeaddrinfo(res);
-            return fd;
-        }
-        last = errno;
-        close(fd);
+        freeaddrinfo(res);
+        return fd;
     }
     freeaddrinfo(res);
-    snprintf(why, wc, "connect to host %s port %d: %s", host, port, strerror(last));
+    snprintf(why, wc, "connect to host %s port %d: %s", name, port, strerror(err));
     return -1;
 }
 
@@ -121,12 +111,17 @@ SshcConn *sshc_conn_new(int fd) {
     c->is = malloc(SSHC_PKT_MAX);
     if (!c->in || !c->out || !c->is) { free(c->in); free(c->out); free(c->is); free(c); return NULL; }
     set_nonblock(fd);
-    struct sockaddr_in sa;
-    socklen_t sl = sizeof sa;
-    memset(&sa, 0, sizeof sa);
-    if (getpeername(fd, (struct sockaddr *)&sa, &sl) == 0 && sa.sin_family == AF_INET) {
-        inet_ntop(AF_INET, &sa.sin_addr, c->peer, sizeof c->peer);
-        c->peer_port = ntohs(sa.sin_port);
+    struct sockaddr_storage ss;
+    socklen_t sl = sizeof ss;
+    memset(&ss, 0, sizeof ss);
+    if (getpeername(fd, (struct sockaddr *)&ss, &sl) == 0 && ss.ss_family == AF_INET) {
+        struct sockaddr_in *sa = (struct sockaddr_in *)&ss;
+        inet_ntop(AF_INET, &sa->sin_addr, c->peer, sizeof c->peer);
+        c->peer_port = ntohs(sa->sin_port);
+    } else if (ss.ss_family == AF_INET6) {
+        struct sockaddr_in6 *sa = (struct sockaddr_in6 *)&ss;
+        inet_ntop(AF_INET6, &sa->sin6_addr, c->peer, sizeof c->peer);
+        c->peer_port = ntohs(sa->sin6_port);
     } else {
         sshc_cpy(c->peer, sizeof c->peer, "unknown");
     }

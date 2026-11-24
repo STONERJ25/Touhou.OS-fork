@@ -97,8 +97,8 @@ static void power_update(const Sample *s) {
         g_th.base_ok = true;
         g_th.base_raw = raw;
         g_th.base_ms = now;
-    } else if (now - g_th.base_ms >= POWER_MIN_WINDOW_MS) {
-        u64 dt = now - g_th.base_ms;
+    } else if (ktime_at_least(now, g_th.base_ms, POWER_MIN_WINDOW_MS)) {     /* (`now` was read before the lock: another reader may have moved the base past it meanwhile) */
+        u64 dt = ktime_elapsed(now, g_th.base_ms);
         if (dt <= POWER_MAX_WINDOW_MS) {
             g_th.win_ok = true;
             g_th.win_from = g_th.base_raw;

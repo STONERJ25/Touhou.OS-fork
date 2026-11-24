@@ -147,7 +147,7 @@ copies them, `execve` keeps them, so the shell's `ulimit` reaches everything it 
 
 | Resource | Default (soft / hard) | Enforced |
 |----------|----------------------|----------|
-| `RLIMIT_NOFILE` | 64 / 64 | `fd_install` (open, pipe, socket, accept, `dup`, `F_DUPFD`) gives `EMFILE`, `dup2` beyond it `EBADF`; the table has 64 slots, so no hard limit above 64 (`EPERM`, root too) |
+| `RLIMIT_NOFILE` | 1024 / 4096 | `fd_install` (open, pipe, socket, accept, `dup`, `F_DUPFD`) gives `EMFILE`, `dup2` beyond it `EBADF`, `F_DUPFD` from beyond it `EINVAL`, a Linux `poll` with more entries `EINVAL`; the table starts with 64 slots and grows on demand up to 4096 (`FD_HARD_MAX`), so no hard limit above 4096 (`EPERM`, root too). Until 2026-11-24 both values were 64 (docs/COMPAT.md, "Descriptors, FIFOs, signalfd and pidfd") |
 | `RLIMIT_NPROC` | 128 / 128 | `fork` gives `EAGAIN` when the *real user* already has that many processes (zombies count until collected); root is exempt. Half of the 256-slot process table: one user cannot fill it. Threads are not counted: they are limited per process (256) and in all (1024) |
 | `RLIMIT_AS` | unlimited | every `mmap`, `brk` and other `uvm_map` of the running process fails with `ENOMEM` beyond the sum of its mappings (the 8 MiB stack counts at its initial 64 KiB) |
 | `RLIMIT_DATA` | unlimited | the same call, for writable private mappings (heap, anonymous maps, the program's data and bss) |
@@ -235,7 +235,7 @@ None of the second round has run on the Dell (the i5-7500 has SMEP and SMAP; QEM
 2. **A working session**: the desktop, an ssh login, the USB stick mounted and unmounted, sound, a `fetch`, `update status`. These exercise every driver the Dell has that QEMU does not (e1000e/I219, xHCI,
    HDA); none of them reaches user memory except through the system call layer, so a violation here would be new information.
 3. **Limits**: `/usr/lib/kernel-tests/rlimtest` (all the rules, as an ordinary user), `/usr/lib/kernel-tests/oomtest fdleak`, `oomtest forkbomb`, `(ulimit -n 8; ls /usr/bin | head -3)`. A program that violates a limit should
-   meet exactly what the table above says (`EMFILE`, `EAGAIN`, `ENOMEM`, `SIGSEGV` for the stack). There is no word that turns the limits off: the defaults only limit the descriptors (64, as before) and the processes
+   meet exactly what the table above says (`EMFILE`, `EAGAIN`, `ENOMEM`, `SIGSEGV` for the stack). There is no word that turns the limits off: the defaults only limit the descriptors (1024 soft, 4096 hard, Linux's usual values; 64 before 2026-11-24) and the processes
    of one user (128).
 4. **The OOM killer** (only when you want to see it: the machine has gigabytes, and `oomtest hog` takes time and is unresponsive for a moment): `ulimit -v 1000000; oomtest hog` first (the address-space limit stops it
    with `mmap failed`, nothing is killed), then `oomtest hog` over ssh: `[Eiki] out of memory: killed 'oomtest' ...` in `dmesg`/the netconsole, the ssh session and the desktop live. **`oom=off`** keeps the reserve but kills nobody.

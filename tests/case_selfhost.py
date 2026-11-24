@@ -47,6 +47,37 @@ class Sh:
         return out
 
 
+class ReportingQemu(Qemu):
+    """A guest that says how it ended when a test fails and QEMU is already gone. selfhost_rebuild_userland once ended with QEMU's exit status 0 in the middle of the build and
+    nothing on the console (2026-11; not seen again in 8 runs), and the failure only said that the shell had vanished. What ends a guest that way, with the harness's
+    `-no-reboot`: any reset of the machine (QEMU then exits with status 0 instead of restarting) and an ACPI power-off (status 0 too); a panic that reaches isa-debug-exit
+    gives an odd status. A reset nobody announced on the console is the TCO watchdog's (docs/RELIABILITY.md: `wdt=120` by default, fed by init's wdt-feeder; a guest
+    that a loaded host starves for two minutes of ITS timer is restarted by it), a triple fault (QEMU's log has the registers: the harness runs it with `-d cpu_reset`),
+    or a reset the kernel chose after a panic or `panic_on_lockup`/OOM, which the console shows first. So: the exit status, the console's last 200 lines, the lines of
+    Momiji (watchdog, lockup), Akyuu (the record of the previous start) and the OOM killer, and the tail of QEMU's log, on stdout where tests/run_all.py keeps them."""
+
+    def __exit__(self, etype, evalue, tb):
+        try:
+            if etype is not None and self.proc is not None and self.proc.poll() is not None:
+                print(self.exit_report(), flush=True)
+        finally:
+            super().__exit__(etype, evalue, tb)
+
+    def exit_report(self):
+        rc = self.proc.returncode
+        how = (f"isa-debug-exit code {rc >> 1} (the kernel ended the run itself: a panic or a test's exit)" if rc & 1 else
+               "a reset under -no-reboot or an ACPI power-off" if rc == 0 else "QEMU itself failed or was killed")
+        text = self.text().replace("\r", "")
+        out = [f"=== {self.name}: QEMU ended by itself with status {rc}: {how} ===", "--- the console's last 200 lines ---"]
+        out += text.splitlines()[-200:]
+        marks = [ln for ln in text.splitlines() if re.search(r"\[Momiji\]|\[Akyuu\]|panic|PANIC|lockup|out of memory|OOM|watchdog|triple|restart|reboot|poweroff", ln)]
+        out += ["--- console lines about watchdog, lockup, panic, memory, restart (last 40) ---"] + marks[-40:]
+        if self.log_path.exists():
+            log = self.log_path.read_text(errors="replace")
+            out += [f"--- QEMU's log: {log.count('CPU Reset')} CPU resets recorded (the firmware's own at the start included); the last 60 lines ---"] + log.splitlines()[-60:]
+        return "\n".join(out)
+
+
 def lines(text):
     return [ln.rstrip() for ln in text.replace("\r", "").splitlines() if ln.strip()]
 
@@ -110,7 +141,7 @@ def selfhost_rebuild_userland():
     from case_storage import Image, hv_part, MIB
     esp = U.make_esp("t-selfhost-a", PROJECT)
     with Image("selfhost", 96 * MIB, [hv_part({})]) as img:
-        with Qemu(cmdline="text user=root bootlog=off", disk=img.path, esp=esp, name="t-selfhost-a", mem="1024M") as vm:
+        with ReportingQemu(cmdline="text user=root bootlog=off", disk=img.path, esp=esp, name="t-selfhost-a", mem="1024M") as vm:
             vm.expect(ROOT_PROMPT, timeout=300)
             sh = Sh(vm, root=True)
             out = sh.ok("cd /ScarletDevilMansion/src && ls && ls libc | head -3 && ls kappabox | wc -l")

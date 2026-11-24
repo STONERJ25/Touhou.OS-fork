@@ -511,6 +511,11 @@ def build_initrd(user_bins):
     cacert = ROOT / "assets" / "local" / "ssl" / "cacert.pem"
     if cacert.exists():
         items.append(("Hakurei/etc/ssl/cacert.pem", cacert))
+    # The public key that `update pull` checks signed updates with (docs/UPDATE.md, "Pulling"): $TOUHOU_UPDATE_PUBKEY_FILE, else assets/local/update/pubkey.hex
+    # (130 hex digits, `serve-update.py pubkey --format hex`), becomes /etc/update/pubkey. No file, no key: the image pulls nothing (never a built-in key).
+    pubkey = Path(os.environ["TOUHOU_UPDATE_PUBKEY_FILE"]) if os.environ.get("TOUHOU_UPDATE_PUBKEY_FILE") else ROOT / "assets" / "local" / "update" / "pubkey.hex"
+    if pubkey.is_file():
+        items.append(("Hakurei/etc/update/pubkey", pubkey))
     fonts = ROOT / "assets" / "fonts"                      # the owner's original fonts (assets/fonts/README.md): /ScarletDevilMansion/share/fonts/NAME.ttf
     if fonts.exists():
         for p in sorted(fonts.glob("Gensokyo*.ttf")):

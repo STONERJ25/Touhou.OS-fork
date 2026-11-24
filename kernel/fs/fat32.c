@@ -1260,14 +1260,14 @@ static void flusher_main(void *arg) {
             FatVol *v = g_vols[i];
             if (!v || v->ro || v->dev->removed) continue;        /* a vanished stick cannot be flushed to: no error line every 30 s */
             u64 now = uptime_ms();
-            bool quiet = now - v->last_op_ms >= FLUSH_AGE_MS;           /* nobody has written for a while */
-            bool aged = v->ndirty && now - v->dirty_since_ms >= FLUSH_AGE_MS;
+            bool quiet = ktime_at_least(now, v->last_op_ms, FLUSH_AGE_MS);           /* nobody has written for a while */
+            bool aged = v->ndirty && ktime_at_least(now, v->dirty_since_ms, FLUSH_AGE_MS);     /* (both stamps are the writers': one of them may write after `now` was read) */
             bool idle = v->media_dirty && !v->ndirty && quiet;
             if (!aged && !idle) continue;
             mutex_lock(&v->lock);
             if (!v->dying) {
                 int rc = vol_sync(v, quiet);
-                if (rc && now - v->err_logged_ms >= 30000) {         /* a broken device must not flood the log every second */
+                if (rc && ktime_at_least(now, v->err_logged_ms, 30000)) {         /* a broken device must not flood the log every second */
                     v->err_logged_ms = now;
                     klog("Keine", "%s: periodic flush of %s failed (%d)", v->fstype, v->dev->name, rc);
                 }

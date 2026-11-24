@@ -27,7 +27,7 @@ static long sys_thread_create(TrapFrame *tf) {
     ntf.cs = USER_CS;
     ntf.ss = USER_DS;
     ntf.rflags = RFLAGS_IF | 2;
-    ThreadInit ti = { .utid = utid, .fs_base = tls, .clear_tid = tid_addr, .sig_blocked = current->sig_blocked };
+    ThreadInit ti = { .utid = utid, .fs_base = tls, .gs_base = current->gs_base, .clear_tid = tid_addr, .sig_blocked = current->sig_blocked };
     Task *t = task_create_thread(p->name, &ntf, p, &ti);
     if (!t) return -EAGAIN;
     return utid;
@@ -41,6 +41,16 @@ static long sys_thread_exit(TrapFrame *tf) {
 static long sys_gettid(TrapFrame *tf) { (void)tf; return current->utid; }
 
 static long sys_exit_group(TrapFrame *tf) { process_exit((int)((A0(tf) & 0xFF) << 8)); }
+
+/* SYS_gsbase: the calling thread's GS base, for a TEB (docs/WINDOWS.md). Written to IA32_GS_BASE (the MSR, not WRGSBASE: CR4.FSGSBASE stays off), kept
+ * per thread and loaded at every switch like the FS base. fork and new threads inherit it, execve clears it. (u64)-1 only reads. */
+static long sys_gsbase(TrapFrame *tf) {
+    u64 old = current->gs_base, want = A0(tf);
+    if (want == (u64)-1) return (long)old;
+    if (want >= USER_TOP) return -EINVAL;
+    task_set_gs_base(current, want);
+    return (long)old;
+}
 
 static long sys_set_tls(TrapFrame *tf) {
     if (A0(tf) >= USER_TOP) return -EINVAL;
@@ -137,6 +147,7 @@ static void thread_init(void) {
     syscall_register(SYS_gettid, sys_gettid);
     syscall_register(SYS_exit_group, sys_exit_group);
     syscall_register(SYS_set_tls, sys_set_tls);
+    syscall_register(SYS_gsbase, sys_gsbase);
     syscall_register(SYS_tgkill, sys_tgkill);
 }
 INITCALL(thread_init);

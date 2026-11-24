@@ -120,10 +120,11 @@ int getpeercred(int fd, struct gpeercred *cred) { return ioctl(fd, SOCK_PEERCRED
 
 int gap_netctl(unsigned long cmd, void *arg) { return (int)__ret(__sc2(SYS_netctl, (long)cmd, (long)arg)); }
 
-/* select() on top of poll(): descriptors are limited to FD_SETSIZE (64), like the kernel's descriptor table. */
+/* select() on top of poll(): descriptors are limited to FD_SETSIZE (1024, the default soft RLIMIT_NOFILE). */
 int select(int nfds, fd_set *rd, fd_set *wr, fd_set *ex, struct timeval *tv) {
-    struct gpollfd p[FD_SETSIZE];
+    static __thread struct gpollfd p[FD_SETSIZE];                 /* 8 KiB: kept off the stack */
     int n = 0;
+    if (nfds < 0) { errno = EINVAL; return -1; }
     if (nfds > FD_SETSIZE) nfds = FD_SETSIZE;
     for (int fd = 0; fd < nfds; fd++) {
         short ev = 0;

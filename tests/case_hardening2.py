@@ -106,13 +106,13 @@ def noisy_line(vm, shell_expr, tag, tries=4):
 
 ULIMIT_CHECKS = [
     # (command, substring that must appear in the output, exit status or None)
-    ("ulimit -n; ulimit -Hn", "64\n64", 0),
+    ("ulimit -n; ulimit -Hn", "1024\n4096", 0),                                                # Linux's usual defaults (docs/COMPAT.md, "Descriptors, FIFOs, signalfd and pidfd")
     ("ulimit -u; ulimit -Hu", "128\n128", 0),
     ("ulimit -s; ulimit -c; ulimit -v", "8192\n0\nunlimited", 0),
     ("(ulimit -n 20; ulimit -n)", "20", 0),
     ("(ulimit -n 20; sh -c 'ulimit -n; ulimit -Hn')", "20\n20", 0),                          # inherited by what the shell starts
     ("(ulimit -v 65536; ulimit -v; ulimit -Hv)", "65536\n65536", 0),
-    ("(ulimit -Sn 10; ulimit -n; ulimit -Hn)", "10\n64", 0),                                  # -S: only the soft limit
+    ("(ulimit -Sn 10; ulimit -n; ulimit -Hn)", "10\n4096", 0),                                 # -S: only the soft limit
     ("(ulimit -Hn 30; ulimit -n; ulimit -Hn)", "30\n30", 0),                                  # lowering the hard limit pulls the soft one with it
     ("(ulimit -Hn 30; ulimit -Hn 40) 2>&1", "cannot modify limit: Operation not permitted", 1),   # a lowered hard limit stays lowered
     ("(ulimit -Hn 30; ulimit -Sn 40) 2>&1", "cannot modify limit: Invalid argument", 1),      # a soft limit above the hard one
@@ -226,7 +226,7 @@ def hardening2_oom_worker_survives_a_slow_hog():
 @test
 def hardening2_oom_fork_of_a_big_process():
     """fork copies every page, so a big process that keeps forking runs the machine out of memory inside fork itself: the killer ends children (the youngest of equal size), the parent lives and gets all its children."""
-    with oom_boot("t-h2-oom-forkfat") as vm:
+    with oom_boot("t-h2-oom-forkfat", "cow=off") as vm:              # the eager copy is what runs out of memory inside fork; with copy-on-write these sleeping children cost nothing (docs/COW.md, cow_fork_under_memory_pressure)
         vm.expect(PROMPT, timeout=90)
         before = kstats(vm)
         keep_before = {pid: name for pid, name in pids(vm).items() if name in ("init", "sshd", "gapsh")}

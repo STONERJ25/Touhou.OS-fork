@@ -10,7 +10,12 @@
 #include "siginfo.h"
 #include "syscall.h"
 
-#define MAX_FD          64
+/* The descriptor table (docs/COMPAT.md, "Descriptors, FIFOs, signalfd and pidfd"): FD_INLINE slots live in the Process itself, a process that needs more gets a table
+ * from the heap that doubles until it covers the descriptor asked for, never beyond FD_HARD_MAX (the highest hard RLIMIT_NOFILE, root included). Index the table only
+ * below fd_slots(p); every loop over it runs to fd_slots(p). */
+#define FD_INLINE       64
+#define FD_SOFT_DEFAULT 1024        /* RLIMIT_NOFILE soft value of a new process (Linux's usual default) */
+#define FD_HARD_MAX     4096        /* its hard value, and the most slots a table can have */
 #define MAX_PROCS       256
 #define USER_TOP        0x0000800000000000UL
 #define USER_STACK_TOP  0x00007FFFFFFFF000UL
@@ -74,8 +79,12 @@ typedef struct Process {
 
     AddrSpace as;
 
-    File *fds[MAX_FD];
-    u8 fd_flags[MAX_FD];
+    File **fds;                     /* fd_slots(p) entries: fd_small, or a heap table once more were needed (kernel/sys/process.c, fd_reserve) */
+    u8 *fd_flags;
+    int fd_cap;
+    void **fd_retired;              /* heap tables fd_reserve replaced, kept until process_free (a preempted thread may still hold one) */
+    File *fd_small[FD_INLINE];
+    u8 fd_small_flags[FD_INLINE];
 
     Task *task;                     /* a live thread of the process (the oldest one); NULL once the process is a zombie */
     Task *threads;                  /* every live thread, linked through Task.thread_next (guarded by irq_save) */
@@ -170,6 +179,11 @@ int      fd_install(Process *p, File *f, int minfd, int flags);        /* takes 
 File    *fd_get(Process *p, int fd);                                    /* borrowed reference */
 File    *fd_get_ref(Process *p, int fd);                                /* owned reference (file_put it): safe against a close in another thread */
 int      fd_close(Process *p, int fd);
+int      fd_place(Process *p, int fd, File *f, int flags);              /* dup2: puts f (reference taken over) at fd, closing what was there; -EBADF beyond the soft limit */
+int      fd_getflags(Process *p, int fd);                               /* descriptor flags read under the table lock, or -EBADF */
+int      fd_setflags(Process *p, int fd, int set, int clear);           /* descriptor flags changed under the table lock: 0 or -EBADF */
+int      fd_reserve(Process *p, int fd);                                /* grows the table so that fd is a slot: 0, or -ENOMEM / -EMFILE beyond FD_HARD_MAX */
+static inline int fd_slots(const Process *p) { return p->fd_cap; }      /* the table's length: every loop over descriptors ends here */
 
 /* user address space */
 int      uvm_new(AddrSpace *as);
@@ -182,6 +196,10 @@ int      uvm_unmap(AddrSpace *as, u64 addr, u64 len);
 int      uvm_protect(AddrSpace *as, u64 addr, u64 len, u32 prot);
 u64      uvm_find_free(AddrSpace *as, u64 len);
 int      uvm_clone(AddrSpace *dst, const AddrSpace *src);
+#define  UVM_COW_DEFAULT 1                                     /* copy-on-write fork unless "cow=off" (0: only with "cow=on"); docs/COW.md */
+bool     uvm_cow_enabled(void);
+u64      uvm_keep_cow(u64 newfl, u64 oldfl);                   /* new entry flags for a page that may still be marked copy-on-write */
+int      uvm_cow_break(AddrSpace *as, u64 va, bool can_sleep); /* as->lock held: the page at va becomes private (0, -ENOMEM) */
 void     uvm_destroy(AddrSpace *as);
 bool     uvm_fault(AddrSpace *as, TrapFrame *tf, u64 addr);             /* demand paging; true if handled */
 int      uvm_write(AddrSpace *as, u64 uaddr, const void *src, size_t n);   /* through the direct map */
@@ -259,7 +277,7 @@ extern int g_ktimers_armed;
 void rlimit_defaults(Rlimits *r);                                       /* a new process starts from these (init, and what fork then overwrites with the parent's) */
 long rlimit_get(const Process *caller, int pid, int res, struct grlimit *out);              /* pid 0 = the caller; 0 or -errno */
 long rlimit_set(Process *caller, int pid, int res, const struct grlimit *nw);               /* the POSIX rules; 0 or -errno */
-int  rlimit_nofile(const Process *p);                                   /* descriptors the process may have open now: its soft limit, at most MAX_FD */
+int  rlimit_nofile(const Process *p);                                   /* descriptors the process may have open now: its soft limit, at most FD_HARD_MAX */
 bool rlimit_nproc_exceeded(const Process *p);                           /* fork would take the real user above RLIMIT_NPROC (root is exempt) */
 int  rlimit_vm_check(const AddrSpace *as, u64 len, u32 prot, u32 vflags);                   /* -ENOMEM when mapping len more bytes of the caller's own space breaks RLIMIT_AS or RLIMIT_DATA */
 bool rlimit_stack_ok(const AddrSpace *as, u64 addr);                    /* the stack may grow down to this address (RLIMIT_STACK of the caller) */

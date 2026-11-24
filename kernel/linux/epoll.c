@@ -62,7 +62,7 @@ static long sigmask_swap(u64 usig, u64 size) {
 /* ------------------------------------------------------------------ poll and ppoll */
 
 static long poll_user(u64 ufds, u64 nfds, u64 deadline) {
-    if (nfds > PQ_MAX_ENTRIES) return -EINVAL;
+    if (nfds > (u64)rlimit_nofile(me())) return -EINVAL;                /* poll(2): more entries than RLIMIT_NOFILE (duplicates are allowed below it) */
     struct lnx_pollfd *u = kmalloc(nfds ? nfds * sizeof *u : 1);
     PollEntry *e = kmalloc(nfds ? nfds * sizeof *e : 1);
     long rc = (u && e) ? 0 : -ENOMEM;
@@ -127,7 +127,7 @@ static void bit_set(u64 *set, int fd) { set[fd / 64] |= 1ULL << (fd % 64); }
 static long select_user(int nfds, u64 ur, u64 uw, u64 ue, u64 deadline) {
     if (nfds < 0) return -EINVAL;
     if (nfds > LNX_FD_SETSIZE) nfds = LNX_FD_SETSIZE;
-    if (nfds > MAX_FD) nfds = MAX_FD;                                 /* the descriptor table ends here; Linux, too, ignores the part of the sets beyond its table */
+    if (nfds > fd_slots(me())) nfds = fd_slots(me());                 /* the descriptor table ends here; Linux, too, ignores the part of the sets beyond its table */
     size_t bytes = (size_t)((nfds + 63) / 64) * 8;
     u64 in[3][FDSET_WORDS], out[3][FDSET_WORDS];
     const u64 uset[3] = { ur, uw, ue };
@@ -316,6 +316,114 @@ long lnx_eventfd(TrapFrame *tf) {
     TrapFrame t = *tf;
     t.rsi = 0;
     return lnx_eventfd2(&t);
+}
+
+/* ------------------------------------------------------------------ signalfd (kernel/fs/signalfd.c) */
+
+long signalfd_create(u64 mask, int flags, File **out);
+long signalfd_set(File *f, u64 mask);
+
+#define LNX_SFD_NONBLOCK 04000
+#define LNX_SFD_CLOEXEC  02000000
+
+/* signalfd4(fd, mask, sizemask, flags): a new descriptor for the signals of mask (fd -1), or the set of an existing one replaced (signalfd(2)). SIGKILL and SIGSTOP
+ * in the mask are ignored silently. */
+long lnx_signalfd4(TrapFrame *tf) {
+    int fd = (int)A0(tf), flags = (int)A3(tf);
+    if (A2(tf) != 8 || (flags & ~(LNX_SFD_NONBLOCK | LNX_SFD_CLOEXEC))) return -EINVAL;
+    u64 lset;
+    if (copy_from_user(&lset, (const void *)A1(tf), sizeof lset)) return -EFAULT;
+    u64 mask = lnx_sigset_to_kernel(lset);
+    if (fd != -1) {
+        File *f = fd_get_ref(me(), fd);
+        if (!f) return -EBADF;
+        long rc = signalfd_set(f, mask);
+        file_put(f);
+        return rc ? rc : fd;
+    }
+    File *f;
+    long rc = signalfd_create(mask, (flags & LNX_SFD_NONBLOCK) ? O_NONBLOCK : 0, &f);
+    return rc ? rc : install(f, (flags & LNX_SFD_CLOEXEC) != 0);
+}
+
+long lnx_signalfd(TrapFrame *tf) {
+    TrapFrame t = *tf;
+    t.r10 = 0;                                      /* the fourth argument: no flags */
+    return lnx_signalfd4(&t);
+}
+
+/* ------------------------------------------------------------------ pidfd (kernel/fs/pidfd.c) */
+
+long pidfd_create(int pid, int flags, File **out);
+
+#define LNX_PIDFD_NONBLOCK 04000
+
+/* pidfd_open(pid, flags): always close-on-exec (pidfd_open(2)). */
+long lnx_pidfd_open(TrapFrame *tf) {
+    long pid = (long)A0(tf);
+    u32 flags = (u32)A1(tf);
+    if (flags & ~LNX_PIDFD_NONBLOCK) return -EINVAL;
+    if (pid <= 0 || pid > 0x7fffffffL) return -EINVAL;
+    File *f;
+    long rc = pidfd_create((int)pid, (flags & LNX_PIDFD_NONBLOCK) ? O_NONBLOCK : 0, &f);
+    return rc ? rc : install(f, true);
+}
+
+/* pidfd_send_signal(pidfd, sig, info, flags): kill(2) aimed through the descriptor; ESRCH once the process has been reaped. A zombie that has not been reaped is
+ * still a process: the call succeeds and the signal goes nowhere, as on Linux (this kernel's kill(2) says ESRCH for a zombie: zombie_target). With info, the siginfo of rt_sigqueueinfo(2): a negative si_code, unless the target is the caller itself. */
+/* 0: pid is a zombie the caller may signal (nothing to do); -ESRCH / -EPERM; 1: a live process. */
+static long zombie_target(int pid) {
+    u64 fl = irq_save();
+    Process *t = process_by_pid(pid);
+    long rc = !t ? -ESRCH : !signal_permitted(me(), t) ? -EPERM : t->state == PROC_ZOMBIE ? 0 : 1;
+    irq_restore(fl);
+    return rc;
+}
+
+/* pidfd_getfd(pidfd, targetfd, flags): a duplicate of descriptor targetfd of the process the pidfd names, in the caller's table, close-on-exec (pidfd_getfd(2)).
+ * EINVAL for flags, EBADF for a file that is not a pidfd or a targetfd that is not open there, ESRCH when the process has exited, EPERM unless the caller is root
+ * or has the target's user id (Linux asks for ptrace's PTRACE_MODE_ATTACH_REALCREDS; this kernel has no ptrace, and the rule for signals is weaker than that). */
+long lnx_pidfd_getfd(TrapFrame *tf) {
+    if (A2(tf)) return -EINVAL;
+    File *pf = fd_get_ref(me(), (int)A0(tf));
+    if (!pf) return -EBADF;
+    int pid = pidfd_pid(pf);
+    file_put(pf);
+    if (pid < 0) return -EBADF;
+    long rc = 0;
+    File *f = NULL;
+    u64 fl = irq_save();                                              /* the target cannot exit or close the descriptor between the look-up and the reference */
+    Process *t = process_by_pid(pid);
+    if (!t || t->state == PROC_ZOMBIE) rc = -ESRCH;
+    else if (me()->cred.uid != 0 && me()->cred.uid != t->cred.uid) rc = -EPERM;
+    else if (!(f = fd_get(t, (int)A1(tf)))) rc = -EBADF;
+    else file_get(f);
+    irq_restore(fl);
+    return rc ? rc : install(f, true);
+}
+
+long lnx_pidfd_send_signal(TrapFrame *tf) {
+    int sig = (int)A1(tf);
+    if (A3(tf) & ~7ULL) return -EINVAL;                               /* PIDFD_SIGNAL_THREAD, _THREAD_GROUP, _PROCESS_GROUP (Linux 6.9): accepted, the process is signalled */
+    File *f = fd_get_ref(me(), (int)A0(tf));
+    if (!f) return -EBADF;
+    int pid = pidfd_pid(f);
+    file_put(f);
+    if (pid < 0) return -EBADF;
+    if (sig < 0 || sig >= KNSIG) return -EINVAL;
+    long z = zombie_target(pid);
+    if (!A2(tf)) return z <= 0 ? z : signal_kill(me(), pid, sig);
+    SigInfo info;
+    if (copy_from_user(&info, (const void *)A2(tf), sizeof info)) return -EFAULT;
+    if (info.si_signo != sig) return -EINVAL;
+    if ((info.si_code >= 0 || info.si_code == SI_TKILL) && pid != me()->pid) return -EPERM;
+    if (z <= 0) return z;
+    u64 fl = irq_save();
+    Process *t = process_by_pid(pid);
+    long rc = !t || t->state == PROC_ZOMBIE ? -ESRCH : !signal_permitted(me(), t) ? -EPERM : 0;
+    irq_restore(fl);
+    if (rc || !sig) return rc;
+    return signal_send_info(t, sig, &info) < 0 ? -EAGAIN : 0;
 }
 
 long lnx_timerfd_create(TrapFrame *tf) {

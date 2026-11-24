@@ -9,6 +9,7 @@
  */
 #include "usb.h"
 #include "kernel.h"
+#include "ktime.h"
 #include "cmdline.h"
 #include "task.h"
 #include "mm.h"
@@ -768,7 +769,7 @@ static bool usb_settled_now(void) {
     if (!g_usbd_up || !g_usb_expect) return true;           /* no working controller, or an empty bus */
     if (g_usb_busy || g_job_head) return false;             /* a port change, an enumeration or a block request is in progress */
     if (msc_busy() || storage_automount_busy()) return false;   /* a stick is still getting ready / its HUMANVILLAGE volume is being mounted */
-    return uptime_ms() - g_usb_last_active >= SETTLE_QUIET_MS;  /* and nothing new arrived for a moment (hub ports report late) */
+    return ktime_at_least(uptime_ms(), g_usb_last_active, SETTLE_QUIET_MS);  /* and nothing new arrived for a moment (hub ports report late) */
 }
 
 bool usb_wait_settled(u32 max_ms) {

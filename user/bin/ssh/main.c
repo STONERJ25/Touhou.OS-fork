@@ -22,7 +22,7 @@
 
 static void usage(void) {
     fprintf(stderr,
-            "usage: ssh [-4NnqsTtVv] [-D [bind_address:]port] [-e escape_char] [-F configfile] [-i identity_file]\n"
+            "usage: ssh [-46NnqsTtVv] [-D [bind_address:]port] [-e escape_char] [-F configfile] [-i identity_file]\n"
             "           [-L [bind_address:]port:host:hostport] [-l login_name] [-o option] [-p port]\n"
             "           [-R [bind_address:]port:host:hostport] [user@]hostname [command [argument ...]]\n");
     exit(255);
@@ -105,7 +105,7 @@ int main(int argc, char **argv) {
                 case 't': if (tty_opt < 2) tty_opt = tty_opt < 0 ? 1 : tty_opt + 1; break;
                 case 'V': printf("TouhouOS_ssh_1 (SSH-2.0: curve25519-sha256, ssh-ed25519, chacha20-poly1305@openssh.com)\n"); return 0;
                 case '4': set_or_die(&cfg, "AddressFamily", "inet"); break;
-                case '6': die("IPv6 is not available on this system");
+                case '6': set_or_die(&cfg, "AddressFamily", "inet6"); break;
                 case 'A': case 'X': case 'Y': die("agent and X11 forwarding (-%c) are not supported", opt);
                 case 'a': case 'x': case 'k': case 'K': case 'C': case 'g': case 'y': case 'G': break;      /* off already, or without meaning here */
                 case 'f': die("-f (going to the background) is not supported");
@@ -142,8 +142,10 @@ int main(int argc, char **argv) {
         host += 6;
         char *slash = strchr(host, '/');
         if (slash) *slash = 0;
-        char *colon = strrchr(host, ':');
-        if (colon && !strchr(colon, '@')) { *colon++ = 0; set_or_die(&cfg, "Port", colon); }
+        char *hp = strrchr(host, '@') ? strrchr(host, '@') + 1 : host;                    /* the host part: "name", "name:port", "[v6]", "[v6]:port" */
+        char *close = strchr(hp, ']');
+        char *colon = close ? (close[1] == ':' ? close + 1 : NULL) : (strchr(hp, ':') == strrchr(hp, ':') ? strchr(hp, ':') : NULL);
+        if (colon) { *colon++ = 0; set_or_die(&cfg, "Port", colon); }
     }
     char *at = strrchr(host, '@');
     if (at) {
@@ -152,6 +154,8 @@ int main(int argc, char **argv) {
         set_or_die(&cfg, "User", host);
         host = at + 1;
     }
+    size_t hl = strlen(host);
+    if (hl >= 2 && host[0] == '[' && host[hl - 1] == ']') { host[hl - 1] = 0; host++; }  /* [fec0::2] means fec0::2 */
     if (!*host) usage();
     for (char *p = host; *p; p++) *p = (char)tolower((unsigned char)*p);
     so.host = host;

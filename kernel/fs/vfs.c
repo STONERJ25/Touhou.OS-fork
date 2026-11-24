@@ -496,6 +496,7 @@ int vfs_open_root(VNode *root, const char *path, int flags, u32 mode, const Cred
     if (S_ISLNK(v->mode)) { vnode_put(v); return -ELOOP; }
     if ((flags & O_TRUNC) && S_ISREG(v->mode) && v->ops->truncate) v->ops->truncate(v, 0);
 
+    if (S_ISFIFO(v->mode)) return fifo_open(v, flags, out);           /* a named pipe: its opens meet in one pipe (kernel/fs/pipe.c) */
     File *f = file_new(v, flags, NULL, NULL);
     if (!f) { vnode_put(v); return -ENOMEM; }
     if (v->ops->opened) v->ops->opened(v, f);

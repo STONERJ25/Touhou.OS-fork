@@ -163,10 +163,10 @@ long lnx_close_range(TrapFrame *tf) {
     u32 flags = (u32)A2(tf);
     if (flags & ~(LNX_CLOSE_RANGE_UNSHARE | LNX_CLOSE_RANGE_CLOEXEC)) return -EINVAL;
     if (first > last) return -EINVAL;
-    if (last >= MAX_FD) last = MAX_FD - 1;
-    for (u64 fd = first; fd <= last && fd < MAX_FD; fd++) {
+    if (last >= (u64)fd_slots(me())) last = (u64)fd_slots(me()) - 1;           /* nothing is open beyond the table */
+    for (u64 fd = first; fd <= last && fd < (u64)fd_slots(me()); fd++) {
         if (!fd_get(me(), (int)fd)) continue;
-        if (flags & LNX_CLOSE_RANGE_CLOEXEC) me()->fd_flags[fd] |= FD_CLOEXEC;
+        if (flags & LNX_CLOSE_RANGE_CLOEXEC) fd_setflags(me(), (int)fd, FD_CLOEXEC, 0);
         else fd_close(me(), (int)fd);
     }
     return 0;
@@ -296,7 +296,7 @@ long lnx_open_via_proc(const char *abs, int flags) {
     if (!t || t->state == PROC_ZOMBIE) return -ENOENT;
     if (t != self && self->cred.uid != 0 && t->cred.uid != self->cred.uid) return -EACCES;      /* /proc/PID/fd is for the owner and root */
     u64 fl = irq_save();
-    File *f = fd >= 0 && fd < MAX_FD ? t->fds[fd] : NULL;
+    File *f = fd >= 0 && fd < fd_slots(t) ? t->fds[fd] : NULL;
     if (f) file_get(f);
     irq_restore(fl);
     if (!f) return -ENOENT;
@@ -341,7 +341,8 @@ long lnx_fcntl(TrapFrame *tf) {
     case LNX_F_DUPFD_CLOEXEC: {
         File *f = fd_get_ref(me(), fd);
         if (!f) return -EBADF;
-        long n = fd_install(me(), f, (int)A2(tf), FD_CLOEXEC);      /* the descriptor table takes over the reference */
+        if ((int)A2(tf) < 0 || (int)A2(tf) >= rlimit_nofile(me())) { file_put(f); return -EINVAL; }   /* fcntl(2): beyond RLIMIT_NOFILE */
+        long n = fd_install(me(), f, (int)A2(tf), FD_CLOEXEC);     /* the descriptor table takes over the reference */
         if (n < 0) file_put(f);
         return n;
     }

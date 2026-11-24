@@ -11,6 +11,8 @@ int  gap_mount(const char *src, const char *target, const char *fstype, unsigned
 int  gap_mount_opts(const char *src, const char *target, const char *fstype, unsigned long flags, const char *opts);
 int  gap_umount(const char *target);
 void gap_setname(const char *name);
+void *gap_set_gsbase(void *base);        /* the calling thread's gs: base (docs/WINDOWS.md); returns the previous one. fork and new threads inherit it, execve clears it */
+void *gap_get_gsbase(void);
 int  gap_setabi(int abi);                 /* ABI_NATIVE or ABI_LINUX: the personality of the NEXT successful execve (docs/COMPAT.md) */
 void gap_log(const char *msg);
 long gap_time_ms(void);

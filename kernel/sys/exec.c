@@ -300,16 +300,20 @@ static int exec_file(Process *p, const char *path, char *const argv[], char *con
     char head[160];
     memset(head, 0, sizeof head);
     ssize_t n = (f->off = 0, vfs_read(f, head, sizeof head - 1));
-    if (n >= 4 && head[0] == '#' && head[1] == '!') {
+    bool windows = n >= 64 && head[0] == 'M' && head[1] == 'Z';       /* a Windows program: run as if it began with "#!/bin/winrun" (docs/WINDOWS.md, W3) */
+    if ((n >= 4 && head[0] == '#' && head[1] == '!') || windows) {
         /* Script: re-run with the interpreter. */
         if (depth >= EXEC_SCRIPT_DEPTH) { file_put(f); return -ELOOP; }
         file_put(f);
-        char *line = head + 2;
-        char *nl = strchr(line, '\n');
-        if (nl) *nl = 0;
-        while (*line == ' ') line++;
-        char *arg = strchr(line, ' ');
-        if (arg) { *arg++ = 0; while (*arg == ' ') arg++; if (!*arg) arg = NULL; }
+        static char winrun[] = "/bin/winrun";
+        char *line = windows ? winrun : head + 2, *arg = NULL;
+        if (!windows) {
+            char *nl = strchr(line, '\n');
+            if (nl) *nl = 0;
+            while (*line == ' ') line++;
+            arg = strchr(line, ' ');
+            if (arg) { *arg++ = 0; while (*arg == ' ') arg++; if (!*arg) arg = NULL; }
+        }
         int argc = 0;
         while (argv && argv[argc]) {
             if (++argc > EXEC_MAX_ARGS) return -E2BIG;
@@ -387,12 +391,15 @@ static int exec_file(Process *p, const char *path, char *const argv[], char *con
     vmm_switch(nas.pml4);
     uvm_destroy(&old);
 
-    for (int i = 0; i < MAX_FD; i++)
-        if (p->fds[i] && (p->fd_flags[i] & FD_CLOEXEC)) fd_close(p, i);
+    for (int i = 0; i < fd_slots(p); i++) {
+        int dfl = fd_getflags(p, i);                                  /* under the table lock; negative: not open */
+        if (dfl >= 0 && (dfl & FD_CLOEXEC)) fd_close(p, i);
+    }
     signal_exec_reset(p);                                             /* handlers back to default, nothing pending (kernel/sys/signal.c) */
     current->utid = p->pid;                                           /* the survivor of a threaded process becomes its first thread */
     current->clear_tid = 0;
     task_set_fs_base(current, 0);                                     /* the new program sets up its own TLS */
+    task_set_gs_base(current, 0);                                     /* and no GS base (SYS_gsbase) */
     strlcpy(p->name, base_name(abi == ABI_LINUX ? w->comm_path : argv && argv[0] ? argv[0] : path), sizeof p->name);      /* a Linux program's comm is the last component of the path it was started by, as ps(1) shows it */
     path_normalize(p->cwd_path, path, p->exe, sizeof p->exe);              /* /proc/<pid>/exe */
     linux_root_adopt(p, w->root);                                     /* "/" is the Linux tree's top for a Linux program started from a native one, the real root for a native program */

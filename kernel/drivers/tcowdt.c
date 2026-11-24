@@ -100,7 +100,7 @@ u32 tcowdt_timeout(void) { return W.armed ? W.seconds : 0; }
 
 u32 tcowdt_seconds_left(void) {
     if (!W.armed) return 0;
-    u64 gone = (uptime_ms() - W.last_feed) / 1000;
+    u64 gone = ktime_elapsed(uptime_ms(), W.last_feed) / 1000;      /* (no lock here: a feed may land between the two readings and be the newer one) */
     return gone >= W.seconds ? 0 : W.seconds - (u32)gone;
 }
 
@@ -157,7 +157,7 @@ static void momiji_main(void *arg) {
             if (!W.late_said || now - W.late_said > 30000) {
                 W.late_said = now;
                 if (feeding) klog("Momiji", "watchdog: the kernel fed it late: the first of its two countdowns had run out (the machine stalled for more than %u s)", W.seconds / 2);
-                else klog("Momiji", "watchdog: nobody has fed it for %lu s (%s); the machine restarts within %u s", (unsigned long)((now - W.last_feed) / 1000),
+                else klog("Momiji", "watchdog: nobody has fed it for %lu s (%s); the machine restarts within %u s", (unsigned long)(ktime_elapsed(now, W.last_feed) / 1000),
                           W.feeder == TCOWDT_USER ? "user space is late" : W.test ? "a test" : W.shutdown ? "the shutdown takes long" : "/dev/watchdog was closed",
                           tcowdt_seconds_left());
             }
@@ -268,7 +268,7 @@ static size_t gen_proc(char *b, size_t cap) {
     if (W.armed) P(", %u s, %u s left if nobody feeds it", W.seconds, tcowdt_seconds_left());
     P("\nfeeder:   %s", feeder_name());
     if (W.armed && W.feeder == TCOWDT_USER) P(": '%s' (pid %d)", W.user_name, W.user_pid);
-    if (W.armed) P(", last fed %lu ms ago", (unsigned long)(uptime_ms() - W.last_feed));
+    if (W.armed) P(", last fed %lu ms ago", (unsigned long)ktime_elapsed(uptime_ms(), W.last_feed));
     P("\nreset:    %s\n", W.blocked ? "BLOCKED: the timer ran out twice and the machine went on running" :
                           W.nr == 0 ? "possible (NO_REBOOT is clear)" : W.nr == 1 ? "blocked: NO_REBOOT stays set (a pin strap or the firmware)" : "unknown (NO_REBOOT cannot be read)");
     P("noreboot: %s when the kernel looked%s\n", W.nr_before == 1 ? "set" : W.nr_before == 0 ? "clear" : "unknown",

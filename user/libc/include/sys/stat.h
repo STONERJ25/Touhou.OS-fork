@@ -21,6 +21,8 @@ int stat(const char *path, struct stat *st);
 int lstat(const char *path, struct stat *st);
 int fstat(int fd, struct stat *st);
 int mkdir(const char *path, mode_t mode);
+int mknod(const char *path, mode_t mode, dev_t dev);    /* S_IFREG and S_IFIFO only (the FIFO on tmpfs: /tmp); dev is ignored */
+int mkfifo(const char *path, mode_t mode);
 int chmod(const char *path, mode_t mode);
 mode_t umask(mode_t m);
 #endif

@@ -48,8 +48,58 @@ static int futex_key(u64 uaddr, bool populate, u64 *key) {
         if (!pa) return -EFAULT;
     }
     if (!pmm_page_managed(pa)) return -EFAULT;           /* a mapped device (the framebuffer, a BAR) is not in the direct map: the kernel could not read it */
+    /* Copy-on-write (docs/COW.md): a page shared after a fork has one physical address in several processes, and it changes for the one that writes first. A waiter
+     * therefore takes its own copy of the page before it uses the address (a wait is a write as far as sharing goes), and fork never shares a page that has a waiter
+     * (uvm_clone asks futex_page_has_waiters): the address of a word somebody sleeps on stays what it is and belongs to one address space. A waker that finds the page
+     * still shared has, by the same rule, nobody to wake. */
+    u64 fl = 0;
+    vmm_translate(p->as.pml4, uaddr, &fl);
+    if (fl & PTE_COW) {
+        if (!populate) return 0;
+        mutex_lock(&p->as.lock);
+        int rc = uvm_cow_break(&p->as, uaddr, true);
+        pa = vmm_translate(p->as.pml4, uaddr, NULL);
+        mutex_unlock(&p->as.lock);
+        if (rc || !pa) return rc ? -ENOMEM : -EFAULT;
+    }
     *key = pa;
     return 1;
+}
+
+/* Is the word at uaddr still the page `key` names, and not shared? Called with interrupts off, just before a waiter joins the list: a sibling thread may have forked
+ * between futex_key and here (the page is shared again), and then the key is worked out once more. */
+static bool key_is_stable(u64 uaddr, u64 key) {
+    u64 fl = 0;
+    paddr_t pa = vmm_translate(current->proc->as.pml4, uaddr, &fl);
+    return pa == key && !(fl & PTE_COW);
+}
+
+/* For fork (uvm_clone): does anybody sleep on a word in this page? */
+bool futex_page_has_waiters(paddr_t page) {
+    if (!g_head) return false;
+    bool yes = false;
+    u64 f = irq_save();
+    for (FutexWaiter *w = g_head; w && !yes; w = w->next) yes = (w->key & ~(u64)(PAGE_SIZE - 1)) == (page & ~(u64)(PAGE_SIZE - 1));
+    irq_restore(f);
+    return yes;
+}
+
+long futex_wait_key(u64 key, u32 val, u64 deadline);
+
+/* futex_key and futex_wait_key as one step that a fork by a sibling thread cannot come between. */
+static long futex_wait_user(u64 uaddr, u32 val, u64 deadline) {
+    for (;;) {
+        u64 key;
+        int rc = futex_key(uaddr, true, &key);
+        if (rc < 0) return rc;
+        u64 f = irq_save();
+        if (key_is_stable(uaddr, key)) {
+            long r = futex_wait_key(key, val, deadline);
+            irq_restore(f);
+            return r;
+        }
+        irq_restore(f);
+    }
 }
 
 /* Wakes up to n waiters on key; with a destination key, moves up to `requeue` more of them there instead. irq off. */
@@ -121,15 +171,13 @@ int futex_waiters_on(u64 key) {
 }
 
 static long futex_wait(u64 uaddr, u32 val, u64 utimeout) {
-    u64 key;
-    int rc = futex_key(uaddr, true, &key);
-    if (rc < 0) return rc;
+    if (uaddr & 3) return -EINVAL;
     u64 deadline = ~0ULL;
     if (utimeout) {
         long rc2 = deadline_from_timespec((void *)utimeout, &deadline);
         if (rc2) return rc2;
     }
-    return futex_wait_key(key, val, deadline);
+    return futex_wait_user(uaddr, val, deadline);
 }
 
 static long futex_wake(u64 uaddr, int n) {
@@ -140,12 +188,16 @@ static long futex_wake(u64 uaddr, int n) {
 }
 
 static long futex_requeue(u64 uaddr, int nwake, u64 nrequeue, u64 uaddr2, bool check, u32 expected) {
-    u64 k1, k2;
-    int rc = futex_key(uaddr, true, &k1);
-    if (rc < 0) return rc;
-    rc = futex_key(uaddr2, true, &k2);
-    if (rc < 0) return rc;
-    u64 f = irq_save();
+    u64 k1, k2, f;
+    for (;;) {
+        int rc = futex_key(uaddr, true, &k1);
+        if (rc < 0) return rc;
+        rc = futex_key(uaddr2, true, &k2);
+        if (rc < 0) return rc;
+        f = irq_save();
+        if (key_is_stable(uaddr, k1) && key_is_stable(uaddr2, k2)) break;       /* (a fork by a sibling thread in between: once more) */
+        irq_restore(f);
+    }
     if (check && *(volatile u32 *)phys_to_virt(k1) != expected) { irq_restore(f); return -EAGAIN; }
     int woken = wake_locked(k1, nwake < 0 ? 0x7FFFFFFF : nwake, k2, (int)(nrequeue > 0x7FFFFFFF ? 0x7FFFFFFF : nrequeue));
     irq_restore(f);
@@ -158,10 +210,7 @@ static long futex_cmp_requeue(u64 uaddr, int nwake, u64 nrequeue, u64 uaddr2, u3
 
 /* For the Linux personality (kernel/linux/syscall.c): the same operations with the timeout already worked out, and the requeue also without the comparison. */
 long futex_wait_deadline(u64 uaddr, u32 val, u64 deadline) {         /* deadline: an absolute uptime in ms, or ~0 for none */
-    u64 key;
-    int rc = futex_key(uaddr, true, &key);
-    if (rc < 0) return rc;
-    return futex_wait_key(key, val, deadline);
+    return futex_wait_user(uaddr, val, deadline);
 }
 
 long futex_wake_addr(u64 uaddr, int n) { return futex_wake(uaddr, n); }

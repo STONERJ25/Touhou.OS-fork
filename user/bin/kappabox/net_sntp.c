@@ -5,8 +5,11 @@
  *
  * The kernel asks for the time by itself after boot (kernel/net/ntp.c, docs/NTP.md); sntp -S shows what it did (/proc/ntp) and
  * sntp -n makes it ask again now (root).
+ * A name with AAAA and A records is asked over both families in turn (IPv6 first when this machine has a global address); a literal may be
+ * written "fec0::2" or "[fec0::2]".
  */
 #include "netutil.h"
+#include <netconn.h>
 
 #define NTP_UNIX_DELTA 2208988800ull
 
@@ -85,19 +88,37 @@ static int sntp_main(int argc, char **argv, int set_default) {
     if (optind >= argc) { kb_error("usage: %s [-s] [-w] [-q] [-p PORT] [-t SECONDS] SERVER | -S | -n", kb_name); return 2; }
     if (query_only) set = write_rtc = 0;
     const char *server = argv[optind];
-    uint32_t ip;
-    if (!nu_resolve(server, &ip)) return 1;
-    int fd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (fd < 0) { kb_error("socket: %s", strerror(errno)); return 1; }
-    struct sockaddr_in sa;
-    memset(&sa, 0, sizeof sa);
-    sa.sin_family = AF_INET;
-    sa.sin_port = htons((unsigned short)port);
-    sa.sin_addr.s_addr = htonl(ip);
-    if (connect(fd, (struct sockaddr *)&sa, sizeof sa) < 0) { kb_error("%s: %s", server, strerror(errno)); return 1; }
+    /* every address of the name (IPv6 and IPv4, the families this machine has), interleaved by family: the three attempts go to the
+     * first, second and third of them in turn, so a family that is broken here costs one attempt, not all three */
+    char name[256];
+    snprintf(name, sizeof name, "%s", server);
+    size_t nl = strlen(name);
+    if (nl >= 2 && name[0] == '[' && name[nl - 1] == ']') { name[nl - 1] = 0; memmove(name, name + 1, nl - 1); }
+    char service[8];
+    snprintf(service, sizeof service, "%u", port);
+    struct addrinfo hints, *res = NULL;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_socktype = SOCK_DGRAM;
+    hints.ai_flags = AI_ADDRCONFIG;
+    int rc = getaddrinfo(name, service, &hints, &res);
+    if (rc == EAI_NONAME || rc == EAI_FAIL) { hints.ai_flags = 0; if (getaddrinfo(name, service, &hints, &res) == 0) rc = 0; }
+    if (rc != 0 || !res) { kb_error("%s: %s", server, gai_strerror(rc)); return 1; }
+    const struct addrinfo *addrs[NETCONN_MAX];
+    int naddrs = 0;
+    for (const struct addrinfo *ai = res; ai && naddrs < NETCONN_MAX; ai = ai->ai_next) addrs[naddrs++] = ai;
+    netconn_interleave(addrs, naddrs);
+    int fd = -1;
+    char shown_ip[64] = "";
 
     unsigned char req[48], rep[128];
     for (int attempt = 0; attempt < 3; attempt++) {
+        const struct addrinfo *ai = addrs[attempt % naddrs];
+        if (fd >= 0) close(fd);
+        fd = socket(ai->ai_family, SOCK_DGRAM, 0);
+        if (fd < 0) { kb_error("socket: %s", strerror(errno)); freeaddrinfo(res); return 1; }
+        if (ai->ai_family == AF_INET6) inet_ntop(AF_INET6, &((struct sockaddr_in6 *)ai->ai_addr)->sin6_addr, shown_ip, sizeof shown_ip);
+        else inet_ntop(AF_INET, &((struct sockaddr_in *)ai->ai_addr)->sin_addr, shown_ip, sizeof shown_ip);
+        if (connect(fd, ai->ai_addr, ai->ai_addrlen) < 0) { if (attempt + 1 < 3 && naddrs > 1) continue; kb_error("%s: %s", server, strerror(errno)); freeaddrinfo(res); return 1; }
         memset(req, 0, sizeof req);
         req[0] = 0x23;                                                /* leap 0, version 4, mode 3 (client) */
         long long t1 = gap_time_ms();
@@ -112,14 +133,23 @@ static int sntp_main(int argc, char **argv, int set_default) {
             if (r <= 0) break;
             ssize_t n = recv(fd, rep, sizeof rep, 0);
             long long t4 = gap_time_ms();
-            if (n < 48) { if (n < 0 && errno == ECONNREFUSED) { kb_error("%s: connection refused (is an NTP server running there?)", server); return 1; } continue; }
+            if (n < 48) {
+                if (n < 0 && errno == ECONNREFUSED) {
+                    if (naddrs > 1 && attempt + 1 < 3) break;                 /* the next address may have one */
+                    kb_error("%s: connection refused (is an NTP server running there?)", server);
+                    freeaddrinfo(res);
+                    return 1;
+                }
+                continue;
+            }
             int mode = rep[0] & 7, li = rep[0] >> 6, stratum = rep[1];
             if ((mode != 4 && mode != 5) || memcmp(rep + 24, req + 40, 8)) continue;       /* not an answer to our request */
             if (li == 3 || stratum == 0 || stratum > 15) { kb_error("%s: the server's clock is not synchronised (stratum %d)", server, stratum); return 1; }
             long long t2 = get_ntp(rep + 32), t3 = get_ntp(rep + 40);
             long long offset = ((t2 - t1) + (t3 - t4)) / 2, delay = (t4 - t1) - (t3 - t2);
-            printf("server %s, stratum %d, offset %+lld.%03lld, delay %lld.%03lld\n", nu_ip(ip), stratum, offset / 1000, (offset < 0 ? -offset : offset) % 1000,
+            printf("server %s, stratum %d, offset %+lld.%03lld, delay %lld.%03lld\n", shown_ip, stratum, offset / 1000, (offset < 0 ? -offset : offset) % 1000,
                    delay / 1000, (delay < 0 ? -delay : delay) % 1000);
+            freeaddrinfo(res);
             if (!set) return 0;
             long long now = gap_time_ms() + offset;
             long rtc_value = 0;
@@ -138,6 +168,7 @@ static int sntp_main(int argc, char **argv, int set_default) {
             return 0;
         }
     }
+    freeaddrinfo(res);
     kb_error("no answer from %s", server);
     return 1;
 }

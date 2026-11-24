@@ -27,6 +27,9 @@ static Process *process_alloc(void) {
     wq_init(&p->thread_wq);
     wq_init(&p->stop_wq);
     p->umask = 022;
+    p->fds = p->fd_small;                           /* the descriptor table starts inline (fd_reserve grows it) */
+    p->fd_flags = p->fd_small_flags;
+    p->fd_cap = FD_INLINE;
     rlimit_defaults(&p->rlim);                      /* fork overwrites them with the parent's */
     p->start_ms = uptime_ms();
     u64 f = irq_save();
@@ -45,6 +48,8 @@ static void process_free(Process *p) {
     }
     g_nprocs--;
     irq_restore(f);
+    if (p->fds != p->fd_small) kfree((void **)p->fds - 1);      /* a grown descriptor table (its link and flags share the block) */
+    for (void **b = p->fd_retired; b;) { void **n = *b; kfree(b); b = n; }      /* and the tables it replaced (fd_reserve) */
     kfree(p);
 }
 
@@ -92,40 +97,118 @@ void alarm_tick(u64 now) { process_for_each(alarm_cb, &now); }
 
 /* ------------------------------------------------------------------ descriptors */
 
-/* The descriptor table is shared by every thread: scans and updates run with interrupts disabled (its lock). */
-int fd_install(Process *p, File *f, int minfd, int flags) {
-    u64 fl = irq_save();
-    int nfd = rlimit_nofile(p);                     /* RLIMIT_NOFILE: the soft limit, at most the table */
-    for (int i = minfd < 0 ? 0 : minfd; i < nfd; i++) {
-        if (!p->fds[i]) {
-            p->fds[i] = f;
-            p->fd_flags[i] = (u8)flags;
-            irq_restore(fl);
-            return i;
+/* The descriptor table is shared by every thread: scans and updates run with interrupts disabled (its lock).
+ *
+ * It starts as the FD_INLINE slots inside the Process; fd_reserve swaps in a heap table twice as long (again and again, up to FD_HARD_MAX) when a descriptor beyond
+ * the end is wanted: by fd_install when every slot below the soft limit is taken, by dup2 and F_DUPFD to a high number, by fork for a child of a parent with a large
+ * table. A table never shrinks while the process lives (Linux does the same). The flags live in the same block, behind the pointers, and one pointer in front of them
+ * links the block into the process's list of retired tables.
+ *
+ * A replaced table is NOT freed until the process is (process_free): the kernel is preemptive, and code all over it loads p->fds or p->fd_flags and indexes it with
+ * interrupts on (fd_get, the F_GETFD/F_SETFD and FD_CLOEXEC lines of the system calls, /proc, the OOM killer's count). A thread preempted between the load and the
+ * access, while a sibling grows the table, would otherwise read or WRITE freed heap memory (docs/FDS_REVIEW.md, finding 1). A stale table is still a correct
+ * snapshot of the moment it was replaced, so the reader gets an answer that was true an instant ago, as it would have without the growth. The cost is bounded: the
+ * tables double, so all the retired ones together are smaller than the live one (at most 36 KiB for a process that reached 4096 slots). */
+int fd_reserve(Process *p, int fd) {
+    if (fd < 0 || fd >= FD_HARD_MAX) return -EMFILE;
+    for (;;) {
+        int cap = p->fd_cap;
+        if (fd < cap) return 0;
+        int ncap = cap;
+        while (ncap <= fd) ncap *= 2;
+        if (ncap > FD_HARD_MAX) ncap = FD_HARD_MAX;
+        void **blk = kzalloc(sizeof(void *) + (size_t)ncap * (sizeof(File *) + 1));       /* [link][ncap pointers][ncap flag bytes] */
+        if (!blk) return -ENOMEM;
+        File **nt = (File **)(blk + 1);
+        u8 *nf = (u8 *)(nt + ncap);
+        u64 fl = irq_save();
+        if (p->fd_cap == cap) {                     /* nobody else grew it meanwhile */
+            memcpy(nt, p->fds, (size_t)cap * sizeof(File *));
+            memcpy(nf, p->fd_flags, (size_t)cap);
+            if (p->fds != p->fd_small) {            /* retire the old heap table: freed with the process, see above */
+                void **ob = (void **)p->fds - 1;
+                *ob = p->fd_retired;
+                p->fd_retired = ob;
+            }
+            p->fds = nt;
+            p->fd_flags = nf;
+            p->fd_cap = ncap;
+            blk = NULL;
         }
+        irq_restore(fl);
+        if (blk) kfree(blk);                        /* lost the race: the other table is used (and checked again) */
     }
+}
+
+int fd_install(Process *p, File *f, int minfd, int flags) {
+    int nfd = rlimit_nofile(p);                     /* RLIMIT_NOFILE: the soft limit */
+    int i = minfd < 0 ? 0 : minfd;
+    for (;;) {
+        u64 fl = irq_save();
+        int end = nfd < p->fd_cap ? nfd : p->fd_cap;
+        for (; i < end; i++) {
+            if (!p->fds[i]) {
+                p->fds[i] = f;
+                p->fd_flags[i] = (u8)flags;
+                irq_restore(fl);
+                return i;
+            }
+        }
+        irq_restore(fl);
+        if (i >= nfd) return -EMFILE;
+        int rc = fd_reserve(p, i);                  /* every slot of the table is taken but the limit allows more */
+        if (rc) return rc;
+    }
+}
+
+/* dup2's half: f (a reference the caller gives up) at slot fd, whatever was there closed first. */
+int fd_place(Process *p, int fd, File *f, int flags) {
+    if (fd < 0 || fd >= rlimit_nofile(p)) { file_put(f); return -EBADF; }
+    int rc = fd_reserve(p, fd);
+    if (rc) { file_put(f); return rc; }
+    u64 fl = irq_save();
+    File *old = p->fds[fd];
+    p->fds[fd] = f;
+    p->fd_flags[fd] = (u8)flags;
     irq_restore(fl);
-    return -EMFILE;
+    if (old) file_put(old);
+    return fd;
+}
+
+/* Sets and clears descriptor flags (FD_CLOEXEC) of an open descriptor under the table lock; -EBADF when it is not open. */
+int fd_setflags(Process *p, int fd, int set, int clear) {
+    u64 fl = irq_save();
+    int rc = -EBADF;
+    if (fd >= 0 && fd < p->fd_cap && p->fds[fd]) { p->fd_flags[fd] = (u8)((p->fd_flags[fd] & ~clear) | set); rc = 0; }
+    irq_restore(fl);
+    return rc;
+}
+
+/* The descriptor flags of an open descriptor, read under the table lock; -EBADF when it is not open. */
+int fd_getflags(Process *p, int fd) {
+    u64 fl = irq_save();
+    int rc = fd >= 0 && fd < p->fd_cap && p->fds[fd] ? p->fd_flags[fd] : -EBADF;
+    irq_restore(fl);
+    return rc;
 }
 
 File *fd_get(Process *p, int fd) {
-    if (fd < 0 || fd >= MAX_FD) return NULL;
+    if (fd < 0 || fd >= p->fd_cap) return NULL;
     return p->fds[fd];
 }
 
 /* Like fd_get, but takes a reference under the table lock: safe against another thread closing the descriptor. */
 File *fd_get_ref(Process *p, int fd) {
-    if (fd < 0 || fd >= MAX_FD) return NULL;
     u64 fl = irq_save();
-    File *f = p->fds[fd];
+    File *f = fd >= 0 && fd < p->fd_cap ? p->fds[fd] : NULL;
     if (f) file_get(f);
     irq_restore(fl);
     return f;
 }
 
 int fd_close(Process *p, int fd) {
-    if (fd < 0 || fd >= MAX_FD) return -EBADF;
     u64 fl = irq_save();
+    if (fd < 0 || fd >= p->fd_cap) { irq_restore(fl); return -EBADF; }
     File *f = p->fds[fd];
     p->fds[fd] = NULL;
     p->fd_flags[fd] = 0;
@@ -193,8 +276,14 @@ int process_fork_ex(TrapFrame *tf, u64 settid_addr, u64 cleartid_addr) {
     c->root = par->root;                            /* a child lives in the same Linux root as its parent (docs/COMPAT.md) */
     if (c->root) vnode_get(c->root);
     memcpy(c->sigact, par->sigact, sizeof c->sigact);
-    u64 fl = irq_save();                            /* the table is shared with the parent's other threads */
-    for (int i = 0; i < MAX_FD; i++) {
+    u64 fl;
+    for (;;) {                                      /* the child's table as long as the parent's: the whole table is inherited */
+        if (fd_reserve(c, par->fd_cap - 1)) { if (c->cwd) vnode_put(c->cwd); if (c->root) vnode_put(c->root); process_free(c); return -ENOMEM; }
+        fl = irq_save();                            /* the table is shared with the parent's other threads */
+        if (c->fd_cap >= par->fd_cap) break;
+        irq_restore(fl);                            /* a sibling thread grew it meanwhile */
+    }
+    for (int i = 0; i < par->fd_cap; i++) {
         if (par->fds[i]) {
             file_get(par->fds[i]);
             c->fds[i] = par->fds[i];
@@ -210,7 +299,7 @@ int process_fork_ex(TrapFrame *tf, u64 settid_addr, u64 cleartid_addr) {
         mutex_unlock(&par->as.lock);
     }
     if (rc) {
-        for (int i = 0; i < MAX_FD; i++) if (c->fds[i]) file_put(c->fds[i]);
+        for (int i = 0; i < fd_slots(c); i++) if (c->fds[i]) file_put(c->fds[i]);
         if (c->cwd) vnode_put(c->cwd);
         if (c->root) vnode_put(c->root);
         uvm_destroy(&c->as);
@@ -225,7 +314,7 @@ int process_fork_ex(TrapFrame *tf, u64 settid_addr, u64 cleartid_addr) {
     irq_restore(f);
 
     /* Only the calling thread survives in the child: it keeps its TLS base and signal mask, and becomes the child's first thread. */
-    ThreadInit ti = { .utid = c->pid, .fs_base = current->fs_base, .clear_tid = cleartid_addr, .sig_blocked = current->sig_blocked };
+    ThreadInit ti = { .utid = c->pid, .fs_base = current->fs_base, .gs_base = current->gs_base, .clear_tid = cleartid_addr, .sig_blocked = current->sig_blocked };
     if (settid_addr) {
         u32 tid = (u32)c->pid;
         uvm_write(&c->as, settid_addr, &tid, sizeof tid);
@@ -235,7 +324,7 @@ int process_fork_ex(TrapFrame *tf, u64 settid_addr, u64 cleartid_addr) {
         u64 g = irq_save();
         par->children = c->sibling;
         irq_restore(g);
-        for (int i = 0; i < MAX_FD; i++) if (c->fds[i]) file_put(c->fds[i]);
+        for (int i = 0; i < fd_slots(c); i++) if (c->fds[i]) file_put(c->fds[i]);
         if (c->cwd) vnode_put(c->cwd);
         if (c->root) vnode_put(c->root);
         uvm_destroy(&c->as);
@@ -248,6 +337,7 @@ int process_fork_ex(TrapFrame *tf, u64 settid_addr, u64 cleartid_addr) {
 int process_fork(TrapFrame *tf) { return process_fork_ex(tf, 0, 0); }
 
 /* The last thread out: releases everything the process owned and turns it into a zombie for the parent. */
+void pidfd_notify(void);
 static NORETURN void process_finalize(Process *p, int status) {
     if (p == g_init_proc) panic("init (pid 1) exited with status %#x: the shrine has no maiden", status);
 
@@ -256,7 +346,7 @@ static NORETURN void process_finalize(Process *p, int status) {
     irq_restore(af);
     signal_process_exit(p);                                                  /* the queued signals go back to the pool */
     ktimers_process_exit(p);                                                 /* and the POSIX timers are dropped */
-    for (int i = 0; i < MAX_FD; i++) if (p->fds[i]) fd_close(p, i);
+    for (int i = 0; i < fd_slots(p); i++) if (p->fds[i]) fd_close(p, i);
     if (p->cwd) { vnode_put(p->cwd); p->cwd = NULL; }
     if (p->root) { vnode_put(p->root); p->root = NULL; }
     for (unsigned i = 0; i < ARRAY_SIZE(p->old_cwd); i++) if (p->old_cwd[i]) { vnode_put(p->old_cwd[i]); p->old_cwd[i] = NULL; }
@@ -290,6 +380,7 @@ static NORETURN void process_finalize(Process *p, int status) {
     Process *parent = p->parent;
     int my_pgid = p->pgid;
     irq_restore(f);
+    pidfd_notify();                                 /* a pidfd of this process polls readable from now on (kernel/fs/pidfd.c) */
 
     if (wake_init) wq_wake_all(&g_init_proc->wait_wq);
     if (parent) {

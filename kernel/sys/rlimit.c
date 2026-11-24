@@ -6,13 +6,13 @@
  * Process: fork copies them, execve keeps them, so a shell's `ulimit` reaches every program it starts.
  *
  * What is enforced, and where (the rest is stored and reported, so that programs that set them are not refused):
- *   RLIMIT_NOFILE  fd_install and dup2 (kernel/sys/process.c, syscalls.c): the table has MAX_FD slots, so the hard limit cannot go above that; EMFILE / EBADF
+ *   RLIMIT_NOFILE  fd_install and fd_place (kernel/sys/process.c): soft 1024, hard 4096 (FD_HARD_MAX, the longest table: not even root goes above it); EMFILE / EBADF
  *   RLIMIT_NPROC   fork and the thread creation calls: the processes of one real user, root exempt; EAGAIN
  *   RLIMIT_AS      uvm_map (every mmap, brk and the other ways to get address space): the sum of the process's mappings, the stack counted at its initial size; ENOMEM
  *   RLIMIT_DATA    uvm_map: writable private mappings (the heap, anonymous maps, the program's data and bss); ENOMEM
  *   RLIMIT_STACK   the page fault handler: a stack page deeper than the limit is not mapped, so the program gets SIGSEGV as on any system
  *   RLIMIT_CORE    accepted (there are no core dumps)
- * The defaults keep every program that ran before running: nothing but NOFILE (64), NPROC (128 of the 256 slots of the process table) and the stack (8 MiB) is limited.
+ * The defaults keep every program that ran before running: nothing but NOFILE (1024 soft, 4096 hard, as on a usual Linux), NPROC (128 of the 256 slots of the process table) and the stack (8 MiB) is limited.
  */
 #include "process.h"
 #include "kernel.h"
@@ -25,7 +25,8 @@ void rlimit_defaults(Rlimits *r) {
     r->cur[RLIMIT_STACK] = USER_STACK_MAX;
     r->cur[RLIMIT_CORE] = 0;
     r->cur[RLIMIT_NPROC] = r->max[RLIMIT_NPROC] = NPROC_DEFAULT;
-    r->cur[RLIMIT_NOFILE] = r->max[RLIMIT_NOFILE] = MAX_FD;
+    r->cur[RLIMIT_NOFILE] = FD_SOFT_DEFAULT;
+    r->max[RLIMIT_NOFILE] = FD_HARD_MAX;
     r->cur[RLIMIT_MEMLOCK] = r->max[RLIMIT_MEMLOCK] = 64 * 1024;
     r->cur[RLIMIT_SIGPENDING] = r->max[RLIMIT_SIGPENDING] = SIGQ_PER_PROC;
     r->cur[RLIMIT_MSGQUEUE] = r->max[RLIMIT_MSGQUEUE] = 819200;
@@ -37,7 +38,7 @@ void rlimit_defaults(Rlimits *r) {
 
 int rlimit_nofile(const Process *p) {
     u64 c = p->rlim.cur[RLIMIT_NOFILE];
-    return c > MAX_FD ? MAX_FD : (int)c;
+    return c > FD_HARD_MAX ? FD_HARD_MAX : (int)c;
 }
 
 typedef struct { u32 uid; u64 n; } UserCount;
@@ -117,7 +118,7 @@ long rlimit_set(Process *caller, int pid, int res, const struct grlimit *nw) {
     if (rc) return rc;
     bool root = caller->cred.uid == 0;
     if (nw->max > t->rlim.max[res] && !root) return -EPERM;     /* only root raises a hard limit */
-    if (res == RLIMIT_NOFILE && nw->max > MAX_FD) return -EPERM;        /* the descriptor table has MAX_FD slots: not even root can have more */
+    if (res == RLIMIT_NOFILE && nw->max > FD_HARD_MAX) return -EPERM;   /* no descriptor table is longer than FD_HARD_MAX slots: not even root can have more */
     t->rlim.cur[res] = nw->cur;
     t->rlim.max[res] = nw->max;
     return 0;

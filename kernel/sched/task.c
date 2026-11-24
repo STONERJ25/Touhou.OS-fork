@@ -18,6 +18,7 @@ static int g_next_tid = 1;
 static volatile bool g_need_resched;
 static volatile bool g_tick_pending;    /* sched_tick ran in this interrupt: task_on_trap_return still has to say whether it interrupted user mode */
 static Task *g_reap;
+static u64 g_gs_loaded;                 /* what IA32_GS_BASE holds right now (0 at boot: gdt.c loads a zero-based selector into gs) */
 static u64 g_fs_loaded;                 /* what IA32_FS_BASE holds right now: user threads load their own TLS base when they run */
 static int g_nuser_threads;             /* Tasks that belong to a Process (all user threads, in every process) */
 static u8 g_fpu_default[512] ALIGNED(16);
@@ -86,6 +87,13 @@ void task_set_fs_base(Task *t, u64 base) {
     u64 f = irq_save();
     t->fs_base = base;
     if (t == g_current && t->proc && base != g_fs_loaded) { wrmsr(MSR_FS_BASE, base); g_fs_loaded = base; }
+    irq_restore(f);
+}
+
+void task_set_gs_base(Task *t, u64 base) {
+    u64 f = irq_save();
+    t->gs_base = base;
+    if (t == g_current && t->proc && base != g_gs_loaded) { wrmsr(MSR_GS_BASE, base); g_gs_loaded = base; }
     irq_restore(f);
 }
 
@@ -167,6 +175,7 @@ void schedule(void) {
         tss_set_rsp0(next->kstack_top);
         if (next->pml4 != prev->pml4) vmm_switch(next->pml4);
         if (next->proc && next->fs_base != g_fs_loaded) { wrmsr(MSR_FS_BASE, next->fs_base); g_fs_loaded = next->fs_base; }
+        if (next->proc && next->gs_base != g_gs_loaded) { wrmsr(MSR_GS_BASE, next->gs_base); g_gs_loaded = next->gs_base; }
         if (prev->fpu) fpu_save(prev->fpu);
         if (next->fpu) fpu_restore(next->fpu);
         context_switch(&prev->rsp, next->rsp);
@@ -316,6 +325,7 @@ Task *task_create_thread(const char *name, const TrapFrame *tf, Process *proc, c
     if (ti) {
         t->utid = ti->utid;
         t->fs_base = ti->fs_base;
+        t->gs_base = ti->gs_base;
         t->clear_tid = ti->clear_tid;
         t->sig_blocked = ti->sig_blocked;
     }

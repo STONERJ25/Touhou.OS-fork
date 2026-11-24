@@ -156,6 +156,13 @@ A kappabox applet in `kappabox/runstatus.c` (manual page `runstatus(1)`; the who
 | `runstatus -b MANIFEST [-w DIR] [-m SUBDIR]... [-c BYTES] [-k]` | runs every program of a manifest, each in a fresh directory with its output (standard output and error together) in one file, and prints one record per program, `@@RS ID EXIT SIGNAL FLAGS MS LENGTH BASE64`: the exit code and the signal are never folded into one number |
 | `tools/run-in-guest.py` (host) | boots a guest, hands it the programs, and prints one JSON line per program: `{"name", "output", "exit", "signal", "timed_out", ...}`; `PROGRAM [ARG...]` for a single one |
 
+## Looking at the guest's network from the host: pcapdump, net-stall-probe
+
+| Command | What it does |
+|---|---|
+| `tools/pcapdump.py FILE [--tcp PORT] [--abs] [--limit N]` (host) | prints a classic pcap file one line per frame (ARP, IPv4, IPv6, ICMP, UDP, TCP with flags, sequence and acknowledgement numbers, payload length; times since the first frame and since the line before); the captures come from `TOUHOU_PCAP=path` in the environment of a QEMU test ([NETWORK.md](NETWORK.md), "The first-connection stall") |
+| `tools/net-stall-probe.py [--modes speak,silent,delayed,second] [--runs N] [--pcap PREFIX] [--dmesg]` (host, through `tools/qemu-slot.py`) | boots a fresh guest per measurement and prints the time from `connect()` to the sshd's banner for a client that speaks first, one that stays silent, and one that waits 30 s |
+
 ## Tests
 
 ```

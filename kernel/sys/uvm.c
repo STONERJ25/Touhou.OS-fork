@@ -4,6 +4,7 @@
 #include "cpu.h"
 #include "cpuinfo.h"
 #include "fb.h"
+#include "cmdline.h"
 
 u64 pte_flags_for(u32 prot, u32 vflags) {
     u64 f = (prot & (PROT_READ | PROT_WRITE | PROT_EXEC)) ? PTE_U : 0;       /* PROT_NONE: a page that is there but that user code may not touch (a guard page that was already in use) */
@@ -157,8 +158,9 @@ int uvm_protect(AddrSpace *as, u64 addr, u64 len, u32 prot) {
         if (v->start < addr || v->end > end) continue;
         v->prot = prot;
         for (u64 va = v->start; va < v->end; va += PAGE_SIZE) {
-            paddr_t p = vmm_translate(as->pml4, va, NULL);
-            if (p) vmm_map(as->pml4, va, p & PTE_ADDR, pte_flags_for(prot, v->flags));
+            u64 ofl = 0;
+            paddr_t p = vmm_translate(as->pml4, va, &ofl);
+            if (p) vmm_map(as->pml4, va, p & PTE_ADDR, uvm_keep_cow(pte_flags_for(prot, v->flags), ofl));    /* a page still shared after a fork stays read-only whatever the new rights say (docs/COW.md) */
         }
     }
     return 0;
@@ -178,11 +180,67 @@ u64 uvm_find_free(AddrSpace *as, u64 len) {
     return addr;
 }
 
+/* ---- copy-on-write (docs/COW.md) ----
+ *
+ * A fork shares every private page instead of copying it: both entries lose PTE_W and gain PTE_COW (a software bit of the entry, Intel SDM vol. 3A, 4.5: bits 9..11 are
+ * ignored by the CPU), and the page's reference count says how many address spaces map it. The first write from either side faults (CR0.WP is set, so a write by the kernel
+ * through the uaccess window faults exactly like a write by the program) and uvm_cow_break gives the writer a page of its own. "cow=off" on the kernel command line keeps the
+ * eager copy. */
+static int g_cow = -1;
+
+bool uvm_cow_enabled(void) {
+    if (g_cow < 0) {
+        char v[8];
+        g_cow = UVM_COW_DEFAULT;
+        if (cmdline_value("cow", v, sizeof v)) g_cow = strcmp(v, "off") == 0 ? 0 : strcmp(v, "on") == 0 ? 1 : UVM_COW_DEFAULT;
+    }
+    return g_cow != 0;
+}
+
+/* The flags an entry gets when its rights change or it moves: a page that is still marked copy-on-write stays marked and read-only. */
+u64 uvm_keep_cow(u64 newfl, u64 oldfl) {
+    return (oldfl & PTE_COW) ? ((newfl & ~PTE_W) | PTE_COW) : newfl;
+}
+
+/* Makes the page at va this address space's own if it is marked copy-on-write (nothing to do otherwise). The caller holds as->lock, or nobody else can use the address space
+ * (a child that has not run yet). The only reference: the entry becomes an ordinary one in place. Shared: a new page gets the contents, the old one loses a reference. The
+ * allocation may wait for the OOM killer (can_sleep), so the entry is read again after it. 0, or -ENOMEM (the entry is unchanged: still shared, still read-only). */
+int uvm_cow_break(AddrSpace *as, u64 va, bool can_sleep) {
+    va &= ~(u64)(PAGE_SIZE - 1);
+    for (;;) {
+        u64 fl = 0;
+        paddr_t old = vmm_translate(as->pml4, va, &fl);
+        if (!old || !(fl & PTE_COW)) return 0;
+        Vma *v = vma_find(as, va);
+        u64 nfl = v ? pte_flags_for(v->prot, v->flags) : (fl & ~(PTE_COW | PTE_A | PTE_D | PTE_P));
+        Page *pg = pmm_page(old);
+        if (pg && pg->refcount == 1) {                      /* everybody else has let go (exit, exec, munmap, or their own copy) */
+            vmm_map(as->pml4, va, old, nfl);
+            return 0;
+        }
+        paddr_t np = oom_alloc_user_page(false, can_sleep);
+        if (!np) return -ENOMEM;
+        u64 fl2 = 0;
+        paddr_t again = vmm_translate(as->pml4, va, &fl2);
+        if (again != old || !(fl2 & PTE_COW)) {             /* changed while the allocation waited: look again */
+            pmm_free_page(np);
+            continue;
+        }
+        memcpy(phys_to_virt(np), phys_to_virt(old), PAGE_SIZE);
+        if (vmm_map(as->pml4, va, np, nfl)) { pmm_free_page(np); return -ENOMEM; }      /* (the tables are there: cannot fail) */
+        pmm_free_page(old);                                 /* one reference less; the page itself lives on in the other address spaces */
+        return 0;
+    }
+}
+
+bool futex_page_has_waiters(paddr_t page);                  /* kernel/sys/futex.c */
+
 int uvm_clone(AddrSpace *dst, const AddrSpace *src) {
     dst->brk_start = src->brk_start;
     dst->brk = src->brk;
     dst->mmap_next = src->mmap_next;
     bool can_sleep = (read_rflags() & RFLAGS_IF) != 0;
+    bool cow = uvm_cow_enabled();
     for (Vma *v = src->vmas; v; v = v->next) {
         Vma *nv = vma_new(v->start, v->end, v->prot, v->flags);
         if (!nv) return -ENOMEM;
@@ -194,16 +252,26 @@ int uvm_clone(AddrSpace *dst, const AddrSpace *src) {
             paddr_t sp = vmm_translate(src->pml4, va, &fl);
             if (!sp) continue;
             sp &= PTE_ADDR;
-            fl &= ~(PTE_A | PTE_D);
             if (v->flags & VMA_IO) {
-                if (vmm_map(dst->pml4, va, sp, fl)) return -ENOMEM;     /* shared device/shared-buffer pages */
+                if (vmm_map(dst->pml4, va, sp, fl & ~(PTE_A | PTE_D))) return -ENOMEM;     /* shared device/shared-buffer pages: shared for real, never copy-on-write */
                 if (pmm_page_managed(sp)) pmm_get_page(sp);
                 continue;
             }
-            paddr_t np = oom_alloc_user_page(false, can_sleep);     /* fork copies every page: the reserve and the OOM killer decide when that is too much */
+            /* Shared, read-only and marked in both address spaces. Also a page of a read-only mapping (the program text): nothing is copied for it either, and a later
+             * mprotect(PROT_WRITE) finds the mark. The exception is a page some thread sleeps on in a futex: the wait list knows the word by its physical address, so
+             * that page must stay the parent's own (kernel/sys/futex.c); the child gets a copy at once, as every page did before. */
+            if (cow && pmm_page_managed(sp) && !futex_page_has_waiters(sp)) {
+                u64 nfl = (fl & ~(PTE_W | PTE_A | PTE_D)) | PTE_COW;
+                if (vmm_map(dst->pml4, va, sp, nfl)) return -ENOMEM;
+                pmm_get_page(sp);
+                if ((fl & PTE_W) || !(fl & PTE_COW)) vmm_map(src->pml4, va, sp, (fl & ~PTE_W) | PTE_COW);     /* the parent's entry: the TLB entry goes with it (vmm_map) */
+                continue;
+            }
+            paddr_t np = oom_alloc_user_page(false, can_sleep);     /* the eager copy: the reserve and the OOM killer decide when that is too much */
             if (!np) return -ENOMEM;
             memcpy(phys_to_virt(np), phys_to_virt(sp), PAGE_SIZE);
-            if (vmm_map(dst->pml4, va, np, fl)) { pmm_free_page(np); return -ENOMEM; }
+            u64 cfl = (fl & PTE_COW) ? pte_flags_for(v->prot, v->flags) : (fl & ~(PTE_A | PTE_D));
+            if (vmm_map(dst->pml4, va, np, cfl)) { pmm_free_page(np); return -ENOMEM; }
         }
     }
     return 0;
@@ -247,7 +315,19 @@ static bool uvm_fault_locked(AddrSpace *as, TrapFrame *tf, u64 addr) {
     Vma *v = vma_find(as, addr);
     if (!v || (v->flags & VMA_IO)) return false;
     u64 err = tf->error;
-    if (err & 1) return false;                              /* present page: a real protection violation */
+    if (err & 1) {                                          /* present page: a write to a copy-on-write page, or a real protection violation */
+        u64 fl = 0;
+        if (!(err & 2) || (err & (8 | 16))) return false;
+        if (!vmm_translate(as->pml4, addr, &fl)) return true;           /* unmapped while we waited: the retry is a not-present fault */
+        if ((fl & PTE_W) && (fl & PTE_U)) return true;                  /* another thread broke the sharing while we waited for the lock */
+        if (!(fl & PTE_COW) || !(fl & PTE_U) || !(v->prot & PROT_WRITE)) return false;
+        if (uvm_cow_break(as, addr, (tf->rflags & RFLAGS_IF) != 0)) {   /* no page for the copy: as for a demand-zero page below */
+            if ((tf->cs & 3) == 3 && oom_current_is_dying()) return true;
+            klog("Yuyuko", "out of memory while copying the shared page %#lx: Yuyuko is hungry", (unsigned long)addr);
+            return false;
+        }
+        return true;
+    }
     if (vmm_translate(as->pml4, addr, NULL)) return true;   /* another thread mapped it while we waited: just retry */
     if ((err & 2) && !(v->prot & PROT_WRITE)) return false;
     if ((err & 16) && !(v->prot & PROT_EXEC)) return false;
@@ -269,6 +349,7 @@ static bool uvm_fault_locked(AddrSpace *as, TrapFrame *tf, u64 addr) {
 int uvm_write(AddrSpace *as, u64 uaddr, const void *src, size_t n) {
     const u8 *s = src;
     while (n) {
+        if (uvm_cow_break(as, uaddr, (read_rflags() & RFLAGS_IF) != 0)) return -ENOMEM;     /* the direct map knows no rights: a page shared after a fork gets its copy first */
         paddr_t p = vmm_translate(as->pml4, uaddr, NULL);
         if (!p) return -EFAULT;
         size_t chunk = MIN(n, PAGE_SIZE - (uaddr & (PAGE_SIZE - 1)));

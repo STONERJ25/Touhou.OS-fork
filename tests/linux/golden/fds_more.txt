@@ -1,0 +1,47 @@
+a second thread has an id of its own: 1
+pidfd_open of a thread id: ENOENT
+pidfd_open of the first thread's id: ok
+waitid WNOWAIT leaves the zombie: 0
+signal 0 to a zombie: ok
+SIGTERM to a zombie: ok
+reaped it: 1
+its status is still exit 3: 1
+signal 0 after the reap: ESRCH
+pidfd_getfd with flags: EINVAL
+pidfd_getfd of a closed number: EBADF
+pidfd_getfd through a pipe: EBADF
+pidfd_getfd through nothing: EBADF
+pidfd_getfd: ok
+it is close-on-exec: 1
+wrote through it: 1
+read from the pipe: 1
+the same byte: 1
+pidfd_getfd of a zombie: ESRCH
+pidfd_getfd after the reap: ESRCH
+mkfifo: 0
+reader, no writer yet: 0 []
+read with no writer yet: 0
+reader, a writer and no data: 0 []
+writer: 1 [OUT ]
+write: 1
+reader, data: 1 [IN ]
+reader, data and the writer gone: 1 [IN HUP ]
+read: 1
+reader, the writer gone: 1 [HUP ]
+reader, a second writer: 0 []
+writer, the reader gone: 1 [OUT ERR ]
+O_RDWR, empty: 1 [OUT ]
+filled it: 1
+O_RDWR, full: 1 [IN ]
+O_RDWR, waiting for room: 1 [OUT ]
+woken well before the timeout: 1
+signalfd, nothing yet: 0 []
+pidfd, still running: 0 []
+signalfd, waiting for the signal: 1 [IN ]
+woken well before the timeout: 1
+one record: 1
+SIGUSR1 from the child: 1
+pidfd, waiting for the exit: 1 [IN ]
+woken well before the timeout: 1
+done
+exit status: 0

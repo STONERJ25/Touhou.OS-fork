@@ -57,7 +57,7 @@ static int t_defaults(void) {
     errno = 0;
     CHECK(getrlimit(RLIM_NLIMITS, &r) == -1 && errno == EINVAL);
     CHECK(getrlimit(-1, &r) == -1 && errno == EINVAL);
-    CHECK(cur_of(RLIMIT_NOFILE) == 64 && max_of(RLIMIT_NOFILE) == 64);
+    CHECK(cur_of(RLIMIT_NOFILE) == 1024 && max_of(RLIMIT_NOFILE) == 4096);
     CHECK(cur_of(RLIMIT_NPROC) == 128 && max_of(RLIMIT_NPROC) == 128);
     CHECK(cur_of(RLIMIT_STACK) == 8 * MIB && max_of(RLIMIT_STACK) == RLIM_INFINITY);
     CHECK(cur_of(RLIMIT_CORE) == 0 && max_of(RLIMIT_CORE) == RLIM_INFINITY);
@@ -69,7 +69,7 @@ static int t_defaults(void) {
     CHECK(setrlimit(RLIMIT_AS, NULL) == -1 && errno == EFAULT);
     CHECK(getrlimit(RLIMIT_AS, (struct rlimit *)8) == -1 && errno == EFAULT);
     errno = 0;
-    CHECK(set(RLIMIT_NOFILE, 64, 65) == -1 && errno == EPERM);                    /* more descriptors than the table has */
+    CHECK(set(RLIMIT_NOFILE, 4096, 4097) == -1 && errno == EPERM);                /* more descriptors than any table has (FD_HARD_MAX) */
     return g_fail;
 }
 
@@ -218,7 +218,7 @@ static int t_prlimit(void) {
         _exit(0);
     }
     struct rlimit nw = { 11, 11 }, old;
-    CHECK(prlimit(kid, RLIMIT_NOFILE, &nw, &old) == 0 && old.rlim_cur == 64);
+    CHECK(prlimit(kid, RLIMIT_NOFILE, &nw, &old) == 0 && old.rlim_cur == 1024);
     write(down[1], "x", 1);
     rlim_t seen = 0;
     CHECK(read(up[0], &seen, sizeof seen) == (ssize_t)sizeof seen && seen == 11);

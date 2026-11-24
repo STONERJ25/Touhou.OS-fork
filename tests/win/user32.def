@@ -1,0 +1,4 @@
+; One USER32.dll name, for the test that a DLL winrun does not build in is refused at load time.
+LIBRARY USER32.dll
+EXPORTS
+MessageBoxA

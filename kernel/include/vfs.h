@@ -197,6 +197,7 @@ int    vfs_mkdir_p(const char *path, u32 mode);
 
 /* ---- pipes ---- */
 int    vfs_pipe(File **rd, File **wr);
+int    fifo_open(VNode *v, int flags, File **out);                      /* open of a named pipe (kernel/fs/pipe.c): takes over the reference to v */
 
 /* ---- device nodes ---- */
 int    devfs_register(const char *path, u32 mode, const VNodeOps *ops, void *priv, u64 rdev);   /* "tty", "input/events" */

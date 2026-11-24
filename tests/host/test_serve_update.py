@@ -333,6 +333,33 @@ class TestCollect(Base):
                 su.collect_files(d)
 
 
+class TestExport(Base):
+    def test_export_is_what_serve_answers(self):
+        """`export DIR` writes DIR/manifest and DIR/files/<path>: the same bytes the server answers with, so any static web server can stand in for it"""
+        with tempfile.TemporaryDirectory() as d:
+            m = su.export_dir(d, self.manifest, self.files)
+            self.assertEqual((Path(d) / "manifest").read_bytes(), self.manifest)
+            su.verify_manifest((Path(d) / "manifest").read_bytes(), self.key)
+            for e in m.files:
+                su.check_file(e, Path(d).joinpath("files", *e.path.split("/")).read_bytes())
+            left = sorted(p.relative_to(d).as_posix() for p in Path(d).rglob("*") if p.is_file())
+            self.assertEqual(left, ["files/" + p for p in sorted(self.files)] + ["manifest"])       # nothing else (no .part left behind)
+            changed = dict(self.files, **{"kernel.elf": self.files["kernel.elf"] + b"x"})
+            with self.assertRaises(su.ManifestError):                                              # files that are not the manifest's are never written
+                su.export_dir(Path(d) / "other", self.manifest, changed)
+            self.assertFalse((Path(d) / "other" / "manifest").exists())
+
+    def test_export_command(self):
+        with tempfile.TemporaryDirectory() as d:
+            make_esp(Path(d) / "esp")
+            keyfile = Path(d) / "k.pem"
+            su.write_private_key(keyfile, self.key)
+            su.main(["export", str(Path(d) / "out"), "--key", str(keyfile), "--src", str(Path(d) / "esp"), "--version", "exp-1", "--issued", "1800000000"])
+            m = su.verify_manifest((Path(d) / "out" / "manifest").read_bytes(), self.key)
+            self.assertEqual((m.version, m.issued), ("exp-1", 1800000000))
+            self.assertEqual((Path(d) / "out" / "files" / "kernel.elf").read_bytes(), self.files["kernel.elf"])
+
+
 class TestServer(Base):
     def setUp(self):
         self.srv = su.make_server("127.0.0.1", 0, self.manifest, self.files, quiet=True)

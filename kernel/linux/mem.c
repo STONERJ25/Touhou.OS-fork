@@ -120,10 +120,11 @@ long lnx_mremap(TrapFrame *tf) {
             }
             if (!rc) {
                 for (u64 o = 0; o < osz; o += PAGE_SIZE) {  /* the pages move with their contents: no copy */
-                    paddr_t p = vmm_translate(as->pml4, old + o, NULL);
+                    u64 ofl = 0;
+                    paddr_t p = vmm_translate(as->pml4, old + o, &ofl);
                     if (!p) continue;
                     vmm_unmap(as->pml4, old + o);
-                    if (vmm_map(as->pml4, na + o, p & PTE_ADDR, pte_flags_for(prot, vflags))) { pmm_free_page(p & PTE_ADDR); }
+                    if (vmm_map(as->pml4, na + o, p & PTE_ADDR, uvm_keep_cow(pte_flags_for(prot, vflags), ofl))) { pmm_free_page(p & PTE_ADDR); }     /* a page shared after a fork moves as what it is: read-only and marked (docs/COW.md) */
                 }
                 uvm_unmap(as, old, osz);
                 rc = (long)na;

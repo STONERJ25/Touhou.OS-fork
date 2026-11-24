@@ -2,7 +2,10 @@
  * URLs for libhttp: the http and https schemes (RFC 9110 4.2) in the generic syntax of RFC 3986, reference resolution
  * (RFC 3986 5.2, for Location headers), and the request message (RFC 9112 3).
  *
- * Not handled: IPv6 literals ("[...]"), user information in the authority ("user@host" is refused rather than half-supported),
+ * IPv6 literals are written in brackets (RFC 3986 3.2.2, "http://[2001:db8::1]:8080/"); HttpUrl.host keeps the address without them
+ * (what getaddrinfo and a TLS server name want: RFC 6066 3 has no literals at all), and every place that writes an authority (the URL's text,
+ * the Host header, a resolved reference) puts them back. A zone ("[fe80::1%25eth0]", RFC 6874) is kept as "fe80::1%eth0".
+ * Not handled: user information in the authority ("user@host" is refused rather than half-supported), IPvFuture literals,
  * internationalized host names (give the xn-- form).
  */
 #include <stdio.h>
@@ -40,6 +43,40 @@ static int put_path(char *out, size_t cap, const char *p, size_t n) {
 
 static int default_port(const char *scheme) { return strcmp(scheme, "https") == 0 ? 443 : 80; }
 
+/* the host as an authority writes it: an IPv6 address in brackets */
+static const char *auth_host(const HttpUrl *u, char *buf, size_t cap) {
+    if (!strchr(u->host, ':')) return u->host;
+    snprintf(buf, cap, "[%s]", u->host);
+    return buf;
+}
+
+/* the inside of "[...]": hex digits, ':' and '.' (an embedded IPv4 address), at least two colons, and an optional zone "%25name" */
+static int ipv6_literal(const char *p, size_t n, char *out, size_t cap) {
+    size_t k = 0, colons = 0, i = 0;
+    for (; i < n; i++) {
+        char c = (char)lower(p[i]);
+        if (c == '%') break;
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || c == ':' || c == '.')) return -1;
+        if (c == ':') colons++;
+        if (k + 1 >= cap) return -1;
+        out[k++] = c;
+    }
+    if (colons < 2) return -1;
+    if (i < n) {                                                    /* a zone: "%25" then unreserved characters */
+        if (n - i < 4 || p[i + 1] != '2' || p[i + 2] != '5') return -1;
+        if (k + 1 >= cap) return -1;
+        out[k++] = '%';
+        for (i += 3; i < n; i++) {
+            char c = p[i];
+            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '.' || c == '_' || c == '~')) return -1;
+            if (k + 1 >= cap) return -1;
+            out[k++] = c;
+        }
+    }
+    out[k] = 0;
+    return 0;
+}
+
 int http_url_parse(const char *s, HttpUrl *u) {
     memset(u, 0, sizeof *u);
     if (!s) return HTTP_E_URL;
@@ -60,9 +97,19 @@ int http_url_parse(const char *s, HttpUrl *u) {
     while (i < len && s[i] != '/' && s[i] != '?' && s[i] != '#') i++;
     size_t alen = i - a;
     const char *auth = s + a;
-    if (memchr(auth, '@', alen) || (alen && auth[0] == '[')) return HTTP_E_URL;
+    if (memchr(auth, '@', alen)) return HTTP_E_URL;
     size_t hlen = alen;
     const char *colon = memchr(auth, ':', alen);
+    int bracketed = 0;
+    if (alen && auth[0] == '[') {                                   /* an IPv6 literal: the port's colon is the one after ']' */
+        const char *close = memchr(auth, ']', alen);
+        if (!close) return HTTP_E_URL;
+        size_t after = (size_t)(close - auth) + 1;
+        if (after < alen && auth[after] != ':') return HTTP_E_URL;
+        if (ipv6_literal(auth + 1, (size_t)(close - auth) - 1, u->host, sizeof u->host) != 0) return HTTP_E_URL;
+        colon = after < alen ? auth + after : NULL;
+        bracketed = 1;
+    }
     u->port = default_port(u->scheme);
     if (colon) {
         hlen = (size_t)(colon - auth);
@@ -79,13 +126,14 @@ int http_url_parse(const char *s, HttpUrl *u) {
             u->explicit_port = 1;
         }
     }
-    if (hlen == 0 || hlen >= sizeof u->host) return HTTP_E_URL;
-    for (size_t k = 0; k < hlen; k++) {
+    if (bracketed) hlen = 0;
+    else if (hlen == 0 || hlen >= sizeof u->host) return HTTP_E_URL;
+    for (size_t k = 0; k < hlen && !bracketed; k++) {
         char c = (char)lower(auth[k]);
         if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '.' || c == '_' || c == '~')) return HTTP_E_URL;
         u->host[k] = c;
     }
-    u->host[hlen] = 0;
+    if (!bracketed) u->host[hlen] = 0;
     size_t pend = i;
     while (pend < len && s[pend] != '#') pend++;                    /* the fragment never goes to the server */
     char raw[HTTP_MAX_PATH];
@@ -101,8 +149,10 @@ int http_url_parse(const char *s, HttpUrl *u) {
 
 int http_url_format(const HttpUrl *u, char *buf, size_t cap) {
     int n;
-    if (u->explicit_port && u->port != default_port(u->scheme)) n = snprintf(buf, cap, "%s://%s:%d%s", u->scheme, u->host, u->port, u->path);
-    else n = snprintf(buf, cap, "%s://%s%s", u->scheme, u->host, u->path);
+    char hb[HTTP_MAX_HOST + 2];
+    const char *h = auth_host(u, hb, sizeof hb);
+    if (u->explicit_port && u->port != default_port(u->scheme)) n = snprintf(buf, cap, "%s://%s:%d%s", u->scheme, h, u->port, u->path);
+    else n = snprintf(buf, cap, "%s://%s%s", u->scheme, h, u->path);
     return n < 0 || (size_t)n >= cap ? -1 : n;
 }
 
@@ -142,9 +192,10 @@ int http_url_resolve(const HttpUrl *base, const char *ref, HttpUrl *out) {
         if (snprintf(buf, sizeof buf, "%s:%s", base->scheme, ref) >= (int)sizeof buf) return HTTP_E_URL;
         return http_url_parse(buf, out);
     }
-    char auth[HTTP_MAX_HOST + 16];
-    if (base->explicit_port) snprintf(auth, sizeof auth, "%s:%d", base->host, base->port);
-    else snprintf(auth, sizeof auth, "%s", base->host);
+    char auth[HTTP_MAX_HOST + 16], hb[HTTP_MAX_HOST + 2];
+    const char *bh = auth_host(base, hb, sizeof hb);
+    if (base->explicit_port) snprintf(auth, sizeof auth, "%s:%d", bh, base->port);
+    else snprintf(auth, sizeof auth, "%s", bh);
     /* the reference without its fragment, split at '?' */
     size_t rlen = strcspn(ref, "#");
     size_t qpos = strcspn(ref, "?");
@@ -187,9 +238,10 @@ static int has_header(const char *extra, const char *name) {
 }
 
 long http_request_build(char *buf, size_t cap, const char *method, const HttpUrl *u, const char *extra, int decode) {
-    char hostport[HTTP_MAX_HOST + 8];
-    if (u->port != default_port(u->scheme)) snprintf(hostport, sizeof hostport, "%s:%d", u->host, u->port);
-    else snprintf(hostport, sizeof hostport, "%s", u->host);
+    char hostport[HTTP_MAX_HOST + 10], hb[HTTP_MAX_HOST + 2];
+    const char *h = auth_host(u, hb, sizeof hb);
+    if (u->port != default_port(u->scheme)) snprintf(hostport, sizeof hostport, "%s:%d", h, u->port);
+    else snprintf(hostport, sizeof hostport, "%s", h);
     /* a caller that sends its own User-Agent (fetch -U) replaces ours: two of them is a request some servers refuse */
     const char *agent = extra && has_header(extra, "user-agent:") ? "" : "User-Agent: libhttp/1.0 (TouhouOS)\r\n";
     int n = snprintf(buf, cap, "%s %s HTTP/1.1\r\nHost: %s\r\n%sAccept: */*\r\n%sConnection: close\r\n%s\r\n",

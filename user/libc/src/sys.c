@@ -81,6 +81,8 @@ int pipe(int fds[2]) { return (int)__ret(__sc1(SYS_pipe, (long)fds)); }
 int unlink(const char *p) { return (int)__ret(__sc1(SYS_unlink, (long)p)); }
 int rmdir(const char *p) { return (int)__ret(__sc1(SYS_rmdir, (long)p)); }
 int mkdir(const char *p, mode_t m) { return (int)__ret(__sc2(SYS_mkdir, (long)p, (long)m)); }
+int mknod(const char *p, mode_t m, dev_t dev) { (void)dev; return (int)__ret(__sc2(SYS_mknod, (long)p, (long)m)); }
+int mkfifo(const char *p, mode_t m) { return mknod(p, (m & 07777) | S_IFIFO, 0); }
 int rename(const char *a, const char *b) { return (int)__ret(__sc2(SYS_rename, (long)a, (long)b)); }
 int remove(const char *p) {
     int r = unlink(p);
@@ -591,6 +593,8 @@ int gap_mount(const char *src, const char *target, const char *fstype, unsigned 
 }
 int gap_umount(const char *target) { return (int)__ret(__sc1(SYS_umount, (long)target)); }
 void gap_setname(const char *name) { __sc1(SYS_setname, (long)name); }
+void *gap_set_gsbase(void *base) { return (void *)__sc1(SYS_gsbase, (long)base); }
+void *gap_get_gsbase(void) { return (void *)__sc1(SYS_gsbase, -1L); }
 int gap_setabi(int abi) { return (int)__ret(__sc1(SYS_setabi, abi)); }
 void gap_log(const char *msg) { __sc1(SYS_debuglog, (long)msg); }
 long gap_time_ms(void) { return __sc0(SYS_gettime_ms); }

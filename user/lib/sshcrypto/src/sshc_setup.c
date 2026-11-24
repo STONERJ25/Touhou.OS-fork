@@ -4,6 +4,7 @@
  * ~/.ssh/id_ed25519 (the only key type this client has), public key then keyboard-interactive then password, three password tries.
  */
 #include <sshc.h>
+#include <sys/socket.h>
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -54,7 +55,10 @@ int sshc_login_setup(SshcSetup *s, const SshcConfig *cfg, const char *host, int 
     const char *pj = sshc_cfg_str(cfg, SSHC_O_PROXYJUMP);
     if (pj && strcasecmp(pj, "none")) { snprintf(s->err, sizeof s->err, "ProxyJump is not supported"); return -1; }
     const char *af = sshc_cfg_str(cfg, SSHC_O_ADDRESSFAMILY);
-    if (af && !strcasecmp(af, "inet6")) { snprintf(s->err, sizeof s->err, "IPv6 is not available on this system"); return -1; }
+    sshc_family = AF_UNSPEC;
+    if (af && !strcasecmp(af, "inet6")) sshc_family = AF_INET6;
+    else if (af && !strcasecmp(af, "inet")) sshc_family = AF_INET;
+    else if (af && strcasecmp(af, "any")) { snprintf(s->err, sizeof s->err, "bad AddressFamily '%s' (any, inet or inet6)", af); return -1; }
 
     const char *hostname = sshc_cfg_str(cfg, SSHC_O_HOSTNAME);
     if (hostname) {
