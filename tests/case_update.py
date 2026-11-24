@@ -294,7 +294,8 @@ def update_refusals_and_rules():
             r = g.ssh("sudo update recv" + flags, input=data)
             text = (r.stdout + r.stderr).decode("utf-8", "replace")
             assert r.returncode != 0 and want in text, (what, r.returncode, text)
-        assert esp_stamp_in_guest(g) == before, "a refused push changed the ESP"
+        after = esp_stamp_in_guest(g)
+        assert after == before, ("a refused push changed the ESP", before, after)
         r = g.ssh("sudo update recv", input=push_update.build_stream([("kernel.elf", (BUILD / "esp" / "kernel.elf").read_bytes()),
                                                                        ("initrd.img", (BUILD / "esp" / "initrd.img").read_bytes())], "same"))
         assert r.returncode == 0 and b"nothing to do" in r.stdout, (r.returncode, r.stdout, r.stderr)
@@ -332,7 +333,9 @@ def update_refusals_and_rules():
 def esp_stamp_in_guest(g):
     """A fingerprint of the files on the ESP, read by the guest through a read-only mount."""
     out = g.run("mkdir -p /tmp/e && mount -r /dev/nvme0n1p1 /tmp/e && (cd /tmp/e && sha256sum kernel.elf initrd.img cmdline.txt EFI/BOOT/BOOTX64.EFI; ls) ; umount /tmp/e")[0]
-    return out
+    # The console also carries the kernel's own log lines ("[Keine] fat32: ... mounted", and since the ARP fix of 2026-11-24 the network clock sync "[Sakuya] clock set from ..." lands
+    # right at the start of a guest, in whichever of two stamps happens to be taken then): they say nothing about the files, so they are not part of the fingerprint.
+    return "\n".join(ln for ln in out.splitlines() if not re.match(r"\[\w+\] ", ln))
 
 
 @test

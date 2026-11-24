@@ -673,7 +673,9 @@ __attribute__((noinline)) static void signal_deliver_slow(TrapFrame *tf) {
             continue;
         }
         if (act->handler == SIG_DFL) {
-            klog("Eiki", "'%s' (pid %d) was exorcised by signal %d", p->name, p->pid, sig);
+            /* SIGPIPE is how the writer of a pipeline ends when its reader has gone (`yes | head`, `echo x | bc /dev/null`): an ordinary event, not worth a line on the console,
+             * and with copy-on-write fork the child that writes often loses the race to the reader (2026-11-24: bc_language saw the line in its output). */
+            if (sig != SIGPIPE) klog("Eiki", "'%s' (pid %d) was exorcised by signal %d", p->name, p->pid, sig);
             process_exit(sig);                              /* the default action ends the whole process, not one thread */
         }
 

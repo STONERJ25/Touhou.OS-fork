@@ -452,9 +452,10 @@ def mcc_userland():
     report = json.loads((ROOT / "build" / "mcc-user" / "report.json").read_text())
     # still from clang: the calculator (it keeps 80-bit values in memory and mcc's long double is a double), libtls and libgap's exact
     # floating point (fpconv.c, math.c: they use unsigned __int128, which mcc does not have) and libjs (its headers use __builtin_signbit,
-    # which mcc does not know; what else is behind it was not looked at: docs/SELFHOST.md)
+    # which mcc does not know; what else is behind it was not looked at: docs/SELFHOST.md), and winrun (user/bin/winrun/main.c enters the Windows program through a top-level
+    # __asm__ block, which mcc does not assemble: the link says "undefined reference to winrun_call_on_stack"; its Win32 layer also uses __attribute__((ms_abi)))
     rest = [f for f in report["fallback"] if not f.startswith(("user/lib/tls/src/", "user/lib/js/src/", "user/libc/src/fpconv.c", "user/libc/src/math.c"))]
-    assert rest == ["bin/calculator"] and not report["failed"], report
+    assert sorted(rest) == ["bin/calculator", "bin/winrun"] and not report["failed"], report
     repl = {}
     for kind in ("bin", "sbin"):
         for p in sorted((ROOT / "build" / "mcc-user" / kind).glob("*")):

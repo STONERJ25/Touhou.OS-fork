@@ -1,0 +1,25 @@
+.page mkfifo 1 make named pipes (FIFOs)
+
+# SYNOPSIS
+*mkfifo* [*-m* _MODE_] _NAME_...
+
+# DESCRIPTION
+`mkfifo` creates a named pipe for each _NAME_. A named pipe is a file that two programs open to talk to each other: whatever one writes, the other reads, in order, without the data ever being stored. `open` for reading waits until another program has opened it for writing, and the other way round; a reader sees end of file when the last writer has closed it, and a writer without a reader gets `SIGPIPE`.
+
+Named pipes can be made on the tmpfs file systems only: under `/tmp`, in the Linux root and the other RAM-backed directories. Anywhere else the call fails with "Operation not permitted".
+
+# OPTIONS
+@ *-m* _MODE_
+    Give the new pipes the permissions _MODE_, an octal number. The default is 666 (changed by the umask).
+
+# EXIT STATUS
+0, 1 if a pipe could not be created or no name was given, 2 for an unknown option.
+
+# EXAMPLES
+    mkfifo /tmp/f
+    cat /tmp/f &
+    echo hello > /tmp/f
+    mkfifo -m 600 /tmp/private
+
+# SEE ALSO
+mkdir(1), cat(1)
